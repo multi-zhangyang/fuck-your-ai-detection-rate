@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a focused improvement without attaching private documents.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow pain are you trying to solve?
+      placeholder: "Example: I need a faster way to inspect only chunks that require manual review."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the interaction or algorithm you want.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - UI / interaction
+        - Rewrite strategy
+        - Model provider configuration
+        - Detection report feedback
+        - History / artifacts
+        - DOCX export / formatting
+        - School format parsing
+        - Developer experience
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Mention privacy, cost, token usage, speed, or compatibility constraints if relevant.
+    validations:
+      required: false

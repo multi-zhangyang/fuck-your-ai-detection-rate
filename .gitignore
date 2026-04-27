@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / Vite
+app/node_modules/
+app/dist/
+app/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Generated runtime outputs
+finish/
+origin/
+logs/
+*.log
+tmp/
+temp/
+uploads/
+reports/
+*.tmp
+*.bak
+*.orig
+
+# Local documents and detector reports
+*.doc
+*.docx
+*.docm
+*.pdf
+~$*.docx
+
+# Local archives / packaged releases
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+
+# Local databases / state snapshots
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.jsonl
+
+# Local environment / secrets
+.env
+.env.*
+app/.env
+app/.env.*
+!*.env.example
+!app/*.env.example
+*.key
+*.pem
+*.p12
+*.crt
+*.cert
+*.token
+*.secret
+
+# Local UI screenshots
+app/ui-check*.png
+screenshots/
+playwright-report/
+test-results/
+coverage/
+
+# Local raw design exports; app uses app/public/brand-logo.png
+/Fuck your AI detection rate.png
+
+# Editor / local config
+.vscode/
+.idea/
+.agents/
+
+# OS junk
+.DS_Store
+Thumbs.db

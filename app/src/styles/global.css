@@ -1,0 +1,120 @@
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Source+Serif+4:wght@600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@property --fyadr-rainbow-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes fyadr-rainbow-spin {
+  to {
+    --fyadr-rainbow-angle: 360deg;
+  }
+}
+
+@layer base {
+  :root {
+    --background: 32 44% 97%;
+    --foreground: 220 24% 16%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 24% 16%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 24% 16%;
+    --primary: 222 66% 42%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 33% 95%;
+    --secondary-foreground: 222 47% 16%;
+    --muted: 32 28% 94%;
+    --muted-foreground: 215 16% 41%;
+    --accent: 198 71% 93%;
+    --accent-foreground: 222 47% 16%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 26% 87%;
+    --input: 214 26% 87%;
+    --ring: 222 66% 42%;
+    --radius: 1rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply min-h-screen bg-background font-sans text-foreground antialiased;
+    background-image:
+      radial-gradient(circle at 12% 8%, rgba(37, 99, 235, 0.16), transparent 28%),
+      radial-gradient(circle at 86% 12%, rgba(20, 184, 166, 0.14), transparent 24%),
+      radial-gradient(circle at 50% 100%, rgba(168, 85, 247, 0.08), transparent 26%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.98));
+  }
+
+  #root {
+    @apply min-h-screen;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply border border-white/70 bg-white/80 backdrop-blur-xl;
+  }
+
+  .surface-card {
+    @apply border border-white/70 bg-white/85 shadow-soft backdrop-blur-xl;
+  }
+
+  .hero-orb {
+    background: radial-gradient(circle, rgba(37, 99, 235, 0.2), transparent 64%);
+  }
+
+  .focus-ring {
+    @apply transition duration-200 hover:-translate-y-0.5 hover:shadow-glow;
+  }
+
+  .app-grid {
+    background-size: 36px 36px;
+    background-image: linear-gradient(to right, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .text-pretty {
+    text-wrap: pretty;
+  }
+
+  .rainbow-marquee-card {
+    border: 2px solid transparent;
+    background:
+      linear-gradient(rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.96)) padding-box,
+      conic-gradient(
+        from var(--fyadr-rainbow-angle),
+        #ff2d55,
+        #ff9500,
+        #ffd60a,
+        #34c759,
+        #00c7be,
+        #0a84ff,
+        #bf5af2,
+        #ff2d55
+      ) border-box;
+    animation: fyadr-rainbow-spin 3.8s linear infinite;
+    box-shadow:
+      0 18px 48px rgba(15, 23, 42, 0.08),
+      0 0 0 1px rgba(255, 255, 255, 0.78) inset;
+  }
+
+  .rainbow-marquee-card:hover {
+    animation-duration: 2.6s;
+  }
+}

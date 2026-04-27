@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible problem in the Web UI, backend, rewrite pipeline, or export pipeline.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Please remove private thesis text, API keys, provider URLs, and personal paths before submitting.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I have removed private document content, API keys, provider URLs, and personal paths.
+          required: true
+        - label: I have searched existing issues and did not find the same problem.
+          required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the visible symptom and what you expected to happen.
+      placeholder: "Example: after selecting a history item, clicking adopt rewrite does nothing."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Give exact steps. Include whether this happens after refresh, history switching, rerun, cancel, or export.
+      placeholder: |
+        1. Start backend with ...
+        2. Open ...
+        3. Upload ...
+        4. Click ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      multiple: true
+      options:
+        - Startup / one-click script
+        - Model configuration
+        - Rewrite execution
+        - Cancel / resume / rerun
+        - Diff review UI
+        - Detection report feedback
+        - History / artifact cleanup
+        - Word export / formatting
+        - School format parsing
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: In the app, open 启动诊断 and click 复制诊断信息. Paste it here after checking it contains no private data.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and screenshots
+      description: Paste backend error text or browser console errors. Screenshots are helpful, but redact document content.
+      render: text
+    validations:
+      required: false
