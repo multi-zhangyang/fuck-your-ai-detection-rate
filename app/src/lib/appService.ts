@@ -23,6 +23,7 @@ import type {
   OutputPreview,
   RoundCompareData,
   RoundProgress,
+  RoundProgressStatus,
   ReviewDecision,
   ReviewDecisionsResult,
   RerunChunkResult,
@@ -61,6 +62,7 @@ export interface AppService {
   startRunRound(sourcePath: string, modelConfig: ModelConfig): Promise<string | null>;
   getRunRoundStatus(runToken: string): Promise<RunRoundStatus>;
   cancelRunRound(runToken: string): Promise<void>;
+  getRoundProgressStatus(sourcePath: string, promptProfile: ModelConfig["promptProfile"], roundNumber?: number | null, promptSequence?: ModelConfig["promptSequence"]): Promise<RoundProgressStatus>;
   resetRoundProgress(sourcePath: string, promptProfile: ModelConfig["promptProfile"], roundNumber: number, promptSequence?: ModelConfig["promptSequence"]): Promise<void>;
   awaitRunRound(sourcePath: string, modelConfig: ModelConfig, runToken?: string | null): Promise<RoundResult>;
   listenRoundProgress(onProgress: (payload: RoundProgress) => void, runToken?: string | null): Promise<() => void>;

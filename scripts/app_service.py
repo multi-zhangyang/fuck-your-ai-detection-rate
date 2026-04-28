@@ -29,6 +29,7 @@ from fyadr_round_service import (
     build_paragraph_guard,
     build_prompt_input,
     get_max_rounds,
+    get_round_checkpoint_path,
     get_round_compare_path,
     load_prompt,
     normalize_chunk_output,
@@ -1216,6 +1217,135 @@ def reset_round_progress(
         "promptSequence": normalized_prompt_sequence,
         "deletedRounds": records_payload.get("deletedRounds", []),
         "deletedFiles": [*records_payload.get("deletedFiles", []), *deleted_files],
+    }
+
+
+def get_round_progress_status(
+    source_path: str,
+    prompt_profile: str,
+    round_number: int | None = None,
+    prompt_sequence: object | None = None,
+) -> dict[str, Any]:
+    normalized_profile = normalize_prompt_profile(prompt_profile)
+    normalized_prompt_sequence = normalize_prompt_sequence(normalized_profile, prompt_sequence)
+    normalized_source = normalize_path(Path(source_path))
+    effective_round = int(round_number or 0)
+    if effective_round <= 0:
+        status = get_document_status(
+            str(normalized_source),
+            prompt_profile=normalized_profile,
+            prompt_sequence=normalized_prompt_sequence,
+        )
+        effective_round = int(status.get("nextRound", 0) or 0)
+    if effective_round <= 0:
+        return {
+            "sourcePath": str(normalized_source),
+            "promptProfile": normalized_profile,
+            "promptSequence": normalized_prompt_sequence,
+            "round": None,
+            "checkpointExists": False,
+            "canResume": False,
+            "completedChunks": 0,
+            "totalChunks": 0,
+            "progressPercent": 0,
+            "checkpointPath": "",
+            "lastError": "",
+            "updatedAt": "",
+            "validationEventCount": 0,
+            "message": "当前没有待执行轮次。",
+        }
+
+    context = build_round_context(
+        normalized_source,
+        round_number=effective_round,
+        prompt_profile=normalized_profile,
+        prompt_sequence=normalized_prompt_sequence,
+    )
+    checkpoint_path = get_round_checkpoint_path(context.output_text_path)
+    if not checkpoint_path.exists():
+        return {
+            "sourcePath": str(normalized_source),
+            "promptProfile": normalized_profile,
+            "promptSequence": normalized_prompt_sequence,
+            "round": effective_round,
+            "checkpointExists": False,
+            "canResume": False,
+            "completedChunks": 0,
+            "totalChunks": 0,
+            "progressPercent": 0,
+            "checkpointPath": str(checkpoint_path),
+            "lastError": "",
+            "updatedAt": "",
+            "validationEventCount": 0,
+            "message": "当前轮次暂无断点。",
+        }
+
+    try:
+        payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "sourcePath": str(normalized_source),
+            "promptProfile": normalized_profile,
+            "promptSequence": normalized_prompt_sequence,
+            "round": effective_round,
+            "checkpointExists": True,
+            "canResume": False,
+            "completedChunks": 0,
+            "totalChunks": 0,
+            "progressPercent": 0,
+            "checkpointPath": str(checkpoint_path),
+            "lastError": f"Checkpoint file is unreadable: {exc}",
+            "updatedAt": "",
+            "validationEventCount": 0,
+            "message": "断点文件无法读取，可放弃本轮进度后重新开始。",
+        }
+    if not isinstance(payload, dict):
+        return {
+            "sourcePath": str(normalized_source),
+            "promptProfile": normalized_profile,
+            "promptSequence": normalized_prompt_sequence,
+            "round": effective_round,
+            "checkpointExists": True,
+            "canResume": False,
+            "completedChunks": 0,
+            "totalChunks": 0,
+            "progressPercent": 0,
+            "checkpointPath": str(checkpoint_path),
+            "lastError": "Checkpoint payload is not an object.",
+            "updatedAt": "",
+            "validationEventCount": 0,
+            "message": "断点文件格式异常，可放弃本轮进度后重新开始。",
+        }
+    chunk_outputs = payload.get("chunk_outputs")
+    chunk_ids = payload.get("chunk_ids")
+    validation_events = payload.get("validation_events")
+    completed_chunks = int(payload.get("completed_chunk_count", 0) or 0)
+    if isinstance(chunk_outputs, dict):
+        completed_chunks = max(completed_chunks, len(chunk_outputs))
+    total_chunks = len(chunk_ids) if isinstance(chunk_ids, list) else 0
+    progress_percent = round((completed_chunks / total_chunks) * 100) if total_chunks else 0
+    last_error = str(payload.get("last_error", "") or "").strip()
+    updated_at = str(payload.get("updated_at", "") or "").strip()
+    validation_event_count = len(validation_events) if isinstance(validation_events, list) else 0
+    return {
+        "sourcePath": str(normalized_source),
+        "promptProfile": normalized_profile,
+        "promptSequence": normalized_prompt_sequence,
+        "round": effective_round,
+        "checkpointExists": True,
+        "canResume": True,
+        "completedChunks": completed_chunks,
+        "totalChunks": total_chunks,
+        "progressPercent": progress_percent,
+        "checkpointPath": str(checkpoint_path),
+        "lastError": last_error,
+        "updatedAt": updated_at,
+        "validationEventCount": validation_event_count,
+        "message": (
+            f"发现第 {effective_round} 轮断点：已完成 {completed_chunks}/{total_chunks} 块。"
+            if total_chunks
+            else f"发现第 {effective_round} 轮断点。"
+        ),
     }
 
 

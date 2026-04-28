@@ -25,6 +25,7 @@ import type {
   ReviewDecision,
   RoundCompareData,
   RoundProgress,
+  RoundProgressStatus,
   RunRoundStatus,
   RoundResult,
   TestConnectionResult,
@@ -635,6 +636,17 @@ export const webService: AppService = {
 
   async cancelRunRound(runToken: string): Promise<void> {
     await requestJson(`/api/run-round/${encodeURIComponent(runToken)}/cancel`, { method: "POST" });
+  },
+
+  async getRoundProgressStatus(sourcePath: string, promptProfile: ModelConfig["promptProfile"], roundNumber?: number | null, promptSequence?: ModelConfig["promptSequence"]): Promise<RoundProgressStatus> {
+    const query = new URLSearchParams({ sourcePath, promptProfile });
+    if (roundNumber) {
+      query.set("roundNumber", String(roundNumber));
+    }
+    if (promptSequence?.length) {
+      query.set("promptSequence", promptSequence.join(","));
+    }
+    return requestJson<RoundProgressStatus>(`/api/round-progress-status?${query.toString()}`);
   },
 
   async resetRoundProgress(sourcePath: string, promptProfile: ModelConfig["promptProfile"], roundNumber: number, promptSequence?: ModelConfig["promptSequence"]): Promise<void> {

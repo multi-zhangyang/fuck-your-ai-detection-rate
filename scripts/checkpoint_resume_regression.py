@@ -4,8 +4,10 @@ import json
 import shutil
 from pathlib import Path
 
+from app_service import get_round_progress_status
 from fyadr_records import ROOT_DIR
 from fyadr_round_service import get_round_checkpoint_path, run_round
+from round_helper import build_round_context
 
 
 def main() -> int:
@@ -60,6 +62,31 @@ def main() -> int:
     completed_before = set(checkpoint_payload.get("chunk_outputs", {}))
     if len(completed_before) != 2:
         raise AssertionError(f"expected 2 checkpointed chunks, got {len(completed_before)}")
+
+    status_context = build_round_context(
+        source_path,
+        round_number=1,
+        prompt_profile="cn_custom",
+        prompt_sequence=["classical"],
+    )
+    status_checkpoint_path = get_round_checkpoint_path(status_context.output_text_path)
+    status_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(checkpoint_path, status_checkpoint_path)
+    progress_status = get_round_progress_status(
+        str(source_path),
+        "cn_custom",
+        round_number=1,
+        prompt_sequence=["classical"],
+    )
+    if not progress_status.get("checkpointExists") or not progress_status.get("canResume"):
+        raise AssertionError("checkpoint status must expose resumable progress")
+    if progress_status.get("completedChunks") != 2:
+        raise AssertionError(f"expected 2 completed chunks in progress status, got {progress_status.get('completedChunks')}")
+    if int(progress_status.get("totalChunks", 0) or 0) <= 2:
+        raise AssertionError("progress status must expose total chunk count")
+    if "simulated provider timeout" not in str(progress_status.get("lastError", "")):
+        raise AssertionError("progress status must preserve the last checkpoint error")
+    status_checkpoint_path.unlink(missing_ok=True)
 
     resumed_calls: list[str] = []
 

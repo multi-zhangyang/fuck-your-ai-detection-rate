@@ -260,6 +260,24 @@ export type RunRoundStatus = {
   updatedAt: string;
 };
 
+export type RoundProgressStatus = {
+  sourcePath: string;
+  promptProfile: PromptProfile;
+  promptSequence?: PromptId[];
+  round: number | null;
+  checkpointExists: boolean;
+  canResume: boolean;
+  completedChunks: number;
+  totalChunks: number;
+  progressPercent: number;
+  checkpointPath: string;
+  lastError: string;
+  updatedAt: string;
+  validationEventCount: number;
+  message: string;
+  activeRun?: RunRoundStatus | null;
+};
+
 export type ReviewDecision = "rewrite" | "source" | "rewrite_confirmed" | "source_confirmed" | CustomReviewDecision;
 
 export type ReviewDecisionsResult = {

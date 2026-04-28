@@ -36,7 +36,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAppState } from "@/hooks/useAppState";
 import type { AppService } from "@/lib/appService";
 import { getTaskPhaseLabel, isTaskBlocking, isTaskRunningPhase, type TaskPhase } from "@/lib/taskState";
-import type { DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundResult } from "@/types/app";
+import type { DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult } from "@/types/app";
 
 const PREVIEW_MAX_CHARS = 12000;
 const FORMAT_RULE_DRAFT_KEY = "fyadr.formatRuleDraft";
@@ -1320,6 +1320,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("fyadr.sidebarCollapsed") === "1");
   const [reviewDecisions, setReviewDecisions] = useState<Record<string, ReviewDecision>>({});
   const [currentRunToken, setCurrentRunToken] = useState<string | null>(null);
+  const [roundProgressStatus, setRoundProgressStatus] = useState<RoundProgressStatus | null>(null);
   const [taskPhase, setTaskPhase] = useState<TaskPhase>("idle");
   const [modelConfigReady, setModelConfigReady] = useState(false);
   const [historyListReady, setHistoryListReady] = useState(false);
@@ -1878,7 +1879,28 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     setProtectionMap(nextProtectionMap);
     setDetectionReport(loadStoredDetectionReportForDocument(status.sourcePath, status.docId));
     persistActiveDocument(status.sourcePath, status.promptProfile, status.promptSequence ?? config.promptSequence);
+    await refreshRoundProgressStatus(status, config);
     return status;
+  }
+
+  async function refreshRoundProgressStatus(status = documentStatus, config = modelConfig) {
+    if (!status?.sourcePath || !status.hasNextRound || !status.nextRound) {
+      setRoundProgressStatus(null);
+      return null;
+    }
+    try {
+      const nextStatus = await service.getRoundProgressStatus(
+        status.sourcePath,
+        config.promptProfile,
+        status.nextRound,
+        config.promptSequence,
+      );
+      setRoundProgressStatus(nextStatus);
+      return nextStatus;
+    } catch {
+      setRoundProgressStatus(null);
+      return null;
+    }
   }
 
   async function refreshHistoryList() {
@@ -1954,6 +1976,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     setPreview(null);
     setCompareData(null);
     setLastExportResult(null);
+    setRoundProgressStatus(null);
     liveCompareRef.current = null;
     setReviewDecisions({});
     if (options.includeDetectionReport) {
@@ -2652,6 +2675,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     try {
       visibleProgressRef.current = null;
       setProgress(null);
+      setRoundProgressStatus(null);
       setLastExportResult(null);
       await releaseProgressListener();
 
@@ -3222,6 +3246,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                     modelCatalog={modelCatalog}
                     modelCatalogBusy={modelCatalogBusy}
                     progress={progress}
+                    roundProgressStatus={roundProgressStatus}
                     promptProfile={modelConfig.promptProfile}
                     promptSequence={modelConfig.promptSequence}
                     onPromptProfileChange={(promptProfile) => void handlePromptProfileChange(promptProfile)}
@@ -3575,6 +3600,7 @@ function HomeRunPanel({
   modelCatalog,
   modelCatalogBusy,
   progress,
+  roundProgressStatus,
   promptProfile,
   promptSequence,
   onPromptProfileChange,
@@ -3596,6 +3622,7 @@ function HomeRunPanel({
   modelCatalog: ModelCatalogResult | null;
   modelCatalogBusy: boolean;
   progress: RoundProgress | null;
+  roundProgressStatus: RoundProgressStatus | null;
   promptProfile: ModelConfig["promptProfile"];
   promptSequence: PromptId[];
   onPromptProfileChange: (promptProfile: ModelConfig["promptProfile"]) => void;
@@ -3656,24 +3683,39 @@ function HomeRunPanel({
     : rewriteCandidateMode === "quality"
       ? "质量模式会对长中文块生成第二候选。"
       : "省钱模式不会额外生成第二候选。";
+  const activeRunStatus = roundProgressStatus?.activeRun && !roundProgressStatus.activeRun.completed ? roundProgressStatus.activeRun : null;
+  const resumableCheckpoint = roundProgressStatus?.canResume && roundProgressStatus.round === value?.nextRound
+    ? roundProgressStatus
+    : null;
+  const checkpointUpdatedText = resumableCheckpoint?.updatedAt
+    ? new Date(resumableCheckpoint.updatedAt).toLocaleString()
+    : "";
   const setRewriteCandidateMode = (mode: "economy" | "quality") => {
     onModelConfigChange({ ...modelConfig, rewriteCandidateMode: mode });
   };
-  const canRunNextRound = hasPendingRound && !busy && !running && unavailableRouteCount === 0;
+  const canRunNextRound = hasPendingRound && !busy && !running && !activeRunStatus && unavailableRouteCount === 0;
   const runButtonText = running
     ? `正在执行第 ${value?.nextRound ?? ""} 轮`
+    : activeRunStatus
+      ? "后台已有运行"
     : unavailableRouteCount
     ? "先修复模型路线"
     : value?.hasNextRound
-      ? `开始 / 继续第 ${value.nextRound} 轮`
+      ? resumableCheckpoint
+        ? `继续第 ${value.nextRound} 轮`
+        : `开始第 ${value.nextRound} 轮`
       : value
         ? "全部轮次已完成"
         : "上传后开始第 1 轮";
   const runHelperText = running
     ? "中断会保留已完成分块，再次执行可从断点继续。"
+    : activeRunStatus
+      ? "检测到后台正在运行，请等待接管或刷新状态。"
     : hasDocument
       ? value?.hasNextRound
-        ? "确认流程和模型路线后，执行当前轮。"
+        ? resumableCheckpoint
+          ? "发现未完成断点，继续会从已完成分块之后接着跑。"
+          : "确认流程和模型路线后，执行当前轮。"
         : "当前任务已完成，可以在左侧 Diff 区导出。"
       : "先导入论文，系统会自动识别可改写正文。";
   const updateSequenceRound = (roundIndex: number, promptId: PromptId) => {
@@ -3885,6 +3927,38 @@ function HomeRunPanel({
                   <span className="font-black text-slate-700">{candidateModeLabel}</span>：{candidateModeDetail} {progressCallText}
                 </div>
               </div>
+              {resumableCheckpoint ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-black">发现第 {resumableCheckpoint.round} 轮断点</div>
+                      <div className="mt-1 font-semibold">
+                        已完成 {resumableCheckpoint.completedChunks}/{resumableCheckpoint.totalChunks || "?"} 块
+                        {resumableCheckpoint.progressPercent ? ` · 约 ${resumableCheckpoint.progressPercent}%` : ""}
+                      </div>
+                    </div>
+                    <Badge variant="warning">可续跑</Badge>
+                  </div>
+                  {resumableCheckpoint.lastError ? (
+                    <div className="mt-2 rounded-xl bg-white/70 px-3 py-2 text-[11px] text-amber-800">
+                      上次停止：{resumableCheckpoint.lastError}
+                    </div>
+                  ) : null}
+                  <div className="mt-2 text-[11px] text-amber-700">
+                    点击“继续”会保留已完成分块；点击“放弃本轮进度”才会清掉断点。
+                    {checkpointUpdatedText ? ` 最近更新：${checkpointUpdatedText}` : ""}
+                  </div>
+                </div>
+              ) : null}
+              {activeRunStatus ? (
+                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3 text-xs leading-5 text-blue-900">
+                  <div className="font-black">后台运行未结束</div>
+                  <div className="mt-1 font-semibold">
+                    状态：{activeRunStatus.status} · 事件 {activeRunStatus.eventCount} 条
+                  </div>
+                  <div className="mt-1 text-[11px] text-blue-700">系统会自动尝试接管进度，避免重复启动同一文档。</div>
+                </div>
+              ) : null}
               <Button
                 className={`h-14 w-full text-base shadow-soft ${canRunNextRound ? "bg-slate-950 text-white hover:bg-slate-800" : ""}`}
                 onClick={onRunRound}

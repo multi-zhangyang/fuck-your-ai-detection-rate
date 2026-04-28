@@ -28,6 +28,7 @@ from app_service import (
     get_document_history,
     get_document_protection_map,
     get_document_status,
+    get_round_progress_status,
     list_available_models,
     list_document_histories,
     load_review_decisions,
@@ -826,6 +827,30 @@ def get_run_round_status(run_id: str) -> tuple[Response, int] | Response:
         return error_response("Unknown run id.", 404)
     touch_run_state(run_id)
     return jsonify(serialize_run_state(run_id, state))
+
+
+@app.route("/api/round-progress-status", methods=["GET"])
+def get_round_progress_status_route() -> tuple[Response, int] | Response:
+    try:
+        source_path = require_query_value("sourcePath")
+        prompt_profile = request.args.get("promptProfile", "cn_prewrite")
+        prompt_sequence = parse_prompt_sequence_value(request.args.get("promptSequence"))
+        round_number = optional_int_query_value("roundNumber")
+        status = get_round_progress_status(
+            source_path,
+            prompt_profile,
+            round_number=round_number,
+            prompt_sequence=prompt_sequence,
+        )
+        active_run = get_active_run_for_source(source_path)
+        if active_run is not None:
+            active_run_id, active_state = active_run
+            status["activeRun"] = serialize_run_state(active_run_id, active_state)
+        else:
+            status["activeRun"] = None
+        return jsonify(status)
+    except Exception as exc:
+        return error_response(str(exc))
 
 
 @app.route("/api/round-progress", methods=["DELETE"])
