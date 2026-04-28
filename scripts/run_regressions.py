@@ -70,6 +70,8 @@ def build_commands(*, skip_frontend_build: bool, include_web_health: bool, stric
         {"name": "detection report parser regression", "command": [sys.executable, "scripts/detection_report_regression.py", *(("--strict-missing",) if strict_samples else ())]},
         {"name": "detection matching regression", "command": ["node", "scripts/detection_matching_regression.mjs"]},
         {"name": "frontend batch rerun regression", "command": ["node", "scripts/frontend_batch_rerun_regression.mjs"]},
+        {"name": "frontend state machine regression", "command": ["node", "scripts/frontend_state_machine_regression.mjs"]},
+        {"name": "frontend history governance regression", "command": ["node", "scripts/frontend_history_governance_regression.mjs"]},
         {"name": "factual guards regression", "command": [sys.executable, "scripts/factual_guards_regression.py"]},
         {"name": "validation fallback regression", "command": [sys.executable, "scripts/validation_fallback_regression.py"]},
         {"name": "checkpoint resume regression", "command": [sys.executable, "scripts/checkpoint_resume_regression.py"]},

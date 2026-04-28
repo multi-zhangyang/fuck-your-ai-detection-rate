@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Clock3, Download, FolderClock, RotateCcw, Search, ShieldCheck, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +9,7 @@ import type {
   DeleteHistoryOptions,
   DocumentHistory,
   HistoryArtifactStats,
+  HistoryDeleteImpact,
   HistoryDocumentSummary,
   HistoryOrphanScanResult,
   HistoryRound,
@@ -26,10 +28,16 @@ type Props = {
   busy: boolean;
   onToggle: () => void;
   onSelect: (item: HistoryDocumentSummary) => void;
+  onPreviewDelete: (docId: string, options?: DeleteHistoryOptions) => Promise<HistoryDeleteImpact | null>;
   onDelete: (docId: string, options?: DeleteHistoryOptions) => void;
   onScanOrphans: () => void;
   onDeleteOrphans: () => void;
   onDownload: (item: HistoryRound, format: "txt" | "docx") => void;
+};
+
+type HistoryImpactPreviewState = {
+  key: string;
+  impact: HistoryDeleteImpact;
 };
 
 const PROMPT_LABELS: Record<PromptId, string> = {
@@ -166,6 +174,31 @@ function getPromptOptions(promptProfile: ModelConfig["promptProfile"], promptSeq
     promptProfile,
     promptSequence: promptProfile === "cn_custom" ? normalizePromptSequence(promptSequence) : undefined,
   };
+}
+
+function makeDeleteActionKey(docId: string, options?: DeleteHistoryOptions): string {
+  return JSON.stringify({
+    docId,
+    mode: options?.mode ?? "records_and_artifacts",
+    fromRound: options?.fromRound ?? null,
+    promptProfile: options?.promptProfile ?? null,
+    promptSequence: options?.promptSequence ?? null,
+  });
+}
+
+function getDeleteModeLabel(mode: DeleteHistoryOptions["mode"]): string {
+  if (mode === "records_only") return "只移除记录";
+  if (mode === "exports_only") return "只清理项目导出";
+  if (mode === "records_artifacts_and_source") return "彻底清理项目副本";
+  return "删除生成链路";
+}
+
+function getDeleteModeDescription(mode: DeleteHistoryOptions["mode"], fromRound?: number): string {
+  const scope = fromRound ? `第 ${fromRound} 轮及之后` : "整篇文档";
+  if (mode === "records_only") return `${scope}只从界面索引移除，文件会留在项目中。`;
+  if (mode === "exports_only") return `${scope}只删除项目 web_exports 内导出副本和审计文件。`;
+  if (mode === "records_artifacts_and_source") return `${scope}删除记录、生成物，并仅删除项目 origin 内源副本。`;
+  return `${scope}删除轮次记录、Diff、中间产物、检查报告和项目导出副本。`;
 }
 
 function getSafeArtifactStats(stats?: HistoryArtifactStats): HistoryArtifactStats {
@@ -374,6 +407,40 @@ function StatPill({ label, value }: { label: string; value: string }) {
   );
 }
 
+function formatCandidateMode(value?: string | null): string {
+  if (value === "quality") return "质量模式";
+  if (value === "economy") return "省钱模式";
+  return "未记录";
+}
+
+function formatAuditValue(value: unknown, suffix = ""): string {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return "-";
+  return `${numberValue}${suffix}`;
+}
+
+function getRoundAuditValue(round: HistoryRound, key: keyof NonNullable<HistoryRound["runAudit"]>): unknown {
+  return round.runAudit?.[key] ?? round.qualitySummary?.[key as keyof NonNullable<HistoryRound["qualitySummary"]>];
+}
+
+function RoundAuditStrip({ round }: { round: HistoryRound }) {
+  const candidateMode = String(getRoundAuditValue(round, "rewriteCandidateMode") ?? "");
+  const estimatedApiCalls = getRoundAuditValue(round, "estimatedApiCalls");
+  const validationRetryCount = getRoundAuditValue(round, "validationRetryCount");
+  const sourceFallbackCount = getRoundAuditValue(round, "sourceFallbackCount");
+  const model = String(round.runAudit?.model || "").trim();
+  const provider = String(round.runAudit?.providerName || "").trim();
+  return (
+    <div className="grid gap-2 rounded-2xl border border-white/70 bg-white/75 p-2 text-xs md:grid-cols-5">
+      <StatPill label="候选策略" value={formatCandidateMode(candidateMode)} />
+      <StatPill label="预计调用" value={formatAuditValue(estimatedApiCalls, " 次")} />
+      <StatPill label="校验重试" value={formatAuditValue(validationRetryCount, " 块")} />
+      <StatPill label="安全回退" value={formatAuditValue(sourceFallbackCount, " 块")} />
+      <StatPill label="模型" value={model ? `${provider ? `${provider} · ` : ""}${model}` : "未记录"} />
+    </div>
+  );
+}
+
 function ImpactCard({ title, value, text, tone = "slate" }: { title: string; value: string; text: string; tone?: "slate" | "amber" | "red" | "emerald" }) {
   const toneClass = {
     slate: "border-slate-200 bg-slate-50 text-slate-700",
@@ -390,6 +457,118 @@ function ImpactCard({ title, value, text, tone = "slate" }: { title: string; val
   );
 }
 
+function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
+  const stats = impact.fileStats;
+  const candidateStats = impact.candidateStats;
+  const previewFiles = impact.files.filter((file) => file.exists).slice(0, 8);
+  const sourceTone = impact.willDeleteSource ? "border-red-200 bg-red-50 text-red-800" : "border-emerald-200 bg-emerald-50 text-emerald-800";
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary">删除影响预览</Badge>
+            <Badge variant="outline">{getDeleteModeLabel(impact.mode)}</Badge>
+            {impact.fromRound ? <Badge variant="outline">从第 {impact.fromRound} 轮开始</Badge> : null}
+          </div>
+          <div className="mt-2 text-sm leading-6 text-muted-foreground">
+            这是执行前的资产审计结果；预览不会删除任何文件。
+          </div>
+        </div>
+        <Badge variant={stats.existing ? "warning" : "success"}>
+          将删除 {stats.existing} 个文件 · {formatBytes(stats.bytes)}
+        </Badge>
+      </div>
+
+      <div className="mt-4 grid gap-2 md:grid-cols-5">
+        <StatPill label="源文档副本" value={`${stats.sources ?? 0}`} />
+        <StatPill label="中间产物" value={`${stats.intermediate}`} />
+        <StatPill label="项目导出" value={`${stats.exports}`} />
+        <StatPill label="报告/审计" value={`${stats.reports}`} />
+        <StatPill label="候选文件" value={`${candidateStats.existing}`} />
+      </div>
+
+      <div className={`mt-4 rounded-2xl border px-3 py-2 text-xs leading-5 ${sourceTone}`}>
+        <span className="font-black">源文档策略：</span>
+        {impact.willDeleteSource
+          ? "会删除项目 origin 目录下的源文档副本；不会删除浏览器下载目录或外部路径文件。"
+          : impact.sourceOwnedByProject
+            ? "源文档副本会保留；只处理记录或生成产物。"
+            : "源文档位于外部路径，系统不会删除。"}
+        {impact.sourcePath ? <span className="ml-1 opacity-80">{formatPathScope(impact.sourcePath)}</span> : null}
+      </div>
+
+      {impact.affectedRounds.length ? (
+        <div className="mt-3 rounded-2xl border border-violet-100 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-800">
+          影响轮次：{impact.affectedRounds.join(", ")}
+        </div>
+      ) : null}
+
+      {previewFiles.length ? (
+        <div className="mt-4 space-y-2">
+          {previewFiles.map((file) => (
+            <div key={`${file.relativePath}-${file.kind}`} className="flex min-w-0 items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2 text-xs">
+              <div className="min-w-0">
+                <div className="truncate font-semibold text-slate-800">{file.relativePath}</div>
+                <div className="mt-0.5 text-slate-500">{getOrphanKindLabel(file.kind)} · {formatBytes(file.bytes)}</div>
+              </div>
+              <Badge variant="outline">将删除</Badge>
+            </div>
+          ))}
+          {impact.hasMoreFiles ? <div className="text-xs font-semibold text-slate-500">仅展示前 80 个候选文件中的一部分，执行时按同一安全规则处理。</div> : null}
+        </div>
+      ) : (
+        <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
+          此操作不会删除项目文件，只会改变历史索引或没有匹配到文件。
+        </div>
+      )}
+
+      {impact.warnings.length ? (
+        <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
+          {impact.warnings.map((warning) => <div key={warning}>提醒：{warning}</div>)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function HistoryDeleteAction({
+  title,
+  options,
+  docId,
+  busy,
+  loading,
+  destructive = false,
+  onPreview,
+  onDelete,
+}: {
+  title: string;
+  options: DeleteHistoryOptions;
+  docId: string;
+  busy: boolean;
+  loading: boolean;
+  destructive?: boolean;
+  onPreview: (docId: string, options: DeleteHistoryOptions) => void;
+  onDelete: (docId: string, options: DeleteHistoryOptions) => void;
+}) {
+  return (
+    <div className={`rounded-2xl border p-3 ${destructive ? "border-red-200 bg-red-50/70" : "border-slate-200 bg-white"}`}>
+      <div className={`text-sm font-black ${destructive ? "text-red-800" : "text-slate-900"}`}>{title}</div>
+      <div className="mt-1 min-h-10 text-xs leading-5 text-slate-500">{getDeleteModeDescription(options.mode, options.fromRound)}</div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <Button type="button" variant="outline" size="sm" onClick={() => onPreview(docId, options)} disabled={busy || loading}>
+          <Search className="h-4 w-4" />
+          {loading ? "预览中" : "先看影响"}
+        </Button>
+        <Button type="button" variant={destructive ? "destructive" : "outline"} size="sm" onClick={() => onDelete(docId, options)} disabled={busy}>
+          {destructive ? <Trash2 className="h-4 w-4" /> : null}
+          执行
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function HistoryCard({
   currentDocId,
   currentHistory,
@@ -401,16 +580,31 @@ export function HistoryCard({
   busy,
   onToggle,
   onSelect,
+  onPreviewDelete,
   onDelete,
   onScanOrphans,
   onDeleteOrphans,
   onDownload,
 }: Props) {
+  const [impactPreview, setImpactPreview] = useState<HistoryImpactPreviewState | null>(null);
+  const [impactLoadingKey, setImpactLoadingKey] = useState("");
   const maxRounds = getMaxRounds(promptProfile, promptSequence);
   const promptOptions = getPromptOptions(promptProfile, promptSequence);
   const totalStats = mergeArtifactStats(items.map((item) => item.artifactStats));
   const currentItem = items.find((item) => item.docId === currentDocId);
   const currentStats = currentItem?.artifactStats;
+  const handlePreviewDelete = async (docId: string, options: DeleteHistoryOptions) => {
+    const key = makeDeleteActionKey(docId, options);
+    setImpactLoadingKey(key);
+    try {
+      const impact = await onPreviewDelete(docId, options);
+      if (impact) {
+        setImpactPreview({ key, impact });
+      }
+    } finally {
+      setImpactLoadingKey("");
+    }
+  };
 
   return (
     <Card className="min-h-full overflow-visible">
@@ -469,6 +663,16 @@ export function HistoryCard({
                 const activeRounds = isActive && currentHistory ? getRoundsForProfile(currentHistory.rounds, promptProfile, promptSequence) : profileRounds;
                 const visibleRounds = activeRounds.length ? activeRounds : item.rounds;
                 const completedRounds = getCompletedRounds(activeRounds, promptProfile, promptSequence);
+                const documentDeleteActions: Array<{ title: string; options: DeleteHistoryOptions; destructive?: boolean }> = [
+                  { title: "只移除记录", options: { mode: "records_only" } },
+                  { title: "清理项目导出", options: { mode: "exports_only" } },
+                  { title: "删除生成链路", options: { mode: "records_and_artifacts" }, destructive: true },
+                  { title: "彻底清理项目副本", options: { mode: "records_artifacts_and_source" }, destructive: true },
+                ];
+                const documentImpactPreview = impactPreview
+                  && documentDeleteActions.some((action) => makeDeleteActionKey(item.docId, action.options) === impactPreview.key)
+                  ? impactPreview.impact
+                  : null;
 
                 return (
                   <div
@@ -507,41 +711,25 @@ export function HistoryCard({
 
                       <ArtifactStats stats={item.artifactStats} />
                       <ArtifactGovernanceMap stats={item.artifactStats} sourcePath={item.originPath || item.sourcePath} />
-                      <div className="grid gap-3 rounded-3xl border border-border/70 bg-muted/20 p-4 md:grid-cols-4">
-                        <Button
-                          variant="outline"
-                          onClick={() => onDelete(item.docId, { mode: "records_only" })}
-                          disabled={busy}
-                          className="h-12 justify-start rounded-2xl"
-                        >
-                          只移除记录
-                        </Button>
-                        <Button
-                          variant="outline"
-                          onClick={() => onDelete(item.docId, { mode: "exports_only" })}
-                          disabled={busy}
-                          className="h-12 justify-start rounded-2xl border-amber-200 text-amber-800 hover:bg-amber-50"
-                        >
-                          清理项目导出
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          onClick={() => onDelete(item.docId, { mode: "records_and_artifacts" })}
-                          disabled={busy}
-                          className="h-12 justify-start rounded-2xl"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          删除生成链路
-                        </Button>
-                        <Button
-                          variant="outline"
-                          onClick={() => onDelete(item.docId, { mode: "records_artifacts_and_source" })}
-                          disabled={busy}
-                          className="h-12 justify-start rounded-2xl border-red-200 text-red-700 hover:bg-red-50"
-                        >
-                          清理源副本
-                        </Button>
+                      <div className="grid gap-3 rounded-3xl border border-border/70 bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-4">
+                        {documentDeleteActions.map((action) => {
+                          const actionKey = makeDeleteActionKey(item.docId, action.options);
+                          return (
+                            <HistoryDeleteAction
+                              key={actionKey}
+                              title={action.title}
+                              options={action.options}
+                              docId={item.docId}
+                              busy={busy}
+                              loading={impactLoadingKey === actionKey}
+                              destructive={action.destructive}
+                              onPreview={handlePreviewDelete}
+                              onDelete={onDelete}
+                            />
+                          );
+                        })}
                       </div>
+                      {documentImpactPreview ? <AssetImpactPanel impact={documentImpactPreview} /> : null}
                     </div>
 
                     {visibleRounds.length ? (
@@ -556,6 +744,14 @@ export function HistoryCard({
                           {visibleRounds.map((roundItem) => {
                             const roundPromptProfile = (roundItem.promptProfile || "cn") as ModelConfig["promptProfile"];
                             const roundPromptOptions = getPromptOptions(roundPromptProfile, roundItem.promptSequence ?? promptSequence);
+                            const roundDeleteActions: Array<{ title: string; options: DeleteHistoryOptions; destructive?: boolean }> = [
+                              { title: "清理本轮导出", options: { ...roundPromptOptions, fromRound: roundItem.round, mode: "exports_only" } },
+                              { title: "回滚到本轮前", options: { ...roundPromptOptions, fromRound: roundItem.round, mode: "records_and_artifacts" }, destructive: true },
+                            ];
+                            const roundImpactPreview = impactPreview
+                              && roundDeleteActions.some((action) => makeDeleteActionKey(item.docId, action.options) === impactPreview.key)
+                              ? impactPreview.impact
+                              : null;
                             return (
                               <div key={`${item.docId}-${roundItem.promptProfile}-${roundItem.round}-${formatPromptSequence(roundItem.promptSequence)}`} className="rounded-3xl border border-violet-200 bg-violet-50/60 p-5">
                                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -566,14 +762,15 @@ export function HistoryCard({
                                       {roundPromptProfile === "cn_custom" ? <Badge variant="outline">{formatPromptSequence(roundItem.promptSequence)}</Badge> : null}
                                       <Badge variant="outline">{formatTimestamp(roundItem.timestamp)}</Badge>
                                     </div>
-                                    <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
-                                      <span>输入分块：{roundItem.inputSegmentCount ?? "-"}</span>
-                                      <span>输出分块：{roundItem.outputSegmentCount ?? "-"}</span>
-                                      <span>分块上限：{roundItem.chunkLimit ?? "-"}</span>
-                                    </div>
-                                    <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{roundItem.outputPath ? formatPathScope(roundItem.outputPath) : "暂无输出路径"}</p>
-                                    <ArtifactStats stats={roundItem.artifactStats} />
-                                    <ArtifactGovernanceMap stats={roundItem.artifactStats} sourcePath={item.originPath || item.sourcePath} compact />
+                                     <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
+                                       <span>输入分块：{roundItem.inputSegmentCount ?? "-"}</span>
+                                       <span>输出分块：{roundItem.outputSegmentCount ?? "-"}</span>
+                                       <span>分块上限：{roundItem.chunkLimit ?? "-"}</span>
+                                     </div>
+                                     <RoundAuditStrip round={roundItem} />
+                                     <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{roundItem.outputPath ? formatPathScope(roundItem.outputPath) : "暂无输出路径"}</p>
+                                     <ArtifactStats stats={roundItem.artifactStats} />
+                                     <ArtifactGovernanceMap stats={roundItem.artifactStats} sourcePath={item.originPath || item.sourcePath} compact />
                                   </div>
 
                                   <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
@@ -585,24 +782,27 @@ export function HistoryCard({
                                       <Download className="h-4 w-4" />
                                       Word
                                     </Button>
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => onDelete(item.docId, { ...roundPromptOptions, fromRound: roundItem.round, mode: "exports_only" })}
-                                      disabled={busy}
-                                    >
-                                      清理项目导出
-                                    </Button>
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => onDelete(item.docId, { ...roundPromptOptions, fromRound: roundItem.round, mode: "records_and_artifacts" })}
-                                      disabled={busy}
-                                    >
-                                      回滚到本轮前
-                                    </Button>
                                   </div>
                                 </div>
+                                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                  {roundDeleteActions.map((action) => {
+                                    const actionKey = makeDeleteActionKey(item.docId, action.options);
+                                    return (
+                                      <HistoryDeleteAction
+                                        key={actionKey}
+                                        title={action.title}
+                                        options={action.options}
+                                        docId={item.docId}
+                                        busy={busy}
+                                        loading={impactLoadingKey === actionKey}
+                                        destructive={action.destructive}
+                                        onPreview={handlePreviewDelete}
+                                        onDelete={onDelete}
+                                      />
+                                    );
+                                  })}
+                                </div>
+                                {roundImpactPreview ? <div className="mt-4"><AssetImpactPanel impact={roundImpactPreview} /></div> : null}
                               </div>
                             );
                           })}

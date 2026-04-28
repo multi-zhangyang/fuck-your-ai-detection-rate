@@ -45,6 +45,7 @@ from fyadr_round_service import (
     _build_validation_repair_steps,
     _extract_required_terms,
     _score_rewrite_candidate,
+    _serialize_rejected_candidate_output,
 )
 from docx_bodymap import load_docx_body_map, save_docx_body_map, update_docx_body_map_texts, validate_docx_body_map
 from docx_audit import audit_docx_export, get_docx_audit_report_path
@@ -145,6 +146,8 @@ def _build_provider_rate_limiter(model_config: dict[str, Any]) -> Callable[[], f
 
 def _map_history_round(item: dict[str, Any]) -> dict[str, Any]:
     prompt_sequence = item.get("prompt_sequence")
+    quality_summary = _load_history_quality_summary(item)
+    run_audit = _build_history_run_audit(item, quality_summary)
     return {
         "round": int(item.get("round", 0)),
         "prompt": str(item.get("prompt", "")),
@@ -162,7 +165,57 @@ def _map_history_round(item: dict[str, Any]) -> dict[str, Any]:
         "validationPath": str(item.get("validation_path", "")),
         "timestamp": str(item.get("timestamp", "")),
         "artifactStats": build_artifact_summary([item]),
+        "qualitySummary": quality_summary or None,
+        "runAudit": run_audit or None,
     }
+
+
+def _history_path_to_absolute(value: object) -> Path | None:
+    raw_path = str(value or "").strip()
+    if not raw_path:
+        return None
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = ROOT_DIR / candidate
+    return candidate.resolve()
+
+
+def _load_history_quality_summary(item: dict[str, Any]) -> dict[str, Any]:
+    quality_path = _history_path_to_absolute(item.get("quality_path"))
+    if quality_path is None or not quality_path.exists() or not quality_path.is_file():
+        return {}
+    try:
+        payload = json.loads(quality_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _build_history_run_audit(item: dict[str, Any], quality_summary: dict[str, Any]) -> dict[str, Any]:
+    stored_audit = item.get("run_audit")
+    audit = dict(stored_audit) if isinstance(stored_audit, dict) else {}
+    if quality_summary:
+        split_summary = quality_summary.get("paragraphSplitSummary")
+        audit.setdefault("rewriteCandidateMode", quality_summary.get("rewriteCandidateMode"))
+        audit.setdefault("candidateMaxPerChunk", quality_summary.get("candidateMaxPerChunk"))
+        audit.setdefault("estimatedApiCalls", quality_summary.get("estimatedApiCalls"))
+        audit.setdefault("twoCandidateChunkCount", quality_summary.get("twoCandidateChunkCount"))
+        audit.setdefault("validationRetryCount", quality_summary.get("validationRetryCount"))
+        audit.setdefault("sourceFallbackCount", quality_summary.get("sourceFallbackCount"))
+        audit.setdefault("validationEventCount", quality_summary.get("validationEventCount"))
+        audit.setdefault("machineLikeRiskCount", quality_summary.get("machineLikeRiskCount"))
+        audit.setdefault("protectedTokenCount", quality_summary.get("protectedTokenCount"))
+        if isinstance(split_summary, dict):
+            audit.setdefault("paragraphCount", split_summary.get("paragraphCount"))
+            audit.setdefault("chunkCount", split_summary.get("chunkCount"))
+            audit.setdefault("splitParagraphCount", split_summary.get("splitParagraphCount"))
+    if item.get("input_segment_count") is not None:
+        audit.setdefault("chunkCount", item.get("input_segment_count"))
+    audit.setdefault("promptProfile", str(item.get("prompt_profile", "cn") or "cn"))
+    prompt_sequence = item.get("prompt_sequence")
+    if isinstance(prompt_sequence, list):
+        audit.setdefault("promptSequence", prompt_sequence)
+    return {key: value for key, value in audit.items() if value not in ("", None, [])}
 
 
 def _record_entry_to_history(doc_id: str, entry: dict[str, Any]) -> dict[str, Any]:
@@ -1479,6 +1532,8 @@ def run_round_for_app(
         "prompt_sequence": prompt_sequence,
         "round_model_key": _round_model_key(prompt_profile, effective_round),
         "round_model_provider": str(effective_model_config.get("providerName", "")),
+        "request_timeout_seconds": request_timeout_seconds,
+        "max_retries": max_retries,
         "rate_limit_window_minutes": _coerce_rate_window_minutes(effective_model_config),
         "rate_limit_max_requests": _coerce_rate_max_requests(effective_model_config),
     }
@@ -1522,6 +1577,7 @@ def run_round_for_app(
         "docEntry": result["doc_entry"],
         "roundContext": result["round_context"],
         "qualitySummary": result.get("quality_summary", {}),
+        "runAudit": result.get("run_audit", {}),
     }
 
 
@@ -2394,6 +2450,48 @@ def _append_compare_validation_event(compare_payload: dict[str, Any], event: dic
     events.append(event)
 
 
+def _record_targeted_rejected_candidate(
+    compare_payload: dict[str, Any],
+    target_chunk: dict[str, Any],
+    *,
+    round_number: int,
+    chunk_id: str,
+    validation_attempt: int,
+    candidate_index: int,
+    error: str,
+    output_text: str,
+) -> None:
+    rejected_payload = _serialize_rejected_candidate_output(output_text)
+    if not rejected_payload.get("outputText"):
+        return
+    event = {
+        "event": "validation-retry",
+        "round": round_number,
+        "chunkId": chunk_id,
+        "paragraphIndex": target_chunk.get("paragraphIndex"),
+        "chunkIndex": target_chunk.get("chunkIndex"),
+        "attempt": validation_attempt,
+        "candidate": candidate_index,
+        "error": error,
+        **rejected_payload,
+    }
+    _append_compare_validation_event(compare_payload, event)
+    rejected_candidates = target_chunk.get("rejectedCandidates")
+    if not isinstance(rejected_candidates, list):
+        rejected_candidates = []
+    rejected_candidates.append(
+        {
+            "attempt": validation_attempt,
+            "candidate": candidate_index,
+            "outputText": rejected_payload.get("outputText", ""),
+            "outputCharCount": rejected_payload.get("outputCharCount"),
+            "truncated": bool(rejected_payload.get("truncated")),
+            "error": error,
+        }
+    )
+    target_chunk["rejectedCandidates"] = rejected_candidates[-4:]
+
+
 def _bump_quality_summary_counter(compare_payload: dict[str, Any], key: str, chunk_id: str) -> None:
     summary = compare_payload.get("qualitySummary")
     if not isinstance(summary, dict):
@@ -2484,11 +2582,14 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
                 candidate_index=candidate_index,
                 validation_retry_note=validation_retry_note,
             )
+            candidate_output_for_review = ""
             try:
                 raw_output = transform(protected_chunk.text, prompt_input, round_number, chunk_id)
+                candidate_output_for_review = str(raw_output or "").strip()
                 protected_output = normalize_chunk_output(protected_chunk.text, raw_output)
                 validate_structure_placeholders(protected_output, protected_chunk.tokens, chunk_id)
                 candidate_output = restore_structure_tokens(protected_output, protected_chunk.tokens)
+                candidate_output_for_review = candidate_output
                 validate_chunk_output(input_text, candidate_output, chunk_id)
                 score = _score_rewrite_candidate(input_text, candidate_output)
                 if previous_output_text and candidate_output.strip() == previous_output_text:
@@ -2497,6 +2598,16 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
             except Exception as exc:
                 candidate_error = f"attempt {validation_attempt} candidate {candidate_index}: {exc}"
                 candidate_errors.append(candidate_error)
+                _record_targeted_rejected_candidate(
+                    compare_payload,
+                    target_chunk,
+                    round_number=round_number,
+                    chunk_id=chunk_id,
+                    validation_attempt=validation_attempt,
+                    candidate_index=candidate_index,
+                    error=str(exc),
+                    output_text=candidate_output_for_review,
+                )
                 validation_retry_note = _build_targeted_validation_retry_note(str(exc))
         if valid_candidates:
             break

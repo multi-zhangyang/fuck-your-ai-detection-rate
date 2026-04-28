@@ -1519,6 +1519,49 @@ def _build_quality_summary(
     }
 
 
+def _build_run_audit(
+    *,
+    checkpoint_metadata: dict[str, object],
+    prompt_profile: str,
+    prompt_sequence: list[str],
+    manifest: ChunkManifest,
+    quality_summary: dict[str, object],
+) -> dict[str, object]:
+    split_summary = quality_summary.get("paragraphSplitSummary")
+    split_count = 0
+    if isinstance(split_summary, dict):
+        try:
+            split_count = int(split_summary.get("splitParagraphCount", 0) or 0)
+        except (TypeError, ValueError):
+            split_count = 0
+    return {
+        "version": 1,
+        "providerName": str(checkpoint_metadata.get("round_model_provider", "") or ""),
+        "model": str(checkpoint_metadata.get("model", "") or ""),
+        "apiType": str(checkpoint_metadata.get("api_type", "") or ""),
+        "temperature": checkpoint_metadata.get("temperature"),
+        "offlineMode": bool(checkpoint_metadata.get("offline_mode", False)),
+        "requestTimeoutSeconds": checkpoint_metadata.get("request_timeout_seconds"),
+        "maxRetries": checkpoint_metadata.get("max_retries"),
+        "rateLimitWindowMinutes": checkpoint_metadata.get("rate_limit_window_minutes"),
+        "rateLimitMaxRequests": checkpoint_metadata.get("rate_limit_max_requests"),
+        "promptProfile": prompt_profile,
+        "promptSequence": prompt_sequence,
+        "rewriteCandidateMode": quality_summary.get("rewriteCandidateMode"),
+        "candidateMaxPerChunk": quality_summary.get("candidateMaxPerChunk"),
+        "estimatedApiCalls": quality_summary.get("estimatedApiCalls"),
+        "twoCandidateChunkCount": quality_summary.get("twoCandidateChunkCount"),
+        "chunkCount": manifest.chunk_count,
+        "paragraphCount": manifest.paragraph_count,
+        "splitParagraphCount": split_count,
+        "validationRetryCount": quality_summary.get("validationRetryCount"),
+        "sourceFallbackCount": quality_summary.get("sourceFallbackCount"),
+        "validationEventCount": quality_summary.get("validationEventCount"),
+        "machineLikeRiskCount": quality_summary.get("machineLikeRiskCount"),
+        "protectedTokenCount": quality_summary.get("protectedTokenCount"),
+    }
+
+
 def run_round(
     doc_id: str,
     round_number: int,
@@ -1865,6 +1908,13 @@ def run_round(
         normalized_candidate_mode,
         normalized_prompt_profile,
     )
+    run_audit = _build_run_audit(
+        checkpoint_metadata=effective_checkpoint_metadata,
+        prompt_profile=normalized_prompt_profile,
+        prompt_sequence=normalized_prompt_sequence,
+        manifest=manifest,
+        quality_summary=quality_summary,
+    )
     _write_json_atomically(quality_path, quality_summary)
     _save_round_compare(
         compare_path,
@@ -1896,6 +1946,7 @@ def run_round(
         manifest_path=relative_to_root(normalized_manifest_path),
         compare_path=relative_to_root(compare_path),
         quality_path=relative_to_root(quality_path),
+        run_audit=run_audit,
     )
     _delete_round_checkpoint(checkpoint_path)
 
@@ -1911,4 +1962,5 @@ def run_round(
         "output_segment_count": len(chunk_outputs),
         "paragraph_count": manifest.paragraph_count,
         "quality_summary": quality_summary,
+        "run_audit": run_audit,
     }

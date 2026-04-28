@@ -66,6 +66,9 @@ def _normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
     chunk_count = _optional_int(raw.get("chunkCount"))
     review_chunk_count = _optional_int(raw.get("reviewChunkCount"))
     machine_like_risk_count = _optional_int(raw.get("machineLikeRiskCount"))
+    estimated_api_calls = _optional_int(raw.get("estimatedApiCalls"))
+    validation_retry_count = _optional_int(raw.get("validationRetryCount"))
+    source_fallback_count = _optional_int(raw.get("sourceFallbackCount"))
     prompt_sequence = raw.get("promptSequence")
     if not isinstance(prompt_sequence, list):
         prompt_sequence = []
@@ -96,6 +99,10 @@ def _normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
         "chunkCount": chunk_count,
         "reviewChunkCount": review_chunk_count,
         "machineLikeRiskCount": machine_like_risk_count,
+        "rewriteCandidateMode": _normalize_candidate_mode(raw.get("rewriteCandidateMode")),
+        "estimatedApiCalls": estimated_api_calls,
+        "validationRetryCount": validation_retry_count,
+        "sourceFallbackCount": source_fallback_count,
         "guardIssueCount": _optional_int(raw.get("guardIssueCount")),
         "preflightIssueCount": _optional_int(raw.get("preflightIssueCount")),
         "auditIssueCount": _optional_int(raw.get("auditIssueCount")),
@@ -109,19 +116,16 @@ def _sanitize_round_model(value: Any) -> dict[str, Any] | None:
     return {
         "round": _optional_int(value.get("round")),
         "providerName": str(value.get("providerName", "")).strip(),
-        "baseUrl": _mask_url(str(value.get("baseUrl", "")).strip()),
+        "baseUrl": "",
         "model": str(value.get("model", "")).strip(),
         "apiType": str(value.get("apiType", "")).strip(),
         "temperature": _optional_float(value.get("temperature")),
     }
 
 
-def _mask_url(value: str) -> str:
-    if not value:
-        return ""
-    if len(value) <= 28:
-        return value
-    return f"{value[:18]}…{value[-8:]}"
+def _normalize_candidate_mode(value: Any) -> str:
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in {"economy", "quality"} else ""
 
 
 def _score_delta(before: float | None, after: float | None) -> float | None:

@@ -33,6 +33,17 @@ const T = {
   reviewChunks: "需处理",
   noReviewChunks: "暂无需处理块",
   noReviewHint: "当前轮次没有被硬校验或外部报告标记的块。",
+  failedChunks: "重跑失败",
+  failedOnly: "只看失败",
+  noFailedChunks: "暂无重跑失败块",
+  candidateChunks: "候选输出",
+  candidateOnly: "只看候选",
+  noCandidateChunks: "暂无候选输出块",
+  rerunFailure: "重跑失败",
+  rerunFailureHint: "该块上次重跑没有通过，可补充意见后单块重跑。",
+  rerunFailureSummary: "部分块没有通过硬校验，系统已保留旧内容，不会自动污染导出。",
+  viewFailedChunks: "查看失败块",
+  viewCandidateChunks: "查看候选块",
   previousReview: "上一处",
   nextReview: "下一处",
   source: "原文",
@@ -95,12 +106,18 @@ const T = {
 const zh = (...codes: number[]) => String.fromCharCode(...codes);
 const diffScrollPositions = new Map<string, number>();
 
+type RerunFailure = {
+  chunkId: string;
+  error: string;
+};
+
 type Props = {
   result: RoundResult | null;
   preview: OutputPreview | null;
   compareData: RoundCompareData | null;
   exportResult: ExportResult | null;
   busy: boolean;
+  rerunFailures?: RerunFailure[];
   detectionMatchesByChunk?: Record<string, DetectionReportMatch[]>;
   reviewDecisions: Record<string, ReviewDecision>;
   onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void;
@@ -112,7 +129,7 @@ type Props = {
   onExportDocx: () => void;
 };
 
-export function ResultCard({ result, preview, compareData, exportResult, busy, detectionMatchesByChunk = {}, reviewDecisions, onReviewDecisionChange, onRerunChunk, onRerunRiskyChunks, onExportReviewedTxt, onExportReviewedDocx, onExportTxt, onExportDocx }: Props) {
+export function ResultCard({ result, preview, compareData, exportResult, busy, rerunFailures = [], detectionMatchesByChunk = {}, reviewDecisions, onReviewDecisionChange, onRerunChunk, onRerunRiskyChunks, onExportReviewedTxt, onExportReviewedDocx, onExportTxt, onExportDocx }: Props) {
   const deferredPreviewText = useDeferredValue(preview?.text ?? "");
   const qualitySummary = result?.qualitySummary ?? compareData?.qualitySummary ?? null;
 
@@ -154,7 +171,7 @@ export function ResultCard({ result, preview, compareData, exportResult, busy, d
       <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
         {result || compareData?.chunks.length ? (
           <>
-            <RewriteDiffPanel data={compareData} busy={busy} detectionMatchesByChunk={detectionMatchesByChunk} reviewDecisions={reviewDecisions} onReviewDecisionChange={onReviewDecisionChange} onRerunChunk={onRerunChunk} />
+            <RewriteDiffPanel data={compareData} busy={busy} rerunFailures={rerunFailures} detectionMatchesByChunk={detectionMatchesByChunk} reviewDecisions={reviewDecisions} onReviewDecisionChange={onReviewDecisionChange} onRerunChunk={onRerunChunk} />
 
             {result ? <details className="group shrink-0 rounded-3xl border border-border/70 bg-background/75">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-foreground">
@@ -200,30 +217,62 @@ export function ResultCard({ result, preview, compareData, exportResult, busy, d
   );
 }
 
-function RewriteDiffPanel({ data, busy, detectionMatchesByChunk, reviewDecisions, onReviewDecisionChange, onRerunChunk }: { data: RoundCompareData | null; busy: boolean; detectionMatchesByChunk: Record<string, DetectionReportMatch[]>; reviewDecisions: Record<string, ReviewDecision>; onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void; onRerunChunk: (chunkId: string, userFeedback?: string) => void }) {
+function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, reviewDecisions, onReviewDecisionChange, onRerunChunk }: { data: RoundCompareData | null; busy: boolean; rerunFailures: RerunFailure[]; detectionMatchesByChunk: Record<string, DetectionReportMatch[]>; reviewDecisions: Record<string, ReviewDecision>; onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void; onRerunChunk: (chunkId: string, userFeedback?: string) => void }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chunkRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const restoredKeyRef = useRef("");
   const previousChunkCountRef = useRef(0);
-  const [reviewOnly, setReviewOnly] = useState(false);
+  const previousFailedCountRef = useRef(0);
+  const previousCandidateCountRef = useRef(0);
+  const [filterMode, setFilterMode] = useState<"all" | "review" | "failed" | "candidate">("all");
   const [focusedReviewIndex, setFocusedReviewIndex] = useState(-1);
 
   const allChunks = data?.chunks ?? [];
+  const rerunFailureByChunk = new Map(rerunFailures.map((failure) => [failure.chunkId, failure]));
+  const failedChunkIds = allChunks.filter((chunk) => rerunFailureByChunk.has(chunk.chunkId)).map((chunk) => chunk.chunkId);
+  const failedChunkIdSet = new Set(failedChunkIds);
+  const candidateChunkIds = allChunks.filter((chunk) => (chunk.rejectedCandidates?.length ?? 0) > 0).map((chunk) => chunk.chunkId);
+  const candidateChunkIdSet = new Set(candidateChunkIds);
   const reviewChunkIds = allChunks
-    .filter((chunk) => isReviewChunk(chunk, detectionMatchesByChunk[chunk.chunkId] ?? []))
+    .filter((chunk) => isReviewChunk(chunk, detectionMatchesByChunk[chunk.chunkId] ?? []) || rerunFailureByChunk.has(chunk.chunkId) || candidateChunkIdSet.has(chunk.chunkId))
     .map((chunk) => chunk.chunkId);
   const reviewChunkIdSet = new Set(reviewChunkIds);
-  const shownChunks = reviewOnly ? allChunks.filter((chunk) => reviewChunkIdSet.has(chunk.chunkId)) : allChunks;
+  const shownChunks = filterMode === "failed"
+    ? allChunks.filter((chunk) => failedChunkIdSet.has(chunk.chunkId))
+    : filterMode === "candidate"
+      ? allChunks.filter((chunk) => candidateChunkIdSet.has(chunk.chunkId))
+    : filterMode === "review"
+      ? allChunks.filter((chunk) => reviewChunkIdSet.has(chunk.chunkId))
+      : allChunks;
   const focusedChunkId = focusedReviewIndex >= 0 ? reviewChunkIds[focusedReviewIndex] : "";
   const baseScrollKey = data ? data.outputPath || `${data.docId}-${data.round}` : "empty";
-  const scrollKey = `${baseScrollKey}:${reviewOnly ? "review" : "all"}`;
+  const scrollKey = `${baseScrollKey}:${filterMode}`;
   const chunkCount = shownChunks.length;
+  const shownLabel = filterMode === "failed" ? T.failedOnly : filterMode === "candidate" ? T.candidateOnly : filterMode === "review" ? T.reviewOnly : T.shown;
 
   useEffect(() => {
     if (focusedReviewIndex >= reviewChunkIds.length) {
       setFocusedReviewIndex(reviewChunkIds.length ? reviewChunkIds.length - 1 : -1);
     }
   }, [focusedReviewIndex, reviewChunkIds.length]);
+
+  useEffect(() => {
+    const previousFailedCount = previousFailedCountRef.current;
+    const previousCandidateCount = previousCandidateCountRef.current;
+    if (failedChunkIds.length > previousFailedCount) {
+      setFilterMode("failed");
+      setFocusedReviewIndex(-1);
+    } else if (candidateChunkIds.length > previousCandidateCount && failedChunkIds.length === 0) {
+      setFilterMode("candidate");
+      setFocusedReviewIndex(-1);
+    } else if (failedChunkIds.length === 0 && filterMode === "failed") {
+      setFilterMode("all");
+    } else if (candidateChunkIds.length === 0 && filterMode === "candidate") {
+      setFilterMode("all");
+    }
+    previousFailedCountRef.current = failedChunkIds.length;
+    previousCandidateCountRef.current = candidateChunkIds.length;
+  }, [candidateChunkIds.length, failedChunkIds.length, filterMode]);
 
   useLayoutEffect(() => {
     const node = scrollRef.current;
@@ -246,12 +295,12 @@ function RewriteDiffPanel({ data, busy, detectionMatchesByChunk, reviewDecisions
       previousChunkCountRef.current = chunkCount;
       return;
     }
-    if (!reviewOnly) {
+    if (filterMode === "all") {
       node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
       diffScrollPositions.set(scrollKey, node.scrollHeight);
     }
     previousChunkCountRef.current = chunkCount;
-  }, [chunkCount, reviewOnly, scrollKey]);
+  }, [chunkCount, filterMode, scrollKey]);
 
   useEffect(() => {
     return () => {
@@ -312,14 +361,44 @@ function RewriteDiffPanel({ data, busy, detectionMatchesByChunk, reviewDecisions
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline">{data?.chunkCount ?? allChunks.length} {T.chunks}</Badge>
           <Badge variant={reviewChunkIds.length ? "warning" : "success"}>{T.reviewChunks} {reviewChunkIds.length}</Badge>
-          <Badge variant="secondary">{reviewOnly ? T.reviewOnly : T.shown} {shownChunks.length}</Badge>
-          <Button size="sm" variant={reviewOnly ? "default" : "outline"} onClick={() => setReviewOnly((value) => !value)} disabled={!reviewChunkIds.length && !reviewOnly}>
-            {reviewOnly ? T.showAll : T.reviewOnly}
+          <Badge variant={failedChunkIds.length ? "warning" : "outline"}>{T.failedChunks} {failedChunkIds.length}</Badge>
+          <Badge variant={candidateChunkIds.length ? "outline" : "secondary"}>{T.candidateChunks} {candidateChunkIds.length}</Badge>
+          <Badge variant="secondary">{shownLabel} {shownChunks.length}</Badge>
+          <Button size="sm" variant={filterMode === "review" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "review" ? "all" : "review")} disabled={!reviewChunkIds.length && filterMode !== "review"}>
+            {filterMode === "review" ? T.showAll : T.reviewOnly}
+          </Button>
+          <Button size="sm" variant={filterMode === "failed" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "failed" ? "all" : "failed")} disabled={!failedChunkIds.length && filterMode !== "failed"}>
+            {filterMode === "failed" ? T.showAll : T.failedOnly}
+          </Button>
+          <Button size="sm" variant={filterMode === "candidate" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "candidate" ? "all" : "candidate")} disabled={!candidateChunkIds.length && filterMode !== "candidate"}>
+            {filterMode === "candidate" ? T.showAll : T.candidateOnly}
           </Button>
           <Button size="sm" variant="outline" onClick={() => jumpToReviewChunk("previous")} disabled={!reviewChunkIds.length}>{T.previousReview}</Button>
           <Button size="sm" variant="outline" onClick={() => jumpToReviewChunk("next")} disabled={!reviewChunkIds.length}>{T.nextReview}</Button>
         </div>
       </div>
+      {failedChunkIds.length ? (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-800">
+          <div className="min-w-0 flex-1">
+            <span className="font-semibold">{T.failedChunks} {failedChunkIds.length}：</span>
+            <span>{T.rerunFailureSummary}</span>
+          </div>
+          <Button size="sm" variant={filterMode === "failed" ? "destructive" : "outline"} onClick={() => setFilterMode(filterMode === "failed" ? "all" : "failed")}>
+            {filterMode === "failed" ? T.showAll : T.viewFailedChunks}
+          </Button>
+        </div>
+      ) : null}
+      {candidateChunkIds.length ? (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
+          <div className="min-w-0 flex-1">
+            <span className="font-semibold">{T.candidateChunks} {candidateChunkIds.length}：</span>
+            <span>{T.rejectedCandidateHint}</span>
+          </div>
+          <Button size="sm" variant={filterMode === "candidate" ? "default" : "outline"} onClick={() => setFilterMode(filterMode === "candidate" ? "all" : "candidate")}>
+            {filterMode === "candidate" ? T.showAll : T.viewCandidateChunks}
+          </Button>
+        </div>
+      ) : null}
       <div
         ref={scrollRef}
         onScroll={(event) => diffScrollPositions.set(scrollKey, event.currentTarget.scrollTop)}
@@ -328,11 +407,13 @@ function RewriteDiffPanel({ data, busy, detectionMatchesByChunk, reviewDecisions
         <div className="grid gap-4">
           {shownChunks.length ? shownChunks.map((chunk) => {
             const detectionMatches = detectionMatchesByChunk[chunk.chunkId] ?? [];
+            const rerunFailure = rerunFailureByChunk.get(chunk.chunkId);
             const needsReview = reviewChunkIdSet.has(chunk.chunkId);
+            const hasRejectedCandidate = (chunk.rejectedCandidates?.length ?? 0) > 0;
             const strongMatches = detectionMatches.filter((match) => match.confidence === "strong");
             const reviewMatches = detectionMatches.filter((match) => match.confidence === "review");
             const matchTone = strongMatches.length ? "strong" : reviewMatches.length ? "review" : "weak";
-                const matchTitle = matchTone === "strong" ? "外部报告强命中" : matchTone === "review" ? "外部报告疑似命中" : "外部报告仅参考";
+            const matchTitle = matchTone === "strong" ? "外部报告强命中" : matchTone === "review" ? "外部报告疑似命中" : "外部报告仅参考";
             const matchClassName = matchTone === "strong"
               ? "border-red-200 bg-red-50 text-red-800"
               : matchTone === "review"
@@ -344,8 +425,15 @@ function RewriteDiffPanel({ data, busy, detectionMatchesByChunk, reviewDecisions
                 ref={(node) => {
                   chunkRefs.current[chunk.chunkId] = node;
                 }}
-                className={`grid gap-4 rounded-3xl border p-4 transition xl:grid-cols-2 ${needsReview ? "border-amber-200 bg-amber-50/35" : "border-border/70 bg-muted/30"} ${focusedChunkId === chunk.chunkId ? "ring-2 ring-amber-300 ring-offset-2" : ""}`}
+                className={`grid gap-4 rounded-3xl border p-4 transition xl:grid-cols-2 ${rerunFailure ? "border-red-200 bg-red-50/40" : hasRejectedCandidate ? "border-sky-200 bg-sky-50/35" : needsReview ? "border-amber-200 bg-amber-50/35" : "border-border/70 bg-muted/30"} ${focusedChunkId === chunk.chunkId ? "ring-2 ring-amber-300 ring-offset-2" : ""}`}
               >
+                {rerunFailure ? (
+                  <div className="xl:col-span-2 rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-800">
+                    <span className="font-semibold">{T.rerunFailure}：</span>
+                    <span>{rerunFailure.error}</span>
+                    <span className="ml-2 opacity-80">{T.rerunFailureHint}</span>
+                  </div>
+                ) : null}
                 {detectionMatches.length ? (
                   <div className={`xl:col-span-2 flex flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${matchClassName}`}>
                     <span className="font-semibold">{matchTitle}</span>
@@ -371,9 +459,9 @@ function RewriteDiffPanel({ data, busy, detectionMatchesByChunk, reviewDecisions
             );
           }) : (
             <div className="rounded-3xl border border-dashed border-border bg-white/80 p-8 text-center">
-              <div className="text-base font-semibold text-foreground">{T.noReviewChunks}</div>
+              <div className="text-base font-semibold text-foreground">{filterMode === "failed" ? T.noFailedChunks : filterMode === "candidate" ? T.noCandidateChunks : T.noReviewChunks}</div>
               <div className="mt-2 text-sm text-muted-foreground">{T.noReviewHint}</div>
-              <Button className="mt-4" size="sm" variant="outline" onClick={() => setReviewOnly(false)}>{T.showAll}</Button>
+              <Button className="mt-4" size="sm" variant="outline" onClick={() => setFilterMode("all")}>{T.showAll}</Button>
             </div>
           )}
         </div>
@@ -537,6 +625,57 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
           <Button size="sm" variant="outline" onClick={() => onRerun(feedback)} disabled={busy}>{zh(0x5b9a, 0x5411, 0x91cd, 0x8dd1)}</Button>
         </div>
       </div>
+      {rejectedCandidates.length ? (
+        <details className="rounded-xl border border-sky-200 bg-sky-50/85 p-3 text-sky-950" open={isSourceFallback || !needsReview}>
+          <summary className="cursor-pointer select-none font-semibold">
+            {T.rejectedCandidate}（{rejectedCandidates.length}）
+          </summary>
+          <div className="mt-2 text-[11px] leading-5 opacity-80">{T.rejectedCandidateHint}</div>
+          <div className="mt-3 grid gap-3">
+            {rejectedCandidates.map((candidate, index) => {
+              const candidateKey = `${candidate.attempt ?? "?"}-${candidate.candidate ?? index}`;
+              const canAdopt = Boolean(candidate.outputText?.trim()) && !candidate.truncated;
+              return (
+                <div key={candidateKey} className="rounded-2xl border border-sky-200 bg-white/90 p-3">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">尝试 {candidate.attempt ?? "-"} / 候选 {candidate.candidate ?? index + 1}</Badge>
+                    {candidate.truncated ? <Badge variant="warning">内容过长已截断</Badge> : null}
+                    {candidate.error ? <span className="min-w-0 flex-1 truncate text-[11px] opacity-75">{candidate.error}</span> : null}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(candidate.outputText ?? "");
+                        setCopiedCandidateKey(candidateKey);
+                      }}
+                    >
+                      {copiedCandidateKey === candidateKey ? T.copied : T.copyCandidate}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={selectedBaseDecision === "custom" && typeof decision === "object" && decision.text === candidate.outputText ? "default" : "outline"}
+                      disabled={!canAdopt}
+                      onClick={() => onDecisionChange({
+                        mode: "custom",
+                        text: candidate.outputText,
+                        source: "rejected_candidate",
+                        attempt: candidate.attempt,
+                        candidate: candidate.candidate,
+                        error: candidate.error,
+                      })}
+                    >
+                      {T.adoptCandidate}
+                    </Button>
+                  </div>
+                  <div className="max-h-56 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950/95 p-3 text-xs leading-6 text-slate-50">
+                    {candidate.outputText}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      ) : null}
       {needsReview ? (
         <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50/80 p-3 text-amber-950 lg:grid-cols-[1fr_1fr_1.2fr]">
           {isSourceFallback ? (
@@ -545,57 +684,6 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
               {T.sourceFallbackHint}
               {chunk.fallbackError ? <span className="ml-1 opacity-80">{chunk.fallbackError}</span> : null}
             </div>
-          ) : null}
-          {rejectedCandidates.length ? (
-            <details className="rounded-xl border border-sky-200 bg-sky-50/85 p-3 text-sky-950 lg:col-span-3" open={isSourceFallback}>
-              <summary className="cursor-pointer select-none font-semibold">
-                {T.rejectedCandidate}（{rejectedCandidates.length}）
-              </summary>
-              <div className="mt-2 text-[11px] leading-5 opacity-80">{T.rejectedCandidateHint}</div>
-              <div className="mt-3 grid gap-3">
-                {rejectedCandidates.map((candidate, index) => {
-                  const candidateKey = `${candidate.attempt ?? "?"}-${candidate.candidate ?? index}`;
-                  const canAdopt = Boolean(candidate.outputText?.trim()) && !candidate.truncated;
-                  return (
-                    <div key={candidateKey} className="rounded-2xl border border-sky-200 bg-white/90 p-3">
-                      <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <Badge variant="outline">尝试 {candidate.attempt ?? "-"} / 候选 {candidate.candidate ?? index + 1}</Badge>
-                        {candidate.truncated ? <Badge variant="warning">内容过长已截断</Badge> : null}
-                        {candidate.error ? <span className="min-w-0 flex-1 truncate text-[11px] opacity-75">{candidate.error}</span> : null}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            void navigator.clipboard?.writeText(candidate.outputText ?? "");
-                            setCopiedCandidateKey(candidateKey);
-                          }}
-                        >
-                          {copiedCandidateKey === candidateKey ? T.copied : T.copyCandidate}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant={selectedBaseDecision === "custom" && typeof decision === "object" && decision.text === candidate.outputText ? "default" : "outline"}
-                          disabled={!canAdopt}
-                          onClick={() => onDecisionChange({
-                            mode: "custom",
-                            text: candidate.outputText,
-                            source: "rejected_candidate",
-                            attempt: candidate.attempt,
-                            candidate: candidate.candidate,
-                            error: candidate.error,
-                          })}
-                        >
-                          {T.adoptCandidate}
-                        </Button>
-                      </div>
-                      <div className="max-h-56 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950/95 p-3 text-xs leading-6 text-slate-50">
-                        {candidate.outputText}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </details>
           ) : null}
           <div>
             <div className="mb-1 font-semibold">{zh(0x95ee, 0x9898, 0x8bca, 0x65ad)}</div>

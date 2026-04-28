@@ -92,6 +92,7 @@ type RunStream = {
   resolveResult: (value: RoundResult) => void;
   rejectResult: (error: Error) => void;
   settled: boolean;
+  sseDisconnected: boolean;
   statusPollTimer?: number;
   statusFailureCount: number;
 };
@@ -411,7 +412,7 @@ function startRunStatusPolling(runToken: string, stream: RunStream): void {
       settleRunStreamWithError(runToken, stream, new Error(`Run ended without a result. Status: ${status.status}`));
     } catch (error) {
       stream.statusFailureCount += 1;
-      if (stream.statusFailureCount >= 12 && stream.eventSource.readyState === EventSource.CLOSED) {
+      if (stream.statusFailureCount >= 12 && (stream.sseDisconnected || stream.eventSource.readyState === EventSource.CLOSED)) {
         settleRunStreamWithError(
           runToken,
           stream,
@@ -443,6 +444,7 @@ function ensureRunStream(runToken: string): RunStream {
     resolveResult,
     rejectResult,
     settled: false,
+    sseDisconnected: false,
     statusFailureCount: 0,
   };
 
@@ -470,7 +472,8 @@ function ensureRunStream(runToken: string): RunStream {
     if (eventSource.readyState !== EventSource.CLOSED) {
       return;
     }
-    settleRunStreamWithError(runToken, stream, new Error("Progress channel disconnected."));
+    stream.sseDisconnected = true;
+    eventSource.close();
   };
 
   runStreams.set(runToken, stream);

@@ -36,7 +36,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAppState } from "@/hooks/useAppState";
 import type { AppService } from "@/lib/appService";
 import { getTaskPhaseLabel, isTaskBlocking, isTaskRunningPhase, type TaskPhase } from "@/lib/taskState";
-import type { DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult } from "@/types/app";
+import type { DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
 
 const PREVIEW_MAX_CHARS = 12000;
 const FORMAT_RULE_DRAFT_KEY = "fyadr.formatRuleDraft";
@@ -64,6 +64,27 @@ type AppNotification = {
   text: string;
   time: string;
   read: boolean;
+};
+type RunSession = {
+  sessionId: number;
+  runId: string;
+  sourcePath: string;
+  round: number;
+  taskTicket: number;
+  mode: "start" | "attach";
+  cancelRequested: boolean;
+};
+type RunRecoveryPanelState = {
+  title: string;
+  message: string;
+  tone: "blue" | "amber" | "red";
+  phaseLabel: string;
+  actionHint: string;
+  completedChunks: number;
+  totalChunks: number;
+  percent: number;
+  eventCount?: number;
+  error?: string;
 };
 type StoredDetectionReport = {
   documentSourcePath: string;
@@ -201,6 +222,31 @@ function buildQualityStats(compareData: RoundCompareData | null, exportResult: E
     guardIssueCount: exportResult?.guardIssueCount ?? 0,
     preflightIssueCount: exportResult?.preflightIssueCount ?? 0,
     auditIssueCount: exportResult?.auditIssueCount ?? 0,
+  };
+}
+
+function buildCurrentRunAudit(roundResult: RoundResult | null, compareData: RoundCompareData | null, modelConfig: ModelConfig): RunAuditSummary {
+  const qualitySummary = (roundResult?.qualitySummary ?? compareData?.qualitySummary ?? {}) as NonNullable<RoundResult["qualitySummary"]>;
+  const paragraphSplitSummary = compareData?.paragraphSplitSummary ?? qualitySummary.paragraphSplitSummary;
+  const candidateMode = qualitySummary.rewriteCandidateMode ?? modelConfig.rewriteCandidateMode ?? "economy";
+  const candidateMaxPerChunk = qualitySummary.candidateMaxPerChunk ?? (candidateMode === "quality" ? 2 : 1);
+  const chunkCount = compareData?.chunkCount ?? qualitySummary.paragraphSplitSummary?.chunkCount ?? roundResult?.inputSegmentCount ?? null;
+  return {
+    ...(roundResult?.runAudit ?? {}),
+    promptProfile: compareData?.promptProfile ?? modelConfig.promptProfile,
+    promptSequence: normalizePromptSequence(compareData?.promptSequence ?? modelConfig.promptSequence),
+    rewriteCandidateMode: candidateMode,
+    candidateMaxPerChunk,
+    estimatedApiCalls: qualitySummary.estimatedApiCalls ?? (chunkCount ? chunkCount * candidateMaxPerChunk : null),
+    twoCandidateChunkCount: qualitySummary.twoCandidateChunkCount ?? null,
+    chunkCount,
+    paragraphCount: compareData?.paragraphCount ?? qualitySummary.paragraphSplitSummary?.paragraphCount ?? roundResult?.paragraphCount ?? null,
+    splitParagraphCount: paragraphSplitSummary?.splitParagraphCount ?? null,
+    validationRetryCount: qualitySummary.validationRetryCount ?? 0,
+    sourceFallbackCount: qualitySummary.sourceFallbackCount ?? 0,
+    validationEventCount: qualitySummary.validationEventCount ?? compareData?.validationEvents?.length ?? 0,
+    machineLikeRiskCount: qualitySummary.machineLikeRiskCount ?? null,
+    protectedTokenCount: qualitySummary.protectedTokenCount ?? null,
   };
 }
 
@@ -917,7 +963,25 @@ function buildRoundResultFromRerunResult(result: RerunChunkResult, current: Roun
 type BatchRerunFailure = {
   chunkId: string;
   error: string;
+  scopeKey?: string;
 };
+
+function getRerunFailureScopeKey(compareData: RoundCompareData | null | undefined): string {
+  if (!compareData) {
+    return "";
+  }
+  return compareData.outputPath || compareData.manifestPath || `${compareData.docId}:${compareData.round}`;
+}
+
+function scopeRerunFailures(failures: BatchRerunFailure[], compareData: RoundCompareData | null | undefined): BatchRerunFailure[] {
+  const scopeKey = getRerunFailureScopeKey(compareData);
+  if (!scopeKey) {
+    return [];
+  }
+  return failures
+    .filter((failure) => failure.chunkId !== "预览刷新")
+    .map((failure) => ({ ...failure, scopeKey }));
+}
 
 function formatBatchRerunFailures(failures: BatchRerunFailure[], limit = 3): string {
   if (!failures.length) {
@@ -1070,6 +1134,12 @@ function mergeVisibleProgress(current: RoundProgress | null, next: RoundProgress
   if (!current) {
     return next;
   }
+  if (next.phase === "cancel-requested") {
+    return {
+      ...current,
+      phase: "cancel-requested",
+    };
+  }
   if (current.round !== next.round || current.totalChunks !== next.totalChunks) {
     return next;
   }
@@ -1082,6 +1152,29 @@ function mergeVisibleProgress(current: RoundProgress | null, next: RoundProgress
     return current;
   }
   return next;
+}
+
+function createCheckpointProgress(
+  status: RoundProgressStatus | null,
+  rewriteCandidateMode: ModelConfig["rewriteCandidateMode"],
+): RoundProgress | null {
+  if (!status?.canResume || !status.round) {
+    return null;
+  }
+  const candidateMode = rewriteCandidateMode === "quality" ? "quality" : "economy";
+  const candidateMaxPerChunk = candidateMode === "quality" ? 2 : 1;
+  return {
+    phase: "resuming-from-checkpoint",
+    round: status.round,
+    currentChunk: status.completedChunks,
+    completedChunks: status.completedChunks,
+    totalChunks: status.totalChunks || undefined,
+    checkpointPath: status.checkpointPath,
+    error: status.lastError || undefined,
+    rewriteCandidateMode: candidateMode,
+    candidateMaxPerChunk,
+    estimatedApiCalls: status.totalChunks ? status.totalChunks * candidateMaxPerChunk : undefined,
+  };
 }
 
 function sameWorkspacePath(left: string | undefined | null, right: string | undefined | null): boolean {
@@ -1115,6 +1208,9 @@ function formatRuntimeStep(progress: RoundProgress | null, fallback: string): st
   }
   if (progress.phase === "chunk-failed" && progress.currentChunk && progress.totalChunks) {
     return `第 ${progress.round} 轮在第 ${progress.currentChunk}/${progress.totalChunks} 个分块失败，但当前进度已经保住。`;
+  }
+  if (progress.phase === "cancel-requested") {
+    return "正在中断当前轮次，已完成分块会保留。";
   }
   if (progress.phase === "restoring-output") {
     return `第 ${progress.round} 轮分块处理完成，正在合并输出。`;
@@ -1250,6 +1346,69 @@ function createNotification(kind: NotificationKind, text: string): AppNotificati
   };
 }
 
+function buildRunRecoveryPanelState(input: {
+  running: boolean;
+  progress: RoundProgress | null;
+  activeRunStatus: NonNullable<RoundProgressStatus["activeRun"]> | null;
+  resumableCheckpoint: RoundProgressStatus | null;
+  nextRound?: number | null;
+}): RunRecoveryPanelState | null {
+  const activeProgress = input.progress ?? input.activeRunStatus?.lastEvent ?? null;
+  const checkpoint = input.resumableCheckpoint;
+  const completedChunks = Number(
+    activeProgress?.currentChunk
+    ?? activeProgress?.completedChunks
+    ?? checkpoint?.completedChunks
+    ?? 0,
+  ) || 0;
+  const totalChunks = Number(activeProgress?.totalChunks ?? checkpoint?.totalChunks ?? 0) || 0;
+  const percent = totalChunks ? Math.max(0, Math.min(100, Math.round((completedChunks / totalChunks) * 100))) : 0;
+  const phaseLabel = activeProgress?.phase || input.activeRunStatus?.status || (checkpoint ? "checkpoint" : "");
+  if (input.running) {
+    const canceling = activeProgress?.phase === "cancel-requested" || input.activeRunStatus?.cancelRequested;
+    return {
+      title: canceling ? "正在中断当前轮" : "当前轮次运行中",
+      message: canceling ? "中断请求已经送达后端，系统会等当前安全点落盘后释放任务。" : "已绑定当前运行会话，进度事件只会更新这一次任务。",
+      tone: canceling ? "red" : "blue",
+      phaseLabel,
+      actionHint: canceling ? "等待后端完成中断；完成后再次执行会从断点继续。" : "如需暂停，点击中断当前轮；已完成分块会保留。",
+      completedChunks,
+      totalChunks,
+      percent,
+      eventCount: input.activeRunStatus?.eventCount,
+      error: activeProgress?.error || input.activeRunStatus?.error || undefined,
+    };
+  }
+  if (input.activeRunStatus) {
+    return {
+      title: "检测到后台运行",
+      message: "后端仍有同一文档的活跃任务，前端会优先接管它，避免重复启动。",
+      tone: input.activeRunStatus.cancelRequested ? "red" : "blue",
+      phaseLabel,
+      actionHint: "等待自动接管；如果长时间不动，刷新状态后再判断是否继续。",
+      completedChunks,
+      totalChunks,
+      percent,
+      eventCount: input.activeRunStatus.eventCount,
+      error: input.activeRunStatus.error || undefined,
+    };
+  }
+  if (checkpoint) {
+    return {
+      title: `发现第 ${checkpoint.round ?? input.nextRound ?? ""} 轮断点`,
+      message: "断点内的已完成分块会被复用，继续执行不会从头覆盖。",
+      tone: checkpoint.lastError ? "amber" : "blue",
+      phaseLabel,
+      actionHint: "点击继续当前轮可接着跑；只有点击放弃本轮进度才会清空断点。",
+      completedChunks,
+      totalChunks,
+      percent: checkpoint.progressPercent || percent,
+      error: checkpoint.lastError || undefined,
+    };
+  }
+  return null;
+}
+
 function formatNotificationTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -1333,6 +1492,8 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const reviewSaveTimerRef = useRef<number | null>(null);
   const restoredDocumentRef = useRef(false);
   const attachedRunTokenRef = useRef<string | null>(null);
+  const runSessionRef = useRef<RunSession | null>(null);
+  const runSessionSequenceRef = useRef(0);
   const notificationMessageKeyRef = useRef("");
   const taskTicketRef = useRef(0);
   const formatParseAbortRef = useRef<AbortController | null>(null);
@@ -1358,6 +1519,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const [historyOrphanScan, setHistoryOrphanScan] = useState<HistoryOrphanScanResult | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>(() => loadNotificationHistory());
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
+  const [rerunFailures, setRerunFailures] = useState<BatchRerunFailure[]>([]);
 
   const {
     modelConfig,
@@ -1436,6 +1598,42 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     setBusy(false);
   }
 
+  function beginRunSession(input: Omit<RunSession, "sessionId" | "cancelRequested">): RunSession {
+    const session: RunSession = {
+      ...input,
+      sessionId: runSessionSequenceRef.current + 1,
+      cancelRequested: false,
+    };
+    runSessionSequenceRef.current = session.sessionId;
+    runSessionRef.current = session;
+    setCurrentRunToken(session.runId);
+    return session;
+  }
+
+  function isActiveRunSession(session: RunSession | null | undefined): session is RunSession {
+    return Boolean(
+      session
+      && runSessionRef.current?.sessionId === session.sessionId
+      && runSessionRef.current?.runId === session.runId,
+    );
+  }
+
+  function clearRunSession(session: RunSession | null | undefined) {
+    if (!isActiveRunSession(session)) {
+      return;
+    }
+    runSessionRef.current = null;
+    setCurrentRunToken((current) => (current === session.runId ? null : current));
+  }
+
+  function markRunSessionCancelRequested(session: RunSession) {
+    if (!isActiveRunSession(session)) {
+      return false;
+    }
+    runSessionRef.current = { ...session, cancelRequested: true };
+    return true;
+  }
+
   const running = Boolean(currentRunToken) || isTaskRunningPhase(taskPhase);
   const uiBusy = busy || isTaskBlocking(taskPhase);
   const runtimeStatus = taskPhase !== "idle" ? getTaskPhaseLabel(taskPhase) : busy ? "处理中" : "就绪";
@@ -1446,6 +1644,14 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   );
   const detectionMatches = useMemo(() => buildDetectionMatches(detectionReport, activeCompareData), [detectionReport, activeCompareData]);
   const detectionMatchesByChunk = useMemo(() => groupDetectionMatchesByChunk(detectionMatches), [detectionMatches]);
+  const activeRerunFailureScopeKey = useMemo(() => getRerunFailureScopeKey(activeCompareData), [activeCompareData]);
+  const activeRerunFailures = useMemo(() => {
+    if (!activeRerunFailureScopeKey) {
+      return [];
+    }
+    const activeChunkIds = new Set(activeCompareData?.chunks.map((chunk) => chunk.chunkId) ?? []);
+    return rerunFailures.filter((failure) => failure.scopeKey === activeRerunFailureScopeKey && activeChunkIds.has(failure.chunkId));
+  }, [activeCompareData, activeRerunFailureScopeKey, rerunFailures]);
   const currentNotification = error
     ? createNotification("error", error)
     : notice
@@ -1492,6 +1698,27 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   function clearNotificationHistory() {
     setNotifications([]);
     saveNotificationHistory([]);
+  }
+
+  function upsertRerunFailure(failure: BatchRerunFailure) {
+    if (!failure.chunkId || failure.chunkId === "预览刷新") {
+      return;
+    }
+    if (!activeRerunFailureScopeKey) {
+      return;
+    }
+    const scopedFailure = { ...failure, scopeKey: activeRerunFailureScopeKey };
+    setRerunFailures((current) => [
+      ...current.filter((item) => !(item.scopeKey === activeRerunFailureScopeKey && item.chunkId === failure.chunkId)),
+      scopedFailure,
+    ]);
+  }
+
+  function clearRerunFailure(chunkId: string) {
+    if (!activeRerunFailureScopeKey) {
+      return;
+    }
+    setRerunFailures((current) => current.filter((item) => !(item.scopeKey === activeRerunFailureScopeKey && item.chunkId === chunkId)));
   }
 
   function dismissCurrentNotification() {
@@ -2004,6 +2231,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     setCompareData(null);
     setLastExportResult(null);
     setRoundProgressStatus(null);
+    setRerunFailures([]);
     liveCompareRef.current = null;
     setReviewDecisions({});
     if (options.includeDetectionReport) {
@@ -2258,6 +2486,22 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setRuntimeStep("未归属文件清理失败");
     } finally {
       finishTask(taskTicket);
+    }
+  }
+
+  async function handlePreviewHistoryDelete(docId: string, options?: DeleteHistoryOptions): Promise<HistoryDeleteImpact | null> {
+    try {
+      setError("");
+      setRuntimeStep("正在计算历史清理影响范围。");
+      const impact = await service.previewDocumentHistoryDelete(docId, options);
+      const stats = impact.fileStats;
+      setRuntimeStep("历史清理影响预览完成");
+      setNotice(`已生成删除前影响预览：${stats.existing} 个项目文件，约 ${formatBytes(stats.bytes)}。`);
+      return impact;
+    } catch (appError) {
+      setError(stringifyError(appError));
+      setRuntimeStep("历史清理影响预览失败");
+      return null;
     }
   }
 
@@ -2606,12 +2850,20 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       clearMessages: false,
       runtimeStep: "正在接管后台运行中的轮次。",
     });
+    let runSession: RunSession | null = null;
     try {
       await releaseProgressListener();
       const status = documentStatus && sameWorkspacePath(documentStatus.sourcePath, activeRun.sourcePath)
         ? documentStatus
         : await refreshDocumentState(activeRun.sourcePath);
       const runRound = activeRun.lastEvent?.round || status.nextRound || 1;
+      runSession = beginRunSession({
+        runId: activeRun.runId,
+        sourcePath: activeRun.sourcePath,
+        round: runRound,
+        taskTicket,
+        mode: "attach",
+      });
       const liveCompareSeed = createLiveCompareData(status, runRound);
       liveCompareRef.current = liveCompareSeed;
       setCompareData(liveCompareSeed);
@@ -2620,10 +2872,12 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setPreview(null);
       visibleProgressRef.current = activeRun.lastEvent ?? null;
       setProgress(activeRun.lastEvent ?? null);
-      setCurrentRunToken(activeRun.runId);
       setNotice("已接管后台运行中的轮次；刷新页面后会继续监听，不会再误开新任务。");
 
       progressUnlistenRef.current = await service.listenRoundProgress((nextProgress) => {
+        if (!isActiveRunSession(runSession)) {
+          return;
+        }
         const visibleProgress = mergeVisibleProgress(visibleProgressRef.current, nextProgress);
         visibleProgressRef.current = visibleProgress;
         setProgress(visibleProgress);
@@ -2639,6 +2893,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       }, activeRun.runId);
 
       const nextResult = await service.awaitRunRound(activeRun.sourcePath, modelConfig, activeRun.runId);
+      if (!isActiveRunSession(runSession)) {
+        return;
+      }
       await releaseProgressListener();
       visibleProgressRef.current = null;
       setProgress(null);
@@ -2661,9 +2918,11 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setRuntimeStep(nextStatus.hasNextRound ? `第 ${nextResult.round} 轮已完成，可继续执行第 ${nextStatus.nextRound} 轮。` : `第 ${nextResult.round} 轮已完成，全部轮次已结束。`);
       setNotice(nextStatus.hasNextRound ? `第 ${nextResult.round} 轮已完成。你现在可以继续下一轮。` : `第 ${nextResult.round} 轮已完成，可以直接导出。`);
     } catch (appError) {
-      await releaseProgressListener();
-      visibleProgressRef.current = null;
-      setProgress(null);
+      if (isActiveRunSession(runSession)) {
+        await releaseProgressListener();
+        visibleProgressRef.current = null;
+        setProgress(null);
+      }
       const runMessage = stringifyError(appError);
       setError(runMessage);
       setRuntimeStep(runMessage.includes("Unknown run id") ? "后台任务已结束，请刷新文档状态" : "后台轮次监听失败");
@@ -2677,7 +2936,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       }
     } finally {
       attachedRunTokenRef.current = null;
-      setCurrentRunToken(null);
+      clearRunSession(runSession);
       finishTask(taskTicket);
     }
   }
@@ -2699,14 +2958,23 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     const taskTicket = beginTask("running-round", {
       runtimeStep: `准备执行第 ${documentStatus.nextRound} 轮。`,
     });
+    let runSession: RunSession | null = null;
     try {
-      visibleProgressRef.current = null;
-      setProgress(null);
-      setRoundProgressStatus(null);
+      const checkpointStatus = roundProgressStatus
+        && sameWorkspacePath(roundProgressStatus.sourcePath, documentStatus.sourcePath)
+        && roundProgressStatus.round === documentStatus.nextRound
+        ? roundProgressStatus
+        : await refreshRoundProgressStatus(documentStatus, modelConfig);
+      const checkpointProgress = createCheckpointProgress(checkpointStatus, modelConfig.rewriteCandidateMode);
+      visibleProgressRef.current = checkpointProgress;
+      setProgress(checkpointProgress);
+      setRerunFailures([]);
       setLastExportResult(null);
       await releaseProgressListener();
 
-      const liveCompareSeed = createLiveCompareData(documentStatus, documentStatus.nextRound);
+      const liveCompareSeed = activeCompareData?.round === documentStatus.nextRound
+        ? activeCompareData
+        : createLiveCompareData(documentStatus, documentStatus.nextRound);
       liveCompareRef.current = liveCompareSeed;
       setCompareData(liveCompareSeed);
       setReviewDecisions({});
@@ -2714,18 +2982,31 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setPreview(null);
       const runConfig = modelConfig;
       const runToken = await service.startRunRound(documentStatus.sourcePath, runConfig);
-      setCurrentRunToken(runToken);
+      if (!runToken) {
+        throw new Error("无法创建运行任务。");
+      }
+      runSession = beginRunSession({
+        runId: runToken,
+        sourcePath: documentStatus.sourcePath,
+        round: documentStatus.nextRound,
+        taskTicket,
+        mode: "start",
+      });
       try {
         const runSnapshot = await service.getHealth();
         const activeRun = runSnapshot.activeRuns.find((item) => item.runId === runToken);
-        if (activeRun?.lastEvent) {
-          visibleProgressRef.current = activeRun.lastEvent;
-          setProgress(activeRun.lastEvent);
+        if (activeRun?.lastEvent && isActiveRunSession(runSession)) {
+          const visibleProgress = mergeVisibleProgress(visibleProgressRef.current, activeRun.lastEvent);
+          visibleProgressRef.current = visibleProgress;
+          setProgress(visibleProgress);
         }
       } catch {
         // Snapshot is only for smoother resume display; the SSE stream remains authoritative.
       }
       progressUnlistenRef.current = await service.listenRoundProgress((nextProgress) => {
+        if (!isActiveRunSession(runSession)) {
+          return;
+        }
         const visibleProgress = mergeVisibleProgress(visibleProgressRef.current, nextProgress);
         visibleProgressRef.current = visibleProgress;
         setProgress(visibleProgress);
@@ -2740,10 +3021,13 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         setRuntimeStep(formatRuntimeStep(visibleProgress, "处理中"));
       }, runToken);
 
-      setRuntimeStep(`准备执行第 ${documentStatus.nextRound} 轮。`);
-      setNotice(`本次运行将使用 ${describePromptProfile(modelConfig.promptProfile)}，中途失败时会优先尝试断点续跑。`);
+      setRuntimeStep(checkpointProgress ? formatRuntimeStep(checkpointProgress, `准备续跑第 ${documentStatus.nextRound} 轮。`) : `准备执行第 ${documentStatus.nextRound} 轮。`);
+      setNotice(checkpointProgress ? "已识别断点，本次会从已完成分块后继续，不会重头跑。" : `本次运行将使用 ${describePromptProfile(modelConfig.promptProfile)}，中途失败时会优先尝试断点续跑。`);
 
       const nextResult = await service.awaitRunRound(documentStatus.sourcePath, runConfig, runToken);
+      if (!isActiveRunSession(runSession)) {
+        return;
+      }
       await releaseProgressListener();
       visibleProgressRef.current = null;
       setProgress(null);
@@ -2766,10 +3050,11 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setRuntimeStep(status.hasNextRound ? `第 ${nextResult.round} 轮已完成，可继续执行第 ${status.nextRound} 轮。` : `第 ${nextResult.round} 轮已完成，全部轮次已结束。`);
       setNotice(status.hasNextRound ? `第 ${nextResult.round} 轮已完成。你现在可以继续下一轮，或先导出查看结果。` : `第 ${nextResult.round} 轮已完成，可以直接导出。`);
     } catch (appError) {
-      await releaseProgressListener();
-      visibleProgressRef.current = null;
-      setProgress(null);
-      liveCompareRef.current = null;
+      if (isActiveRunSession(runSession)) {
+        await releaseProgressListener();
+        visibleProgressRef.current = null;
+        setProgress(null);
+      }
       const runMessage = stringifyError(appError);
       const interrupted = runMessage.includes("当前轮次已中断") || runMessage.includes("interrupted by user");
       const resumable = interrupted || runMessage.includes("断点续跑") || runMessage.includes("已完成的分块会保留") || runMessage.includes("Completed chunks are kept");
@@ -2790,23 +3075,30 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         }
       }
     } finally {
-      setCurrentRunToken(null);
+      clearRunSession(runSession);
       finishTask(taskTicket);
     }
   }
 
   async function handleCancelRunRound() {
-    if (!currentRunToken) {
+    const runSession = runSessionRef.current;
+    if (!runSession || !currentRunToken || runSession.runId !== currentRunToken) {
+      setNotice("当前没有可中断的运行任务。");
       return;
     }
     try {
-      setTaskPhase("canceling-run");
-      await service.cancelRunRound(currentRunToken);
+      markRunSessionCancelRequested(runSession);
+      transitionTask(runSession.taskTicket, "canceling-run", {
+        runtimeStep: "正在中断当前轮次",
+      });
+      await service.cancelRunRound(runSession.runId);
       setNotice("已请求中断。已完成的块会保留，稍后点击执行可从断点继续。");
       setRuntimeStep("正在中断当前轮次");
     } catch (appError) {
       setError(stringifyError(appError));
-      setTaskPhase("running-round");
+      if (isActiveRunSession(runSession)) {
+        transitionTask(runSession.taskTicket, "running-round");
+      }
     }
   }
 
@@ -2881,6 +3173,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setRoundResult(buildRoundResultFromRerunResult(result, roundResult));
       setCompareData(result.compare);
       setLastExportResult(null);
+      clearRerunFailure(chunkId);
       liveCompareRef.current = result.compare;
       setReviewDecisions((current) => ({ ...buildDefaultReviewDecisions(result.compare), ...current, [chunkId]: "rewrite" }));
       const outputPreview = await service.readOutput(result.outputPath, PREVIEW_MAX_CHARS);
@@ -2888,7 +3181,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setNotice(`块 ${chunkId} 已重跑完成，默认采用新改写。`);
       setRuntimeStep("局部重跑完成");
     } catch (appError) {
-      setError(stringifyError(appError));
+      const message = stringifyError(appError);
+      upsertRerunFailure({ chunkId, error: message });
+      setError(message);
       setRuntimeStep("局部重跑失败");
     } finally {
       finishTask(taskTicket);
@@ -2904,6 +3199,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
     const taskTicket = beginTask("rerunning-chunk");
     try {
+      setRerunFailures([]);
       let latestCompare = activeCompareData;
       let currentOutputPath = outputPath;
       let currentRoundResult = roundResult;
@@ -2918,6 +3214,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
           latestCompare = result.compare;
           currentRoundResult = buildRoundResultFromRerunResult(result, currentRoundResult);
           successCount += 1;
+          clearRerunFailure(chunkId);
           setRoundResult(currentRoundResult);
           setCompareData(result.compare);
           setLastExportResult(null);
@@ -2937,10 +3234,12 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         }
       }
       if (successCount === 0 && failures.length) {
+        setRerunFailures(scopeRerunFailures(failures, latestCompare));
         setError(formatBatchRerunSummary("重跑需处理块", successCount, riskyChunkIds.length, failures));
         setRuntimeStep("批量局部重跑全部失败");
         return;
       }
+      setRerunFailures(scopeRerunFailures(failures, latestCompare));
       setNotice(formatBatchRerunSummary("重跑需处理块", successCount, riskyChunkIds.length, failures));
       setRuntimeStep(failures.length ? "批量局部重跑部分完成" : "批量局部重跑完成");
     } catch (appError) {
@@ -2967,6 +3266,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
     const taskTicket = beginTask("rerunning-chunk");
     try {
+      setRerunFailures([]);
       let currentOutputPath = outputPath;
       let latestCompare = activeCompareData;
       let currentRoundResult = roundResult;
@@ -2981,6 +3281,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
           latestCompare = result.compare;
           currentRoundResult = buildRoundResultFromRerunResult(result, currentRoundResult);
           successCount += 1;
+          clearRerunFailure(chunkId);
           setRoundResult(currentRoundResult);
           setCompareData(result.compare);
           setLastExportResult(null);
@@ -3000,10 +3301,12 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         }
       }
       if (successCount === 0 && failures.length) {
+        setRerunFailures(scopeRerunFailures(failures, latestCompare));
         setError(formatBatchRerunSummary("按外部报告反馈重跑", successCount, riskyMatchTargets.length, failures));
         setRuntimeStep("外部报告命中块重跑全部失败");
         return;
       }
+      setRerunFailures(scopeRerunFailures(failures, latestCompare));
       setNotice(formatBatchRerunSummary("按外部报告反馈重跑", successCount, riskyMatchTargets.length, failures, "建议重新导出 Word 后再上传新报告复查。"));
       setRuntimeStep(failures.length ? "外部报告命中块重跑部分完成" : "外部报告命中块重跑完成");
     } catch (appError) {
@@ -3060,6 +3363,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
 
   async function handleSaveExperimentRecord(input: ExperimentRecordInput) {
     const stats = buildQualityStats(activeCompareData, lastExportResult);
+    const runAudit = buildCurrentRunAudit(roundResult, activeCompareData, modelConfig);
     const reportOverall = detectionReport?.summary.weightedOverallRiskProbability ?? detectionReport?.summary.overallRiskProbability ?? null;
     const roundModel = roundResult?.roundModel ?? null;
     const payload: ExperimentRecordInput = {
@@ -3079,6 +3383,10 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       chunkCount: activeCompareData?.chunkCount ?? stats.chunkCount,
       reviewChunkCount: stats.reviewChunkCount,
       machineLikeRiskCount: stats.machineLikeRiskCount,
+      rewriteCandidateMode: runAudit.rewriteCandidateMode,
+      estimatedApiCalls: runAudit.estimatedApiCalls,
+      validationRetryCount: runAudit.validationRetryCount,
+      sourceFallbackCount: runAudit.sourceFallbackCount,
       guardIssueCount: stats.guardIssueCount,
       preflightIssueCount: stats.preflightIssueCount,
       auditIssueCount: stats.auditIssueCount,
@@ -3292,15 +3600,16 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                     compareData={activeCompareData}
                     exportResult={lastExportResult}
                     busy={uiBusy}
-                  detectionMatchesByChunk={detectionMatchesByChunk}
-                  reviewDecisions={reviewDecisions}
-                  onReviewDecisionChange={updateReviewDecision}
-                  onRerunChunk={(chunkId) => void handleRerunChunk(chunkId)}
-                  onRerunRiskyChunks={() => void handleRerunRiskyChunks()}
-                  onExportReviewedTxt={() => void handleExportReviewed("txt")}
-                  onExportReviewedDocx={() => void handleExportReviewed("docx")}
-                  onExportTxt={() => void handleExportCurrent("txt")}
-                  onExportDocx={() => void handleExportCurrent("docx")}
+                    rerunFailures={activeRerunFailures}
+                    detectionMatchesByChunk={detectionMatchesByChunk}
+                    reviewDecisions={reviewDecisions}
+                    onReviewDecisionChange={updateReviewDecision}
+                    onRerunChunk={(chunkId, userFeedback) => void handleRerunChunk(chunkId, userFeedback)}
+                    onRerunRiskyChunks={() => void handleRerunRiskyChunks()}
+                    onExportReviewedTxt={() => void handleExportReviewed("txt")}
+                    onExportReviewedDocx={() => void handleExportReviewed("docx")}
+                    onExportTxt={() => void handleExportCurrent("txt")}
+                    onExportDocx={() => void handleExportCurrent("docx")}
                 />
                 <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-y-auto overflow-x-hidden pr-1">
                   <HomeRunPanel
@@ -3379,6 +3688,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                 busy={uiBusy}
                 onToggle={() => setHistoryPanelOpen(!historyPanelOpen)}
                 onSelect={(item) => void handleSelectHistory(item)}
+                onPreviewDelete={(docId, options) => handlePreviewHistoryDelete(docId, options)}
                 onDelete={(docId, options) => void handleDeleteHistory(docId, options)}
                 onScanOrphans={() => void handleScanHistoryOrphans()}
                 onDeleteOrphans={() => void handleDeleteHistoryOrphans()}
@@ -3752,6 +4062,13 @@ function HomeRunPanel({
   const resumableCheckpoint = roundProgressStatus?.canResume && roundProgressStatus.round === value?.nextRound
     ? roundProgressStatus
     : null;
+  const runRecoveryState = buildRunRecoveryPanelState({
+    running,
+    progress,
+    activeRunStatus,
+    resumableCheckpoint,
+    nextRound: value?.nextRound,
+  });
   const checkpointUpdatedText = resumableCheckpoint?.updatedAt
     ? new Date(resumableCheckpoint.updatedAt).toLocaleString()
     : "";
@@ -3992,6 +4309,7 @@ function HomeRunPanel({
                   <span className="font-black text-slate-700">{candidateModeLabel}</span>：{candidateModeDetail} {progressCallText}
                 </div>
               </div>
+              <RunRecoveryPanel state={runRecoveryState} />
               {resumableCheckpoint ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
                   <div className="flex items-start justify-between gap-3">
@@ -4191,6 +4509,53 @@ function HomeRunPanel({
   );
 }
 
+function RunRecoveryPanel({ state }: { state: RunRecoveryPanelState | null }) {
+  if (!state) {
+    return null;
+  }
+  const toneClass = state.tone === "red"
+    ? "border-red-200 bg-red-50 text-red-900"
+    : state.tone === "amber"
+      ? "border-amber-200 bg-amber-50 text-amber-900"
+      : "border-blue-200 bg-blue-50 text-blue-900";
+  const barClass = state.tone === "red"
+    ? "bg-red-500"
+    : state.tone === "amber"
+      ? "bg-amber-500"
+      : "bg-blue-500";
+  return (
+    <div className={`rounded-2xl border p-3 text-xs leading-5 ${toneClass}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-black">{state.title}</div>
+          <div className="mt-1 font-semibold opacity-90">{state.message}</div>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {state.phaseLabel ? <Badge variant="outline">{state.phaseLabel}</Badge> : null}
+          {state.eventCount != null ? <Badge variant="outline">事件 {state.eventCount}</Badge> : null}
+        </div>
+      </div>
+      {state.totalChunks ? (
+        <div className="mt-3">
+          <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold">
+            <span>已完成 {state.completedChunks}/{state.totalChunks} 块</span>
+            <span>{state.percent}%</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-white/80">
+            <div className={`h-full rounded-full ${barClass}`} style={{ width: `${state.percent}%` }} />
+          </div>
+        </div>
+      ) : null}
+      {state.error ? (
+        <div className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-[11px]">
+          上次停止：{state.error}
+        </div>
+      ) : null}
+      <div className="mt-2 text-[11px] opacity-80">{state.actionHint}</div>
+    </div>
+  );
+}
+
 
 function ExperimentLabPage({
   records,
@@ -4230,6 +4595,9 @@ function ExperimentLabPage({
   const [notes, setNotes] = useState("");
   const providerLabel = detectionReport?.providerLabel || detectionReport?.provider || "";
   const reportOverall = detectionReport?.summary.weightedOverallRiskProbability ?? detectionReport?.summary.overallRiskProbability ?? null;
+  const currentRunAudit = buildCurrentRunAudit(roundResult, compareData, modelConfig);
+  const auditCandidateLabel = currentRunAudit.rewriteCandidateMode === "quality" ? "质量模式" : "省钱模式";
+  const auditModelLabel = [currentRunAudit.providerName, currentRunAudit.model].filter(Boolean).join(" · ") || "未记录";
   const currentDocRecords = documentStatus?.docId
     ? records.filter((record) => record.docId === documentStatus.docId)
     : records;
@@ -4348,6 +4716,8 @@ function ExperimentLabPage({
               <div><b className="text-slate-900">文档：</b>{formatDocLabel(documentStatus?.docId)}</div>
               <div><b className="text-slate-900">轮次：</b>{roundResult?.round ?? compareData?.round ?? "-"} / <b className="text-slate-900">Prompt：</b>{describePromptProfile(modelConfig.promptProfile)} · {formatPromptSequence(modelConfig.promptSequence)}</div>
               <div><b className="text-slate-900">分块：</b>{stats.chunkCount} 块，需处理 {stats.reviewChunkCount}，表达提示 {stats.machineLikeRiskCount}</div>
+              <div><b className="text-slate-900">运行审计：</b>{auditCandidateLabel}，预计 {currentRunAudit.estimatedApiCalls ?? "-"} 次调用，校验重试 {currentRunAudit.validationRetryCount ?? 0}，安全回退 {currentRunAudit.sourceFallbackCount ?? 0}</div>
+              <div><b className="text-slate-900">模型：</b>{auditModelLabel}</div>
               <div><b className="text-slate-900">当前报告：</b>{providerLabel || "未上传"}{reportOverall != null ? ` · ${reportOverall}%` : ""}</div>
             </div>
 
@@ -4539,6 +4909,10 @@ function ExperimentRecordItem({
         <ExperimentScoreBox provider="PaperPass" before={record.paperpassBefore} after={record.paperpassAfter} delta={record.paperpassDelta} />
         <ReportStat label="需处理块" value={String(record.reviewChunkCount ?? "-")} />
         <ReportStat label="表达提示" value={String(record.machineLikeRiskCount ?? "-")} />
+        <ReportStat label="候选策略" value={record.rewriteCandidateMode === "quality" ? "质量" : record.rewriteCandidateMode === "economy" ? "省钱" : "-"} />
+        <ReportStat label="预计调用" value={record.estimatedApiCalls == null ? "-" : `${record.estimatedApiCalls}`} />
+        <ReportStat label="校验重试" value={record.validationRetryCount == null ? "-" : `${record.validationRetryCount}`} />
+        <ReportStat label="安全回退" value={record.sourceFallbackCount == null ? "-" : `${record.sourceFallbackCount}`} />
       </div>
 
       {record.notes ? <div className="mt-3 rounded-2xl bg-white px-3 py-2 text-xs leading-5 text-slate-600">{record.notes}</div> : null}

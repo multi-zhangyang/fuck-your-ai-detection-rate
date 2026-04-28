@@ -310,6 +310,33 @@ export type RoundQualitySummary = {
   sentenceStats?: { count?: number; avg?: number; min?: number; max?: number; variance?: number };
 };
 
+export type RunAuditSummary = {
+  version?: number;
+  providerName?: string;
+  model?: string;
+  apiType?: "chat_completions" | "responses" | string;
+  temperature?: number | null;
+  offlineMode?: boolean;
+  requestTimeoutSeconds?: number | null;
+  maxRetries?: number | null;
+  rateLimitWindowMinutes?: number | null;
+  rateLimitMaxRequests?: number | null;
+  promptProfile?: PromptProfile | string;
+  promptSequence?: PromptId[] | string[];
+  rewriteCandidateMode?: "economy" | "quality" | string;
+  candidateMaxPerChunk?: number | null;
+  estimatedApiCalls?: number | null;
+  twoCandidateChunkCount?: number | null;
+  chunkCount?: number | null;
+  paragraphCount?: number | null;
+  splitParagraphCount?: number | null;
+  validationRetryCount?: number | null;
+  sourceFallbackCount?: number | null;
+  validationEventCount?: number | null;
+  machineLikeRiskCount?: number | null;
+  protectedTokenCount?: number | null;
+};
+
 export type RoundCompareData = {
   version: number;
   docId: string;
@@ -422,6 +449,7 @@ export type RoundResult = {
   docEntry: Record<string, unknown>;
   roundContext: Record<string, unknown>;
   qualitySummary?: RoundQualitySummary;
+  runAudit?: RunAuditSummary;
 };
 
 export type HistoryRound = {
@@ -436,6 +464,8 @@ export type HistoryRound = {
   qualityPath?: string;
   bodyMapPath?: string;
   validationPath?: string;
+  qualitySummary?: RoundQualitySummary;
+  runAudit?: RunAuditSummary;
   scoreTotal: number | null;
   chunkLimit: number | null;
   inputSegmentCount: number | null;
@@ -707,6 +737,10 @@ export type ExperimentRecordInput = {
   chunkCount?: number | null;
   reviewChunkCount?: number | null;
   machineLikeRiskCount?: number | null;
+  rewriteCandidateMode?: "economy" | "quality" | string;
+  estimatedApiCalls?: number | null;
+  validationRetryCount?: number | null;
+  sourceFallbackCount?: number | null;
   guardIssueCount?: number | null;
   preflightIssueCount?: number | null;
   auditIssueCount?: number | null;

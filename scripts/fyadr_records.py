@@ -83,6 +83,7 @@ class RoundRecord:
     quality_path: Optional[str] = None
     body_map_path: Optional[str] = None
     validation_path: Optional[str] = None
+    run_audit: Optional[Dict[str, Any]] = None
     timestamp: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -94,6 +95,8 @@ class RoundRecord:
             data.pop("score_total", None)
         if not data.get("prompt_sequence"):
             data.pop("prompt_sequence", None)
+        if not data.get("run_audit"):
+            data.pop("run_audit", None)
         return data
 
 
@@ -186,7 +189,51 @@ def _normalize_round_item(item: Dict[str, Any]) -> Dict[str, Any] | None:
         normalized_item["prompt_sequence"] = prompt_sequence
     else:
         normalized_item.pop("prompt_sequence", None)
+    run_audit = normalized_item.get("run_audit")
+    if isinstance(run_audit, dict):
+        normalized_item["run_audit"] = _sanitize_run_audit(run_audit)
+    else:
+        normalized_item.pop("run_audit", None)
     return normalized_item
+
+
+def _sanitize_run_audit(value: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep run audit metadata useful while stripping connection secrets."""
+
+    allowed_fields = {
+        "version",
+        "providerName",
+        "model",
+        "apiType",
+        "temperature",
+        "offlineMode",
+        "requestTimeoutSeconds",
+        "maxRetries",
+        "rateLimitWindowMinutes",
+        "rateLimitMaxRequests",
+        "promptProfile",
+        "promptSequence",
+        "rewriteCandidateMode",
+        "candidateMaxPerChunk",
+        "estimatedApiCalls",
+        "twoCandidateChunkCount",
+        "chunkCount",
+        "paragraphCount",
+        "splitParagraphCount",
+        "validationRetryCount",
+        "sourceFallbackCount",
+        "validationEventCount",
+        "machineLikeRiskCount",
+        "protectedTokenCount",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key in allowed_fields:
+        item = value.get(key)
+        if isinstance(item, (str, int, float, bool)) or item is None:
+            sanitized[key] = item
+        elif key == "promptSequence" and isinstance(item, list):
+            sanitized[key] = [str(part).strip() for part in item if str(part).strip()][:3]
+    return {key: item for key, item in sanitized.items() if item not in ("", None, [])}
 
 
 def _round_record_key(item: Dict[str, Any]) -> tuple[str, str, int] | None:
@@ -734,6 +781,7 @@ def update_round(
     body_map_path: Optional[str] = None,
     validation_path: Optional[str] = None,
     prompt_sequence: Optional[List[str]] = None,
+    run_audit: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Update (or create) the record for a single document round.
 
@@ -789,6 +837,7 @@ def update_round(
         quality_path=normalize_record_path(quality_path) if quality_path else None,
         body_map_path=normalize_record_path(body_map_path) if body_map_path else None,
         validation_path=normalize_record_path(validation_path) if validation_path else None,
+        run_audit=_sanitize_run_audit(run_audit) if isinstance(run_audit, dict) else None,
         timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
 
