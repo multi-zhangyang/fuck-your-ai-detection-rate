@@ -42,6 +42,8 @@ python scripts/run_regressions.py --skip-frontend-build
 python scripts/run_regressions.py
 ```
 
+GitHub Actions 会在推送 `main`、创建 Pull Request 或手动触发时运行完整回归。CI 使用仓库内代码和空样例环境，不依赖本地论文、检测报告、截图或运行产物。
+
 单项回归：
 
 ```powershell
@@ -67,6 +69,7 @@ npm --prefix app run build
 
 - README 中的命令全部可执行。
 - `CHANGELOG.md` 已更新本次版本的新增能力、移除项和已知边界。
+- GitHub Actions 最近一次 `CI` 工作流通过。
 - `.gitignore` 覆盖本地运行产物和私密文件。
 - `.github/ISSUE_TEMPLATE/` 和 Pull Request 模板能引导用户提供复现步骤与诊断信息。
 - `python scripts/open_source_audit.py` 无 error；特别确认没有 API Key、私有 Base URL、模型厂商 endpoint、个人路径、旧项目名和乱码。

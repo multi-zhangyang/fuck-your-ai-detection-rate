@@ -30,6 +30,14 @@
 - 不要上传真实论文全文、检测报告原文、API Key、私有模型地址、个人路径或未脱敏截图。
 - 如果问题和文档内容有关，优先构造一段最小复现样例，而不是贴完整文档。
 
+## 提交与 CI
+
+- 每次提交前先运行 `python scripts/run_regressions.py --skip-frontend-build`，涉及前端或发布前再运行完整 `python scripts/run_regressions.py`。
+- 推送到 `main` 或创建 Pull Request 后，GitHub Actions 会自动运行完整回归，包括 Python 编译、开源审计、前端文本检查和前端构建。
+- CI 不依赖本地论文、检测报告或截图；缺少本地样例时，相关真实文档冒烟测试会跳过，不会阻塞仓库协作。
+- 提交信息建议使用清晰动词开头，例如 `Fix task resume state`、`Improve provider config UI`、`Add CI regression workflow`。
+- 不要为了让 CI 通过而放宽核心校验；如果校验误伤，应补充回归样例或改进算法边界。
+
 ## 常用命令
 
 ```powershell

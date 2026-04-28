@@ -4,6 +4,13 @@
 
 本项目采用轻量版本记录方式：发布前以 `0.x` 版本描述功能边界，稳定后再考虑语义化版本。
 
+## Unreleased
+
+### Added
+
+- GitHub Actions CI：在 push、Pull Request 和手动触发时运行完整回归，覆盖 Python 编译、开源审计、前端文本检查和前端构建。
+- 贡献指南补充提交前检查、CI 行为和提交信息建议。
+
 ## 0.1.0 - Initial public preview
 
 ### Added

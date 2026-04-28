@@ -229,6 +229,7 @@ Web 端模型设置里现在可以直接调：
 - 发布检查：[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
 - 优化路线：[references/optimization-roadmap.md](references/optimization-roadmap.md)
 - 隐私与安全：[SECURITY.md](SECURITY.md)
+- 自动回归：`.github/workflows/ci.yml`
 
 ## 开源发布检查
 
@@ -239,6 +240,7 @@ Web 端模型设置里现在可以直接调：
 - 运行 `python scripts/open_source_audit.py`；它会拦截疑似 API Key、私有 Base URL、模型厂商 endpoint、个人路径、旧项目名和乱码文本。
 - README、启动脚本、回归命令和实际代码保持一致。
 - `CHANGELOG.md` 已记录本次发布的主要能力、移除项和已知边界。
+- GitHub Actions 已能在 push / Pull Request 时运行完整回归。
 - 核心 prompt 的任何变更都是明确、有意、可回滚的。
 
 完整清单见 `docs/RELEASE_CHECKLIST.md`。
