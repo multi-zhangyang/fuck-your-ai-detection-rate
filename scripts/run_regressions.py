@@ -74,6 +74,7 @@ def build_commands(*, skip_frontend_build: bool, include_web_health: bool, stric
         {"name": "checkpoint resume regression", "command": [sys.executable, "scripts/checkpoint_resume_regression.py"]},
         {"name": "targeted rerun fallback regression", "command": [sys.executable, "scripts/targeted_rerun_fallback_regression.py"]},
         {"name": "LLM client regression", "command": [sys.executable, "scripts/llm_client_regression.py"]},
+        {"name": "history assets regression", "command": [sys.executable, "scripts/history_assets_regression.py"]},
         {"name": "real DOCX smoke", "command": [sys.executable, "scripts/real_docx_smoke.py", *(("--strict-missing",) if strict_samples else ())]},
         {"name": "state machine regression", "command": [sys.executable, "scripts/state_machine_regression.py"]},
         {"name": "DOCX export regression", "command": [sys.executable, "scripts/docx_export_regression.py", "--rebuild-sample"]},

@@ -58,7 +58,10 @@ FINISH_DIR = ROOT_DIR / "finish"
 RECORDS_PATH = FINISH_DIR / "fyadr_records.json"
 SUPPORTED_PROMPT_PROFILES = {"cn", "cn_prewrite", "cn_custom"}
 SUPPORTED_PROMPT_IDS = {"prewrite", "classical", "round1", "round2"}
-DELETE_MODES = {"records_and_artifacts", "records_only", "exports_only"}
+DELETE_MODES = {"records_and_artifacts", "records_artifacts_and_source", "records_only", "exports_only"}
+ORIGIN_DIR = ROOT_DIR / "origin"
+INTERMEDIATE_DIR = ROOT_DIR / "finish" / "intermediate"
+WEB_EXPORTS_DIR = ROOT_DIR / "finish" / "web_exports"
 
 
 @dataclass
@@ -270,13 +273,11 @@ def _record_path_to_absolute(path: str) -> Optional[Path]:
 
 def _export_related_paths_for_output(output_path: Path) -> set[Path]:
     stem = output_path.stem
-    export_dir = ROOT_DIR / "finish" / "web_exports"
-    intermediate_dir = ROOT_DIR / "finish" / "intermediate"
     paths: set[Path] = set()
     for export_stem in (stem, f"{stem}_reviewed"):
         for suffix in (".txt", ".docx", ".audit.json", ".guard.json"):
-            paths.add((export_dir / f"{export_stem}{suffix}").resolve())
-        paths.add((intermediate_dir / f"{export_stem}_format_preflight.json").resolve())
+            paths.add((WEB_EXPORTS_DIR / f"{export_stem}{suffix}").resolve())
+        paths.add((INTERMEDIATE_DIR / f"{export_stem}_format_preflight.json").resolve())
     return paths
 
 
@@ -342,12 +343,80 @@ def _is_safe_generated_artifact(path: Path) -> bool:
     return relative_parts[1] in {"intermediate", "web_exports"}
 
 
+def _is_safe_project_source(path: Path) -> bool:
+    try:
+        path.relative_to(ORIGIN_DIR)
+    except ValueError:
+        return False
+    return path.is_file()
+
+
+def _source_path_for_entry(doc_id: str, entry: Dict[str, Any]) -> Optional[Path]:
+    raw_origin_path = entry.get("origin_path") if isinstance(entry, dict) else None
+    source_path = _record_path_to_absolute(str(raw_origin_path or doc_id))
+    return source_path.resolve() if source_path is not None else None
+
+
+def _docx_processing_paths_for_source(source_path: Path) -> set[Path]:
+    if source_path.suffix.lower() != ".docx":
+        return set()
+    return {
+        (INTERMEDIATE_DIR / f"{source_path.stem}_docx_snapshot.json").resolve(),
+        (INTERMEDIATE_DIR / f"{source_path.stem}_extracted.txt").resolve(),
+    }
+
+
+def _source_related_paths_for_entry(doc_id: str, entry: Dict[str, Any]) -> set[Path]:
+    source_path = _source_path_for_entry(doc_id, entry)
+    if source_path is None:
+        return set()
+    paths = _docx_processing_paths_for_source(source_path)
+    if _is_safe_project_source(source_path):
+        paths.add(source_path)
+    return paths
+
+
+def _collect_record_source_paths(records: Dict[str, Any]) -> set[Path]:
+    paths: set[Path] = set()
+    for doc_id, entry in records.items():
+        if not isinstance(entry, dict):
+            continue
+        source_path = _source_path_for_entry(str(doc_id), entry)
+        if source_path is not None:
+            paths.add(source_path)
+            paths.update(_docx_processing_paths_for_source(source_path))
+    return paths
+
+
+def _delete_source_related_paths_for_removed_entry(
+    doc_id: str,
+    deleted_entry: Dict[str, Any],
+    retained_records: Dict[str, Any],
+) -> List[str]:
+    retained_paths = _collect_record_source_paths(retained_records)
+    removed_paths: List[str] = []
+    for candidate in sorted(_source_related_paths_for_entry(doc_id, deleted_entry)):
+        if candidate in retained_paths:
+            continue
+        if not (_is_safe_project_source(candidate) or _is_safe_generated_artifact(candidate)):
+            continue
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        candidate.unlink()
+        removed_paths.append(str(candidate.relative_to(ROOT_DIR)).replace("\\", "/"))
+    return removed_paths
+
+
 def _artifact_category(path: Path) -> str:
     try:
         relative = path.relative_to(ROOT_DIR)
     except ValueError:
         return "external"
     parts = relative.parts
+    if not parts:
+        return "external"
+    if parts[0] == "origin":
+        return "sources"
     if len(parts) < 2 or parts[0] != "finish":
         return "source"
     if parts[1] == "web_exports":
@@ -365,6 +434,7 @@ def build_artifact_summary(rounds: List[Dict[str, Any]]) -> Dict[str, Any]:
         "intermediate": 0,
         "exports": 0,
         "reports": 0,
+        "sources": 0,
         "external": 0,
         "missing": 0,
         "bytes": 0,
@@ -418,6 +488,7 @@ def _deleted_file_stats(removed_paths: List[str]) -> Dict[str, Any]:
         "intermediate": 0,
         "exports": 0,
         "reports": 0,
+        "sources": 0,
         "external": 0,
         "missing": 0,
         "bytes": 0,
@@ -431,6 +502,219 @@ def _deleted_file_stats(removed_paths: List[str]) -> Dict[str, Any]:
         if category in counts:
             counts[category] += 1
     return counts
+
+
+def _history_delete_file_entry(path: Path) -> Dict[str, Any]:
+    normalized_path = path.resolve()
+    category = _artifact_category(normalized_path)
+    exists = normalized_path.exists() and normalized_path.is_file()
+    size = 0
+    if exists:
+        try:
+            size = normalized_path.stat().st_size
+        except OSError:
+            size = 0
+    try:
+        display_path = str(normalized_path.relative_to(ROOT_DIR)).replace("\\", "/")
+    except ValueError:
+        display_path = str(normalized_path)
+    return {
+        "path": str(normalized_path),
+        "relativePath": display_path,
+        "kind": category,
+        "exists": exists,
+        "bytes": size,
+    }
+
+
+def _history_delete_stats_for_entries(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    counts = {
+        "total": 0,
+        "existing": 0,
+        "intermediate": 0,
+        "exports": 0,
+        "reports": 0,
+        "sources": 0,
+        "external": 0,
+        "missing": 0,
+        "bytes": 0,
+    }
+    for entry in entries:
+        counts["total"] += 1
+        if bool(entry.get("exists")):
+            counts["existing"] += 1
+            counts["bytes"] += int(entry.get("bytes", 0) or 0)
+            category = str(entry.get("kind", "external"))
+            if category in counts:
+                counts[category] += 1
+            else:
+                counts["external"] += 1
+        else:
+            counts["missing"] += 1
+    return counts
+
+
+def _round_filter(
+    from_round: int,
+    prompt_profile: str | None,
+    prompt_sequence: Optional[List[str]],
+) -> tuple[str | None, List[str] | None, str, Any]:
+    normalized_prompt_profile = _normalize_prompt_profile(prompt_profile) if prompt_profile is not None else None
+    normalized_prompt_sequence = (
+        _normalize_prompt_sequence(prompt_sequence)
+        if normalized_prompt_profile == "cn_custom" and prompt_sequence is not None
+        else None
+    )
+    normalized_sequence_key = ",".join(normalized_prompt_sequence or [])
+
+    def round_matches(item: Dict[str, Any]) -> bool:
+        if not isinstance(item.get("round"), int) or item.get("round") < from_round:
+            return False
+        if normalized_prompt_profile is None:
+            return True
+        if _normalize_prompt_profile(item.get("prompt_profile", "cn")) != normalized_prompt_profile:
+            return False
+        if normalized_prompt_sequence is None:
+            return True
+        return ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"))) == normalized_sequence_key
+
+    return normalized_prompt_profile, normalized_prompt_sequence, normalized_sequence_key, round_matches
+
+
+def _build_delete_impact(
+    *,
+    doc_id: str,
+    entry: Dict[str, Any],
+    deleted_rounds: List[Dict[str, Any]],
+    retained_rounds: List[Dict[str, Any]],
+    mode: str,
+    records_after: Dict[str, Any],
+    from_round: int | None = None,
+    prompt_profile: str | None = None,
+    prompt_sequence: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    if mode == "exports_only":
+        candidate_paths = _collect_round_export_paths(deleted_rounds)
+    elif mode == "records_only":
+        candidate_paths = set()
+    else:
+        retained_paths = _collect_round_file_paths(retained_rounds)
+        candidate_paths = {
+            path
+            for path in _collect_round_file_paths(deleted_rounds)
+            if path not in retained_paths and _is_safe_generated_artifact(path)
+        }
+        if mode == "records_artifacts_and_source" and not retained_rounds:
+            retained_source_paths = _collect_record_source_paths(records_after)
+            candidate_paths.update(
+                path
+                for path in _source_related_paths_for_entry(doc_id, entry)
+                if path not in retained_source_paths
+                and (_is_safe_project_source(path) or _is_safe_generated_artifact(path))
+            )
+
+    entries = [
+        _history_delete_file_entry(path)
+        for path in sorted(candidate_paths, key=lambda item: str(item).lower())
+    ]
+    existing_entries = [entry for entry in entries if bool(entry.get("exists"))]
+    affected_rounds = sorted({
+        int(item["round"])
+        for item in deleted_rounds
+        if isinstance(item, dict) and isinstance(item.get("round"), int)
+    })
+    warnings: list[str] = []
+    source_path = _source_path_for_entry(doc_id, entry)
+    source_owned = bool(source_path and _is_safe_project_source(source_path))
+    will_delete_source = any(str(file.get("kind")) == "sources" for file in existing_entries)
+    if mode == "records_artifacts_and_source" and source_path is not None and not source_owned:
+        warnings.append("源文档不在项目 origin 目录内，后端不会删除外部本地文件。")
+    if mode == "records_only" and deleted_rounds:
+        warnings.append("只移除历史索引会让原生成文件变成未归属产物，后续可在孤儿清理中处理。")
+
+    return {
+        "docId": doc_id,
+        "mode": mode,
+        "fromRound": from_round,
+        "promptProfile": prompt_profile,
+        "promptSequence": prompt_sequence or [],
+        "affectedRounds": affected_rounds,
+        "willDeleteRounds": mode not in {"records_only", "exports_only"},
+        "willRemoveDocument": not retained_rounds and mode != "exports_only",
+        "willDeleteSource": will_delete_source,
+        "sourceOwnedByProject": source_owned,
+        "sourcePath": str(source_path) if source_path is not None else "",
+        "fileStats": _history_delete_stats_for_entries(existing_entries),
+        "candidateStats": _history_delete_stats_for_entries(entries),
+        "files": existing_entries[:80],
+        "hasMoreFiles": len(existing_entries) > 80,
+        "warnings": warnings,
+    }
+
+
+def preview_delete_document(
+    doc_id: str,
+    from_round: int | None = None,
+    prompt_profile: str | None = None,
+    prompt_sequence: Optional[List[str]] = None,
+    mode: str | None = None,
+) -> Dict[str, Any]:
+    normalized_mode = _normalize_delete_mode(mode)
+    normalized_doc_id = normalize_doc_id(doc_id)
+    records = load_records_normalized()
+    doc_entry = records.get(normalized_doc_id)
+    if not isinstance(doc_entry, dict):
+        raise ValueError(f"Document record not found: {normalized_doc_id}")
+    rounds = doc_entry.get("rounds") if isinstance(doc_entry.get("rounds"), list) else []
+    target_rounds = [item for item in rounds if isinstance(item, dict)]
+
+    if from_round is None:
+        retained_rounds: List[Dict[str, Any]] = target_rounds if normalized_mode == "exports_only" else []
+        records_after = dict(records)
+        if normalized_mode != "exports_only":
+            records_after.pop(normalized_doc_id, None)
+        return _build_delete_impact(
+            doc_id=normalized_doc_id,
+            entry=doc_entry,
+            deleted_rounds=target_rounds,
+            retained_rounds=retained_rounds,
+            mode=normalized_mode,
+            records_after=records_after,
+        )
+
+    normalized_prompt_profile, normalized_prompt_sequence, _, round_matches = _round_filter(
+        from_round,
+        prompt_profile,
+        prompt_sequence,
+    )
+    deleted_rounds = [item for item in target_rounds if round_matches(item)]
+    if not deleted_rounds:
+        suffix = f" under prompt profile {normalized_prompt_profile}" if normalized_prompt_profile else ""
+        raise ValueError(f"No rounds found from round {from_round} for: {normalized_doc_id}{suffix}")
+    retained_rounds = [
+        item
+        for item in target_rounds
+        if normalized_mode == "exports_only" or not round_matches(item)
+    ]
+    records_after = dict(records)
+    if normalized_mode != "exports_only":
+        if retained_rounds:
+            next_entry = dict(doc_entry)
+            next_entry["rounds"] = retained_rounds
+            records_after[normalized_doc_id] = next_entry
+        else:
+            records_after.pop(normalized_doc_id, None)
+    return _build_delete_impact(
+        doc_id=normalized_doc_id,
+        entry=doc_entry,
+        deleted_rounds=deleted_rounds,
+        retained_rounds=retained_rounds,
+        mode=normalized_mode,
+        records_after=records_after,
+        from_round=from_round,
+        prompt_profile=normalized_prompt_profile,
+        prompt_sequence=normalized_prompt_sequence,
+    )
 
 
 def update_round(
@@ -546,6 +830,13 @@ def delete_rounds(
 ) -> Dict[str, Any]:
     normalized_mode = _normalize_delete_mode(mode)
     normalized_doc_id = normalize_doc_id(doc_id)
+    impact = preview_delete_document(
+        normalized_doc_id,
+        from_round,
+        prompt_profile=prompt_profile,
+        prompt_sequence=prompt_sequence,
+        mode=normalized_mode,
+    )
     records = load_records_normalized()
     doc_entry = records.get(normalized_doc_id)
     if not isinstance(doc_entry, dict):
@@ -555,24 +846,11 @@ def delete_rounds(
     if not isinstance(rounds, list):
         rounds = []
 
-    normalized_prompt_profile = _normalize_prompt_profile(prompt_profile) if prompt_profile is not None else None
-    normalized_prompt_sequence = (
-        _normalize_prompt_sequence(prompt_sequence)
-        if normalized_prompt_profile == "cn_custom" and prompt_sequence is not None
-        else None
+    normalized_prompt_profile, normalized_prompt_sequence, normalized_sequence_key, round_matches = _round_filter(
+        from_round,
+        prompt_profile,
+        prompt_sequence,
     )
-    normalized_sequence_key = ",".join(normalized_prompt_sequence or [])
-
-    def round_matches(item: Dict[str, Any]) -> bool:
-        if not isinstance(item.get("round"), int) or item.get("round") < from_round:
-            return False
-        if normalized_prompt_profile is None:
-            return True
-        if _normalize_prompt_profile(item.get("prompt_profile", "cn")) != normalized_prompt_profile:
-            return False
-        if normalized_prompt_sequence is None:
-            return True
-        return ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"))) == normalized_sequence_key
 
     deleted_rounds = [
         item for item in rounds
@@ -621,7 +899,7 @@ def delete_rounds(
             }),
             "removedDocument": False,
             "deletedFiles": removed_files,
-            "deletedFileStats": _deleted_file_stats(removed_files),
+            "deletedFileStats": impact["fileStats"],
         }
         if normalized_prompt_profile is not None:
             result["promptProfile"] = normalized_prompt_profile
@@ -646,6 +924,8 @@ def delete_rounds(
 
     save_records(records)
     removed_files = [] if normalized_mode == "records_only" else _delete_artifacts_for_removed_rounds(deleted_rounds, remaining_rounds)
+    if normalized_mode == "records_artifacts_and_source" and not remaining_rounds:
+        removed_files.extend(_delete_source_related_paths_for_removed_entry(normalized_doc_id, doc_entry, records))
     remaining_rounds_for_response = remaining_rounds
     if normalized_prompt_profile is not None:
         remaining_rounds_for_response = [
@@ -679,7 +959,7 @@ def delete_rounds(
         }),
         "removedDocument": not remaining_rounds,
         "deletedFiles": removed_files,
-        "deletedFileStats": _deleted_file_stats(removed_files),
+        "deletedFileStats": impact["fileStats"],
     }
     if normalized_prompt_profile is not None:
         result["promptProfile"] = normalized_prompt_profile
@@ -691,6 +971,7 @@ def delete_rounds(
 def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
     normalized_mode = _normalize_delete_mode(mode)
     normalized_doc_id = normalize_doc_id(doc_id)
+    impact = preview_delete_document(normalized_doc_id, mode=normalized_mode)
     records = load_records_normalized()
     doc_entry = records.get(normalized_doc_id)
     if not isinstance(doc_entry, dict):
@@ -711,11 +992,13 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
             }),
             "removedDocument": False,
             "deletedFiles": removed_files,
-            "deletedFileStats": _deleted_file_stats(removed_files),
+            "deletedFileStats": impact["fileStats"],
         }
     records.pop(normalized_doc_id, None)
     save_records(records)
     removed_files = [] if normalized_mode == "records_only" else _delete_artifacts_for_removed_rounds(target_rounds, [])
+    if normalized_mode == "records_artifacts_and_source":
+        removed_files.extend(_delete_source_related_paths_for_removed_entry(normalized_doc_id, doc_entry, records))
     return {
         "docId": normalized_doc_id,
         "mode": normalized_mode,
@@ -728,7 +1011,7 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
         "remainingRounds": [],
         "removedDocument": True,
         "deletedFiles": removed_files,
-        "deletedFileStats": _deleted_file_stats(removed_files),
+        "deletedFileStats": impact["fileStats"],
     }
 
 

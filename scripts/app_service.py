@@ -19,6 +19,7 @@ from fyadr_records import (
     delete_rounds,
     list_records,
     normalize_doc_id,
+    preview_delete_document,
 )
 from chunking import load_manifest, restore_text_from_chunks, split_text_to_paragraphs
 from fyadr_round_service import (
@@ -840,6 +841,7 @@ def list_document_histories() -> dict[str, Any]:
 
 
 HISTORY_ORPHAN_SCAN_DIRS: dict[str, Path] = {
+    "sources": ROOT_DIR / "origin",
     "intermediate": ROOT_DIR / "finish" / "intermediate",
     "exports": ROOT_DIR / "finish" / "web_exports",
     "reports": ROOT_DIR / "finish" / "detection_reports",
@@ -857,6 +859,7 @@ def _empty_artifact_stats() -> dict[str, Any]:
         "intermediate": 0,
         "exports": 0,
         "reports": 0,
+        "sources": 0,
         "external": 0,
         "missing": 0,
         "bytes": 0,
@@ -878,6 +881,8 @@ def _history_artifact_kind(path: Path) -> str:
     except ValueError:
         return "external"
     parts = relative.parts
+    if parts and parts[0] == "origin":
+        return "sources"
     if len(parts) < 2 or parts[0] != "finish":
         return "external"
     if parts[1] == "web_exports":
@@ -903,6 +908,8 @@ def _is_cleanable_history_artifact(path: Path) -> bool:
         return False
     if not normalized_path.exists() or not normalized_path.is_file():
         return False
+    if _is_path_under(normalized_path, HISTORY_ORPHAN_SCAN_DIRS["sources"]):
+        return True
     if _is_path_under(normalized_path, HISTORY_ORPHAN_SCAN_DIRS["exports"]):
         return True
     if _is_path_under(normalized_path, HISTORY_ORPHAN_SCAN_DIRS["reports"]):
@@ -941,12 +948,43 @@ def _normalize_protected_paths(protected_paths: object | None) -> set[Path]:
     return normalized_paths
 
 
+def _collect_experiment_referenced_history_paths() -> set[Path]:
+    records_path = ROOT_DIR / "finish" / "experiments" / "records.json"
+    if not records_path.exists():
+        return set()
+    try:
+        data = json.loads(records_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(data, list):
+        return set()
+    referenced_paths: set[Path] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        for field in ("sourcePath", "outputPath", "reportPath"):
+            value = item.get(field)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            try:
+                referenced_paths.add(normalize_path(Path(value)))
+            except Exception:
+                continue
+    return referenced_paths
+
+
 def _collect_referenced_history_artifacts(protected_paths: object | None = None) -> set[Path]:
     referenced_paths = _normalize_protected_paths(protected_paths)
     records = list_records()
     for entry in records.values():
         if not isinstance(entry, dict):
             continue
+        origin_path = entry.get("origin_path")
+        if isinstance(origin_path, str) and origin_path.strip():
+            try:
+                referenced_paths.add(normalize_path(Path(origin_path)))
+            except Exception:
+                pass
         rounds = entry.get("rounds")
         if not isinstance(rounds, list):
             continue
@@ -960,6 +998,7 @@ def _collect_referenced_history_artifacts(protected_paths: object | None = None)
                     referenced_paths.add(normalized_compare_path.with_name(f"{normalized_compare_path.stem}_review_decisions.json"))
                 except Exception:
                     continue
+    referenced_paths.update(_collect_experiment_referenced_history_paths())
     return referenced_paths
 
 
@@ -1006,7 +1045,7 @@ def _build_stats_from_file_entries(entries: list[dict[str, Any]]) -> dict[str, A
         stats["total"] += 1
         stats["existing"] += 1
         stats["bytes"] += max(0, size)
-        if kind in {"intermediate", "exports", "reports"}:
+        if kind in {"sources", "intermediate", "exports", "reports"}:
             stats[kind] += 1
         else:
             stats["external"] += 1
@@ -1015,6 +1054,7 @@ def _build_stats_from_file_entries(entries: list[dict[str, Any]]) -> dict[str, A
 
 def _build_kind_stats(entries: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     kind_stats = {
+        "sources": {"files": 0, "bytes": 0},
         "intermediate": {"files": 0, "bytes": 0},
         "exports": {"files": 0, "bytes": 0},
         "reports": {"files": 0, "bytes": 0},
@@ -1191,6 +1231,24 @@ def delete_document_history(
         return delete_document(normalized_doc_id, mode=mode)
     normalized_profile = normalize_prompt_profile(prompt_profile) if prompt_profile is not None else None
     return delete_rounds(
+        normalized_doc_id,
+        from_round,
+        prompt_profile=normalized_profile,
+        prompt_sequence=normalize_prompt_sequence(normalized_profile, prompt_sequence) if normalized_profile == "cn_custom" else None,
+        mode=mode,
+    )
+
+
+def preview_document_history_delete(
+    doc_id: str,
+    from_round: int | None = None,
+    prompt_profile: str | None = None,
+    prompt_sequence: object | None = None,
+    mode: str | None = None,
+) -> dict[str, Any]:
+    normalized_doc_id = normalize_doc_id(doc_id)
+    normalized_profile = normalize_prompt_profile(prompt_profile) if prompt_profile is not None else None
+    return preview_delete_document(
         normalized_doc_id,
         from_round,
         prompt_profile=normalized_profile,

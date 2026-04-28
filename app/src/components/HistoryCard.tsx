@@ -175,6 +175,7 @@ function getSafeArtifactStats(stats?: HistoryArtifactStats): HistoryArtifactStat
     intermediate: 0,
     exports: 0,
     reports: 0,
+    sources: 0,
     external: 0,
     missing: 0,
     bytes: 0,
@@ -208,7 +209,7 @@ function ArtifactGovernanceMap({ stats, sourcePath, compact = false }: { stats?:
     {
       label: "源文档",
       value: "保留",
-      detail: sourcePath ? formatPathScope(sourcePath) : "原始上传文件不会被历史清理删除",
+      detail: sourcePath ? formatPathScope(sourcePath) : "默认保留；彻底清理时也只删除项目 origin 内副本",
       tone: "emerald",
     },
     {
@@ -255,6 +256,7 @@ function ArtifactGovernanceMap({ stats, sourcePath, compact = false }: { stats?:
 }
 
 function getOrphanKindLabel(kind: string): string {
+  if (kind === "sources") return "源文档副本";
   if (kind === "exports") return "项目导出";
   if (kind === "reports") return "报告文件";
   if (kind === "intermediate") return "中间产物";
@@ -283,7 +285,7 @@ function OrphanGovernancePanel({
             {scan ? <Badge variant={stats.existing ? "secondary" : "outline"}>{stats.existing} 个</Badge> : null}
           </div>
           <div className="mt-2 text-sm leading-6 text-muted-foreground">
-            扫描项目生成目录中不再被历史记录引用的文件；源文档、历史记录和浏览器已下载文件不会被清理。
+            扫描项目目录中不再被历史、当前文档或复盘记录引用的源文档副本和生成物；外部路径与浏览器下载文件不会被清理。
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -303,9 +305,10 @@ function OrphanGovernancePanel({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-2 md:grid-cols-4">
+      <div className="mt-4 grid gap-2 md:grid-cols-5">
         <StatPill label="可清理文件" value={`${stats.existing}`} />
         <StatPill label="占用空间" value={formatBytes(stats.bytes)} />
+        <StatPill label="源文档副本" value={`${scan?.orphanKindStats.sources.files ?? 0}`} />
         <StatPill label="项目导出" value={`${scan?.orphanKindStats.exports.files ?? 0}`} />
         <StatPill label="报告文件" value={`${scan?.orphanKindStats.reports.files ?? 0}`} />
       </div>
@@ -345,6 +348,7 @@ function mergeArtifactStats(items: Array<HistoryArtifactStats | undefined>): His
     intermediate: total.intermediate + (item?.intermediate ?? 0),
     exports: total.exports + (item?.exports ?? 0),
     reports: total.reports + (item?.reports ?? 0),
+    sources: (total.sources ?? 0) + (item?.sources ?? 0),
     external: total.external + (item?.external ?? 0),
     missing: total.missing + (item?.missing ?? 0),
     bytes: total.bytes + (item?.bytes ?? 0),
@@ -354,6 +358,7 @@ function mergeArtifactStats(items: Array<HistoryArtifactStats | undefined>): His
     intermediate: 0,
     exports: 0,
     reports: 0,
+    sources: 0,
     external: 0,
     missing: 0,
     bytes: 0,
@@ -448,7 +453,7 @@ export function HistoryCard({
           <ImpactCard
             title="源文档"
             value="保留"
-            text="所有清理动作都不会删除原始上传文档。"
+            text="默认保留；源副本清理只作用于项目 origin。"
           />
         </div>
 
@@ -502,7 +507,7 @@ export function HistoryCard({
 
                       <ArtifactStats stats={item.artifactStats} />
                       <ArtifactGovernanceMap stats={item.artifactStats} sourcePath={item.originPath || item.sourcePath} />
-                      <div className="grid gap-3 rounded-3xl border border-border/70 bg-muted/20 p-4 md:grid-cols-3">
+                      <div className="grid gap-3 rounded-3xl border border-border/70 bg-muted/20 p-4 md:grid-cols-4">
                         <Button
                           variant="outline"
                           onClick={() => onDelete(item.docId, { mode: "records_only" })}
@@ -527,6 +532,14 @@ export function HistoryCard({
                         >
                           <Trash2 className="h-4 w-4" />
                           删除生成链路
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => onDelete(item.docId, { mode: "records_artifacts_and_source" })}
+                          disabled={busy}
+                          className="h-12 justify-start rounded-2xl border-red-200 text-red-700 hover:bg-red-50"
+                        >
+                          清理源副本
                         </Button>
                       </div>
                     </div>
@@ -613,7 +626,7 @@ export function HistoryCard({
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
           <div className="rounded-3xl border border-border/70 bg-muted/20 p-4">
-            <div className="grid gap-3 text-sm md:grid-cols-3">
+            <div className="grid gap-3 text-sm md:grid-cols-4">
               <div className="rounded-2xl bg-white/80 p-3">
                 <div className="font-black text-foreground">只移除记录</div>
                 <div className="mt-1 leading-6 text-muted-foreground">只隐藏索引，不删除生成文件。</div>
@@ -625,6 +638,10 @@ export function HistoryCard({
               <div className="rounded-2xl bg-white/80 p-3">
                 <div className="font-black text-foreground">删除生成链路</div>
                 <div className="mt-1 leading-6 text-muted-foreground">删除轮次和中间产物，源文档保留。</div>
+              </div>
+              <div className="rounded-2xl bg-white/80 p-3">
+                <div className="font-black text-foreground">清理源副本</div>
+                <div className="mt-1 leading-6 text-muted-foreground">只删除项目 origin 内源文件副本，外部路径不碰。</div>
               </div>
             </div>
           </div>

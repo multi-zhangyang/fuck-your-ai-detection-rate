@@ -31,6 +31,7 @@ from app_service import (
     list_available_models,
     list_document_histories,
     load_review_decisions,
+    preview_document_history_delete,
     read_output_text,
     read_round_compare,
     rerun_compare_chunk,
@@ -648,6 +649,38 @@ def delete_history_orphans() -> tuple[Response, int] | Response:
         payload = request.get_json(silent=True) or {}
         protected_paths = payload.get("protectedPaths", [])
         return jsonify(delete_history_orphan_artifacts(protected_paths))
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/document-history/impact", methods=["POST"])
+def preview_history_delete() -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        doc_id = str(payload.get("docId", "")).strip()
+        from_round = payload.get("fromRound")
+        prompt_profile = payload.get("promptProfile")
+        prompt_sequence = payload.get("promptSequence")
+        mode = payload.get("mode")
+        if not doc_id:
+            raise ValueError("docId is required.")
+        if from_round is not None and not isinstance(from_round, int):
+            raise ValueError("fromRound must be an integer when provided.")
+        if prompt_profile is not None and not isinstance(prompt_profile, str):
+            raise ValueError("promptProfile must be a string when provided.")
+        if prompt_sequence is not None and not isinstance(prompt_sequence, list):
+            raise ValueError("promptSequence must be a list when provided.")
+        if mode is not None and not isinstance(mode, str):
+            raise ValueError("mode must be a string when provided.")
+        return jsonify(
+            preview_document_history_delete(
+                doc_id,
+                from_round,
+                prompt_profile=prompt_profile,
+                prompt_sequence=prompt_sequence,
+                mode=mode,
+            )
+        )
     except Exception as exc:
         return error_response(str(exc))
 

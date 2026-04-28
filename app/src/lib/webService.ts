@@ -15,6 +15,7 @@ import type {
   ExperimentSaveResult,
   FormatRules,
   FormatRulesResult,
+  HistoryDeleteImpact,
   HistoryOrphanDeleteResult,
   HistoryOrphanScanResult,
   HistoryListResponse,
@@ -580,6 +581,22 @@ export const webService: AppService = {
   ): Promise<DeleteHistoryResult> {
     return requestJson<DeleteHistoryResult>("/api/document-history", {
       method: "DELETE",
+      body: JSON.stringify({
+        docId,
+        fromRound: options?.fromRound ?? null,
+        promptProfile: options?.promptProfile ?? null,
+        promptSequence: options?.promptSequence ?? null,
+        mode: options?.mode ?? "records_and_artifacts",
+      }),
+    });
+  },
+
+  async previewDocumentHistoryDelete(
+    docId: string,
+    options?: DeleteHistoryOptions,
+  ): Promise<HistoryDeleteImpact> {
+    return requestJson<HistoryDeleteImpact>("/api/document-history/impact", {
+      method: "POST",
       body: JSON.stringify({
         docId,
         fromRound: options?.fromRound ?? null,

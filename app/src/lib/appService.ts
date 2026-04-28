@@ -14,6 +14,7 @@ import type {
   ExperimentSaveResult,
   FormatRules,
   FormatRulesResult,
+  HistoryDeleteImpact,
   HistoryOrphanDeleteResult,
   HistoryOrphanScanResult,
   HistoryListResponse,
@@ -51,6 +52,10 @@ export interface AppService {
     docId: string,
     options?: DeleteHistoryOptions,
   ): Promise<DeleteHistoryResult>;
+  previewDocumentHistoryDelete(
+    docId: string,
+    options?: DeleteHistoryOptions,
+  ): Promise<HistoryDeleteImpact>;
   scanHistoryOrphans(protectedPaths?: string[]): Promise<HistoryOrphanScanResult>;
   deleteHistoryOrphans(protectedPaths?: string[]): Promise<HistoryOrphanDeleteResult>;
   startRunRound(sourcePath: string, modelConfig: ModelConfig): Promise<string | null>;

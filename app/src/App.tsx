@@ -36,7 +36,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAppState } from "@/hooks/useAppState";
 import type { AppService } from "@/lib/appService";
 import { getTaskPhaseLabel, isTaskBlocking, isTaskRunningPhase, type TaskPhase } from "@/lib/taskState";
-import type { DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundResult } from "@/types/app";
+import type { DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundResult } from "@/types/app";
 
 const PREVIEW_MAX_CHARS = 12000;
 const FORMAT_RULE_DRAFT_KEY = "fyadr.formatRuleDraft";
@@ -1889,10 +1889,22 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
 
   function getProtectedHistoryArtifactPaths(): string[] {
     const protectedPaths: string[] = [];
+    if (documentStatus?.sourcePath) {
+      protectedPaths.push(documentStatus.sourcePath);
+    }
+    if (roundResult?.outputPath) {
+      protectedPaths.push(roundResult.outputPath);
+    }
+    if (activeCompareData?.outputPath) {
+      protectedPaths.push(activeCompareData.outputPath);
+    }
+    if (lastExportResult?.path) {
+      protectedPaths.push(lastExportResult.path);
+    }
     if (detectionReport?.sourcePath) {
       protectedPaths.push(detectionReport.sourcePath);
     }
-    return protectedPaths;
+    return Array.from(new Set(protectedPaths));
   }
 
   async function refreshHistoryOrphanScan() {
@@ -2083,6 +2095,13 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   function getHistoryDeleteCopy(options?: DeleteHistoryOptions): { actionLabel: string; confirmText: string; doneLabel: string } {
     const mode: HistoryDeleteMode = options?.mode ?? "records_and_artifacts";
     const fromRound = options?.fromRound;
+    if (mode === "records_artifacts_and_source") {
+      return {
+        actionLabel: "彻底清理该文档项目副本",
+        confirmText: "确认彻底清理这篇文档的项目副本吗？\n\n会删除历史记录、轮次中间产物、项目导出副本，并且只在源文件位于项目 origin 目录时删除该源文档副本；不会删除浏览器下载目录或其他外部路径文件。",
+        doneLabel: "项目副本彻底清理完成",
+      };
+    }
     if (mode === "exports_only") {
       return {
         actionLabel: fromRound ? `清理第 ${fromRound} 轮及之后的项目导出副本` : "清理该文档项目导出副本",
@@ -2108,6 +2127,31 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
           : "确认删除该文档的生成链路吗？\n\n会删除本项目为这篇文档生成的历史轮次、中间文件、Diff、改写检查报告和项目导出副本；不会删除源文档。",
       doneLabel: fromRound ? "历史回滚完成" : "生成链路清理完成",
     };
+  }
+
+  function buildHistoryDeleteConfirmText(baseText: string, impact: HistoryDeleteImpact | null): string {
+    if (!impact) {
+      return baseText;
+    }
+    const stats = impact.fileStats;
+    const roundText = impact.affectedRounds.length ? impact.affectedRounds.join(", ") : "无";
+    const sourceText = impact.willDeleteSource
+      ? `源文档副本：会删除项目 origin 内源文件（${stats.sources ?? 0} 个）`
+      : impact.sourceOwnedByProject
+        ? "源文档副本：保留"
+        : "源文档副本：外部路径不删除";
+    const warningText = impact.warnings.length ? `\n提醒：${impact.warnings.join("；")}` : "";
+    return [
+      baseText,
+      "",
+      "【删除前影响预览】",
+      `影响轮次：${roundText}`,
+      `文件数量：${stats.existing} 个，占用 ${formatBytes(stats.bytes)}`,
+      `分类：源副本 ${stats.sources ?? 0}，项目导出 ${stats.exports}，中间产物 ${stats.intermediate}，报告 ${stats.reports}`,
+      sourceText,
+      impact.hasMoreFiles ? "文件列表较长，界面只展示前 80 个，后端会按同一安全规则处理。" : "",
+      warningText.trim(),
+    ].filter(Boolean).join("\n");
   }
 
   async function handleScanHistoryOrphans() {
@@ -2145,7 +2189,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       return;
     }
     const confirmed = window.confirm(
-      `确认清理 ${currentScan.totalOrphanFiles} 个未归属生成文件吗？\n\n只会删除项目生成目录中的孤儿产物；源文档、历史记录、当前绑定的检测报告，以及浏览器已经下载到本地的文件都不会受影响。`,
+      `确认清理 ${currentScan.totalOrphanFiles} 个未归属项目文件吗？\n\n只会删除项目目录中未被历史记录、当前文档或复盘记录引用的源文档副本/生成产物；浏览器已经下载到本地的文件和外部路径文件不会受影响。`,
     );
     if (!confirmed) {
       return;
@@ -2157,7 +2201,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setHistoryOrphanScan(result.after);
       const deletedStats = result.deletedFileStats;
       const failedText = result.failedFiles.length ? `，${result.failedFiles.length} 个文件未能删除` : "";
-      setNotice(`已清理 ${deletedStats.total} 个未归属生成文件，占用 ${formatBytes(deletedStats.bytes)}${failedText}。`);
+      setNotice(`已清理 ${deletedStats.total} 个未归属项目文件（源副本 ${deletedStats.sources ?? 0}，生成物 ${deletedStats.intermediate + deletedStats.exports + deletedStats.reports}），释放 ${formatBytes(deletedStats.bytes)}${failedText}。`);
       setRuntimeStep("未归属文件清理完成");
     } catch (appError) {
       setError(stringifyError(appError));
@@ -2169,10 +2213,25 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
 
   async function handleDeleteHistory(docId: string, options?: DeleteHistoryOptions) {
     const { actionLabel, confirmText, doneLabel } = getHistoryDeleteCopy(options);
+    let impact: HistoryDeleteImpact | null = null;
+    const previewTicket = beginTask("loading-history", {
+      globalBusy: false,
+      runtimeStep: "正在计算历史清理影响范围。",
+    });
+    try {
+      impact = await service.previewDocumentHistoryDelete(docId, options);
+    } catch (appError) {
+      setError(stringifyError(appError));
+      setRuntimeStep("历史清理影响预览失败");
+      finishTask(previewTicket);
+      return;
+    }
+    finishTask(previewTicket);
     const confirmed = window.confirm(
-      confirmText,
+      buildHistoryDeleteConfirmText(confirmText, impact),
     );
     if (!confirmed) {
+      setRuntimeStep("待命");
       return;
     }
     const taskTicket = beginTask("deleting-history");
@@ -2207,7 +2266,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       const roundText = affectedRounds.length ? `影响轮次：${affectedRounds.join(", ")}。` : "没有匹配到可处理的轮次。";
       const deletedStats = result.deletedFileStats;
       const fileText = deletedStats
-        ? `删除生成文件：${deletedStats.total} 个（项目导出 ${deletedStats.exports}，中间/报告 ${deletedStats.intermediate + deletedStats.reports}）；源文档保留。`
+        ? `删除文件：${deletedStats.existing} 个（源副本 ${deletedStats.sources ?? 0}，项目导出 ${deletedStats.exports}，中间/报告 ${deletedStats.intermediate + deletedStats.reports}）。`
         : `删除生成文件：${result.deletedFiles.length} 个；源文档保留。`;
       setNotice(result.removedDocument ? `历史记录已移除。${roundText}${fileText}` : `历史记录已更新。${roundText}${fileText}`);
       setRuntimeStep(doneLabel);

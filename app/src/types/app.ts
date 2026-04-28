@@ -468,6 +468,7 @@ export type HistoryArtifactStats = {
   intermediate: number;
   exports: number;
   reports: number;
+  sources?: number;
   external: number;
   missing: number;
   bytes: number;
@@ -481,7 +482,7 @@ export type HistoryOrphanArtifactFile = {
   modifiedAt: string;
 };
 
-export type HistoryOrphanKindStats = Record<"intermediate" | "exports" | "reports", {
+export type HistoryOrphanKindStats = Record<"sources" | "intermediate" | "exports" | "reports", {
   files: number;
   bytes: number;
 }>;
@@ -507,7 +508,34 @@ export type HistoryOrphanDeleteResult = {
   after: HistoryOrphanScanResult;
 };
 
-export type HistoryDeleteMode = "records_and_artifacts" | "records_only" | "exports_only";
+export type HistoryDeleteImpactFile = {
+  path: string;
+  relativePath: string;
+  kind: string;
+  exists: boolean;
+  bytes: number;
+};
+
+export type HistoryDeleteImpact = {
+  docId: string;
+  mode: HistoryDeleteMode;
+  fromRound?: number | null;
+  promptProfile?: PromptProfile | null;
+  promptSequence?: PromptId[];
+  affectedRounds: number[];
+  willDeleteRounds: boolean;
+  willRemoveDocument: boolean;
+  willDeleteSource: boolean;
+  sourceOwnedByProject: boolean;
+  sourcePath: string;
+  fileStats: HistoryArtifactStats;
+  candidateStats: HistoryArtifactStats;
+  files: HistoryDeleteImpactFile[];
+  hasMoreFiles: boolean;
+  warnings: string[];
+};
+
+export type HistoryDeleteMode = "records_and_artifacts" | "records_artifacts_and_source" | "records_only" | "exports_only";
 
 export type DeleteHistoryOptions = {
   fromRound?: number;
