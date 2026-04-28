@@ -24,6 +24,7 @@ import type {
   ReviewDecision,
   RoundCompareData,
   RoundProgress,
+  RunRoundStatus,
   RoundResult,
   TestConnectionResult,
 } from "../types/app";
@@ -89,6 +90,8 @@ type RunStream = {
   resolveResult: (value: RoundResult) => void;
   rejectResult: (error: Error) => void;
   settled: boolean;
+  statusPollTimer?: number;
+  statusFailureCount: number;
 };
 
 const runStreams = new Map<string, RunStream>();
@@ -356,8 +359,65 @@ function cleanupRunStream(runToken: string): void {
   if (!stream) {
     return;
   }
+  if (stream.statusPollTimer !== undefined) {
+    window.clearInterval(stream.statusPollTimer);
+  }
   stream.eventSource.close();
   runStreams.delete(runToken);
+}
+
+function settleRunStreamWithResult(runToken: string, stream: RunStream, result: RoundResult): void {
+  if (stream.settled) {
+    return;
+  }
+  stream.settled = true;
+  stream.resolveResult(result);
+  cleanupRunStream(runToken);
+}
+
+function settleRunStreamWithError(runToken: string, stream: RunStream, error: Error): void {
+  if (stream.settled) {
+    return;
+  }
+  stream.settled = true;
+  stream.rejectResult(error);
+  cleanupRunStream(runToken);
+}
+
+function startRunStatusPolling(runToken: string, stream: RunStream): void {
+  stream.statusPollTimer = window.setInterval(async () => {
+    if (stream.settled) {
+      cleanupRunStream(runToken);
+      return;
+    }
+    try {
+      const status = await requestJson<RunRoundStatus>(`/api/run-round-status/${encodeURIComponent(runToken)}`, {
+        timeoutMs: 8_000,
+      });
+      stream.statusFailureCount = 0;
+      if (!status.completed) {
+        return;
+      }
+      if (status.error) {
+        settleRunStreamWithError(runToken, stream, new Error(status.error));
+        return;
+      }
+      if (status.result) {
+        settleRunStreamWithResult(runToken, stream, status.result);
+        return;
+      }
+      settleRunStreamWithError(runToken, stream, new Error(`Run ended without a result. Status: ${status.status}`));
+    } catch (error) {
+      stream.statusFailureCount += 1;
+      if (stream.statusFailureCount >= 12 && stream.eventSource.readyState === EventSource.CLOSED) {
+        settleRunStreamWithError(
+          runToken,
+          stream,
+          error instanceof Error ? error : new Error("Progress channel disconnected and status polling failed."),
+        );
+      }
+    }
+  }, 5_000);
 }
 
 function ensureRunStream(runToken: string): RunStream {
@@ -381,6 +441,7 @@ function ensureRunStream(runToken: string): RunStream {
     resolveResult,
     rejectResult,
     settled: false,
+    statusFailureCount: 0,
   };
 
   eventSource.addEventListener("progress", (event) => {
@@ -390,24 +451,14 @@ function ensureRunStream(runToken: string): RunStream {
   });
 
   eventSource.addEventListener("result", (event) => {
-    if (stream.settled) {
-      return;
-    }
-    stream.settled = true;
     const message = event as MessageEvent;
-    stream.resolveResult(JSON.parse(message.data) as RoundResult);
-    cleanupRunStream(runToken);
+    settleRunStreamWithResult(runToken, stream, JSON.parse(message.data) as RoundResult);
   });
 
   eventSource.addEventListener("run-error", (event) => {
-    if (stream.settled) {
-      return;
-    }
-    stream.settled = true;
     const message = event as MessageEvent;
     const payload = JSON.parse(message.data) as { message?: string };
-    stream.rejectResult(new Error(payload.message || "Run round failed."));
-    cleanupRunStream(runToken);
+    settleRunStreamWithError(runToken, stream, new Error(payload.message || "Run round failed."));
   });
 
   eventSource.onerror = () => {
@@ -417,12 +468,11 @@ function ensureRunStream(runToken: string): RunStream {
     if (eventSource.readyState !== EventSource.CLOSED) {
       return;
     }
-    stream.settled = true;
-    stream.rejectResult(new Error("Progress channel disconnected."));
-    cleanupRunStream(runToken);
+    settleRunStreamWithError(runToken, stream, new Error("Progress channel disconnected."));
   };
 
   runStreams.set(runToken, stream);
+  startRunStatusPolling(runToken, stream);
   return stream;
 }
 
@@ -560,6 +610,10 @@ export const webService: AppService = {
       body: JSON.stringify({ sourcePath, modelConfig }),
     });
     return runId;
+  },
+
+  async getRunRoundStatus(runToken: string): Promise<RunRoundStatus> {
+    return requestJson<RunRoundStatus>(`/api/run-round-status/${encodeURIComponent(runToken)}`);
   },
 
   async cancelRunRound(runToken: string): Promise<void> {

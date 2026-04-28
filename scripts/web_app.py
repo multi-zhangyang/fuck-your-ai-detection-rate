@@ -59,6 +59,7 @@ SSE_KEEPALIVE_INTERVAL_SECONDS = 15
 @dataclass
 class ProgressState:
     source_path: str
+    status: str = "running"
     completed: bool = False
     error: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -210,6 +211,23 @@ def release_active_run(run_id: str) -> None:
             ACTIVE_RUNS_BY_SOURCE.pop(state.source_path, None)
 
 
+def serialize_run_state(run_id: str, state: ProgressState) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "runId": run_id,
+        "sourcePath": state.source_path,
+        "status": state.status,
+        "completed": state.completed,
+        "cancelRequested": state.cancel_requested,
+        "eventCount": len(state.events),
+        "lastEvent": state.events[-1] if state.events else None,
+        "result": state.result,
+        "error": state.error,
+        "createdAt": datetime.fromtimestamp(state.created_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+        "updatedAt": datetime.fromtimestamp(state.updated_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
 def append_progress_event(run_id: str, event: dict[str, Any]) -> None:
     state = RUN_STATES.get(run_id)
     if not state:
@@ -227,6 +245,10 @@ def finalize_progress(run_id: str, *, result: dict[str, Any] | None = None, erro
     with state.condition:
         state.result = result
         state.error = error
+        if error:
+            state.status = "canceled" if state.cancel_requested or "interrupted" in error.lower() else "failed"
+        else:
+            state.status = "completed"
         state.completed = True
         state.updated_at = time.time()
         state.condition.notify_all()
@@ -284,17 +306,7 @@ def build_environment_diagnostics() -> dict[str, Any]:
         for run_id, state in RUN_STATES.items():
             if state.completed:
                 continue
-            active_runs.append(
-                {
-                    "runId": run_id,
-                    "sourcePath": state.source_path,
-                    "cancelRequested": state.cancel_requested,
-                    "eventCount": len(state.events),
-                    "lastEvent": state.events[-1] if state.events else None,
-                    "createdAt": datetime.fromtimestamp(state.created_at, timezone.utc).isoformat().replace("+00:00", "Z"),
-                    "updatedAt": datetime.fromtimestamp(state.updated_at, timezone.utc).isoformat().replace("+00:00", "Z"),
-                }
-            )
+            active_runs.append(serialize_run_state(run_id, state))
     path_summaries = [
         summarize_workspace_path(ROOT_DIR, label="项目根目录", kind="workspace"),
         summarize_workspace_path(ORIGIN_DIR, label="源文档目录", kind="origin"),
@@ -764,11 +776,23 @@ def post_cancel_run_round(run_id: str) -> tuple[Response, int] | Response:
     if not state:
         return error_response("Unknown run id.", 404)
     with state.condition:
+        if state.completed:
+            return jsonify({"ok": True, "runId": run_id, "completed": True, "status": state.status})
         state.cancel_requested = True
+        state.status = "canceling"
         state.updated_at = time.time()
         state.condition.notify_all()
     append_progress_event(run_id, {"phase": "cancel-requested", "round": 0})
-    return jsonify({"ok": True, "runId": run_id})
+    return jsonify({"ok": True, "runId": run_id, "completed": False, "status": "canceling"})
+
+
+@app.route("/api/run-round-status/<run_id>", methods=["GET"])
+def get_run_round_status(run_id: str) -> tuple[Response, int] | Response:
+    state = RUN_STATES.get(run_id)
+    if not state:
+        return error_response("Unknown run id.", 404)
+    touch_run_state(run_id)
+    return jsonify(serialize_run_state(run_id, state))
 
 
 @app.route("/api/round-progress", methods=["DELETE"])
@@ -781,6 +805,13 @@ def delete_round_progress_route() -> tuple[Response, int] | Response:
         round_number = int(payload.get("roundNumber", 0) or 0)
         if not source_path or round_number <= 0:
             raise ValueError("sourcePath and roundNumber are required.")
+        active_run = get_active_run_for_source(source_path)
+        if active_run is not None:
+            active_run_id, active_state = active_run
+            return error_response(
+                f"Current document has an active {active_state.status} run ({active_run_id}); cancel or wait before resetting round progress.",
+                409,
+            )
         return jsonify(reset_round_progress(source_path, prompt_profile, round_number, prompt_sequence=prompt_sequence))
     except Exception as exc:
         return error_response(str(exc))

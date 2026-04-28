@@ -57,7 +57,41 @@ class WebRunStateRegressionTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(state.cancel_requested)
+        self.assertEqual(state.status, "canceling")
         self.assertTrue(any(event.get("phase") == "cancel-requested" for event in state.events))
+
+    def test_run_status_reports_lifecycle(self) -> None:
+        run_id, state = web_app.register_run(str(self.sample_path))
+
+        initial = self.client.get(f"/api/run-round-status/{run_id}")
+        self.assertEqual(initial.status_code, 200)
+        initial_payload = initial.get_json()
+        self.assertEqual(initial_payload["status"], "running")
+        self.assertFalse(initial_payload["completed"])
+
+        self.client.post(f"/api/run-round/{run_id}/cancel")
+        canceling = self.client.get(f"/api/run-round-status/{run_id}").get_json()
+        self.assertEqual(canceling["status"], "canceling")
+        self.assertTrue(canceling["cancelRequested"])
+
+        web_app.finalize_progress(run_id, error="Run interrupted by user.")
+        completed = self.client.get(f"/api/run-round-status/{run_id}").get_json()
+        self.assertEqual(completed["status"], "canceled")
+        self.assertTrue(completed["completed"])
+        self.assertEqual(completed["error"], "Run interrupted by user.")
+
+    def test_cancel_completed_run_is_idempotent(self) -> None:
+        run_id, state = web_app.register_run(str(self.sample_path))
+        web_app.finalize_progress(run_id, result={"ok": True})
+
+        response = self.client.post(f"/api/run-round/{run_id}/cancel")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["completed"])
+        self.assertEqual(payload["status"], "completed")
+        self.assertFalse(state.cancel_requested)
+        self.assertFalse(state.events)
 
     def test_cancel_unknown_run_returns_404(self) -> None:
         response = self.client.post("/api/run-round/not-a-real-run/cancel")
@@ -87,6 +121,17 @@ class WebRunStateRegressionTest(unittest.TestCase):
 
         self.assertNotIn(run_id, web_app.RUN_STATES)
         self.assertFalse(web_app.ACTIVE_RUNS_BY_SOURCE)
+
+    def test_reset_round_progress_blocks_active_run(self) -> None:
+        web_app.register_run(str(self.sample_path))
+
+        response = self.client.delete(
+            "/api/round-progress",
+            json={"sourcePath": str(self.sample_path), "promptProfile": "cn_prewrite", "roundNumber": 1},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("active", response.get_data(as_text=True))
 
     def test_app_service_run_round_accepts_cancel_check(self) -> None:
         signature = inspect.signature(web_app.run_round_for_app)

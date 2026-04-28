@@ -98,9 +98,13 @@ export type EnvironmentDiagnostics = {
   activeRuns: Array<{
     runId: string;
     sourcePath: string;
+    status?: RunRoundStatus["status"];
+    completed?: boolean;
     cancelRequested: boolean;
     eventCount: number;
     lastEvent?: RoundProgress | null;
+    result?: RoundResult | null;
+    error?: string | null;
     createdAt: string;
     updatedAt: string;
   }>;
@@ -239,6 +243,21 @@ export type CustomReviewDecision = {
   attempt?: number;
   candidate?: number;
   error?: string;
+};
+
+export type RunRoundStatus = {
+  ok: boolean;
+  runId: string;
+  sourcePath: string;
+  status: "running" | "canceling" | "completed" | "failed" | "canceled" | string;
+  completed: boolean;
+  cancelRequested: boolean;
+  eventCount: number;
+  lastEvent?: RoundProgress | null;
+  result?: RoundResult | null;
+  error?: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ReviewDecision = "rewrite" | "source" | "rewrite_confirmed" | "source_confirmed" | CustomReviewDecision;

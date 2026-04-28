@@ -10,6 +10,8 @@
 
 - GitHub Actions CI：在 push、Pull Request 和手动触发时运行完整回归，覆盖 Python 编译、开源审计、前端文本检查和前端构建。
 - 贡献指南补充提交前检查、CI 行为和提交信息建议。
+- 任务状态机兜底：新增运行状态查询接口，前端对 SSE 进度流增加轮询兜底，避免进度通道漏掉结束事件后页面长期卡在运行中。
+- 后端运行生命周期显式区分 `running`、`canceling`、`completed`、`failed`、`canceled`，并阻止运行中清理当前轮断点。
 
 ## 0.1.0 - Initial public preview
 

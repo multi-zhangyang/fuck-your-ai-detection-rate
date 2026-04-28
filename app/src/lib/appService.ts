@@ -25,6 +25,7 @@ import type {
   ReviewDecision,
   ReviewDecisionsResult,
   RerunChunkResult,
+  RunRoundStatus,
   RoundResult,
   TestConnectionResult,
 } from "../types/app";
@@ -53,6 +54,7 @@ export interface AppService {
   scanHistoryOrphans(protectedPaths?: string[]): Promise<HistoryOrphanScanResult>;
   deleteHistoryOrphans(protectedPaths?: string[]): Promise<HistoryOrphanDeleteResult>;
   startRunRound(sourcePath: string, modelConfig: ModelConfig): Promise<string | null>;
+  getRunRoundStatus(runToken: string): Promise<RunRoundStatus>;
   cancelRunRound(runToken: string): Promise<void>;
   resetRoundProgress(sourcePath: string, promptProfile: ModelConfig["promptProfile"], roundNumber: number, promptSequence?: ModelConfig["promptSequence"]): Promise<void>;
   awaitRunRound(sourcePath: string, modelConfig: ModelConfig, runToken?: string | null): Promise<RoundResult>;
