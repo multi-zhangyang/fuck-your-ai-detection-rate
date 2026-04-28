@@ -81,6 +81,7 @@ def build_commands(*, skip_frontend_build: bool, include_web_health: bool, stric
         {"name": "DOCX export regression", "command": [sys.executable, "scripts/docx_export_regression.py", "--rebuild-sample"]},
         {"name": "Python compile", "command": [sys.executable, "-m", "py_compile", *_all_python_files()]},
         {"name": "open-source audit regression", "command": [sys.executable, "scripts/open_source_audit_regression.py"]},
+        {"name": "pre-release check regression", "command": [sys.executable, "scripts/pre_release_check_regression.py"]},
         {"name": "open-source audit", "command": [sys.executable, "scripts/open_source_audit.py"]},
         {"name": "frontend text check", "command": ["npm", "run", "check:text"], "cwd": ROOT_DIR / "app"},
     ]
