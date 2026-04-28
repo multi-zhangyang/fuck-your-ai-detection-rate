@@ -914,6 +914,33 @@ function buildRoundResultFromRerunResult(result: RerunChunkResult, current: Roun
   };
 }
 
+type BatchRerunFailure = {
+  chunkId: string;
+  error: string;
+};
+
+function formatBatchRerunFailures(failures: BatchRerunFailure[], limit = 3): string {
+  if (!failures.length) {
+    return "";
+  }
+  const preview = failures
+    .slice(0, limit)
+    .map((failure) => `${failure.chunkId}：${failure.error}`)
+    .join("；");
+  const more = failures.length > limit ? `；另有 ${failures.length - limit} 个失败` : "";
+  return `${preview}${more}`;
+}
+
+function formatBatchRerunSummary(actionLabel: string, successCount: number, totalCount: number, failures: BatchRerunFailure[], suffix = ""): string {
+  if (!failures.length) {
+    return `已${actionLabel} ${successCount}/${totalCount} 个块。${suffix}`;
+  }
+  if (successCount > 0) {
+    return `已${actionLabel} ${successCount}/${totalCount} 个块；失败 ${failures.length} 个：${formatBatchRerunFailures(failures)}。${suffix}`;
+  }
+  return `${actionLabel}全部失败：${formatBatchRerunFailures(failures)}。`;
+}
+
 function isPromptProfile(value: unknown): value is ModelConfig["promptProfile"] {
   return value === "cn" || value === "cn_prewrite" || value === "cn_custom";
 }
@@ -2880,25 +2907,42 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       let latestCompare = activeCompareData;
       let currentOutputPath = outputPath;
       let currentRoundResult = roundResult;
+      let successCount = 0;
+      const failures: BatchRerunFailure[] = [];
       for (let index = 0; index < riskyChunkIds.length; index += 1) {
         const chunkId = riskyChunkIds[index];
         setRuntimeStep(`正在重跑风险块 ${index + 1}/${riskyChunkIds.length}：${chunkId}`);
-        const result = await service.rerunChunk(currentOutputPath, chunkId, modelConfig);
-        currentOutputPath = result.outputPath;
-        latestCompare = result.compare;
-        currentRoundResult = buildRoundResultFromRerunResult(result, currentRoundResult);
-        setRoundResult(currentRoundResult);
-        setCompareData(result.compare);
-        setLastExportResult(null);
-        liveCompareRef.current = result.compare;
-        setReviewDecisions((current) => ({ ...buildDefaultReviewDecisions(result.compare), ...current, [chunkId]: "rewrite" }));
+        try {
+          const result = await service.rerunChunk(currentOutputPath, chunkId, modelConfig);
+          currentOutputPath = result.outputPath;
+          latestCompare = result.compare;
+          currentRoundResult = buildRoundResultFromRerunResult(result, currentRoundResult);
+          successCount += 1;
+          setRoundResult(currentRoundResult);
+          setCompareData(result.compare);
+          setLastExportResult(null);
+          liveCompareRef.current = result.compare;
+          setReviewDecisions((current) => ({ ...buildDefaultReviewDecisions(result.compare), ...current, [chunkId]: "rewrite" }));
+        } catch (appError) {
+          failures.push({ chunkId, error: stringifyError(appError) });
+          setRuntimeStep(`块 ${chunkId} 重跑失败，继续处理剩余块。`);
+        }
       }
-      if (latestCompare) {
-        const outputPreview = await service.readOutput(currentOutputPath, PREVIEW_MAX_CHARS);
-        setPreview(outputPreview);
+      if (latestCompare && successCount > 0) {
+        try {
+          const outputPreview = await service.readOutput(currentOutputPath, PREVIEW_MAX_CHARS);
+          setPreview(outputPreview);
+        } catch (appError) {
+          failures.push({ chunkId: "预览刷新", error: stringifyError(appError) });
+        }
       }
-      setNotice(`已重跑 ${riskyChunkIds.length} 个需处理块。`);
-      setRuntimeStep("批量局部重跑完成");
+      if (successCount === 0 && failures.length) {
+        setError(formatBatchRerunSummary("重跑需处理块", successCount, riskyChunkIds.length, failures));
+        setRuntimeStep("批量局部重跑全部失败");
+        return;
+      }
+      setNotice(formatBatchRerunSummary("重跑需处理块", successCount, riskyChunkIds.length, failures));
+      setRuntimeStep(failures.length ? "批量局部重跑部分完成" : "批量局部重跑完成");
     } catch (appError) {
       setError(stringifyError(appError));
       setRuntimeStep("批量局部重跑失败");
@@ -2910,7 +2954,14 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   async function handleRerunDetectionMatchedChunks() {
     const outputPath = roundResult?.outputPath ?? activeCompareData?.outputPath;
     const riskyMatchGroups = groupRiskyDetectionMatches(detectionMatches);
-    if (!outputPath || riskyMatchGroups.length === 0) {
+    const riskyMatchTargets = riskyMatchGroups
+      .map((matchGroup) => ({
+        matchGroup,
+        chunkId: matchGroup[0]?.chunkId ?? "",
+        maxRisk: Math.max(...matchGroup.map((match) => match.segment.probability)),
+      }))
+      .filter((target) => target.chunkId);
+    if (!outputPath || riskyMatchTargets.length === 0) {
       setNotice("外部报告还没有强命中可自动重跑的 Diff 块；疑似命中和仅参考只用于定位，避免误改。");
       return;
     }
@@ -2919,28 +2970,42 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       let currentOutputPath = outputPath;
       let latestCompare = activeCompareData;
       let currentRoundResult = roundResult;
-      for (let index = 0; index < riskyMatchGroups.length; index += 1) {
-        const matchGroup = riskyMatchGroups[index];
-        const chunkId = matchGroup[0]?.chunkId;
-        if (!chunkId) continue;
-        const maxRisk = Math.max(...matchGroup.map((match) => match.segment.probability));
-        setRuntimeStep(`正在按外部报告反馈重跑 ${index + 1}/${riskyMatchGroups.length}：${chunkId}（最高 ${maxRisk}%）。`);
-        const result = await service.rerunChunk(currentOutputPath, chunkId, modelConfig, buildDetectionRerunFeedback(chunkId, matchGroup, detectionReport));
-        currentOutputPath = result.outputPath;
-        latestCompare = result.compare;
-        currentRoundResult = buildRoundResultFromRerunResult(result, currentRoundResult);
-        setRoundResult(currentRoundResult);
-        setCompareData(result.compare);
-        setLastExportResult(null);
-        liveCompareRef.current = result.compare;
-        setReviewDecisions((current) => ({ ...buildDefaultReviewDecisions(result.compare), ...current, [chunkId]: "rewrite" }));
+      let successCount = 0;
+      const failures: BatchRerunFailure[] = [];
+      for (let index = 0; index < riskyMatchTargets.length; index += 1) {
+        const { matchGroup, chunkId, maxRisk } = riskyMatchTargets[index];
+        setRuntimeStep(`正在按外部报告反馈重跑 ${index + 1}/${riskyMatchTargets.length}：${chunkId}（最高 ${maxRisk}%）。`);
+        try {
+          const result = await service.rerunChunk(currentOutputPath, chunkId, modelConfig, buildDetectionRerunFeedback(chunkId, matchGroup, detectionReport));
+          currentOutputPath = result.outputPath;
+          latestCompare = result.compare;
+          currentRoundResult = buildRoundResultFromRerunResult(result, currentRoundResult);
+          successCount += 1;
+          setRoundResult(currentRoundResult);
+          setCompareData(result.compare);
+          setLastExportResult(null);
+          liveCompareRef.current = result.compare;
+          setReviewDecisions((current) => ({ ...buildDefaultReviewDecisions(result.compare), ...current, [chunkId]: "rewrite" }));
+        } catch (appError) {
+          failures.push({ chunkId, error: stringifyError(appError) });
+          setRuntimeStep(`报告命中块 ${chunkId} 重跑失败，继续处理剩余块。`);
+        }
       }
-      if (latestCompare) {
-        const outputPreview = await service.readOutput(currentOutputPath, PREVIEW_MAX_CHARS);
-        setPreview(outputPreview);
+      if (latestCompare && successCount > 0) {
+        try {
+          const outputPreview = await service.readOutput(currentOutputPath, PREVIEW_MAX_CHARS);
+          setPreview(outputPreview);
+        } catch (appError) {
+          failures.push({ chunkId: "预览刷新", error: stringifyError(appError) });
+        }
       }
-      setNotice(`已按外部报告强命中反馈重跑 ${riskyMatchGroups.length} 个块。建议重新导出 Word 后再上传新报告复查。`);
-      setRuntimeStep("外部报告命中块重跑完成");
+      if (successCount === 0 && failures.length) {
+        setError(formatBatchRerunSummary("按外部报告反馈重跑", successCount, riskyMatchTargets.length, failures));
+        setRuntimeStep("外部报告命中块重跑全部失败");
+        return;
+      }
+      setNotice(formatBatchRerunSummary("按外部报告反馈重跑", successCount, riskyMatchTargets.length, failures, "建议重新导出 Word 后再上传新报告复查。"));
+      setRuntimeStep(failures.length ? "外部报告命中块重跑部分完成" : "外部报告命中块重跑完成");
     } catch (appError) {
       setError(stringifyError(appError));
       setRuntimeStep("外部报告命中块重跑失败");
