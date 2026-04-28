@@ -237,6 +237,7 @@ Web 端模型设置里现在可以直接调：
 
 - 没有提交 `finish/`、`origin/`、`logs/` 中的运行产物。
 - 没有提交个人论文、检测报告、截图、API Key、私有模型地址或本地绝对路径。
+- 一键总闸可运行 `python scripts/pre_release_check.py`，它会串起工作区状态、已跟踪产物、开源审计和完整回归。
 - 运行 `python scripts/open_source_audit.py`；它会拦截疑似 API Key、私有 Base URL、模型厂商 endpoint、个人路径、旧项目名和乱码文本。
 - README、启动脚本、回归命令和实际代码保持一致。
 - `CHANGELOG.md` 已记录本次发布的主要能力、移除项和已知边界。

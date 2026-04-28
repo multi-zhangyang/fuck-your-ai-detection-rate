@@ -42,6 +42,18 @@ python scripts/run_regressions.py --skip-frontend-build
 python scripts/run_regressions.py
 ```
 
+发版前总闸：
+
+```powershell
+python scripts/pre_release_check.py
+```
+
+如果正在开发这个检查脚本本身、工作区暂时未提交，可以临时使用：
+
+```powershell
+python scripts/pre_release_check.py --allow-dirty
+```
+
 GitHub Actions 会在推送 `main`、创建 Pull Request 或手动触发时运行完整回归。CI 使用仓库内代码和空样例环境，不依赖本地论文、检测报告、截图或运行产物。
 
 单项回归：
