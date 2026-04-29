@@ -34,7 +34,7 @@ def main() -> int:
 
     def failing_transform(chunk_text: str, _prompt: str, _round_number: int, chunk_id: str) -> str:
         first_calls.append(chunk_id)
-        if len(first_calls) == 3:
+        if len(first_calls) == 2:
             raise RuntimeError("simulated provider timeout")
         return chunk_text
 
@@ -60,8 +60,8 @@ def main() -> int:
     checkpoint_path = get_round_checkpoint_path(output_path)
     checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     completed_before = set(checkpoint_payload.get("chunk_outputs", {}))
-    if len(completed_before) != 2:
-        raise AssertionError(f"expected 2 checkpointed chunks, got {len(completed_before)}")
+    if len(completed_before) != 1:
+        raise AssertionError(f"expected 1 checkpointed chunk, got {len(completed_before)}")
 
     status_context = build_round_context(
         source_path,
@@ -80,13 +80,44 @@ def main() -> int:
     )
     if not progress_status.get("checkpointExists") or not progress_status.get("canResume"):
         raise AssertionError("checkpoint status must expose resumable progress")
-    if progress_status.get("completedChunks") != 2:
-        raise AssertionError(f"expected 2 completed chunks in progress status, got {progress_status.get('completedChunks')}")
-    if int(progress_status.get("totalChunks", 0) or 0) <= 2:
+    if progress_status.get("completedChunks") != 1:
+        raise AssertionError(f"expected 1 completed chunk in progress status, got {progress_status.get('completedChunks')}")
+    if int(progress_status.get("totalChunks", 0) or 0) <= 1:
         raise AssertionError("progress status must expose total chunk count")
     if "simulated provider timeout" not in str(progress_status.get("lastError", "")):
         raise AssertionError("progress status must preserve the last checkpoint error")
-    status_checkpoint_path.unlink(missing_ok=True)
+    if progress_status.get("resumeStage") != "continue_chunks":
+        raise AssertionError(f"expected continue_chunks resume stage, got {progress_status.get('resumeStage')}")
+    if int(progress_status.get("nextChunkIndex", 0) or 0) != 2:
+        raise AssertionError(f"expected resume to point at chunk 2, got {progress_status.get('nextChunkIndex')}")
+    if not str(progress_status.get("nextChunkId", "")).strip():
+        raise AssertionError("progress status must expose the next chunk id")
+    if int(progress_status.get("remainingChunks", 0) or 0) <= 0:
+        raise AssertionError("progress status must expose remaining chunks")
+    if "不会从第一块重跑" not in str(progress_status.get("resumeExplanation", "")):
+        raise AssertionError("progress status must explain non-destructive checkpoint resume")
+
+    all_done_payload = dict(checkpoint_payload)
+    chunk_ids = all_done_payload.get("chunk_ids", [])
+    if not isinstance(chunk_ids, list) or not chunk_ids:
+        raise AssertionError("checkpoint payload must expose chunk ids")
+    all_done_payload["chunk_outputs"] = {str(chunk_id): str(chunk_id) for chunk_id in chunk_ids}
+    all_done_payload["completed_chunk_count"] = len(chunk_ids)
+    status_checkpoint_path.write_text(json.dumps(all_done_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    finalizing_status = get_round_progress_status(
+        str(source_path),
+        "cn_custom",
+        round_number=1,
+        prompt_sequence=["classical"],
+    )
+    if finalizing_status.get("resumeStage") != "finalize_output":
+        raise AssertionError(f"expected finalize_output resume stage, got {finalizing_status.get('resumeStage')}")
+    if "不会重跑 100%" not in str(finalizing_status.get("resumeExplanation", "")):
+        raise AssertionError("100% checkpoint status must explain that only finalization is pending")
+    try:
+        status_checkpoint_path.unlink(missing_ok=True)
+    except PermissionError:
+        pass
 
     resumed_calls: list[str] = []
 
@@ -110,7 +141,9 @@ def main() -> int:
     if any(chunk_id in completed_before for chunk_id in resumed_calls):
         raise AssertionError("resume must not call transform for already checkpointed chunks")
     if checkpoint_path.exists():
-        raise AssertionError("checkpoint must be removed after successful completion")
+        completed_marker = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        if completed_marker.get("completed") is not True:
+            raise AssertionError("checkpoint must be removed or marked completed after successful completion")
     compare = json.loads(Path(result["compare_path"]).read_text(encoding="utf-8"))
     if compare.get("chunkCount") != len(compare.get("chunks", [])):
         raise AssertionError("completed compare payload must include every output segment")

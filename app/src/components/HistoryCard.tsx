@@ -310,7 +310,7 @@ function OrphanGovernancePanel({
   const stats = scan?.orphanStats ?? getSafeArtifactStats();
   const previewFiles = scan?.orphanFiles.slice(0, 6) ?? [];
   return (
-    <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="fy-section p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -461,9 +461,9 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
   const stats = impact.fileStats;
   const candidateStats = impact.candidateStats;
   const previewFiles = impact.files.filter((file) => file.exists).slice(0, 8);
-  const sourceTone = impact.willDeleteSource ? "border-red-200 bg-red-50 text-red-800" : "border-emerald-200 bg-emerald-50 text-emerald-800";
+  const sourceTone = impact.willDeleteSource ? "fy-tone-danger" : "fy-tone-success";
   return (
-    <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="fy-section p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -488,7 +488,7 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
         <StatPill label="候选文件" value={`${candidateStats.existing}`} />
       </div>
 
-      <div className={`mt-4 rounded-2xl border px-3 py-2 text-xs leading-5 ${sourceTone}`}>
+      <div className={`fy-callout mt-4 ${sourceTone}`}>
         <span className="font-black">源文档策略：</span>
         {impact.willDeleteSource
           ? "会删除项目 origin 目录下的源文档副本；不会删除浏览器下载目录或外部路径文件。"
@@ -499,7 +499,7 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
       </div>
 
       {impact.affectedRounds.length ? (
-        <div className="mt-3 rounded-2xl border border-violet-100 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-800">
+        <div className="fy-callout mt-3 border-violet-100 bg-violet-50 text-violet-800">
           影响轮次：{impact.affectedRounds.join(", ")}
         </div>
       ) : null}
@@ -518,13 +518,13 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
           {impact.hasMoreFiles ? <div className="text-xs font-semibold text-slate-500">仅展示前 80 个候选文件中的一部分，执行时按同一安全规则处理。</div> : null}
         </div>
       ) : (
-        <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
+          <div className="fy-callout fy-tone-success mt-4 p-3 text-sm font-semibold">
           此操作不会删除项目文件，只会改变历史索引或没有匹配到文件。
         </div>
       )}
 
       {impact.warnings.length ? (
-        <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
+        <div className="fy-callout fy-tone-warning mt-3">
           {impact.warnings.map((warning) => <div key={warning}>提醒：{warning}</div>)}
         </div>
       ) : null}
@@ -552,7 +552,7 @@ function HistoryDeleteAction({
   onDelete: (docId: string, options: DeleteHistoryOptions) => void;
 }) {
   return (
-    <div className={`rounded-2xl border p-3 ${destructive ? "border-red-200 bg-red-50/70" : "border-slate-200 bg-white"}`}>
+    <div className={`fy-callout p-3 ${destructive ? "fy-tone-danger" : "fy-tone-neutral"}`}>
       <div className={`text-sm font-black ${destructive ? "text-red-800" : "text-slate-900"}`}>{title}</div>
       <div className="mt-1 min-h-10 text-xs leading-5 text-slate-500">{getDeleteModeDescription(options.mode, options.fromRound)}</div>
       <div className="mt-3 grid grid-cols-2 gap-2">

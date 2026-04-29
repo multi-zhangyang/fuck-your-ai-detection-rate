@@ -54,8 +54,11 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 ORIGIN_DIR = ROOT_DIR / "origin"
 EXPORT_DIR = ROOT_DIR / "finish" / "web_exports"
 DETECTION_REPORT_DIR = ROOT_DIR / "finish" / "detection_reports"
+TASK_STATE_DIR = ROOT_DIR / "finish" / "intermediate" / "task_states"
 RUN_STATE_TTL_SECONDS = 1800
 SSE_KEEPALIVE_INTERVAL_SECONDS = 15
+TASK_STATE_RETENTION_HOURS = 168
+TASK_STATE_SNAPSHOT_PREFIXES = ("run_round_", "batch_rerun_")
 
 
 @dataclass
@@ -72,8 +75,32 @@ class ProgressState:
     condition: threading.Condition = field(default_factory=threading.Condition)
 
 
+@dataclass
+class BatchRerunState:
+    output_path: str
+    total_count: int
+    status: str = "running"
+    completed: bool = False
+    error: str | None = None
+    events: list[dict[str, Any]] = field(default_factory=list)
+    result: dict[str, Any] | None = None
+    cancel_requested: bool = False
+    completed_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    current_index: int = 0
+    current_chunk_id: str = ""
+    success_chunk_ids: list[str] = field(default_factory=list)
+    failures: list[dict[str, Any]] = field(default_factory=list)
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    condition: threading.Condition = field(default_factory=threading.Condition)
+
+
 RUN_STATES: dict[str, ProgressState] = {}
 ACTIVE_RUNS_BY_SOURCE: dict[str, str] = {}
+BATCH_RERUN_STATES: dict[str, BatchRerunState] = {}
+ACTIVE_BATCH_RERUNS_BY_OUTPUT: dict[str, str] = {}
 RUN_REGISTRY_LOCK = threading.Lock()
 app = Flask(__name__)
 
@@ -82,10 +109,13 @@ def ensure_workspace_dirs() -> None:
     ORIGIN_DIR.mkdir(parents=True, exist_ok=True)
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     DETECTION_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    TASK_STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def error_response(message: str, status: int = 400) -> tuple[Response, int]:
-    return jsonify({"message": message}), status
+def error_response(message: str, status: int = 400, **extra: Any) -> tuple[Response, int]:
+    payload: dict[str, Any] = {"message": message}
+    payload.update({key: value for key, value in extra.items() if value is not None})
+    return jsonify(payload), status
 
 
 def make_ascii_header_value(value: object) -> str:
@@ -93,6 +123,13 @@ def make_ascii_header_value(value: object) -> str:
     if not text:
         return ""
     return quote(text, safe="")
+
+
+def make_ascii_header_json(value: object) -> str:
+    try:
+        return make_ascii_header_value(json.dumps(value or [], ensure_ascii=False, separators=(",", ":")))
+    except Exception:
+        return ""
 
 
 def sanitize_filename(filename: str) -> str:
@@ -154,6 +191,192 @@ def prune_run_states() -> None:
         ]
         for source_path in inactive_sources:
             ACTIVE_RUNS_BY_SOURCE.pop(source_path, None)
+        stale_batch_ids = [
+            run_id
+            for run_id, state in BATCH_RERUN_STATES.items()
+            if state.completed and state.updated_at < cutoff
+        ]
+        for run_id in stale_batch_ids:
+            BATCH_RERUN_STATES.pop(run_id, None)
+        inactive_outputs = [
+            output_path
+            for output_path, run_id in ACTIVE_BATCH_RERUNS_BY_OUTPUT.items()
+            if run_id not in BATCH_RERUN_STATES
+        ]
+        for output_path in inactive_outputs:
+            ACTIVE_BATCH_RERUNS_BY_OUTPUT.pop(output_path, None)
+
+
+def normalize_output_path(output_path: str) -> str:
+    candidate = Path(output_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = (ROOT_DIR / candidate).resolve()
+    if not candidate.exists():
+        raise ValueError(f"Output file does not exist: {candidate}")
+    return str(candidate)
+
+
+def batch_rerun_state_path(run_id: str) -> Path:
+    safe_run_id = "".join(char for char in run_id if char.isalnum() or char in {"-", "_"}).strip()
+    if not safe_run_id:
+        safe_run_id = "unknown"
+    return TASK_STATE_DIR / f"batch_rerun_{safe_run_id}.json"
+
+
+def run_round_state_path(run_id: str) -> Path:
+    safe_run_id = "".join(char for char in run_id if char.isalnum() or char in {"-", "_"}).strip()
+    if not safe_run_id:
+        safe_run_id = "unknown"
+    return TASK_STATE_DIR / f"run_round_{safe_run_id}.json"
+
+
+def iter_task_state_snapshot_paths() -> list[Path]:
+    ensure_workspace_dirs()
+    paths: dict[str, Path] = {}
+    try:
+        for prefix in TASK_STATE_SNAPSHOT_PREFIXES:
+            for path in TASK_STATE_DIR.glob(f"{prefix}*.json"):
+                paths[str(path.resolve())] = path
+    except OSError:
+        return []
+    return sorted(paths.values(), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+
+
+def task_state_snapshot_kind(path: Path) -> str:
+    if path.name.startswith("run_round_"):
+        return "runRound"
+    if path.name.startswith("batch_rerun_"):
+        return "batchRerun"
+    return "unknown"
+
+
+def read_task_state_snapshot(path: Path) -> dict[str, Any] | None:
+    try:
+        if path.parent.resolve() != TASK_STATE_DIR.resolve():
+            return None
+        if path.suffix.lower() != ".json" or task_state_snapshot_kind(path) == "unknown":
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def get_active_task_ids() -> set[str]:
+    with RUN_REGISTRY_LOCK:
+        return {
+            *[run_id for run_id, state in RUN_STATES.items() if not state.completed],
+            *[run_id for run_id, state in BATCH_RERUN_STATES.items() if not state.completed],
+        }
+
+
+def summarize_task_state_store(retention_hours: int = TASK_STATE_RETENTION_HOURS) -> dict[str, Any]:
+    now = time.time()
+    cutoff = now - max(1, retention_hours) * 3600
+    active_ids = get_active_task_ids()
+    file_count = 0
+    size_bytes = 0
+    run_round_count = 0
+    batch_rerun_count = 0
+    active_snapshot_count = 0
+    stale_count = 0
+    newest_mtime = 0.0
+    oldest_mtime = 0.0
+    for path in iter_task_state_snapshot_paths():
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        payload = read_task_state_snapshot(path) or {}
+        state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+        run_id = str(state.get("runId", "")).strip() if isinstance(state, dict) else ""
+        kind = task_state_snapshot_kind(path)
+        file_count += 1
+        size_bytes += stat.st_size
+        if kind == "runRound":
+            run_round_count += 1
+        elif kind == "batchRerun":
+            batch_rerun_count += 1
+        if run_id in active_ids:
+            active_snapshot_count += 1
+        elif stat.st_mtime < cutoff:
+            stale_count += 1
+        newest_mtime = max(newest_mtime, stat.st_mtime)
+        oldest_mtime = stat.st_mtime if oldest_mtime <= 0 else min(oldest_mtime, stat.st_mtime)
+    return {
+        "path": str(TASK_STATE_DIR),
+        "fileCount": file_count,
+        "sizeBytes": size_bytes,
+        "runRoundCount": run_round_count,
+        "batchRerunCount": batch_rerun_count,
+        "activeSnapshotCount": active_snapshot_count,
+        "staleCount": stale_count,
+        "retentionHours": retention_hours,
+        "oldestUpdatedAt": datetime.fromtimestamp(oldest_mtime, timezone.utc).isoformat().replace("+00:00", "Z") if oldest_mtime else "",
+        "newestUpdatedAt": datetime.fromtimestamp(newest_mtime, timezone.utc).isoformat().replace("+00:00", "Z") if newest_mtime else "",
+    }
+
+
+def cleanup_task_state_snapshots(mode: str = "expired", max_age_hours: int = TASK_STATE_RETENTION_HOURS) -> dict[str, Any]:
+    normalized_mode = mode if mode in {"expired", "completed", "all"} else "expired"
+    normalized_hours = max(1, min(int(max_age_hours or TASK_STATE_RETENTION_HOURS), 24 * 365))
+    cutoff = time.time() - normalized_hours * 3600
+    active_ids = get_active_task_ids()
+    before = summarize_task_state_store(normalized_hours)
+    deleted_files: list[str] = []
+    failed_files: list[dict[str, str]] = []
+    skipped_active_count = 0
+    deleted_bytes = 0
+
+    for path in iter_task_state_snapshot_paths():
+        payload = read_task_state_snapshot(path)
+        if payload is None:
+            continue
+        state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+        run_id = str(state.get("runId", "")).strip() if isinstance(state, dict) else ""
+        if run_id in active_ids:
+            skipped_active_count += 1
+            continue
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            failed_files.append({"file": path.name, "message": str(exc)})
+            continue
+        completed = bool(state.get("completed")) if isinstance(state, dict) else False
+        should_delete = (
+            normalized_mode == "all"
+            or (normalized_mode == "completed" and completed)
+            or (normalized_mode == "expired" and stat.st_mtime < cutoff)
+        )
+        if not should_delete:
+            continue
+        try:
+            deleted_bytes += stat.st_size
+            path.unlink()
+            deleted_files.append(path.name)
+        except OSError as exc:
+            failed_files.append({"file": path.name, "message": str(exc)})
+
+    after = summarize_task_state_store(normalized_hours)
+    return {
+        "ok": not failed_files,
+        "mode": normalized_mode,
+        "maxAgeHours": normalized_hours,
+        "deletedCount": len(deleted_files),
+        "deletedBytes": deleted_bytes,
+        "deletedFiles": deleted_files,
+        "failedFiles": failed_files,
+        "skippedActiveCount": skipped_active_count,
+        "before": before,
+        "after": after,
+    }
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def register_run(source_path: str) -> tuple[str, ProgressState]:
@@ -171,7 +394,8 @@ def register_run(source_path: str) -> tuple[str, ProgressState]:
         state = ProgressState(source_path=normalized_source_path)
         RUN_STATES[run_id] = state
         ACTIVE_RUNS_BY_SOURCE[normalized_source_path] = run_id
-        return run_id, state
+    persist_run_state(run_id)
+    return run_id, state
 
 
 def get_active_run_for_source(source_path: str) -> tuple[str, ProgressState] | None:
@@ -230,6 +454,140 @@ def serialize_run_state(run_id: str, state: ProgressState) -> dict[str, Any]:
     }
 
 
+def sanitize_round_model_for_task_snapshot(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    sanitized = dict(value)
+    for key in ("apiKey", "baseUrl", "providerId", "providerName"):
+        if key in sanitized:
+            sanitized[key] = ""
+    if "model" in sanitized:
+        sanitized["model"] = "<configured>" if sanitized.get("model") else ""
+    return sanitized
+
+
+def clone_json_like(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def sanitize_run_event_for_task_snapshot(event: Any) -> Any:
+    sanitized = clone_json_like(event)
+    if isinstance(sanitized, dict) and "roundModel" in sanitized:
+        sanitized["roundModel"] = sanitize_round_model_for_task_snapshot(sanitized.get("roundModel"))
+    return sanitized
+
+
+def sanitize_run_result_for_task_snapshot(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    source = clone_json_like(result)
+    if not isinstance(source, dict):
+        return source
+    allowed_keys = {
+        "round",
+        "outputPath",
+        "manifestPath",
+        "comparePath",
+        "qualityPath",
+        "bodyMapPath",
+        "validationPath",
+        "chunkLimit",
+        "inputSegmentCount",
+        "outputSegmentCount",
+        "paragraphCount",
+        "offlineMode",
+        "promptSequence",
+        "qualitySummary",
+        "runAudit",
+    }
+    sanitized = {key: source.get(key) for key in allowed_keys if key in source}
+    if "roundModel" in source:
+        sanitized["roundModel"] = sanitize_round_model_for_task_snapshot(source.get("roundModel"))
+    return sanitized
+
+
+def serialize_run_state_for_task_snapshot(run_id: str, state: ProgressState) -> dict[str, Any]:
+    snapshot = serialize_run_state(run_id, state)
+    snapshot["lastEvent"] = sanitize_run_event_for_task_snapshot(snapshot.get("lastEvent"))
+    snapshot["result"] = sanitize_run_result_for_task_snapshot(snapshot.get("result"))
+    return snapshot
+
+
+def persist_run_state(run_id: str) -> None:
+    state = RUN_STATES.get(run_id)
+    if not state:
+        return
+    try:
+        write_json_atomic(
+            run_round_state_path(run_id),
+            {
+                "kind": "runRound",
+                "version": 1,
+                "persistedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "state": serialize_run_state_for_task_snapshot(run_id, state),
+            },
+        )
+    except OSError:
+        # Persistence is only a recovery hint; a disk snapshot failure must not break the round.
+        return
+
+
+def load_recent_run_summaries(active_run_ids: set[str], limit: int = 8) -> list[dict[str, Any]]:
+    ensure_workspace_dirs()
+    summaries: list[dict[str, Any]] = []
+    try:
+        paths = sorted(TASK_STATE_DIR.glob("run_round_*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    except OSError:
+        return summaries
+    for path in paths:
+        if len(summaries) >= limit:
+            break
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            continue
+        run_id = str(state.get("runId", "")).strip()
+        if not run_id or run_id in active_run_ids:
+            continue
+        summary = dict(state)
+        summary["restoredFromDisk"] = True
+        summary["persistedAt"] = payload.get("persistedAt")
+        if not bool(summary.get("completed")):
+            summary["completed"] = True
+            summary["status"] = "interrupted"
+            summary["cancelRequested"] = False
+            summary["error"] = summary.get("error") or "Backend restarted before this round finished. Completed chunks were kept on disk; use continue to resume from the checkpoint."
+        summaries.append(summary)
+    return summaries
+
+
+def load_persisted_run_summary(run_id: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(run_round_state_path(run_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    state = payload.get("state")
+    if not isinstance(state, dict):
+        return None
+    if str(state.get("runId", "")).strip() != run_id:
+        return None
+    summary = dict(state)
+    summary["restoredFromDisk"] = True
+    summary["persistedAt"] = payload.get("persistedAt")
+    if not bool(summary.get("completed")):
+        summary["completed"] = True
+        summary["status"] = "interrupted"
+        summary["cancelRequested"] = False
+        summary["error"] = summary.get("error") or "Backend restarted before this round finished. Completed chunks were kept on disk; use continue to resume from the checkpoint."
+    return summary
+
+
 def append_progress_event(run_id: str, event: dict[str, Any]) -> None:
     state = RUN_STATES.get(run_id)
     if not state:
@@ -238,6 +596,7 @@ def append_progress_event(run_id: str, event: dict[str, Any]) -> None:
         state.events.append(event)
         state.updated_at = time.time()
         state.condition.notify_all()
+    persist_run_state(run_id)
 
 
 def finalize_progress(run_id: str, *, result: dict[str, Any] | None = None, error: str | None = None) -> None:
@@ -254,7 +613,268 @@ def finalize_progress(run_id: str, *, result: dict[str, Any] | None = None, erro
         state.completed = True
         state.updated_at = time.time()
         state.condition.notify_all()
+    persist_run_state(run_id)
     release_active_run(run_id)
+
+
+def register_batch_rerun(output_path: str, total_count: int) -> tuple[str, BatchRerunState]:
+    prune_run_states()
+    normalized_output_path = normalize_output_path(output_path)
+    with RUN_REGISTRY_LOCK:
+        active_run_id = ACTIVE_BATCH_RERUNS_BY_OUTPUT.get(normalized_output_path)
+        if active_run_id:
+            active_state = BATCH_RERUN_STATES.get(active_run_id)
+            if active_state and not active_state.completed:
+                raise ValueError("This output already has a running batch rerun task. Please wait or cancel it first.")
+            ACTIVE_BATCH_RERUNS_BY_OUTPUT.pop(normalized_output_path, None)
+
+        run_id = uuid.uuid4().hex
+        state = BatchRerunState(output_path=normalized_output_path, total_count=total_count)
+        BATCH_RERUN_STATES[run_id] = state
+        ACTIVE_BATCH_RERUNS_BY_OUTPUT[normalized_output_path] = run_id
+        persist_batch_rerun_state(run_id)
+        return run_id, state
+
+
+def get_active_batch_rerun(output_path: str) -> tuple[str, BatchRerunState] | None:
+    prune_run_states()
+    normalized_output_path = normalize_output_path(output_path)
+    with RUN_REGISTRY_LOCK:
+        active_run_id = ACTIVE_BATCH_RERUNS_BY_OUTPUT.get(normalized_output_path)
+        if not active_run_id:
+            return None
+        active_state = BATCH_RERUN_STATES.get(active_run_id)
+        if active_state and not active_state.completed:
+            return active_run_id, active_state
+        ACTIVE_BATCH_RERUNS_BY_OUTPUT.pop(normalized_output_path, None)
+    return None
+
+
+def register_or_reuse_batch_rerun(output_path: str, total_count: int) -> tuple[str, BatchRerunState, bool]:
+    active_run = get_active_batch_rerun(output_path)
+    if active_run is not None:
+        run_id, state = active_run
+        return run_id, state, True
+    run_id, state = register_batch_rerun(output_path, total_count)
+    return run_id, state, False
+
+
+def touch_batch_rerun_state(run_id: str) -> None:
+    state = BATCH_RERUN_STATES.get(run_id)
+    if state is None:
+        return
+    state.updated_at = time.time()
+
+
+def release_active_batch_rerun(run_id: str) -> None:
+    with RUN_REGISTRY_LOCK:
+        state = BATCH_RERUN_STATES.get(run_id)
+        if not state:
+            return
+        if ACTIVE_BATCH_RERUNS_BY_OUTPUT.get(state.output_path) == run_id:
+            ACTIVE_BATCH_RERUNS_BY_OUTPUT.pop(state.output_path, None)
+
+
+def serialize_batch_rerun_state(run_id: str, state: BatchRerunState) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "runId": run_id,
+        "outputPath": state.output_path,
+        "status": state.status,
+        "completed": state.completed,
+        "cancelRequested": state.cancel_requested,
+        "totalCount": state.total_count,
+        "completedCount": state.completed_count,
+        "successCount": state.success_count,
+        "failureCount": state.failure_count,
+        "currentIndex": state.current_index,
+        "currentChunkId": state.current_chunk_id,
+        "successChunkIds": state.success_chunk_ids,
+        "failures": state.failures,
+        "eventCount": len(state.events),
+        "lastEvent": state.events[-1] if state.events else None,
+        "result": state.result,
+        "error": state.error,
+        "createdAt": datetime.fromtimestamp(state.created_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+        "updatedAt": datetime.fromtimestamp(state.updated_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def find_compare_chunk(compare_payload: Any, chunk_id: str) -> dict[str, Any] | None:
+    if not isinstance(compare_payload, dict):
+        return None
+    chunks = compare_payload.get("chunks")
+    if not isinstance(chunks, list):
+        return None
+    for chunk in chunks:
+        if isinstance(chunk, dict) and str(chunk.get("chunkId", "")) == chunk_id:
+            return chunk
+    return None
+
+
+def normalize_rejected_candidates_for_failure(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    candidates: list[dict[str, Any]] = []
+    for candidate in value[-4:]:
+        if not isinstance(candidate, dict):
+            continue
+        output_text = str(candidate.get("outputText", "") or "")
+        if not output_text.strip():
+            continue
+        candidates.append(
+            {
+                "attempt": candidate.get("attempt"),
+                "candidate": candidate.get("candidate"),
+                "outputText": output_text,
+                "outputCharCount": candidate.get("outputCharCount", len(output_text)),
+                "truncated": bool(candidate.get("truncated")),
+                "error": str(candidate.get("error", "") or ""),
+            }
+        )
+    return candidates
+
+
+def build_batch_rerun_failure(
+    chunk_id: str,
+    error: str,
+    output_path: str,
+    latest_compare: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    failure: dict[str, Any] = {"chunkId": chunk_id, "error": error}
+    compare_payload = latest_compare if isinstance(latest_compare, dict) else None
+    chunk = find_compare_chunk(compare_payload, chunk_id)
+    if chunk is None or not normalize_rejected_candidates_for_failure(chunk.get("rejectedCandidates")):
+        try:
+            disk_compare = read_round_compare(output_path)
+            disk_chunk = find_compare_chunk(disk_compare, chunk_id)
+            if disk_chunk is not None:
+                compare_payload = disk_compare
+                chunk = disk_chunk
+        except Exception:
+            compare_payload = latest_compare if isinstance(latest_compare, dict) else None
+            chunk = find_compare_chunk(compare_payload, chunk_id)
+    if chunk:
+        rejected_candidates = normalize_rejected_candidates_for_failure(chunk.get("rejectedCandidates"))
+        if rejected_candidates:
+            failure["rejectedCandidates"] = rejected_candidates
+        if chunk.get("rerunStatus"):
+            failure["rerunStatus"] = chunk.get("rerunStatus")
+        if chunk.get("rerunFallbackMode"):
+            failure["rerunFallbackMode"] = chunk.get("rerunFallbackMode")
+        if chunk.get("rerunFallbackError"):
+            failure["rerunFallbackError"] = chunk.get("rerunFallbackError")
+        quality = chunk.get("quality")
+        if isinstance(quality, dict):
+            failure["quality"] = {
+                key: quality.get(key)
+                for key in ("needsReview", "flags", "advisoryFlags", "reviewReasons", "rewriteAdvice")
+                if key in quality
+            }
+    return failure, compare_payload
+
+
+def persist_batch_rerun_state(run_id: str) -> None:
+    state = BATCH_RERUN_STATES.get(run_id)
+    if not state:
+        return
+    try:
+        write_json_atomic(
+            batch_rerun_state_path(run_id),
+            {
+                "kind": "batchRerun",
+                "version": 1,
+                "persistedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "state": serialize_batch_rerun_state(run_id, state),
+            },
+        )
+    except OSError:
+        # Persistence is a recovery aid only; never break the running task because disk snapshots failed.
+        return
+
+
+def load_recent_batch_rerun_summaries(active_run_ids: set[str], limit: int = 8) -> list[dict[str, Any]]:
+    ensure_workspace_dirs()
+    summaries: list[dict[str, Any]] = []
+    try:
+        paths = sorted(TASK_STATE_DIR.glob("batch_rerun_*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    except OSError:
+        return summaries
+    for path in paths:
+        if len(summaries) >= limit:
+            break
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            continue
+        run_id = str(state.get("runId", "")).strip()
+        if not run_id or run_id in active_run_ids:
+            continue
+        summary = dict(state)
+        summary["restoredFromDisk"] = True
+        summary["persistedAt"] = payload.get("persistedAt")
+        if not bool(summary.get("completed")):
+            summary["completed"] = True
+            summary["status"] = "interrupted"
+            summary["cancelRequested"] = False
+            summary["error"] = summary.get("error") or "Backend restarted before this batch rerun finished. Completed chunks were already written to disk."
+        summaries.append(summary)
+    return summaries
+
+
+def load_persisted_batch_rerun_summary(run_id: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(batch_rerun_state_path(run_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    state = payload.get("state")
+    if not isinstance(state, dict):
+        return None
+    if str(state.get("runId", "")).strip() != run_id:
+        return None
+    summary = dict(state)
+    summary["restoredFromDisk"] = True
+    summary["persistedAt"] = payload.get("persistedAt")
+    if not bool(summary.get("completed")):
+        summary["completed"] = True
+        summary["status"] = "interrupted"
+        summary["cancelRequested"] = False
+        summary["error"] = summary.get("error") or "Backend restarted before this batch rerun finished. Completed chunks were already written to disk."
+    return summary
+
+
+def append_batch_rerun_event(run_id: str, event: dict[str, Any]) -> None:
+    state = BATCH_RERUN_STATES.get(run_id)
+    if not state:
+        return
+    with state.condition:
+        state.events.append(event)
+        state.updated_at = time.time()
+        state.condition.notify_all()
+    persist_batch_rerun_state(run_id)
+
+
+def finalize_batch_rerun(run_id: str, *, result: dict[str, Any] | None = None, error: str | None = None) -> None:
+    state = BATCH_RERUN_STATES.get(run_id)
+    if not state:
+        return
+    with state.condition:
+        state.result = result
+        state.error = error
+        if error:
+            state.status = "canceled" if state.cancel_requested else "failed"
+        elif result and result.get("canceled"):
+            state.status = "canceled"
+        else:
+            state.status = "completed"
+        state.completed = True
+        state.updated_at = time.time()
+        state.condition.notify_all()
+    persist_batch_rerun_state(run_id)
+    release_active_batch_rerun(run_id)
 
 
 def merge_model_config_for_run(incoming: dict[str, Any]) -> dict[str, Any]:
@@ -304,11 +924,19 @@ def build_environment_diagnostics() -> dict[str, Any]:
     enabled_providers = [provider for provider in providers if bool(provider.get("enabled"))]
     custom_rounds = [item for item in round_models.values() if isinstance(item, dict) and bool(item.get("enabled"))]
     active_runs: list[dict[str, Any]] = []
+    active_batch_reruns: list[dict[str, Any]] = []
     with RUN_REGISTRY_LOCK:
         for run_id, state in RUN_STATES.items():
             if state.completed:
                 continue
             active_runs.append(serialize_run_state(run_id, state))
+        for run_id, state in BATCH_RERUN_STATES.items():
+            if state.completed:
+                continue
+            active_batch_reruns.append(serialize_batch_rerun_state(run_id, state))
+    recent_runs = load_recent_run_summaries({str(item.get("runId", "")) for item in active_runs})
+    recent_batch_reruns = load_recent_batch_rerun_summaries({str(item.get("runId", "")) for item in active_batch_reruns})
+    task_state_store = summarize_task_state_store()
     path_summaries = [
         summarize_workspace_path(ROOT_DIR, label="项目根目录", kind="workspace"),
         summarize_workspace_path(ORIGIN_DIR, label="源文档目录", kind="origin"),
@@ -349,9 +977,9 @@ def build_environment_diagnostics() -> dict[str, Any]:
         {
             "key": "runs",
             "label": "运行任务",
-            "ok": len(active_runs) == 0,
-            "level": "success" if len(active_runs) == 0 else "warning",
-            "message": "当前没有后台运行中的轮次。" if len(active_runs) == 0 else f"当前有 {len(active_runs)} 个运行中的轮次。",
+            "ok": len(active_runs) + len(active_batch_reruns) == 0,
+            "level": "success" if len(active_runs) + len(active_batch_reruns) == 0 else "warning",
+            "message": "当前没有后台运行中的任务。" if len(active_runs) + len(active_batch_reruns) == 0 else f"当前有 {len(active_runs)} 个运行中的轮次，{len(active_batch_reruns)} 个批量重跑任务。",
         },
     ]
     return {
@@ -359,8 +987,15 @@ def build_environment_diagnostics() -> dict[str, Any]:
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "workspace": str(ROOT_DIR),
         "activeRunCount": len(active_runs),
+        "activeBatchRerunCount": len(active_batch_reruns),
+        "recentRunCount": len(recent_runs),
+        "recentBatchRerunCount": len(recent_batch_reruns),
         "checks": checks,
         "activeRuns": active_runs,
+        "activeBatchReruns": active_batch_reruns,
+        "recentRuns": recent_runs,
+        "recentBatchReruns": recent_batch_reruns,
+        "taskStateStore": task_state_store,
         "paths": path_summaries,
         "config": {
             "path": str(config_path),
@@ -416,6 +1051,121 @@ def run_round_async(run_id: str, source_path: str, model_config: dict[str, Any])
         finalize_progress(run_id, error=str(exc))
 
 
+def batch_rerun_async(run_id: str, output_path: str, targets: list[dict[str, str]], model_config: dict[str, Any]) -> None:
+    current_output_path = output_path
+    compare_path = ""
+    latest_compare: dict[str, Any] | None = None
+    try:
+        for index, target in enumerate(targets, start=1):
+            state = BATCH_RERUN_STATES.get(run_id)
+            if not state:
+                return
+            chunk_id = str(target.get("chunkId", "")).strip()
+            if not chunk_id:
+                continue
+            with state.condition:
+                if state.cancel_requested:
+                    break
+                state.status = "running"
+                state.current_index = index
+                state.current_chunk_id = chunk_id
+                state.updated_at = time.time()
+                state.condition.notify_all()
+            append_batch_rerun_event(
+                run_id,
+                {
+                    "phase": "chunk-start",
+                    "index": index,
+                    "total": len(targets),
+                    "chunkId": chunk_id,
+                },
+            )
+            try:
+                result = rerun_compare_chunk(
+                    current_output_path,
+                    chunk_id,
+                    model_config,
+                    user_feedback=str(target.get("userFeedback", "") or ""),
+                )
+                current_output_path = str(result.get("outputPath", current_output_path) or current_output_path)
+                compare_path = str(result.get("comparePath", compare_path) or compare_path)
+                latest_compare = result.get("compare") if isinstance(result.get("compare"), dict) else latest_compare
+                with state.condition:
+                    state.completed_count += 1
+                    state.success_count += 1
+                    if chunk_id not in state.success_chunk_ids:
+                        state.success_chunk_ids.append(chunk_id)
+                    state.updated_at = time.time()
+                    state.condition.notify_all()
+                append_batch_rerun_event(
+                    run_id,
+                    {
+                        "phase": "chunk-complete",
+                        "index": index,
+                        "total": len(targets),
+                        "chunkId": chunk_id,
+                    },
+                )
+            except Exception as exc:
+                failure, failure_compare = build_batch_rerun_failure(chunk_id, str(exc), current_output_path, latest_compare)
+                if isinstance(failure_compare, dict):
+                    latest_compare = failure_compare
+                with state.condition:
+                    state.completed_count += 1
+                    state.failure_count += 1
+                    state.failures.append(failure)
+                    state.updated_at = time.time()
+                    state.condition.notify_all()
+                append_batch_rerun_event(
+                    run_id,
+                    {
+                        "phase": "chunk-failed",
+                        "index": index,
+                        "total": len(targets),
+                        "chunkId": chunk_id,
+                        "error": str(exc),
+                        "rejectedCandidates": failure.get("rejectedCandidates", []),
+                    },
+                )
+
+        state = BATCH_RERUN_STATES.get(run_id)
+        if not state:
+            return
+        canceled = bool(state.cancel_requested)
+        if not latest_compare:
+            try:
+                latest_compare = read_round_compare(current_output_path)
+            except Exception:
+                latest_compare = None
+        result_payload = {
+            "ok": True,
+            "runId": run_id,
+            "outputPath": current_output_path,
+            "comparePath": compare_path,
+            "compare": latest_compare,
+            "successChunkIds": state.success_chunk_ids,
+            "totalCount": state.total_count,
+            "completedCount": state.completed_count,
+            "successCount": state.success_count,
+            "failureCount": state.failure_count,
+            "canceled": canceled,
+            "failures": state.failures,
+        }
+        append_batch_rerun_event(
+            run_id,
+            {
+                "phase": "batch-canceled" if canceled else "batch-complete",
+                "total": state.total_count,
+                "completed": state.completed_count,
+                "success": state.success_count,
+                "failure": state.failure_count,
+            },
+        )
+        finalize_batch_rerun(run_id, result=result_payload)
+    except Exception as exc:
+        finalize_batch_rerun(run_id, error=str(exc))
+
+
 def require_query_value(key: str) -> str:
     value = request.args.get(key, "").strip()
     if not value:
@@ -447,7 +1197,8 @@ def add_cors_headers(response: Response) -> Response:
         "X-Export-Content-Locked-Style-Count, X-Export-Table-Style-Count, X-Export-Table-Border-Count, "
         "X-Export-Validation-Path, X-Export-Audit-Path, X-Export-Audit-Issue-Count, "
         "X-Export-Preflight-Path, X-Export-Preflight-Issue-Count, "
-        "X-Export-Guard-Path, X-Export-Guard-Issue-Count"
+        "X-Export-Guard-Path, X-Export-Guard-Issue-Count, "
+        "X-Export-Guard-Issue-Samples, X-Export-Audit-Issue-Samples, X-Export-Preflight-Issue-Samples"
     )
     response.headers["Cache-Control"] = "no-cache"
     return response
@@ -461,6 +1212,17 @@ def get_model_config() -> Response:
 @app.route("/api/health", methods=["GET"])
 def get_health() -> Response:
     return jsonify(build_environment_diagnostics())
+
+
+@app.route("/api/task-state-snapshots/cleanup", methods=["POST"])
+def post_cleanup_task_state_snapshots() -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        mode = str(payload.get("mode", "expired")).strip() or "expired"
+        max_age_hours = int(payload.get("maxAgeHours", TASK_STATE_RETENTION_HOURS) or TASK_STATE_RETENTION_HOURS)
+        return jsonify(cleanup_task_state_snapshots(mode=mode, max_age_hours=max_age_hours))
+    except Exception as exc:
+        return error_response(str(exc))
 
 
 @app.route("/api/model-config", methods=["POST"])
@@ -756,6 +1518,8 @@ def post_review_decisions() -> tuple[Response, int] | Response:
 
 @app.route("/api/rerun-chunk", methods=["POST"])
 def post_rerun_chunk() -> tuple[Response, int] | Response:
+    output_path = ""
+    chunk_id = ""
     try:
         payload = request.get_json(silent=True) or {}
         output_path = str(payload.get("outputPath", "")).strip()
@@ -770,7 +1534,95 @@ def post_rerun_chunk() -> tuple[Response, int] | Response:
             raise ValueError("modelConfig is required.")
         return jsonify(rerun_compare_chunk(output_path, chunk_id, model_config, user_feedback=user_feedback))
     except Exception as exc:
+        failure: dict[str, Any] | None = None
+        if output_path and chunk_id:
+            failure, _ = build_batch_rerun_failure(chunk_id, str(exc), output_path)
+        return error_response(str(exc), failure=failure)
+
+
+@app.route("/api/batch-rerun", methods=["POST"])
+def post_batch_rerun() -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        output_path = str(payload.get("outputPath", "")).strip()
+        targets_payload = payload.get("targets")
+        model_config = payload.get("modelConfig")
+        if not output_path:
+            raise ValueError("outputPath is required.")
+        if not isinstance(targets_payload, list) or not targets_payload:
+            raise ValueError("targets must be a non-empty list.")
+        if not isinstance(model_config, dict):
+            raise ValueError("modelConfig is required.")
+
+        targets: list[dict[str, str]] = []
+        seen_chunk_ids: set[str] = set()
+        for item in targets_payload:
+            if not isinstance(item, dict):
+                raise ValueError("Each batch rerun target must be an object.")
+            chunk_id = str(item.get("chunkId", "")).strip()
+            if not chunk_id:
+                raise ValueError("Each batch rerun target requires chunkId.")
+            if chunk_id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk_id)
+            targets.append(
+                {
+                    "chunkId": chunk_id,
+                    "userFeedback": str(item.get("userFeedback", "") or ""),
+                }
+            )
+        if not targets:
+            raise ValueError("No valid batch rerun targets were provided.")
+
+        run_id, _, already_active = register_or_reuse_batch_rerun(output_path, len(targets))
+        if already_active:
+            return jsonify({"runId": run_id, "alreadyActive": True}), 202
+
+        effective_model_config = merge_model_config_for_run(model_config)
+        worker = threading.Thread(
+            target=batch_rerun_async,
+            args=(run_id, normalize_output_path(output_path), targets, effective_model_config),
+            daemon=True,
+        )
+        worker.start()
+        return jsonify({"runId": run_id, "alreadyActive": False}), 202
+    except ValueError as exc:
+        message = str(exc)
+        status = 409 if "running batch rerun task" in message else 400
+        return error_response(message, status=status)
+    except Exception as exc:
         return error_response(str(exc))
+
+
+@app.route("/api/batch-rerun/<run_id>/cancel", methods=["POST"])
+def post_cancel_batch_rerun(run_id: str) -> tuple[Response, int] | Response:
+    state = BATCH_RERUN_STATES.get(run_id)
+    if not state:
+        persisted = load_persisted_batch_rerun_summary(run_id)
+        if persisted:
+            return jsonify({"ok": True, "runId": run_id, "completed": True, "status": persisted.get("status"), "restoredFromDisk": True})
+        return error_response("Unknown batch rerun id.", 404)
+    with state.condition:
+        if state.completed:
+            return jsonify({"ok": True, "runId": run_id, "completed": True, "status": state.status})
+        state.cancel_requested = True
+        state.status = "canceling"
+        state.updated_at = time.time()
+        state.condition.notify_all()
+    append_batch_rerun_event(run_id, {"phase": "cancel-requested"})
+    return jsonify({"ok": True, "runId": run_id, "completed": False, "status": "canceling"})
+
+
+@app.route("/api/batch-rerun-status/<run_id>", methods=["GET"])
+def get_batch_rerun_status(run_id: str) -> tuple[Response, int] | Response:
+    state = BATCH_RERUN_STATES.get(run_id)
+    if not state:
+        persisted = load_persisted_batch_rerun_summary(run_id)
+        if persisted:
+            return jsonify(persisted)
+        return error_response("Unknown batch rerun id.", 404)
+    touch_batch_rerun_state(run_id)
+    return jsonify(serialize_batch_rerun_state(run_id, state))
 
 
 @app.route("/api/run-round", methods=["POST"])
@@ -808,6 +1660,9 @@ def post_run_round() -> tuple[Response, int] | Response:
 def post_cancel_run_round(run_id: str) -> tuple[Response, int] | Response:
     state = RUN_STATES.get(run_id)
     if not state:
+        persisted = load_persisted_run_summary(run_id)
+        if persisted:
+            return jsonify({"ok": True, "runId": run_id, "completed": True, "status": persisted.get("status"), "restoredFromDisk": True})
         return error_response("Unknown run id.", 404)
     with state.condition:
         if state.completed:
@@ -824,6 +1679,9 @@ def post_cancel_run_round(run_id: str) -> tuple[Response, int] | Response:
 def get_run_round_status(run_id: str) -> tuple[Response, int] | Response:
     state = RUN_STATES.get(run_id)
     if not state:
+        persisted = load_persisted_run_summary(run_id)
+        if persisted:
+            return jsonify(persisted)
         return error_response("Unknown run id.", 404)
     touch_run_state(run_id)
     return jsonify(serialize_run_state(run_id, state))
@@ -903,6 +1761,9 @@ def get_export_round() -> tuple[Response, int] | Response:
         response.headers["X-Export-Preflight-Issue-Count"] = str(result.get("preflightIssueCount", ""))
         response.headers["X-Export-Guard-Path"] = make_ascii_header_value(result.get("guardPath", ""))
         response.headers["X-Export-Guard-Issue-Count"] = str(result.get("guardIssueCount", ""))
+        response.headers["X-Export-Guard-Issue-Samples"] = make_ascii_header_json(result.get("guardIssueSamples", []))
+        response.headers["X-Export-Audit-Issue-Samples"] = make_ascii_header_json(result.get("auditIssueSamples", []))
+        response.headers["X-Export-Preflight-Issue-Samples"] = make_ascii_header_json(result.get("preflightIssueSamples", []))
         return response
     except Exception as exc:
         return error_response(str(exc))
@@ -945,6 +1806,9 @@ def post_export_reviewed_round() -> tuple[Response, int] | Response:
         response.headers["X-Export-Preflight-Issue-Count"] = str(result.get("preflightIssueCount", ""))
         response.headers["X-Export-Guard-Path"] = make_ascii_header_value(result.get("guardPath", ""))
         response.headers["X-Export-Guard-Issue-Count"] = str(result.get("guardIssueCount", ""))
+        response.headers["X-Export-Guard-Issue-Samples"] = make_ascii_header_json(result.get("guardIssueSamples", []))
+        response.headers["X-Export-Audit-Issue-Samples"] = make_ascii_header_json(result.get("auditIssueSamples", []))
+        response.headers["X-Export-Preflight-Issue-Samples"] = make_ascii_header_json(result.get("preflightIssueSamples", []))
         return response
     except Exception as exc:
         return error_response(str(exc))
@@ -954,6 +1818,18 @@ def post_export_reviewed_round() -> tuple[Response, int] | Response:
 def get_run_round_events(run_id: str) -> tuple[Response, int] | Response:
     state = RUN_STATES.get(run_id)
     if not state:
+        persisted = load_persisted_run_summary(run_id)
+        if persisted:
+            if persisted.get("error"):
+                payload = json.dumps({"message": persisted.get("error")}, ensure_ascii=False)
+                event_name = "run-error"
+            else:
+                payload = json.dumps(persisted.get("result") or {}, ensure_ascii=False)
+                event_name = "result"
+            response = Response(f"event: {event_name}\ndata: {payload}\n\n", mimetype="text/event-stream")
+            response.headers["Cache-Control"] = "no-cache"
+            response.headers["X-Accel-Buffering"] = "no"
+            return response
         return error_response("Unknown run id.", 404)
 
     def generate() -> Any:

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const APP_PATH = resolve(ROOT_DIR, "app", "src", "App.tsx");
 const RESULT_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "ResultCard.tsx");
+const WEB_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webService.ts");
 const REPORT_PATH = resolve(ROOT_DIR, "finish", "regression", "frontend_batch_rerun_regression_report.json");
 
 function extractFunctionSource(source, functionName) {
@@ -43,13 +44,31 @@ function assertRegex(source, pattern, message, failures) {
 
 function checkPartialFailureContract(source, functionName, failures) {
   const functionSource = extractFunctionSource(source, functionName);
-  assertIncludes(functionSource, "let successCount = 0;", `${functionName} must track successful chunk reruns.`, failures);
-  assertIncludes(functionSource, "const failures: BatchRerunFailure[] = [];", `${functionName} must collect per-chunk failures.`, failures);
-  assertRegex(functionSource, /for\s*\([^)]*index\s*=\s*0[\s\S]*?\)\s*\{[\s\S]*?try\s*\{[\s\S]*?service\.rerunChunk[\s\S]*?successCount \+= 1;[\s\S]*?\}\s*catch\s*\(appError\)\s*\{[\s\S]*?failures\.push\(\{ chunkId, error: stringifyError\(appError\) \}\);/m, `${functionName} must catch individual rerun failures inside the loop.`, failures);
-  assertIncludes(functionSource, "if (latestCompare && successCount > 0)", `${functionName} should refresh preview only after at least one success.`, failures);
-  assertRegex(functionSource, /failures\.push\(\{ chunkId: ["']预览刷新["'], error: stringifyError\(appError\) \}\);/, `${functionName} should report preview refresh failure without discarding rerun successes.`, failures);
-  assertIncludes(functionSource, "if (successCount === 0 && failures.length)", `${functionName} must distinguish all-failed batches from partial success.`, failures);
-  assertRegex(functionSource, /setRuntimeStep\(failures\.length \? ["'][^"']*部分完成["'] : ["'][^"']*完成["']\);/, `${functionName} must surface partial completion state.`, failures);
+  assertIncludes(functionSource, "runBatchRerunTask(", `${functionName} must delegate batch rerun to the backend task API.`, failures);
+  if (functionSource.includes("service.rerunChunk")) {
+    failures.push(`${functionName} must not keep the old frontend per-chunk rerun loop.`);
+  }
+}
+
+function checkBackendTaskContract(appSource, resultCardSource, failures) {
+  assertIncludes(appSource, "service.startBatchRerun(outputPath, targets, modelConfig)", "Batch rerun must start a backend task.", failures);
+  assertIncludes(appSource, "service.getBatchRerunStatus(runId)", "Batch rerun must poll backend task status.", failures);
+  assertIncludes(appSource, "service.cancelBatchRerun(session.runId)", "Batch rerun must expose backend cancellation.", failures);
+  assertIncludes(appSource, "function attachActiveBatchRerun", "Frontend must be able to re-attach active batch reruns after refresh.", failures);
+  assertIncludes(appSource, "result.activeBatchReruns ?? []", "Frontend health probing must inspect active batch reruns.", failures);
+  assertIncludes(appSource, "void attachActiveBatchRerun(activeBatch)", "Frontend must auto attach matching active batch reruns.", failures);
+  assertIncludes(appSource, "function applyBatchRerunResult", "Batch rerun completion must converge through one result applier.", failures);
+  assertIncludes(appSource, "result.failures.map", "Batch rerun failures must be promoted into visible Diff state.", failures);
+  assertIncludes(appSource, "result.successChunkIds ?? []", "Batch rerun completion must preserve successful chunk decisions after refresh.", failures);
+  assertIncludes(appSource, "batchRerunRunning={Boolean(currentBatchRerunToken)}", "Home ResultCard must receive batch rerun running state.", failures);
+  assertIncludes(appSource, "onCancelBatchRerun={() => void handleCancelBatchRerun()}", "Home ResultCard must wire batch rerun cancellation.", failures);
+  assertIncludes(appSource, "activeBatchReruns", "Diagnostics/task center must render active batch rerun tasks.", failures);
+  assertIncludes(appSource, "recentBatchReruns", "Diagnostics must render persisted batch rerun summaries after backend restart.", failures);
+  assertIncludes(appSource, "近期任务摘要", "Diagnostics must label persisted task summaries clearly.", failures);
+  assertIncludes(appSource, "重跑未完成", "Persisted batch rerun summaries must keep a clear rerun-specific status.", failures);
+  assertIncludes(resultCardSource, "batchRerunRunning?: boolean;", "ResultCard must expose batch rerun running prop.", failures);
+  assertIncludes(resultCardSource, "onCancelBatchRerun?: () => void;", "ResultCard must expose batch rerun cancel prop.", failures);
+  assertIncludes(resultCardSource, "停止重跑", "ResultCard must show a stop action during batch rerun.", failures);
 }
 
 function checkTargetedRerunFeedbackContract(appSource, resultCardSource, failures) {
@@ -72,21 +91,85 @@ function checkRerunFailureVisibilityContract(appSource, resultCardSource, failur
   assertIncludes(appSource, "function scopeRerunFailures", "Batch failures must be scoped before display.", failures);
   assertIncludes(appSource, "failure.scopeKey === activeRerunFailureScopeKey && activeChunkIds.has(failure.chunkId)", "App must scope rerun failures to the active Diff.", failures);
   assertIncludes(appSource, "function upsertRerunFailure(failure: BatchRerunFailure)", "Single rerun failures must be recorded for the Diff UI.", failures);
-  assertIncludes(appSource, "setRerunFailures(scopeRerunFailures(failures, latestCompare));", "Batch rerun failures must be promoted into visible scoped Diff state.", failures);
+  assertIncludes(appSource, "function extractRerunFailureExtras(error: unknown)", "Single rerun failures must extract backend failure details.", failures);
+  assertIncludes(appSource, "normalizeFailureRejectedCandidates(failure.rejectedCandidates)", "Single rerun failures must normalize rejected candidate output.", failures);
+  assertIncludes(appSource, "upsertRerunFailure({ chunkId, error: message, ...extractRerunFailureExtras(appError) });", "Single rerun failure UI must preserve rejected candidates.", failures);
+  assertIncludes(appSource, "result.failures.map((failure) => ({ ...failure }))", "Batch rerun failures must preserve rejected candidate details from the backend.", failures);
+  assertIncludes(appSource, "setRerunFailures(scopeRerunFailures(failures, latestCompare ?? activeCompareData));", "Batch rerun failures must be promoted into visible scoped Diff state.", failures);
   assertIncludes(appSource, "rerunFailures={activeRerunFailures}", "Home ResultCard must receive active rerun failures.", failures);
+  assertIncludes(appSource, "batchRerunStatusText={runtimeLabel}", "Home ResultCard must show live batch rerun status text.", failures);
   assertIncludes(resultCardSource, "rerunFailures?: RerunFailure[];", "ResultCard must expose rerun failure input.", failures);
-  assertIncludes(resultCardSource, "const [filterMode, setFilterMode] = useState<\"all\" | \"review\" | \"failed\" | \"candidate\">(\"all\");", "Diff panel must support failed and candidate filters.", failures);
+  assertIncludes(resultCardSource, "batchRerunStatusText?: string;", "ResultCard must expose batch rerun status text.", failures);
+  assertIncludes(resultCardSource, "rejectedCandidates?: NonNullable<RoundCompareData[\"chunks\"][number][\"rejectedCandidates\"]>;", "Visible rerun failures must carry rejected model candidates.", failures);
+  assertIncludes(resultCardSource, "type DiffFilterMode = \"all\" | \"review\" | \"failed\" | \"candidate\" | \"changed\" | \"number\" | \"citation\";", "Diff panel must support review, failure, candidate and risk-specific filters.", failures);
+  assertIncludes(resultCardSource, "const [filterMode, setFilterMode] = useState<DiffFilterMode>(\"all\");", "Diff panel must keep filter mode as a typed state.", failures);
   assertIncludes(resultCardSource, "const previousFailedCountRef = useRef(0);", "Diff panel must detect newly appeared failed chunks.", failures);
   assertIncludes(resultCardSource, "setFilterMode(\"failed\");", "Diff panel must auto-focus failed chunks when new failures appear.", failures);
   assertIncludes(resultCardSource, "const previousCandidateCountRef = useRef(0);", "Diff panel must detect newly appeared rejected candidates.", failures);
   assertIncludes(resultCardSource, "setFilterMode(\"candidate\");", "Diff panel must auto-focus rejected candidates when no failed chunk is present.", failures);
   assertIncludes(resultCardSource, "const rerunFailureByChunk = new Map", "Diff panel must map failures by chunk id.", failures);
+  assertIncludes(resultCardSource, "const failureCandidateChunkIdSet = new Set", "Diff panel must include failed chunks that only have failure-level candidates.", failures);
+  assertIncludes(resultCardSource, "const displayChunk = failureRejectedCandidates.length", "Diff panel must merge failure-level candidates into the chunk card.", failures);
+  assertIncludes(resultCardSource, "chunk={displayChunk}", "Chunk quality panel must display failure-level rejected candidates.", failures);
   assertIncludes(resultCardSource, "const candidateChunkIds = allChunks.filter", "Diff panel must map rejected candidate chunks.", failures);
+  assertIncludes(resultCardSource, "const changedChunkIds = allChunks.filter", "Diff panel must map chunks with source/rewrite changes.", failures);
+  assertIncludes(resultCardSource, "const numberRiskChunkIds = allChunks.filter", "Diff panel must map chunks with numeric risks.", failures);
+  assertIncludes(resultCardSource, "const citationRiskChunkIds = allChunks.filter", "Diff panel must map chunks with citation risks.", failures);
+  assertIncludes(resultCardSource, "function hasChunkNumberRisk", "Diff panel must detect numeric risk for rewrites and rejected candidates.", failures);
+  assertIncludes(resultCardSource, "function hasChunkCitationRisk", "Diff panel must detect citation risk for rewrites and rejected candidates.", failures);
+  assertIncludes(resultCardSource, "function getDiffFilterEmptyState", "Diff panel must explain empty risk-specific filters.", failures);
   assertIncludes(resultCardSource, "T.failedOnly", "Diff panel must expose the failed-only action.", failures);
   assertIncludes(resultCardSource, "T.candidateOnly", "Diff panel must expose the candidate-only action.", failures);
+  assertIncludes(resultCardSource, "T.changedChunks", "Diff panel must expose the source/rewrite change filter.", failures);
+  assertIncludes(resultCardSource, "T.numberRisk", "Diff panel must expose the numeric risk filter.", failures);
+  assertIncludes(resultCardSource, "T.citationRisk", "Diff panel must expose the citation risk filter.", failures);
+  assertIncludes(resultCardSource, "filterMode === \"number\"", "Diff panel must render numeric-risk-only state.", failures);
+  assertIncludes(resultCardSource, "filterMode === \"citation\"", "Diff panel must render citation-risk-only state.", failures);
   assertIncludes(resultCardSource, "T.rerunFailureSummary", "Failed chunks must have a visible summary banner.", failures);
   assertIncludes(resultCardSource, "T.rerunFailureHint", "Failed chunks must explain the next action.", failures);
   assertIncludes(resultCardSource, "T.rejectedCandidateHint", "Rejected model candidates must explain safe manual adoption.", failures);
+  assertIncludes(resultCardSource, "批量重跑进行中", "ResultCard must keep batch rerun status visible in the main result area.", failures);
+  assertIncludes(resultCardSource, "function inspectRejectedCandidate", "Rejected candidates must be inspected before manual adoption.", failures);
+  assertIncludes(resultCardSource, "function CandidateInspectionPanel", "Rejected candidates must render a compact inspection panel.", failures);
+  assertIncludes(resultCardSource, "const inspection = inspectRejectedCandidate(chunk.inputText, candidate);", "Each rejected candidate card must compute inspection details.", failures);
+  assertIncludes(resultCardSource, "function buildCandidateDiffView", "Rejected candidates must compute local source/candidate diffs.", failures);
+  assertIncludes(resultCardSource, "function CandidateDiffPanel", "Rejected candidates must render a local diff review panel.", failures);
+  assertIncludes(resultCardSource, "<CandidateDiffPanel sourceText={chunk.inputText} candidateText={candidate.outputText ?? \"\"} />", "Rejected candidate cards must show source/candidate diff highlights.", failures);
+  assertIncludes(resultCardSource, "function buildCandidateRerunFeedback", "Rejected candidates must generate reusable rerun feedback.", failures);
+  assertIncludes(resultCardSource, "const [pendingAdoptCandidateKey, setPendingAdoptCandidateKey] = useState(\"\");", "Risky candidate adoption must require a pending confirmation state.", failures);
+  assertIncludes(resultCardSource, "inspection.level !== \"safe\" && pendingAdoptCandidateKey !== candidateKey", "Risky candidate adoption must be blocked on first click.", failures);
+  assertIncludes(resultCardSource, "setFeedback(buildCandidateRerunFeedback(inspection, candidate));", "First risky adoption click must populate rerun feedback.", failures);
+  assertIncludes(resultCardSource, "生成重跑意见", "Candidate cards must expose one-click feedback generation.", failures);
+  assertIncludes(resultCardSource, "确认采用候选", "Candidate cards must require a second explicit confirmation for risky candidates.", failures);
+  assertIncludes(resultCardSource, "reviewToolsVisible", "Candidate feedback tools must stay visible for candidate-only chunks.", failures);
+  assertIncludes(resultCardSource, "原文删减视图", "Candidate diff panel must show removed source text.", failures);
+  assertIncludes(resultCardSource, "候选新增视图", "Candidate diff panel must show added candidate text.", failures);
+  assertIncludes(resultCardSource, "extractNumberTokens(sourceText)", "Candidate inspection must compare numeric tokens.", failures);
+  assertIncludes(resultCardSource, "英文段落被改成中文", "Candidate inspection must flag language inversion.", failures);
+  assertIncludes(resultCardSource, "候选体检", "Candidate inspection panel must be visible to users.", failures);
+  assertIncludes(resultCardSource, "已保留 {failureRejectedCandidates.length} 个模型候选", "Failed chunk banner must point users to preserved model candidates.", failures);
+}
+
+function checkRequestErrorPayloadContract(webServiceSource, failures) {
+  assertIncludes(webServiceSource, "requestError.payload = errorPayload;", "Web request errors must retain backend JSON payloads.", failures);
+  assertIncludes(webServiceSource, "requestError.status = response.status;", "Web request errors must retain HTTP status.", failures);
+}
+
+function checkExportIssueSampleContract(resultCardSource, webServiceSource, failures) {
+  assertIncludes(webServiceSource, "function parseExportIssueSamples", "Export response parser must decode issue samples from response headers.", failures);
+  assertIncludes(webServiceSource, "X-Export-Guard-Issue-Samples", "Export response parser must read guard issue samples.", failures);
+  assertIncludes(webServiceSource, "X-Export-Audit-Issue-Samples", "Export response parser must read audit issue samples.", failures);
+  assertIncludes(webServiceSource, "X-Export-Preflight-Issue-Samples", "Export response parser must read preflight issue samples.", failures);
+  assertIncludes(webServiceSource, "guardIssueSamples,", "Export result must carry guard issue samples.", failures);
+  assertIncludes(webServiceSource, "auditIssueSamples,", "Export result must carry audit issue samples.", failures);
+  assertIncludes(webServiceSource, "preflightIssueSamples,", "Export result must carry preflight issue samples.", failures);
+  assertIncludes(resultCardSource, "samples?: ExportIssueSample[]", "Export audit step must accept visible issue samples.", failures);
+  assertIncludes(resultCardSource, "samples={result?.guardIssueSamples}", "Export safety report must show guard issue samples.", failures);
+  assertIncludes(resultCardSource, "samples={result?.auditIssueSamples}", "Export safety report must show audit issue samples.", failures);
+  assertIncludes(resultCardSource, "samples={result?.preflightIssueSamples}", "Export safety report must show preflight issue samples.", failures);
+  assertIncludes(resultCardSource, "samples.slice(0, 3).map", "Export safety report must limit samples to compact visible examples.", failures);
+  assertIncludes(resultCardSource, "sample.location", "Export safety report must show issue location when available.", failures);
+  assertIncludes(resultCardSource, "sample.sample", "Export safety report must show a short issue text sample when available.", failures);
 }
 
 function runRegression() {
@@ -97,13 +180,20 @@ function runRegression() {
   if (!existsSync(RESULT_CARD_PATH)) {
     failures.push(`Missing ResultCard.tsx: ${RESULT_CARD_PATH}`);
   }
+  if (!existsSync(WEB_SERVICE_PATH)) {
+    failures.push(`Missing webService.ts: ${WEB_SERVICE_PATH}`);
+  }
   const source = failures.length ? "" : readFileSync(APP_PATH, "utf-8");
   const resultCardSource = failures.length ? "" : readFileSync(RESULT_CARD_PATH, "utf-8");
+  const webServiceSource = failures.length ? "" : readFileSync(WEB_SERVICE_PATH, "utf-8");
   if (source) {
     assertIncludes(source, "type BatchRerunFailure = {", "Batch rerun failure type should exist.", failures);
     assertIncludes(source, "function formatBatchRerunSummary(", "Batch rerun summary formatter should exist.", failures);
+    checkBackendTaskContract(source, resultCardSource, failures);
     checkTargetedRerunFeedbackContract(source, resultCardSource, failures);
     checkRerunFailureVisibilityContract(source, resultCardSource, failures);
+    checkRequestErrorPayloadContract(webServiceSource, failures);
+    checkExportIssueSampleContract(resultCardSource, webServiceSource, failures);
     checkPartialFailureContract(source, "handleRerunRiskyChunks", failures);
     checkPartialFailureContract(source, "handleRerunDetectionMatchedChunks", failures);
   }
@@ -115,14 +205,24 @@ function runRegression() {
     reportPath: REPORT_PATH,
     failures,
     checks: [
-      "per-chunk rerun failures are isolated",
-      "partial successes update state immediately",
-      "preview refresh failures are summarized",
-      "all-failed and partial-complete states are distinct",
+      "batch rerun uses backend task API",
+      "batch rerun status polling updates runtime state",
+      "batch rerun cancellation is wired to the UI",
+      "batch rerun can be re-attached after refresh",
+      "task center includes active batch reruns",
+      "persisted batch rerun summaries are visible after restart",
+      "backend task result promotes partial failures",
       "manual targeted-rerun feedback reaches the backend",
       "batch rerun failures are visible and filterable in Diff",
+      "single rerun failure payload preserves model candidates",
+      "rejected candidate cards expose inspection summaries",
+      "rejected candidate cards expose source/candidate diff highlights",
+      "risky candidate adoption requires explicit confirmation",
       "rerun failure markers are scoped per active Diff",
       "new failures auto-focus the failed-only view",
+      "diff panel supports risk-specific filters",
+      "batch rerun status stays visible in result area",
+      "export audit samples are visible in result area",
     ],
   };
   mkdirSync(dirname(REPORT_PATH), { recursive: true });

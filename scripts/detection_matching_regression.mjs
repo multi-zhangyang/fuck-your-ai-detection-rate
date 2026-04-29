@@ -139,6 +139,27 @@ function runRegression() {
   const englishMatches = matching.buildDetectionMatches(makeReport([makeSegment(3, englishSegment, 90)]), englishCompare);
   assertCondition(englishMatches.some((match) => match.chunkId === "p4_c0" && match.confidence === "strong"), "English technical segment should strongly match p4_c0", failures);
 
+  const coveredChunkOne = "近年来，伴随互联网技术的快速普及以及数字经济的持续深化，电子商务已经成为居民消费以及商业流通当中的重要形式。在日常购物过程中，平台持续积累用户浏览、收藏、加购和购买等行为数据。";
+  const coveredChunkTwo = "与此同时，机器学习、深度学习与序列建模技术的发展，为处理时序行为数据提供了有效手段。以LSTM、Transformer和XGBoost为代表的模型，能够从用户行为序列中提取购买意图线索。";
+  const multiChunkSegment = `${coveredChunkOne}${coveredChunkTwo}`;
+  const multiChunkMatches = matching.buildDetectionMatches(
+    makeReport([makeSegment(5, multiChunkSegment, 70)]),
+    makeCompare([
+      makeChunk("p7_c0", 7, coveredChunkOne),
+      makeChunk("p8_c0", 8, coveredChunkTwo),
+      makeChunk("p9_c0", 9, "本段讨论导出排版审计、页边距、目录生成和表格边框，与电商行为序列检测报告片段不属于同一内容。"),
+    ]),
+  );
+  const multiChunkStrongIds = multiChunkMatches.filter((match) => match.confidence === "strong").map((match) => match.chunkId);
+  assertCondition(multiChunkStrongIds.includes("p7_c0") && multiChunkStrongIds.includes("p8_c0"), "one report segment covering adjacent paragraphs should strongly match both covered chunks", failures);
+  assertCondition(!multiChunkStrongIds.includes("p9_c0"), "multi-chunk coverage must not pull unrelated chunks into strong matches", failures);
+
+  const genericContainedMatches = matching.buildDetectionMatches(
+    makeReport([makeSegment(6, "研究背景和方法具有一定价值，但仍需要进一步分析。", 70)]),
+    makeCompare([makeChunk("p10_c0", 10, "研究背景和方法")]),
+  );
+  assertCondition(genericContainedMatches.filter((match) => match.confidence === "strong").length === 0, "short generic contained text must not become a strong match", failures);
+
   const unrelatedMatches = matching.buildDetectionMatches(
     makeReport([makeSegment(4, "这是一段完全不同的报告内容，讨论水稻病害识别和无人机航拍流程。", 70)]),
     makeCompare([makeChunk("p6_c0", 6, "本文围绕电商用户购买意图预测展开，重点分析序列行为和模型部署。")]),
@@ -158,6 +179,8 @@ function runRegression() {
       directMatchCount: directMatches.length,
       spacedMatchCount: spacedMatches.length,
       englishMatchCount: englishMatches.length,
+      multiChunkStrongCount: multiChunkStrongIds.length,
+      genericContainedStrongCount: genericContainedMatches.filter((match) => match.confidence === "strong").length,
       unrelatedMatchCount: unrelatedMatches.length,
     },
   };

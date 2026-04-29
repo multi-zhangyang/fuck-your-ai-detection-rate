@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -950,9 +952,26 @@ def _sha256_json(value: object) -> str:
 
 def _write_text_atomically(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f"{path.name}.tmp")
-    temp_path.write_text(text, encoding="utf-8")
-    temp_path.replace(path)
+    last_error: OSError | None = None
+    for attempt in range(5):
+        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+        try:
+            temp_path.write_text(text, encoding="utf-8")
+            temp_path.replace(path)
+            return
+        except OSError as exc:
+            last_error = exc
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            time.sleep(0.05 * (attempt + 1))
+    if last_error is not None:
+        try:
+            path.write_text(text, encoding="utf-8")
+            return
+        except OSError:
+            raise last_error
 
 
 def _write_json_atomically(path: Path, payload: dict[str, object]) -> None:
@@ -1063,8 +1082,13 @@ def _load_resumable_checkpoint_state(
     payload = _load_checkpoint_payload(checkpoint_path)
     if payload is None:
         return {}, []
+    if payload.get("completed") is True:
+        return {}, []
     if not _is_checkpoint_compatible(payload, signature):
-        checkpoint_path.unlink(missing_ok=True)
+        try:
+            checkpoint_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return {}, []
 
     cleaned_outputs = _normalize_checkpoint_outputs(
@@ -1124,7 +1148,17 @@ def _save_round_checkpoint(
 
 
 def _delete_round_checkpoint(checkpoint_path: Path) -> None:
-    checkpoint_path.unlink(missing_ok=True)
+    try:
+        checkpoint_path.unlink(missing_ok=True)
+    except OSError:
+        _write_json_atomically(
+            checkpoint_path,
+            {
+                "version": ROUND_CHECKPOINT_VERSION,
+                "completed": True,
+                "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
+        )
 
 
 def _serialize_rejected_candidate_output(text: str) -> dict[str, object]:

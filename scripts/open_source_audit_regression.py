@@ -32,6 +32,16 @@ def main() -> int:
     missing_codes = sorted(expected_codes - error_codes)
     if missing_codes:
         raise AssertionError(f"open-source audit did not catch expected private data leaks: {missing_codes}")
+    for item in report.get("errors", []):
+        if isinstance(item, dict) and item.get("code") in expected_codes and not str(item.get("action", "")).strip():
+            raise AssertionError(f"open-source audit issue lacks action guidance: {item.get('code')}")
+    next_action_codes = {str(item.get("code", "")) for item in report.get("nextActions", []) if isinstance(item, dict)}
+    missing_action_codes = sorted(expected_codes - next_action_codes)
+    if missing_action_codes:
+        raise AssertionError(f"open-source audit did not summarize next actions: {missing_action_codes}")
+    summary = report.get("summary", {})
+    if not isinstance(summary, dict) or summary.get("readyForPublicRelease") is not False:
+        raise AssertionError("open-source audit summary must block public release when errors exist")
     print("open-source audit regression passed")
     return 0
 

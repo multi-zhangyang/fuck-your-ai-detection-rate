@@ -8,6 +8,7 @@ import type {
   DocumentProtectionMap,
   DocumentStatus,
   EnvironmentDiagnostics,
+  ExportIssueSample,
   ExportResult,
   ExperimentDeleteResult,
   ExperimentListResponse,
@@ -28,7 +29,10 @@ import type {
   RoundProgressStatus,
   RunRoundStatus,
   RoundResult,
+  TaskStateCleanupResult,
   TestConnectionResult,
+  BatchRerunStatus,
+  BatchRerunTarget,
 } from "../types/app";
 
 const WEB_API_GLOBALS = globalThis as { __FYADR_WEB_API__?: string };
@@ -137,12 +141,18 @@ async function requestJson<T>(input: string, init?: RequestJsonInit): Promise<T>
     if (!response.ok) {
       const errorPayload = (() => {
         try {
-          return JSON.parse(responseText) as { message?: string };
+          return JSON.parse(responseText) as Record<string, unknown> & { message?: string };
         } catch {
           return null;
         }
       })();
-      throw new Error(errorPayload?.message || responseText || `Request failed: ${response.status}`);
+      const requestError = new Error(errorPayload?.message || responseText || `Request failed: ${response.status}`) as Error & {
+        payload?: Record<string, unknown> | null;
+        status?: number;
+      };
+      requestError.payload = errorPayload;
+      requestError.status = response.status;
+      throw requestError;
     }
     return JSON.parse(responseText) as T;
   } finally {
@@ -283,6 +293,35 @@ function decodeHeaderValue(value: string | null): string {
   }
 }
 
+function decodeHeaderJson(value: string | null): unknown {
+  const decoded = decodeHeaderValue(value);
+  if (!decoded) {
+    return null;
+  }
+  try {
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
+function parseExportIssueSamples(value: string | null): ExportIssueSample[] {
+  const decoded = decodeHeaderJson(value);
+  if (!Array.isArray(decoded)) {
+    return [];
+  }
+  return decoded
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      code: typeof item.code === "string" ? item.code : undefined,
+      severity: typeof item.severity === "string" ? item.severity : undefined,
+      message: typeof item.message === "string" ? item.message : "检查项",
+      location: typeof item.location === "string" ? item.location : undefined,
+      sample: typeof item.sample === "string" ? item.sample : undefined,
+    }))
+    .slice(0, 5);
+}
+
 
 async function exportResponseToResult(response: Response, targetFormat: "txt" | "docx"): Promise<ExportResult> {
   if (!response.ok) {
@@ -318,6 +357,9 @@ async function exportResponseToResult(response: Response, targetFormat: "txt" | 
   const guardPath = decodeHeaderValue(response.headers.get("X-Export-Guard-Path"));
   const guardIssueCountHeader = response.headers.get("X-Export-Guard-Issue-Count") || "0";
   const guardIssueCount = Number(guardIssueCountHeader) || 0;
+  const guardIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Guard-Issue-Samples"));
+  const auditIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Audit-Issue-Samples"));
+  const preflightIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Preflight-Issue-Samples"));
   downloadBlob(blob, filename);
   return {
     format: targetFormat,
@@ -336,6 +378,9 @@ async function exportResponseToResult(response: Response, targetFormat: "txt" | 
     preflightIssueCount,
     guardPath,
     guardIssueCount,
+    guardIssueSamples,
+    auditIssueSamples,
+    preflightIssueSamples,
   };
 }
 
@@ -484,6 +529,13 @@ function ensureRunStream(runToken: string): RunStream {
 export const webService: AppService = {
   async getHealth(): Promise<EnvironmentDiagnostics> {
     return requestJson<EnvironmentDiagnostics>("/api/health");
+  },
+
+  async cleanupTaskStateSnapshots(mode = "expired", maxAgeHours = 168): Promise<TaskStateCleanupResult> {
+    return requestJson<TaskStateCleanupResult>("/api/task-state-snapshots/cleanup", {
+      method: "POST",
+      body: JSON.stringify({ mode, maxAgeHours }),
+    });
   },
 
   async loadModelConfig(): Promise<ModelConfig> {
@@ -709,6 +761,22 @@ export const webService: AppService = {
       method: "POST",
       body: JSON.stringify({ outputPath, chunkId, modelConfig, userFeedback }),
     });
+  },
+
+  async startBatchRerun(outputPath: string, targets: BatchRerunTarget[], modelConfig: ModelConfig): Promise<string> {
+    const { runId } = await requestJson<{ runId: string; alreadyActive?: boolean }>("/api/batch-rerun", {
+      method: "POST",
+      body: JSON.stringify({ outputPath, targets, modelConfig }),
+    });
+    return runId;
+  },
+
+  async getBatchRerunStatus(runToken: string): Promise<BatchRerunStatus> {
+    return requestJson<BatchRerunStatus>(`/api/batch-rerun-status/${encodeURIComponent(runToken)}`);
+  },
+
+  async cancelBatchRerun(runToken: string): Promise<void> {
+    await requestJson(`/api/batch-rerun/${encodeURIComponent(runToken)}/cancel`, { method: "POST" });
   },
 
   async exportRound(outputPath: string, targetFormat: "txt" | "docx"): Promise<ExportResult> {

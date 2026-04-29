@@ -18,6 +18,8 @@ export type TaskPhase =
   | "resetting-round"
   | "exporting"
   | "rerunning-chunk"
+  | "batch-rerunning"
+  | "canceling-batch-rerun"
   | "saving-experiment"
   | "replaying-experiment";
 
@@ -25,6 +27,8 @@ const NON_BLOCKING_PHASES = new Set<TaskPhase>(["idle", "picking-document", "pic
 const RUNNING_PHASES = new Set<TaskPhase>(["running-round", "canceling-run"]);
 
 const TASK_PHASE_LABELS: Record<TaskPhase, string> = {
+  "batch-rerunning": "批量重跑",
+  "canceling-batch-rerun": "停止重跑",
   idle: "就绪",
   "restoring-document": "恢复文档",
   "loading-history": "载入历史",

@@ -42,6 +42,18 @@ python scripts/run_regressions.py --skip-frontend-build
 python scripts/run_regressions.py
 ```
 
+真实浏览器烟测：
+
+```powershell
+npm --prefix app run test:e2e:smoke
+```
+
+如果希望发版总闸也覆盖浏览器点击链路：
+
+```powershell
+python scripts/pre_release_check.py --include-browser-e2e
+```
+
 发版前总闸：
 
 ```powershell
@@ -72,6 +84,8 @@ npm --prefix app run build
 
 - 首页当前文档清晰可见。
 - Diff 区是主页视觉重心。
+- 右侧操作面板可以收起进入“专注 Diff”，并且刷新后仍保持用户选择。
+- 上传文档弹窗取消后，主页按钮、导航、通知中心仍可点击。
 - 历史记录能区分删除记录、删除中间产物、删除导出副本、删除源文档。
 - 学校规范未填写时能使用默认规则；填写后能查看结构化解析结果。
 - 外部报告上传后只影响定位反馈，不自动覆盖正文。

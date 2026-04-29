@@ -76,6 +76,81 @@ _RATE_LIMIT_STATE: dict[str, list[float]] = {}
 _RATE_LIMIT_LOCK = threading.Lock()
 
 
+def _truncate_issue_text(value: Any, limit: int = 180) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _format_issue_location(issue: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key, label in (
+        ("paragraphIndex", "段落"),
+        ("unitIndex", "单元"),
+        ("chunkId", "块"),
+        ("tableIndex", "表"),
+        ("rowIndex", "行"),
+        ("cellIndex", "单元格"),
+        ("role", "角色"),
+    ):
+        value = issue.get(key)
+        if value is not None and value != "":
+            parts.append(f"{label} {value}")
+    return " · ".join(parts)
+
+
+def _normalize_issue_sample(issue: Any) -> dict[str, str] | None:
+    if not isinstance(issue, dict):
+        text = _truncate_issue_text(issue)
+        return {"message": text} if text else None
+    message = _truncate_issue_text(issue.get("message") or issue.get("type") or issue.get("code") or "检查项")
+    sample = _truncate_issue_text(
+        issue.get("sample")
+        or issue.get("rewrittenSample")
+        or issue.get("originalSample")
+        or issue.get("actual")
+        or issue.get("expected")
+    )
+    normalized = {
+        "code": _truncate_issue_text(issue.get("code") or issue.get("type") or issue.get("severity"), 80),
+        "severity": _truncate_issue_text(issue.get("severity"), 40),
+        "message": message,
+        "location": _format_issue_location(issue),
+        "sample": sample,
+    }
+    return {key: value for key, value in normalized.items() if value}
+
+
+def _read_json_report(path: Any) -> dict[str, Any] | None:
+    try:
+        if not path:
+            return None
+        report_path = Path(str(path))
+        if not report_path.exists():
+            return None
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _collect_issue_samples(*reports: dict[str, Any] | None, keys: tuple[str, ...] = ("issues",), limit: int = 3) -> list[dict[str, str]]:
+    samples: list[dict[str, str]] = []
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        for key in keys:
+            raw_issues = report.get(key)
+            if not isinstance(raw_issues, list):
+                continue
+            for issue in raw_issues:
+                sample = _normalize_issue_sample(issue)
+                if sample:
+                    samples.append(sample)
+                if len(samples) >= limit:
+                    return samples
+    return samples
+
+
 def _coerce_int_config(value: Any, *, default: int, minimum: int, maximum: int) -> int:
     try:
         normalized = int(value)
@@ -119,7 +194,8 @@ def _build_provider_rate_limiter(model_config: dict[str, Any]) -> Callable[[], f
         return lambda: 0.0
 
     window_seconds = window_minutes * 60.0
-    provider_key = "|".join(
+    provider_id = str(model_config.get("providerId", "") or "").strip()
+    provider_key = provider_id or "|".join(
         [
             str(model_config.get("providerName", "")).strip(),
             str(model_config.get("baseUrl", "")).strip(),
@@ -537,6 +613,46 @@ def _record_matches_prompt(
     return _record_prompt_sequence_key(item, normalized_profile) == ",".join(prompt_sequence)
 
 
+def _find_round_provider(model_config: dict[str, Any], override: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    provider_id = str(override.get("providerId", "") or "").strip()
+    providers = model_config.get("modelProviders")
+    if not provider_id or not isinstance(providers, list):
+        return None, False
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        if str(provider.get("id", "") or "").strip() == provider_id:
+            return provider, True
+    return None, True
+
+
+def _copy_provider_route_fields(resolved: dict[str, Any], provider: dict[str, Any]) -> None:
+    field_map = {
+        "id": "providerId",
+        "name": "providerName",
+        "baseUrl": "baseUrl",
+        "apiKey": "apiKey",
+        "apiType": "apiType",
+        "temperature": "temperature",
+        "requestTimeoutSeconds": "requestTimeoutSeconds",
+        "maxRetries": "maxRetries",
+        "rateLimitWindowMinutes": "rateLimitWindowMinutes",
+        "rateLimitMaxRequests": "rateLimitMaxRequests",
+        "rateLimitPerMinute": "rateLimitPerMinute",
+        "rateLimitPerFiveMinutes": "rateLimitPerFiveMinutes",
+    }
+    for source_key, target_key in field_map.items():
+        if source_key in provider:
+            resolved[target_key] = provider.get(source_key)
+    default_model = str(provider.get("defaultModel", "") or "").strip()
+    if not default_model:
+        models = provider.get("models")
+        if isinstance(models, list):
+            default_model = next((str(item).strip() for item in models if str(item).strip()), "")
+    if default_model:
+        resolved["model"] = default_model
+
+
 def _resolve_round_model_config(model_config: dict[str, Any], prompt_profile: str, round_number: int) -> dict[str, Any]:
     base_config = dict(model_config)
     round_models = model_config.get("roundModels")
@@ -546,23 +662,43 @@ def _resolve_round_model_config(model_config: dict[str, Any], prompt_profile: st
     if not isinstance(override, dict) or not bool(override.get("enabled", False)):
         return base_config
     resolved = dict(base_config)
-    for key in (
-        "providerId",
-        "providerName",
-        "baseUrl",
-        "apiKey",
-        "model",
-        "apiType",
-        "temperature",
-        "requestTimeoutSeconds",
-        "maxRetries",
-        "rateLimitWindowMinutes",
-        "rateLimitMaxRequests",
-        "rateLimitPerMinute",
-        "rateLimitPerFiveMinutes",
+    provider, provider_lookup_attempted = _find_round_provider(model_config, override)
+    if provider is not None:
+        if provider.get("enabled") is False:
+            raise ValueError(
+                f"Round {round_number} model provider is disabled: "
+                f"{str(provider.get('name') or provider.get('id') or '').strip() or 'unknown provider'}"
+            )
+        _copy_provider_route_fields(resolved, provider)
+        resolved["routeSource"] = "provider"
+    elif provider_lookup_attempted and not (
+        str(override.get("baseUrl", "") or "").strip()
+        and str(override.get("apiKey", "") or "").strip()
+        and str(override.get("model", "") or "").strip()
     ):
-        if key in override:
+        raise ValueError(f"Round {round_number} model provider no longer exists; reselect the model route.")
+    else:
+        resolved["routeSource"] = "round_snapshot"
+    override_identity_keys = ("providerId", "model") if provider is not None else ("providerId", "providerName", "model")
+    for key in override_identity_keys:
+        override_value = str(override.get(key, "") or "").strip()
+        if override_value:
             resolved[key] = override.get(key)
+    if provider is None:
+        for key in (
+            "baseUrl",
+            "apiKey",
+            "apiType",
+            "temperature",
+            "requestTimeoutSeconds",
+            "maxRetries",
+            "rateLimitWindowMinutes",
+            "rateLimitMaxRequests",
+            "rateLimitPerMinute",
+            "rateLimitPerFiveMinutes",
+        ):
+            if key in override:
+                resolved[key] = override.get(key)
     return resolved
 
 
@@ -704,6 +840,7 @@ def export_reviewed_round_output(
                 f" 共 {issue_count} 个问题，报告：{audit_report_path}"
             )
 
+    preflight_report = _read_json_report(format_result.get("preflightPath", ""))
     return {
         "format": "docx",
         "path": str(normalized_export_path),
@@ -721,6 +858,9 @@ def export_reviewed_round_output(
         "preflightIssueCount": int(format_result.get("preflightIssueCount", 0) or 0),
         "guardPath": str(guard_report.get("reportPath", "")) if guard_report is not None else "",
         "guardIssueCount": int(guard_report.get("blockingIssueCount", 0) or 0) if guard_report is not None else 0,
+        "guardIssueSamples": _collect_issue_samples(guard_report, keys=("blockingIssues", "warnings")),
+        "auditIssueSamples": _collect_issue_samples(audit_report, keys=("issues",)),
+        "preflightIssueSamples": _collect_issue_samples(preflight_report, keys=("blockingIssues", "issues")),
     }
 
 
@@ -1273,6 +1413,49 @@ def reset_round_progress(
     }
 
 
+def _build_checkpoint_resume_details(
+    *,
+    effective_round: int,
+    chunk_ids: Any,
+    chunk_outputs: Any,
+    completed_chunks: int,
+    total_chunks: int,
+    last_error: str,
+) -> dict[str, Any]:
+    ordered_chunk_ids = [str(item) for item in chunk_ids if isinstance(item, str)] if isinstance(chunk_ids, list) else []
+    completed_chunk_ids = set(chunk_outputs) if isinstance(chunk_outputs, dict) else set()
+    pending_chunk_ids = [chunk_id for chunk_id in ordered_chunk_ids if chunk_id not in completed_chunk_ids]
+    next_chunk_id = pending_chunk_ids[0] if pending_chunk_ids else ""
+    next_chunk_index = (ordered_chunk_ids.index(next_chunk_id) + 1) if next_chunk_id in ordered_chunk_ids else 0
+    failed_chunk_id = ""
+    failed_match = re.search(r"Chunk\s+([A-Za-z0-9_.:-]+)\s+failed", last_error)
+    if failed_match:
+        failed_chunk_id = failed_match.group(1)
+
+    if total_chunks and completed_chunks >= total_chunks:
+        resume_stage = "finalize_output"
+        resume_action_label = "继续收尾"
+        resume_explanation = f"第 {effective_round} 轮所有分块都已落盘，继续时会直接进入合并、Diff 和记录写入阶段，不会重跑 100% 已完成的分块。"
+    elif next_chunk_id:
+        resume_stage = "continue_chunks"
+        resume_action_label = f"从第 {next_chunk_index}/{total_chunks or '?'} 块继续"
+        resume_explanation = f"继续时会复用已完成分块，并从 {next_chunk_id} 开始处理；不会从第一块重跑。"
+    else:
+        resume_stage = "inspect_checkpoint"
+        resume_action_label = "检查断点"
+        resume_explanation = "断点存在，但无法可靠判断下一块；建议先刷新状态，仍异常再放弃本轮进度。"
+
+    return {
+        "remainingChunks": max(0, total_chunks - completed_chunks) if total_chunks else 0,
+        "nextChunkId": next_chunk_id,
+        "nextChunkIndex": next_chunk_index,
+        "failedChunkId": failed_chunk_id,
+        "resumeStage": resume_stage,
+        "resumeActionLabel": resume_action_label,
+        "resumeExplanation": resume_explanation,
+    }
+
+
 def get_round_progress_status(
     source_path: str,
     prompt_profile: str,
@@ -1369,6 +1552,23 @@ def get_round_progress_status(
             "validationEventCount": 0,
             "message": "断点文件格式异常，可放弃本轮进度后重新开始。",
         }
+    if payload.get("completed") is True:
+        return {
+            "sourcePath": str(normalized_source),
+            "promptProfile": normalized_profile,
+            "promptSequence": normalized_prompt_sequence,
+            "round": effective_round,
+            "checkpointExists": False,
+            "canResume": False,
+            "completedChunks": 0,
+            "totalChunks": 0,
+            "progressPercent": 0,
+            "checkpointPath": str(checkpoint_path),
+            "lastError": "",
+            "updatedAt": str(payload.get("updated_at", "") or ""),
+            "validationEventCount": 0,
+            "message": "当前轮次已完成；残留断点标记无需处理。",
+        }
     chunk_outputs = payload.get("chunk_outputs")
     chunk_ids = payload.get("chunk_ids")
     validation_events = payload.get("validation_events")
@@ -1380,6 +1580,14 @@ def get_round_progress_status(
     last_error = str(payload.get("last_error", "") or "").strip()
     updated_at = str(payload.get("updated_at", "") or "").strip()
     validation_event_count = len(validation_events) if isinstance(validation_events, list) else 0
+    resume_details = _build_checkpoint_resume_details(
+        effective_round=effective_round,
+        chunk_ids=chunk_ids,
+        chunk_outputs=chunk_outputs,
+        completed_chunks=completed_chunks,
+        total_chunks=total_chunks,
+        last_error=last_error,
+    )
     return {
         "sourcePath": str(normalized_source),
         "promptProfile": normalized_profile,
@@ -1394,8 +1602,9 @@ def get_round_progress_status(
         "lastError": last_error,
         "updatedAt": updated_at,
         "validationEventCount": validation_event_count,
+        **resume_details,
         "message": (
-            f"发现第 {effective_round} 轮断点：已完成 {completed_chunks}/{total_chunks} 块。"
+            f"发现第 {effective_round} 轮断点：已完成 {completed_chunks}/{total_chunks} 块，{resume_details['resumeActionLabel']}。"
             if total_chunks
             else f"发现第 {effective_round} 轮断点。"
         ),
@@ -1485,6 +1694,7 @@ def run_round_for_app(
             "phase": "model-selected",
             "round": effective_round,
             "roundModel": {
+                "providerId": str(effective_model_config.get("providerId", "")),
                 "providerName": str(effective_model_config.get("providerName", "")),
                 "baseUrl": base_url,
                 "model": model,
@@ -1493,6 +1703,7 @@ def run_round_for_app(
                 "rateLimitWindowMinutes": _coerce_rate_window_minutes(effective_model_config),
                 "rateLimitMaxRequests": _coerce_rate_max_requests(effective_model_config),
                 "rewriteCandidateMode": rewrite_candidate_mode,
+                "routeSource": str(effective_model_config.get("routeSource", "default")),
             },
         })
 
@@ -1531,7 +1742,9 @@ def run_round_for_app(
         "prompt_profile": prompt_profile,
         "prompt_sequence": prompt_sequence,
         "round_model_key": _round_model_key(prompt_profile, effective_round),
+        "round_model_provider_id": str(effective_model_config.get("providerId", "")),
         "round_model_provider": str(effective_model_config.get("providerName", "")),
+        "round_model_route_source": str(effective_model_config.get("routeSource", "default")),
         "request_timeout_seconds": request_timeout_seconds,
         "max_retries": max_retries,
         "rate_limit_window_minutes": _coerce_rate_window_minutes(effective_model_config),
@@ -1564,6 +1777,7 @@ def run_round_for_app(
         "offlineMode": offline_mode,
         "roundModel": {
             "round": effective_round,
+            "providerId": str(effective_model_config.get("providerId", "")),
             "providerName": str(effective_model_config.get("providerName", "")),
             "baseUrl": base_url,
             "model": model,
@@ -1572,6 +1786,7 @@ def run_round_for_app(
             "rateLimitWindowMinutes": _coerce_rate_window_minutes(effective_model_config),
             "rateLimitMaxRequests": _coerce_rate_max_requests(effective_model_config),
             "rewriteCandidateMode": rewrite_candidate_mode,
+            "routeSource": str(effective_model_config.get("routeSource", "default")),
         },
         "promptSequence": prompt_sequence,
         "docEntry": result["doc_entry"],
@@ -1797,6 +2012,7 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                     "DOCX 导出已拦截：审计发现保护区内容发生变化。"
                     f" 共 {issue_count} 个问题，报告：{audit_report_path}"
                 )
+        preflight_report = _read_json_report(format_result.get("preflightPath", ""))
         return {
             "format": "docx",
             "path": str(normalized_export_path),
@@ -1814,6 +2030,9 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
             "preflightIssueCount": int(format_result.get("preflightIssueCount", 0) or 0),
             "guardPath": str(guard_report.get("reportPath", "")) if guard_report is not None else "",
             "guardIssueCount": int(guard_report.get("blockingIssueCount", 0) or 0) if guard_report is not None else 0,
+            "guardIssueSamples": _collect_issue_samples(guard_report, keys=("blockingIssues", "warnings")),
+            "auditIssueSamples": _collect_issue_samples(audit_report, keys=("issues",)),
+            "preflightIssueSamples": _collect_issue_samples(preflight_report, keys=("blockingIssues", "issues")),
         }
 
     raise ValueError(f"Unsupported export format: {target_format}")

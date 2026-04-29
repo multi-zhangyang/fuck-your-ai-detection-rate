@@ -13,6 +13,8 @@ import {
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   RefreshCw,
   Route,
   Save,
@@ -20,6 +22,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Trash2,
   Wand2,
   X,
 } from "lucide-react";
@@ -36,7 +39,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAppState } from "@/hooks/useAppState";
 import type { AppService } from "@/lib/appService";
 import { getTaskPhaseLabel, isTaskBlocking, isTaskRunningPhase, type TaskPhase } from "@/lib/taskState";
-import type { DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
+import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
 
 const PREVIEW_MAX_CHARS = 12000;
 const FORMAT_RULE_DRAFT_KEY = "fyadr.formatRuleDraft";
@@ -49,6 +52,8 @@ const ACTIVE_PROMPT_PROFILE_KEY = "fyadr.activePromptProfile";
 const ACTIVE_PROMPT_SEQUENCE_KEY = "fyadr.activePromptSequence";
 const DETECTION_REPORT_KEY = "fyadr.detectionReport";
 const NOTIFICATION_HISTORY_KEY = "fyadr.notificationHistory";
+const HOME_TOOLS_COLLAPSED_KEY = "fyadr.homeToolsCollapsed";
+const BATCH_RERUN_POLL_INTERVAL_MS = 1200;
 
 type Props = {
   service: AppService;
@@ -74,12 +79,23 @@ type RunSession = {
   mode: "start" | "attach";
   cancelRequested: boolean;
 };
+type BatchRerunSession = {
+  runId: string;
+  taskTicket: number;
+  label: string;
+  cancelRequested: boolean;
+};
 type RunRecoveryPanelState = {
   title: string;
   message: string;
   tone: "blue" | "amber" | "red";
   phaseLabel: string;
   actionHint: string;
+  resumeActionLabel?: string;
+  resumeExplanation?: string;
+  nextChunkId?: string;
+  nextChunkIndex?: number;
+  remainingChunks?: number;
   completedChunks: number;
   totalChunks: number;
   percent: number;
@@ -91,17 +107,6 @@ type StoredDetectionReport = {
   documentDocId: string;
   report: DetectionReport;
   savedAt: string;
-};
-
-const VIEW_HEADERS: Record<WorkbenchView, { title: string; subtitle: string }> = {
-  home: { title: "实时 Diff 改写工作台", subtitle: "上传、执行、对照都在这里完成；配置从左侧进入。" },
-  quality: { title: "改写检查", subtitle: "集中查看结构、引用、外部报告反馈和导出前检查结果。" },
-  experiment: { title: "策略复盘", subtitle: "保存、复现和对比模型、Prompt 与外部平台分数。" },
-  model: { title: "模型配置", subtitle: "维护默认连接、服务商仓库和每轮改写模型。" },
-  format: { title: "学校排版规范", subtitle: "解析学校说明，确认后只影响 Word 导出排版。" },
-  protection: { title: "保护区地图", subtitle: "核对目录、图表、表格、公式和参考文献的锁定边界。" },
-  history: { title: "历史记录", subtitle: "管理原始文档、运行记录、导出文件和中间产物。" },
-  diagnostics: { title: "启动诊断", subtitle: "检查后端、模型配置、工作目录和本地运行环境。" },
 };
 
 const PROMPT_OPTIONS: Array<{ id: PromptId; label: string; desc: string }> = [
@@ -166,7 +171,7 @@ function buildRoundModelFromProvider(provider: ModelProviderConfig, model: strin
     providerName: provider.name,
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
-    model: model || provider.defaultModel || provider.models?.[0] || fallback.model,
+    model: model || provider.defaultModel || provider.models?.[0] || "",
     apiType: provider.apiType || fallback.apiType,
     temperature: provider.temperature ?? fallback.temperature,
     requestTimeoutSeconds: provider.requestTimeoutSeconds ?? fallback.requestTimeoutSeconds,
@@ -626,7 +631,12 @@ function scoreDetectionMatch(segmentText: string, chunkText: string): number {
   const chunk = normalizeForDetectionMatch(chunkText);
   if (!segment || !chunk) return 0;
   if (chunk.includes(segment)) return 1;
-  if (segment.includes(chunk)) return Math.min(0.98, chunk.length / Math.max(segment.length, 1));
+  if (segment.includes(chunk)) {
+    const coverage = chunk.length / Math.max(segment.length, 1);
+    if (chunk.length >= 80) return Math.min(0.94, 0.72 + coverage * 0.26);
+    if (chunk.length >= 42) return Math.min(0.88, 0.62 + coverage * 0.24);
+    return Math.min(0.75, coverage);
+  }
   return Math.max(
     scoreFragmentCoverage(segment, chunk) * 0.98,
     scoreAnchorOverlap(segmentText, chunkText) * 0.86,
@@ -724,6 +734,7 @@ function classifyDetectionCandidate(
   const hasDecisiveLead = scoreGap >= 0.12 || runnerUpScore < 0.5;
   const hasDirectQuoteEvidence = candidate.directFragmentScore >= 0.42 || fragmentCount >= 2;
   const hasConcreteEvidence = hasDirectQuoteEvidence || candidate.directScore >= 0.86 || anchorCount >= 4;
+  const hasCoveredChunkEvidence = candidate.directScore >= 0.78 && candidate.score >= 0.7 && (candidate.directFragmentScore >= 0.14 || anchorCount >= 2);
   if (
     isBest
     && candidate.directScore >= 0.96
@@ -747,7 +758,27 @@ function classifyDetectionCandidate(
   if (isBest && candidate.directScore >= 0.84 && candidate.directFragmentScore >= 0.28 && scoreGap >= 0.06) {
     return "strong";
   }
+  if (
+    isBest
+    && candidate.directScore >= 0.82
+    && candidate.score >= 0.74
+    && candidate.directFragmentScore >= 0.24
+    && candidate.windowFragmentScore >= 0.55
+  ) {
+    return "strong";
+  }
+  if (
+    !isBest
+    && candidate.directScore >= 0.78
+    && candidate.score >= 0.74
+    && (candidate.directFragmentScore >= 0.14 || candidate.windowFragmentScore >= 0.55 || anchorCount >= 1)
+  ) {
+    return "strong";
+  }
   if (isBest && candidate.score >= 0.55 && candidate.directScore >= 0.28 && (candidate.directFragmentScore >= 0.16 || anchorCount >= 1)) {
+    return "review";
+  }
+  if (!isBest && hasCoveredChunkEvidence) {
     return "review";
   }
   if (isBest && candidate.windowFragmentScore >= 0.34 && candidate.score >= 0.48) {
@@ -960,11 +991,75 @@ function buildRoundResultFromRerunResult(result: RerunChunkResult, current: Roun
   };
 }
 
+function buildRoundResultFromBatchRerunResult(result: BatchRerunResult, current: RoundResult | null): RoundResult | null {
+  if (!result.compare) {
+    return current;
+  }
+  const fallback = buildRoundResultFromCompareData(result.compare);
+  return {
+    ...(current ?? fallback),
+    round: result.compare.round,
+    outputPath: result.outputPath,
+    manifestPath: result.compare.manifestPath,
+    comparePath: result.comparePath || current?.comparePath || fallback.comparePath,
+    chunkLimit: result.compare.chunkCount,
+    inputSegmentCount: result.compare.chunkCount,
+    outputSegmentCount: result.compare.chunks.length,
+    paragraphCount: result.compare.paragraphCount,
+    qualitySummary: result.compare.qualitySummary,
+  };
+}
+
 type BatchRerunFailure = {
   chunkId: string;
   error: string;
+  rejectedCandidates?: NonNullable<RoundCompareData["chunks"][number]["rejectedCandidates"]>;
+  rerunStatus?: string;
+  rerunFallbackMode?: string;
+  rerunFallbackError?: string;
+  quality?: RoundCompareData["chunks"][number]["quality"];
   scopeKey?: string;
 };
+
+function asPlainRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function normalizeFailureRejectedCandidates(value: unknown): NonNullable<BatchRerunFailure["rejectedCandidates"]> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const candidates = value
+    .map((item) => asPlainRecord(item))
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map((item, index) => ({
+      attempt: typeof item.attempt === "number" ? item.attempt : undefined,
+      candidate: typeof item.candidate === "number" ? item.candidate : index + 1,
+      outputText: String(item.outputText ?? ""),
+      outputCharCount: typeof item.outputCharCount === "number" ? item.outputCharCount : undefined,
+      truncated: Boolean(item.truncated),
+      error: typeof item.error === "string" ? item.error : undefined,
+    }))
+    .filter((item) => item.outputText.trim());
+  return candidates.length ? candidates : undefined;
+}
+
+function extractRerunFailureExtras(error: unknown): Partial<BatchRerunFailure> {
+  const payload = asPlainRecord((error as { payload?: unknown } | null)?.payload);
+  const failure = asPlainRecord(payload?.failure);
+  if (!failure) {
+    return {};
+  }
+  const rejectedCandidates = normalizeFailureRejectedCandidates(failure.rejectedCandidates);
+  const quality = asPlainRecord(failure.quality) as BatchRerunFailure["quality"] | null;
+  return {
+    ...(rejectedCandidates ? { rejectedCandidates } : {}),
+    ...(typeof failure.rerunStatus === "string" ? { rerunStatus: failure.rerunStatus } : {}),
+    ...(typeof failure.rerunFallbackMode === "string" ? { rerunFallbackMode: failure.rerunFallbackMode } : {}),
+    ...(typeof failure.rerunFallbackError === "string" ? { rerunFallbackError: failure.rerunFallbackError } : {}),
+    ...(quality ? { quality } : {}),
+  };
+}
 
 function getRerunFailureScopeKey(compareData: RoundCompareData | null | undefined): string {
   if (!compareData) {
@@ -1026,6 +1121,12 @@ function historyItemMatchesDocument(item: HistoryDocumentSummary, status: Docume
   const documentRefs = [status?.docId, status?.sourcePath, sourcePath].filter(Boolean) as string[];
   const historyRefs = [item.docId, item.sourcePath, item.originPath].filter(Boolean);
   return documentRefs.some((documentRef) => historyRefs.some((historyRef) => documentRefsMatch(documentRef, historyRef)));
+}
+
+function waitForMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function sortHistoryRounds(rounds: HistoryRound[], strategy: "round" | "timestamp" = "round"): HistoryRound[] {
@@ -1171,6 +1272,12 @@ function createCheckpointProgress(
     totalChunks: status.totalChunks || undefined,
     checkpointPath: status.checkpointPath,
     error: status.lastError || undefined,
+    nextChunkId: status.nextChunkId,
+    nextChunkIndex: status.nextChunkIndex,
+    remainingChunks: status.remainingChunks,
+    resumeStage: status.resumeStage,
+    resumeActionLabel: status.resumeActionLabel,
+    resumeExplanation: status.resumeExplanation,
     rewriteCandidateMode: candidateMode,
     candidateMaxPerChunk,
     estimatedApiCalls: status.totalChunks ? status.totalChunks * candidateMaxPerChunk : undefined,
@@ -1197,6 +1304,12 @@ function formatRuntimeStep(progress: RoundProgress | null, fallback: string): st
     return `已完成切块，共 ${progress.totalChunks} 个分块，${candidateText}${estimateText}，准备开始第 ${progress.round} 轮。`;
   }
   if (progress.phase === "resuming-from-checkpoint" && progress.completedChunks && progress.totalChunks) {
+    if (progress.resumeStage === "finalize_output") {
+      return `检测到第 ${progress.round} 轮所有分块已落盘，正在继续收尾，不会重跑已完成分块。`;
+    }
+    if (progress.resumeActionLabel) {
+      return `检测到断点续跑，${progress.resumeActionLabel}，已复用 ${progress.completedChunks}/${progress.totalChunks} 个分块结果。`;
+    }
     return `检测到断点续跑，已复用 ${progress.completedChunks}/${progress.totalChunks} 个分块结果。`;
   }
   if (progress.phase === "processing-chunk" && progress.currentChunk && progress.totalChunks) {
@@ -1372,6 +1485,11 @@ function buildRunRecoveryPanelState(input: {
       tone: canceling ? "red" : "blue",
       phaseLabel,
       actionHint: canceling ? "等待后端完成中断；完成后再次执行会从断点继续。" : "如需暂停，点击中断当前轮；已完成分块会保留。",
+      resumeActionLabel: activeProgress?.resumeActionLabel,
+      resumeExplanation: activeProgress?.resumeExplanation,
+      nextChunkId: activeProgress?.nextChunkId,
+      nextChunkIndex: activeProgress?.nextChunkIndex,
+      remainingChunks: activeProgress?.remainingChunks,
       completedChunks,
       totalChunks,
       percent,
@@ -1394,12 +1512,20 @@ function buildRunRecoveryPanelState(input: {
     };
   }
   if (checkpoint) {
+    const allChunksDone = checkpoint.resumeStage === "finalize_output";
+    const resumeActionLabel = checkpoint.resumeActionLabel || (allChunksDone ? "继续收尾" : "继续当前轮");
+    const resumeExplanation = checkpoint.resumeExplanation || "断点内的已完成分块会被复用，继续执行不会从头覆盖。";
     return {
-      title: `发现第 ${checkpoint.round ?? input.nextRound ?? ""} 轮断点`,
-      message: "断点内的已完成分块会被复用，继续执行不会从头覆盖。",
+      title: allChunksDone ? `第 ${checkpoint.round ?? input.nextRound ?? ""} 轮等待收尾` : `发现第 ${checkpoint.round ?? input.nextRound ?? ""} 轮断点`,
+      message: resumeExplanation,
       tone: checkpoint.lastError ? "amber" : "blue",
       phaseLabel,
-      actionHint: "点击继续当前轮可接着跑；只有点击放弃本轮进度才会清空断点。",
+      actionHint: allChunksDone ? "点击继续只会补做合并、Diff 和记录写入；不要因为 100% 显示断点就误以为要重头跑。" : "点击继续当前轮可接着跑；只有点击放弃本轮进度才会清空断点。",
+      resumeActionLabel,
+      resumeExplanation,
+      nextChunkId: checkpoint.nextChunkId,
+      nextChunkIndex: checkpoint.nextChunkIndex,
+      remainingChunks: checkpoint.remainingChunks,
       completedChunks,
       totalChunks,
       percent: checkpoint.progressPercent || percent,
@@ -1493,6 +1619,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const restoredDocumentRef = useRef(false);
   const attachedRunTokenRef = useRef<string | null>(null);
   const runSessionRef = useRef<RunSession | null>(null);
+  const batchRerunSessionRef = useRef<BatchRerunSession | null>(null);
   const runSessionSequenceRef = useRef(0);
   const notificationMessageKeyRef = useRef("");
   const taskTicketRef = useRef(0);
@@ -1506,8 +1633,10 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const [formatParserRoute, setFormatParserRoute] = useState<FormatParserModelRoute>(() => loadStoredFormatParserRoute());
   const [activeView, setActiveView] = useState<WorkbenchView>("home");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("fyadr.sidebarCollapsed") === "1");
+  const [homeToolsCollapsed, setHomeToolsCollapsed] = useState(() => localStorage.getItem(HOME_TOOLS_COLLAPSED_KEY) === "1");
   const [reviewDecisions, setReviewDecisions] = useState<Record<string, ReviewDecision>>({});
   const [currentRunToken, setCurrentRunToken] = useState<string | null>(null);
+  const [currentBatchRerunToken, setCurrentBatchRerunToken] = useState<string | null>(null);
   const [roundProgressStatus, setRoundProgressStatus] = useState<RoundProgressStatus | null>(null);
   const [taskPhase, setTaskPhase] = useState<TaskPhase>("idle");
   const [modelConfigReady, setModelConfigReady] = useState(false);
@@ -1634,6 +1763,29 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     return true;
   }
 
+  function beginBatchRerunSession(session: BatchRerunSession) {
+    batchRerunSessionRef.current = session;
+    setCurrentBatchRerunToken(session.runId);
+  }
+
+  function clearBatchRerunSession(runId: string | null | undefined) {
+    if (!runId) {
+      return;
+    }
+    if (batchRerunSessionRef.current?.runId === runId) {
+      batchRerunSessionRef.current = null;
+    }
+    setCurrentBatchRerunToken((current) => (current === runId ? null : current));
+  }
+
+  function markBatchRerunCancelRequested(runId: string) {
+    const session = batchRerunSessionRef.current;
+    if (!session || session.runId !== runId) {
+      return;
+    }
+    batchRerunSessionRef.current = { ...session, cancelRequested: true };
+  }
+
   const running = Boolean(currentRunToken) || isTaskRunningPhase(taskPhase);
   const uiBusy = busy || isTaskBlocking(taskPhase);
   const runtimeStatus = taskPhase !== "idle" ? getTaskPhaseLabel(taskPhase) : busy ? "处理中" : "就绪";
@@ -1662,6 +1814,10 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   useEffect(() => {
     localStorage.setItem("fyadr.sidebarCollapsed", sidebarCollapsed ? "1" : "0");
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem(HOME_TOOLS_COLLAPSED_KEY, homeToolsCollapsed ? "1" : "0");
+  }, [homeToolsCollapsed]);
 
   useEffect(() => {
     const text = error || notice;
@@ -2012,6 +2168,36 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   }, [documentStatus?.sourcePath, currentRunToken, service]);
 
   useEffect(() => {
+    const outputPath = roundResult?.outputPath ?? activeCompareData?.outputPath;
+    if (!outputPath || currentBatchRerunToken || batchRerunSessionRef.current || currentRunToken || taskPhase !== "idle") {
+      return;
+    }
+    let cancelled = false;
+
+    async function probeActiveBatchRerun() {
+      try {
+        const result = await service.getHealth();
+        if (cancelled) {
+          return;
+        }
+        setDiagnostics(result);
+        const activeBatch = (result.activeBatchReruns ?? []).find((item) => sameWorkspacePath(item.outputPath, outputPath));
+        if (activeBatch && !cancelled) {
+          void attachActiveBatchRerun(activeBatch);
+        }
+      } catch {
+        // Batch rerun recovery is best-effort; the visible result remains usable.
+      }
+    }
+
+    void probeActiveBatchRerun();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCompareData?.outputPath, currentBatchRerunToken, currentRunToken, roundResult?.outputPath, service, taskPhase]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function bootstrapFormatRules() {
@@ -2221,6 +2407,23 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       if (!options.silent) {
         finishTask(taskTicket);
       }
+    }
+  }
+
+  async function handleCleanupTaskStateSnapshots() {
+    const taskTicket = beginTask("diagnosing", { runtimeStep: "正在清理过期任务快照。" });
+    try {
+      const result = await service.cleanupTaskStateSnapshots("expired", 168);
+      setDiagnostics((current) => current ? { ...current, taskStateStore: result.after } : current);
+      await refreshDiagnostics({ silent: true });
+      const failedText = result.failedFiles.length ? `，${result.failedFiles.length} 个文件未能删除` : "";
+      setNotice(`已清理 ${result.deletedCount} 个过期任务快照，释放 ${formatBytes(result.deletedBytes)}${failedText}。正在运行的任务快照不会被删除。`);
+      setRuntimeStep("过期任务快照清理完成");
+    } catch (appError) {
+      setError(stringifyError(appError));
+      setRuntimeStep("过期任务快照清理失败");
+    } finally {
+      finishTask(taskTicket);
     }
   }
 
@@ -2657,6 +2860,57 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
   }
 
+  async function handleRefreshAllProviderModels() {
+    const providers = modelConfig.modelProviders ?? [];
+    const enabledProviders = providers.filter((provider) => provider.enabled !== false);
+    if (!enabledProviders.length) {
+      setNotice("当前没有启用的服务商。");
+      return;
+    }
+    const taskTicket = beginTask("loading-models");
+    try {
+      setRuntimeStep("正在批量读取已启用服务商的模型列表。");
+      const providerPatches = new Map<string, Partial<ModelProviderConfig>>();
+      const failures: string[] = [];
+      for (const provider of enabledProviders) {
+        if (!provider.baseUrl.trim() || !provider.apiKey.trim()) {
+          failures.push(`${provider.name || provider.id}：连接信息不完整`);
+          continue;
+        }
+        try {
+          const catalog = await service.listModels(buildModelConfigFromProvider(provider, modelConfig));
+          const models = catalog.models.map((item) => item.id);
+          providerPatches.set(provider.id, {
+            models,
+            defaultModel: provider.defaultModel || models[0] || "",
+            updatedAt: new Date().toISOString(),
+          });
+        } catch (appError) {
+          failures.push(`${provider.name || provider.id}：${stringifyError(appError)}`);
+        }
+      }
+      const nextProviders = providers.map((provider) => ({
+        ...provider,
+        ...(providerPatches.get(provider.id) ?? {}),
+      }));
+      const nextConfig = { ...modelConfig, modelProviders: nextProviders };
+      const saved = await service.saveModelConfig(nextConfig);
+      setModelConfig({ ...saved, ...nextConfig, roundModels: { ...(saved.roundModels ?? {}), ...(nextConfig.roundModels ?? {}) } });
+      const successCount = providerPatches.size;
+      setNotice(
+        failures.length
+          ? `已更新 ${successCount} 个服务商模型列表，${failures.length} 个失败：${failures.slice(0, 2).join("；")}`
+          : `已更新 ${successCount} 个服务商模型列表。`,
+      );
+      setRuntimeStep("服务商模型列表已批量更新");
+    } catch (appError) {
+      setError(stringifyError(appError));
+      setRuntimeStep("批量读取服务商模型失败");
+    } finally {
+      finishTask(taskTicket);
+    }
+  }
+
   async function handleParseFormatRules(text: string) {
     if (formatParseAbortRef.current) {
       setNotice("学校规范正在解析中；如需换模型或修改内容，请先停止当前解析。");
@@ -3022,7 +3276,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       }, runToken);
 
       setRuntimeStep(checkpointProgress ? formatRuntimeStep(checkpointProgress, `准备续跑第 ${documentStatus.nextRound} 轮。`) : `准备执行第 ${documentStatus.nextRound} 轮。`);
-      setNotice(checkpointProgress ? "已识别断点，本次会从已完成分块后继续，不会重头跑。" : `本次运行将使用 ${describePromptProfile(modelConfig.promptProfile)}，中途失败时会优先尝试断点续跑。`);
+      setNotice(checkpointProgress ? checkpointProgress.resumeExplanation || "已识别断点，本次会从已完成分块后继续，不会重头跑。" : `本次运行将使用 ${describePromptProfile(modelConfig.promptProfile)}，中途失败时会优先尝试断点续跑。`);
 
       const nextResult = await service.awaitRunRound(documentStatus.sourcePath, runConfig, runToken);
       if (!isActiveRunSession(runSession)) {
@@ -3099,6 +3353,57 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       if (isActiveRunSession(runSession)) {
         transitionTask(runSession.taskTicket, "running-round");
       }
+    }
+  }
+
+  async function attachActiveBatchRerun(activeBatch: BatchRerunStatus) {
+    if (currentBatchRerunToken || batchRerunSessionRef.current?.runId === activeBatch.runId) {
+      return;
+    }
+    const taskTicket = beginTask("batch-rerunning", {
+      clearMessages: false,
+      runtimeStep: "正在接回后台批量重跑任务。",
+    });
+    const runId = activeBatch.runId;
+    try {
+      beginBatchRerunSession({
+        runId,
+        taskTicket,
+        label: "后台批量重跑",
+        cancelRequested: activeBatch.cancelRequested,
+      });
+      setNotice("已接回后台批量重跑；刷新页面不会让已完成块白跑。");
+      const status = activeBatch.completed ? activeBatch : await waitForBatchRerunResult(runId, "后台批量重跑");
+      if (!status.result) {
+        throw new Error(status.error || "后台批量重跑没有返回结果");
+      }
+      const successTargets = (status.result.successChunkIds ?? []).map((chunkId) => ({ chunkId }));
+      await applyBatchRerunResult("后台批量重跑", status.result, successTargets);
+    } catch (appError) {
+      setError(stringifyError(appError));
+      setRuntimeStep("后台批量重跑接回失败");
+    } finally {
+      clearBatchRerunSession(runId);
+      finishTask(taskTicket);
+    }
+  }
+
+  async function handleCancelBatchRerun() {
+    const session = batchRerunSessionRef.current;
+    if (!session || !currentBatchRerunToken || session.runId !== currentBatchRerunToken) {
+      setNotice("当前没有可停止的批量重跑任务。");
+      return;
+    }
+    try {
+      markBatchRerunCancelRequested(session.runId);
+      transitionTask(session.taskTicket, "canceling-batch-rerun", {
+        runtimeStep: `${session.label}正在停止；当前块完成后会停下`,
+      });
+      await service.cancelBatchRerun(session.runId);
+      setNotice("已请求停止批量重跑；已完成的块会保留。");
+    } catch (appError) {
+      setError(stringifyError(appError));
+      transitionTask(session.taskTicket, "batch-rerunning");
     }
   }
 
@@ -3182,10 +3487,103 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setRuntimeStep("局部重跑完成");
     } catch (appError) {
       const message = stringifyError(appError);
-      upsertRerunFailure({ chunkId, error: message });
+      upsertRerunFailure({ chunkId, error: message, ...extractRerunFailureExtras(appError) });
       setError(message);
       setRuntimeStep("局部重跑失败");
     } finally {
+      finishTask(taskTicket);
+    }
+  }
+
+  function formatBatchRerunProgress(label: string, status: BatchRerunStatus): string {
+    const chunkText = status.currentChunkId ? `：${status.currentChunkId}` : "";
+    const cancelText = status.cancelRequested ? "，正在停止" : "";
+    return `${label} ${status.completedCount}/${status.totalCount}${chunkText}；成功 ${status.successCount}，失败 ${status.failureCount}${cancelText}`;
+  }
+
+  async function waitForBatchRerunResult(runId: string, label: string): Promise<BatchRerunStatus> {
+    for (;;) {
+      const status = await service.getBatchRerunStatus(runId);
+      setRuntimeStep(formatBatchRerunProgress(label, status));
+      if (status.completed) {
+        return status;
+      }
+      await waitForMs(BATCH_RERUN_POLL_INTERVAL_MS);
+    }
+  }
+
+  async function applyBatchRerunResult(
+    actionLabel: string,
+    result: BatchRerunResult,
+    targets: BatchRerunTarget[],
+    suffix = "",
+  ) {
+    let latestCompare = result.compare ?? null;
+    const failures: BatchRerunFailure[] = result.failures.map((failure) => ({ ...failure }));
+    if (!latestCompare && result.outputPath) {
+      try {
+        latestCompare = await service.readCompare(result.outputPath);
+      } catch (appError) {
+        failures.push({ chunkId: "预览刷新", error: stringifyError(appError) });
+      }
+    }
+    if (latestCompare) {
+      const confirmedCompare = latestCompare;
+      const nextRoundResult = buildRoundResultFromBatchRerunResult({ ...result, compare: confirmedCompare }, roundResult);
+      if (nextRoundResult) {
+        setRoundResult(nextRoundResult);
+      }
+      setCompareData(confirmedCompare);
+      liveCompareRef.current = confirmedCompare;
+      const failedChunkIds = new Set(result.failures.map((failure) => failure.chunkId));
+      const successChunkIds = new Set(result.successChunkIds ?? []);
+      const completedTargets = successChunkIds.size
+        ? [...successChunkIds].map((chunkId) => ({ chunkId }))
+        : targets.slice(0, result.completedCount).filter((target) => !failedChunkIds.has(target.chunkId));
+      setReviewDecisions((current) => ({
+        ...buildDefaultReviewDecisions(confirmedCompare),
+        ...current,
+        ...Object.fromEntries(completedTargets.map((target) => [target.chunkId, "rewrite" as ReviewDecision])),
+      }));
+    }
+    if (result.successCount > 0) {
+      try {
+        const outputPreview = await service.readOutput(result.outputPath, PREVIEW_MAX_CHARS);
+        setPreview(outputPreview);
+      } catch (appError) {
+        failures.push({ chunkId: "预览刷新", error: stringifyError(appError) });
+      }
+    }
+    setLastExportResult(null);
+    setRerunFailures(scopeRerunFailures(failures, latestCompare ?? activeCompareData));
+    const finalSuffix = result.canceled ? `${suffix}已停止；已完成的块已保留。` : suffix;
+    if (result.successCount === 0 && failures.length) {
+      setError(formatBatchRerunSummary(actionLabel, result.successCount, result.totalCount, failures, finalSuffix));
+      setRuntimeStep(`${actionLabel}全部失败`);
+      return;
+    }
+    setNotice(formatBatchRerunSummary(actionLabel, result.successCount, result.totalCount, failures, finalSuffix));
+    setRuntimeStep(result.canceled ? `${actionLabel}已停止` : failures.length ? `${actionLabel}部分完成` : `${actionLabel}完成`);
+  }
+
+  async function runBatchRerunTask(actionLabel: string, outputPath: string, targets: BatchRerunTarget[], suffix = "") {
+    const taskTicket = beginTask("batch-rerunning");
+    let runId: string | null = null;
+    try {
+      setRerunFailures([]);
+      setRuntimeStep(`${actionLabel}准备中`);
+      runId = await service.startBatchRerun(outputPath, targets, modelConfig);
+      beginBatchRerunSession({ runId, taskTicket, label: actionLabel, cancelRequested: false });
+      const status = await waitForBatchRerunResult(runId, actionLabel);
+      if (!status.result) {
+        throw new Error(status.error || `${actionLabel}没有返回结果`);
+      }
+      await applyBatchRerunResult(actionLabel, status.result, targets, suffix);
+    } catch (appError) {
+      setError(stringifyError(appError));
+      setRuntimeStep(`${actionLabel}失败`);
+    } finally {
+      clearBatchRerunSession(runId);
       finishTask(taskTicket);
     }
   }
@@ -3197,57 +3595,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setNotice("当前没有需要批量重跑的风险块。");
       return;
     }
-    const taskTicket = beginTask("rerunning-chunk");
-    try {
-      setRerunFailures([]);
-      let latestCompare = activeCompareData;
-      let currentOutputPath = outputPath;
-      let currentRoundResult = roundResult;
-      let successCount = 0;
-      const failures: BatchRerunFailure[] = [];
-      for (let index = 0; index < riskyChunkIds.length; index += 1) {
-        const chunkId = riskyChunkIds[index];
-        setRuntimeStep(`正在重跑风险块 ${index + 1}/${riskyChunkIds.length}：${chunkId}`);
-        try {
-          const result = await service.rerunChunk(currentOutputPath, chunkId, modelConfig);
-          currentOutputPath = result.outputPath;
-          latestCompare = result.compare;
-          currentRoundResult = buildRoundResultFromRerunResult(result, currentRoundResult);
-          successCount += 1;
-          clearRerunFailure(chunkId);
-          setRoundResult(currentRoundResult);
-          setCompareData(result.compare);
-          setLastExportResult(null);
-          liveCompareRef.current = result.compare;
-          setReviewDecisions((current) => ({ ...buildDefaultReviewDecisions(result.compare), ...current, [chunkId]: "rewrite" }));
-        } catch (appError) {
-          failures.push({ chunkId, error: stringifyError(appError) });
-          setRuntimeStep(`块 ${chunkId} 重跑失败，继续处理剩余块。`);
-        }
-      }
-      if (latestCompare && successCount > 0) {
-        try {
-          const outputPreview = await service.readOutput(currentOutputPath, PREVIEW_MAX_CHARS);
-          setPreview(outputPreview);
-        } catch (appError) {
-          failures.push({ chunkId: "预览刷新", error: stringifyError(appError) });
-        }
-      }
-      if (successCount === 0 && failures.length) {
-        setRerunFailures(scopeRerunFailures(failures, latestCompare));
-        setError(formatBatchRerunSummary("重跑需处理块", successCount, riskyChunkIds.length, failures));
-        setRuntimeStep("批量局部重跑全部失败");
-        return;
-      }
-      setRerunFailures(scopeRerunFailures(failures, latestCompare));
-      setNotice(formatBatchRerunSummary("重跑需处理块", successCount, riskyChunkIds.length, failures));
-      setRuntimeStep(failures.length ? "批量局部重跑部分完成" : "批量局部重跑完成");
-    } catch (appError) {
-      setError(stringifyError(appError));
-      setRuntimeStep("批量局部重跑失败");
-    } finally {
-      finishTask(taskTicket);
-    }
+    await runBatchRerunTask("重跑需处理块", outputPath, riskyChunkIds.map((chunkId) => ({ chunkId })));
   }
 
   async function handleRerunDetectionMatchedChunks() {
@@ -3264,57 +3612,15 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setNotice("外部报告还没有强命中可自动重跑的 Diff 块；疑似命中和仅参考只用于定位，避免误改。");
       return;
     }
-    const taskTicket = beginTask("rerunning-chunk");
-    try {
-      setRerunFailures([]);
-      let currentOutputPath = outputPath;
-      let latestCompare = activeCompareData;
-      let currentRoundResult = roundResult;
-      let successCount = 0;
-      const failures: BatchRerunFailure[] = [];
-      for (let index = 0; index < riskyMatchTargets.length; index += 1) {
-        const { matchGroup, chunkId, maxRisk } = riskyMatchTargets[index];
-        setRuntimeStep(`正在按外部报告反馈重跑 ${index + 1}/${riskyMatchTargets.length}：${chunkId}（最高 ${maxRisk}%）。`);
-        try {
-          const result = await service.rerunChunk(currentOutputPath, chunkId, modelConfig, buildDetectionRerunFeedback(chunkId, matchGroup, detectionReport));
-          currentOutputPath = result.outputPath;
-          latestCompare = result.compare;
-          currentRoundResult = buildRoundResultFromRerunResult(result, currentRoundResult);
-          successCount += 1;
-          clearRerunFailure(chunkId);
-          setRoundResult(currentRoundResult);
-          setCompareData(result.compare);
-          setLastExportResult(null);
-          liveCompareRef.current = result.compare;
-          setReviewDecisions((current) => ({ ...buildDefaultReviewDecisions(result.compare), ...current, [chunkId]: "rewrite" }));
-        } catch (appError) {
-          failures.push({ chunkId, error: stringifyError(appError) });
-          setRuntimeStep(`报告命中块 ${chunkId} 重跑失败，继续处理剩余块。`);
-        }
-      }
-      if (latestCompare && successCount > 0) {
-        try {
-          const outputPreview = await service.readOutput(currentOutputPath, PREVIEW_MAX_CHARS);
-          setPreview(outputPreview);
-        } catch (appError) {
-          failures.push({ chunkId: "预览刷新", error: stringifyError(appError) });
-        }
-      }
-      if (successCount === 0 && failures.length) {
-        setRerunFailures(scopeRerunFailures(failures, latestCompare));
-        setError(formatBatchRerunSummary("按外部报告反馈重跑", successCount, riskyMatchTargets.length, failures));
-        setRuntimeStep("外部报告命中块重跑全部失败");
-        return;
-      }
-      setRerunFailures(scopeRerunFailures(failures, latestCompare));
-      setNotice(formatBatchRerunSummary("按外部报告反馈重跑", successCount, riskyMatchTargets.length, failures, "建议重新导出 Word 后再上传新报告复查。"));
-      setRuntimeStep(failures.length ? "外部报告命中块重跑部分完成" : "外部报告命中块重跑完成");
-    } catch (appError) {
-      setError(stringifyError(appError));
-      setRuntimeStep("外部报告命中块重跑失败");
-    } finally {
-      finishTask(taskTicket);
-    }
+    await runBatchRerunTask(
+      "按外部报告反馈重跑",
+      outputPath,
+      riskyMatchTargets.map(({ matchGroup, chunkId }) => ({
+        chunkId,
+        userFeedback: buildDetectionRerunFeedback(chunkId, matchGroup, detectionReport),
+      })),
+      "建议重新导出 Word 后再上传新报告复查。",
+    );
   }
 
   async function handleExportFromHistory(item: { round: number; outputPath: string }, format: "txt" | "docx") {
@@ -3533,9 +3839,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   );
 
   return (
-    <div className="h-screen overflow-hidden bg-[#f6f8fc] text-slate-950">
+    <div className="fy-app-shell">
       <div className="flex h-screen min-h-0">
-        <aside className={`fixed inset-y-0 left-0 z-30 flex flex-col border-r border-slate-200/80 bg-white/90 px-3 py-5 shadow-[12px_0_40px_rgba(15,23,42,0.06)] backdrop-blur-xl transition-[width] duration-300 ${sidebarCollapsed ? "w-[92px]" : "w-[304px]"}`}>
+        <aside className={`fy-sidebar ${sidebarCollapsed ? "w-[92px]" : "w-[304px]"}`}>
           <div className="shrink-0 px-0 pb-4 pt-1">
             <div className={`flex items-center overflow-visible ${sidebarCollapsed ? "h-[74px] justify-center" : "h-[112px] justify-center"}`}>
               <img src="/brand-logo.png" alt="Fuck your AI detection rate" className={`max-w-none object-contain drop-shadow-[0_14px_28px_rgba(249,115,22,0.18)] transition-all duration-300 ${sidebarCollapsed ? "w-[74px]" : "w-[286px]"}`} />
@@ -3563,7 +3869,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
             <SidebarItem collapsed={sidebarCollapsed} active={activeView === "diagnostics"} icon={<Activity className="h-4 w-4" />} label="启动诊断" onClick={() => setActiveView("diagnostics")} />
             <SidebarItem collapsed={sidebarCollapsed} active={activeView === "experiment"} icon={<Clock3 className="h-4 w-4" />} label="策略复盘" onClick={() => setActiveView("experiment")} />
           </nav>
-          <div className={`mt-auto rounded-3xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-500 ${sidebarCollapsed ? "text-center" : ""}`}>
+          <div className={`mt-auto fy-soft-section p-3 text-xs font-semibold text-slate-500 ${sidebarCollapsed ? "text-center" : ""}`}>
             {sidebarCollapsed ? "FYADR" : "FYADR 本地工作台"}
           </div>
         </aside>
@@ -3593,7 +3899,8 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
 
           <section className="mt-4 min-h-0 flex-1 overflow-hidden">
             {activeView === "home" ? (
-              <div className="grid h-full min-h-0 gap-5 xl:grid-cols-[minmax(0,1fr)_380px] 2xl:grid-cols-[minmax(0,1fr)_410px] xl:items-stretch">
+              <div className={`relative grid h-full min-h-0 gap-5 xl:items-stretch ${homeToolsCollapsed ? "grid-cols-1" : "xl:grid-cols-[minmax(0,1fr)_380px] 2xl:grid-cols-[minmax(0,1fr)_410px]"}`}>
+                <div className="relative h-full min-h-0 min-w-0">
                   <ResultCard
                     result={roundResult}
                     preview={preview}
@@ -3606,45 +3913,73 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                     onReviewDecisionChange={updateReviewDecision}
                     onRerunChunk={(chunkId, userFeedback) => void handleRerunChunk(chunkId, userFeedback)}
                     onRerunRiskyChunks={() => void handleRerunRiskyChunks()}
+                    batchRerunRunning={Boolean(currentBatchRerunToken)}
+                    batchRerunStatusText={runtimeLabel}
+                    onCancelBatchRerun={() => void handleCancelBatchRerun()}
                     onExportReviewedTxt={() => void handleExportReviewed("txt")}
                     onExportReviewedDocx={() => void handleExportReviewed("docx")}
                     onExportTxt={() => void handleExportCurrent("txt")}
                     onExportDocx={() => void handleExportCurrent("docx")}
-                />
-                <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-y-auto overflow-x-hidden pr-1">
-                  <HomeRunPanel
-                    value={documentStatus}
-                    busy={uiBusy}
-                    pickerLabel={pickerLabel}
-                    modelConfig={modelConfig}
-                    modelCatalog={modelCatalog}
-                    modelCatalogBusy={modelCatalogBusy}
-                    progress={progress}
-                    roundProgressStatus={roundProgressStatus}
-                    promptProfile={modelConfig.promptProfile}
-                    promptSequence={modelConfig.promptSequence}
-                    onPromptProfileChange={(promptProfile) => void handlePromptProfileChange(promptProfile)}
-                    onPromptSequenceChange={(promptSequence) => void handlePromptSequenceChange(promptSequence)}
-                    onModelConfigChange={setModelConfig}
-                    onSaveModelConfig={(nextConfig) => void handleSaveModelConfig(nextConfig)}
-                    onRefreshDefaultModels={() => void refreshModelCatalog()}
-                    onRefreshProviderModels={(providerId) => void handleRefreshProviderModels(providerId)}
-                    onPickFile={handlePickFile}
-                    onRunRound={handleRunRound}
-                    onCancelRun={handleCancelRunRound}
-                    onResetRound={handleResetCurrentRound}
-                    running={running}
                   />
-                <DetectionReportPanel
-                  report={detectionReport}
-                  matches={detectionMatches}
-                  documentLabel={documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : ""}
-                  busy={uiBusy}
-                  onPickReport={handlePickDetectionReport}
-                  onClearReport={handleClearDetectionReport}
-                    onRerunMatchedChunks={() => void handleRerunDetectionMatchedChunks()}
-                  />
+                  {homeToolsCollapsed ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="fy-panel absolute right-4 top-4 z-20 rounded-full px-4 py-2 shadow-lg"
+                      onClick={() => setHomeToolsCollapsed(false)}
+                    >
+                      <PanelRightOpen className="h-4 w-4" />
+                      展开操作面板
+                    </Button>
+                  ) : null}
                 </div>
+                {!homeToolsCollapsed ? (
+                  <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-y-auto overflow-x-hidden pr-1">
+                    <div className="fy-sticky-toolbar">
+                      <div className="min-w-0">
+                        <div className="text-sm font-black text-slate-950">操作面板</div>
+                        <div className="mt-0.5 truncate text-xs text-slate-500">文档、轮次、检测报告入口集中在这里。</div>
+                      </div>
+                      <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => setHomeToolsCollapsed(true)}>
+                        <PanelRightClose className="h-4 w-4" />
+                        专注 Diff
+                      </Button>
+                    </div>
+                    <HomeRunPanel
+                      value={documentStatus}
+                      busy={uiBusy}
+                      pickerLabel={pickerLabel}
+                      modelConfig={modelConfig}
+                      modelCatalog={modelCatalog}
+                      modelCatalogBusy={modelCatalogBusy}
+                      progress={progress}
+                      roundProgressStatus={roundProgressStatus}
+                      promptProfile={modelConfig.promptProfile}
+                      promptSequence={modelConfig.promptSequence}
+                      onPromptProfileChange={(promptProfile) => void handlePromptProfileChange(promptProfile)}
+                      onPromptSequenceChange={(promptSequence) => void handlePromptSequenceChange(promptSequence)}
+                      onModelConfigChange={setModelConfig}
+                      onSaveModelConfig={(nextConfig) => void handleSaveModelConfig(nextConfig)}
+                      onRefreshDefaultModels={() => void refreshModelCatalog()}
+                      onRefreshAllProviderModels={() => void handleRefreshAllProviderModels()}
+                      onRefreshProviderModels={(providerId) => void handleRefreshProviderModels(providerId)}
+                      onPickFile={handlePickFile}
+                      onRunRound={handleRunRound}
+                      onCancelRun={handleCancelRunRound}
+                      onResetRound={handleResetCurrentRound}
+                      running={running}
+                    />
+                    <DetectionReportPanel
+                      report={detectionReport}
+                      matches={detectionMatches}
+                      documentLabel={documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : ""}
+                      busy={uiBusy}
+                      onPickReport={handlePickDetectionReport}
+                      onClearReport={handleClearDetectionReport}
+                      onRerunMatchedChunks={() => void handleRerunDetectionMatchedChunks()}
+                  />
+                  </div>
+                ) : null}
               </div>
             ) : activeView === "quality" ? (
               <div className="h-full overflow-auto pr-2"><QualityReportPage compareData={activeCompareData} exportResult={lastExportResult} /></div>
@@ -3667,14 +4002,19 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                 />
               </div>
             ) : activeView === "model" ? (
-              <div className="h-full overflow-auto pr-2">{modelPanel}</div>
+              <div className="h-full min-h-0 overflow-hidden pr-2">{modelPanel}</div>
             ) : activeView === "format" ? (
               <div className="h-full overflow-auto pr-2">{formatPanel}</div>
             ) : activeView === "protection" ? (
               <div className="h-full overflow-auto pr-2"><ProtectionMapCard value={protectionMap} /></div>
             ) : activeView === "diagnostics" ? (
               <div className="h-full overflow-auto pr-2">
-                <DiagnosticsPage value={diagnostics} busy={uiBusy} onRefresh={() => void refreshDiagnostics()} />
+                <DiagnosticsPage
+                  value={diagnostics}
+                  busy={uiBusy}
+                  onRefresh={() => void refreshDiagnostics()}
+                  onCleanupTaskSnapshots={() => void handleCleanupTaskStateSnapshots()}
+                />
               </div>
             ) : (
               <div className="h-full overflow-auto pr-2"><HistoryCard
@@ -3720,75 +4060,6 @@ function SidebarItem({ active, icon, label, onClick, collapsed = false }: { acti
   );
 }
 
-function WorkbenchHeader({
-  title,
-  subtitle,
-  notification,
-  unreadNotificationCount,
-  onOpenNotifications,
-}: {
-  title: string;
-  subtitle: string;
-  notification: AppNotification | null;
-  unreadNotificationCount: number;
-  onOpenNotifications: () => void;
-}) {
-  return (
-    <div className="rounded-[1.75rem] border border-slate-200 bg-white/92 px-5 py-4 shadow-soft backdrop-blur-xl">
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,520px)] xl:items-center">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-black tracking-tight text-slate-950">{title}</h1>
-            <p className="mt-1 text-sm font-medium text-slate-500">{subtitle}</p>
-          </div>
-        <div className="flex min-w-0 items-center gap-2 xl:justify-end">
-          <InlineNotification notification={notification} onOpenCenter={onOpenNotifications} />
-          <Button variant="outline" size="sm" onClick={onOpenNotifications} className="relative h-10 shrink-0 rounded-full bg-white px-3 shadow-sm">
-            <Bell className="h-4 w-4" />
-            通知
-            {unreadNotificationCount ? (
-              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
-                {unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}
-              </span>
-            ) : null}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function InlineNotification({ notification, onOpenCenter }: { notification: AppNotification | null; onOpenCenter: () => void }) {
-  const isError = notification?.kind === "error";
-  if (!notification) {
-    return (
-      <button
-        type="button"
-        onClick={onOpenCenter}
-        className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 text-left text-slate-500 transition hover:border-primary/30 hover:bg-white"
-      >
-        <Bell className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate text-sm font-semibold text-slate-600">暂无新通知</span>
-      </button>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onOpenCenter}
-      className={`flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full border px-3 text-left transition ${
-        isError ? "border-red-200 bg-red-50 text-red-900 hover:bg-red-100/70" : "border-emerald-200 bg-emerald-50 text-emerald-900 hover:bg-emerald-100/70"
-      }`}
-    >
-      <div className={`rounded-full p-1 ${isError ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
-        {isError ? <AlertCircle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-      </div>
-      <span className="shrink-0 text-xs font-black">{notification.title}</span>
-      <span className="min-w-0 flex-1 truncate text-sm font-medium opacity-90">{notification.text}</span>
-    </button>
-  );
-}
-
 function CurrentDocumentStatusStrip({
   documentStatus,
   promptProfile,
@@ -3829,11 +4100,11 @@ function CurrentDocumentStatusStrip({
   const progressTone = running ? "from-fuchsia-500 via-sky-500 to-emerald-400" : documentStatus ? "from-indigo-500 via-sky-500 to-cyan-400" : "from-slate-300 via-slate-200 to-slate-300";
 
   return (
-    <div className="rounded-[1.75rem] border border-slate-200 bg-white/90 p-3 shadow-soft backdrop-blur-xl">
+    <div className="fy-panel p-3">
       <div className="grid gap-3 xl:grid-cols-[minmax(360px,1.45fr)_minmax(210px,0.78fr)_minmax(210px,0.78fr)_220px_270px] xl:items-stretch">
         <div className={`rounded-[1.35rem] border p-3 ${documentStatus ? "rainbow-marquee-card" : "border-dashed border-slate-200 bg-slate-50"}`}>
           <div className="flex min-w-0 items-center gap-3">
-            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${documentStatus ? "bg-slate-950 text-white" : "bg-white text-slate-400"}`}>
+            <div className={`fy-icon-cell ${documentStatus ? "bg-slate-950 text-white" : "bg-white text-slate-400"}`}>
               <FileText className="h-5 w-5" />
             </div>
             <div className="min-w-0">
@@ -3862,7 +4133,7 @@ function CurrentDocumentStatusStrip({
           tone={hasDiff ? "emerald" : "slate"}
         />
 
-        <div className="rounded-[1.35rem] border border-slate-200 bg-slate-50 p-3">
+        <div className="fy-status-tile fy-tone-neutral">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-[11px] font-black text-slate-500">
@@ -3905,15 +4176,11 @@ function NotificationStripItem({
     <button
       type="button"
       onClick={onOpenNotifications}
-      className={`relative flex min-w-0 items-center gap-3 rounded-[1.35rem] border p-3 text-left transition ${
-        notification
-          ? isError
-            ? "border-red-200 bg-red-50 text-red-900 hover:bg-red-100/70"
-            : "border-emerald-200 bg-emerald-50 text-emerald-900 hover:bg-emerald-100/70"
-          : "border-slate-200 bg-slate-50 text-slate-800 hover:bg-white"
+      className={`fy-status-tile relative flex min-w-0 items-center gap-3 text-left transition ${
+        notification ? isError ? "fy-tone-danger hover:bg-red-100/70" : "fy-tone-success hover:bg-emerald-100/70" : "fy-tone-neutral hover:bg-white"
       }`}
     >
-      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${isError ? "bg-red-100 text-red-700" : notification ? "bg-emerald-100 text-emerald-700" : "bg-white text-slate-500"}`}>
+      <div className={`fy-icon-cell ${isError ? "bg-red-100 text-red-700" : notification ? "bg-emerald-100 text-emerald-700" : "bg-white text-slate-500"}`}>
         {isError ? <AlertCircle className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
       </div>
       <div className="min-w-0">
@@ -3943,9 +4210,9 @@ function StatusStripItem({
   tone: "violet" | "emerald" | "slate";
 }) {
   const toneClass = {
-    violet: "border-violet-200 bg-violet-50 text-violet-900",
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
-    slate: "border-slate-200 bg-slate-50 text-slate-800",
+    violet: "fy-tone-brand",
+    emerald: "fy-tone-success",
+    slate: "fy-tone-neutral",
   }[tone];
   const iconClass = {
     violet: "bg-violet-100 text-violet-700",
@@ -3954,9 +4221,9 @@ function StatusStripItem({
   }[tone];
 
   return (
-    <div className={`rounded-[1.35rem] border p-3 ${toneClass}`}>
+    <div className={`fy-status-tile ${toneClass}`}>
       <div className="flex min-w-0 items-center gap-3">
-        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${iconClass}`}>{icon}</div>
+        <div className={`fy-icon-cell ${iconClass}`}>{icon}</div>
         <div className="min-w-0">
           <div className="text-[11px] font-black opacity-65">{label}</div>
           <div className="mt-1 truncate text-sm font-black">{value}</div>
@@ -3983,6 +4250,7 @@ function HomeRunPanel({
   onModelConfigChange,
   onSaveModelConfig,
   onRefreshDefaultModels,
+  onRefreshAllProviderModels,
   onRefreshProviderModels,
   onPickFile,
   onRunRound,
@@ -4005,6 +4273,7 @@ function HomeRunPanel({
   onModelConfigChange: (modelConfig: ModelConfig) => void;
   onSaveModelConfig: (modelConfig: ModelConfig) => void;
   onRefreshDefaultModels: () => void;
+  onRefreshAllProviderModels: () => void;
   onRefreshProviderModels: (providerId: string) => void;
   onPickFile: () => void;
   onRunRound: () => void;
@@ -4027,12 +4296,31 @@ function HomeRunPanel({
     const roundKey = getRoundModelKey(promptProfile, index + 1);
     const roundModel = roundKey ? modelConfig.roundModels?.[roundKey] : undefined;
     const provider = findProviderForRoundModel(modelConfig, roundModel);
-    const providerUnavailable = Boolean(roundModel?.enabled && (!provider || provider.enabled === false));
+    const customRoute = Boolean(roundModel?.enabled);
+    const effectiveCustomModel = roundModel?.model || provider?.defaultModel || provider?.models?.[0] || "";
+    const providerUnavailable = Boolean(
+      !modelConfig.offlineMode
+      && (
+        customRoute
+          ? (
+            !provider
+            || provider.enabled === false
+            || !provider.baseUrl?.trim()
+            || !provider.apiKey?.trim()
+            || !effectiveCustomModel.trim()
+          )
+          : (
+            !modelConfig.baseUrl?.trim()
+            || !modelConfig.apiKey?.trim()
+            || !modelConfig.model?.trim()
+          )
+      ),
+    );
     return {
       index,
       promptId,
       providerLabel: roundModel?.enabled && provider ? provider.name : roundModel?.enabled ? "服务商不可用" : "默认连接",
-      modelLabel: roundModel?.enabled && provider ? roundModel.model || provider.defaultModel || "未选模型" : modelConfig.model || "未选模型",
+      modelLabel: roundModel?.enabled && provider ? effectiveCustomModel || "未选模型" : modelConfig.model || "未选模型",
       customized: Boolean(roundModel?.enabled && provider && provider.enabled !== false),
       providerUnavailable,
     };
@@ -4084,7 +4372,7 @@ function HomeRunPanel({
     ? "先修复模型路线"
     : value?.hasNextRound
       ? resumableCheckpoint
-        ? `继续第 ${value.nextRound} 轮`
+        ? resumableCheckpoint.resumeActionLabel || `继续第 ${value.nextRound} 轮`
         : `开始第 ${value.nextRound} 轮`
       : value
         ? "全部轮次已完成"
@@ -4096,7 +4384,7 @@ function HomeRunPanel({
     : hasDocument
       ? value?.hasNextRound
         ? resumableCheckpoint
-          ? "发现未完成断点，继续会从已完成分块之后接着跑。"
+          ? resumableCheckpoint.resumeExplanation || "发现未完成断点，继续会从已完成分块之后接着跑。"
           : "确认流程和模型路线后，执行当前轮。"
         : "当前任务已完成，可以在左侧 Diff 区导出。"
       : "先导入论文，系统会自动识别可改写正文。";
@@ -4199,9 +4487,9 @@ function HomeRunPanel({
   };
   return (
     <>
-    <Card className="min-w-0 shrink-0 overflow-hidden border-slate-200 bg-white/95 shadow-soft">
+    <Card className="fy-panel min-w-0 shrink-0 overflow-hidden">
       <CardContent className="space-y-3 p-4">
-        <div className="rounded-[1.75rem] border border-slate-200 bg-slate-50 p-3">
+        <div className="fy-soft-section p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="text-sm font-black text-slate-950">文档入口</div>
@@ -4222,13 +4510,13 @@ function HomeRunPanel({
           </div>
         </div>
 
-        <div className="rounded-[1.75rem] border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="fy-section p-3">
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={() => setSetupEditor(setupEditor === "prompt" ? null : "prompt")}
               disabled={busy}
-              className={`min-w-0 rounded-2xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${setupEditor === "prompt" ? "border-violet-300 bg-violet-50" : "border-slate-200 bg-slate-50 hover:border-violet-200 hover:bg-white"}`}
+              className={`fy-tile ${setupEditor === "prompt" ? "fy-tile-active" : ""}`}
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs font-black text-violet-700">改写流程</div>
@@ -4248,7 +4536,7 @@ function HomeRunPanel({
               type="button"
               onClick={() => setSetupEditor(setupEditor === "model" ? null : "model")}
               disabled={busy}
-              className={`min-w-0 rounded-2xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${unavailableRouteCount ? "border-red-200 bg-red-50" : setupEditor === "model" ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-slate-50 hover:border-blue-200 hover:bg-white"}`}
+              className={`fy-tile ${unavailableRouteCount ? "fy-tile-danger" : setupEditor === "model" ? "fy-tile-active" : ""}`}
             >
               <div className="flex items-center justify-between gap-2">
                 <div className={`text-xs font-black ${unavailableRouteCount ? "text-red-700" : "text-blue-700"}`}>模型路线</div>
@@ -4270,7 +4558,7 @@ function HomeRunPanel({
           </div>
         </div>
 
-        <div className={`rounded-[1.75rem] border p-4 shadow-sm ${running ? "border-red-100 bg-red-50" : "border-slate-200 bg-white"}`}>
+        <div className={`fy-section p-4 ${running ? "fy-tone-danger" : ""}`}>
           <div className="mb-3 flex items-start justify-between gap-3">
             <div>
               <div className="text-sm font-black text-slate-950">{running ? "正在运行" : "执行动作"}</div>
@@ -4284,13 +4572,13 @@ function HomeRunPanel({
           </div>
           {hasDocument ? (
             <div className="grid gap-2">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2">
+              <div className="fy-soft-section rounded-2xl p-2">
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => setRewriteCandidateMode("economy")}
                     disabled={busy || running}
-                    className={`rounded-xl border px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${rewriteCandidateMode === "economy" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-200 bg-white text-slate-600 hover:border-emerald-200"}`}
+                    className={`fy-tile rounded-xl px-3 py-2 ${rewriteCandidateMode === "economy" ? "fy-tone-success" : "text-slate-600 hover:border-emerald-200"}`}
                   >
                     <div className="text-xs font-black">省钱模式</div>
                     <div className="mt-0.5 text-[11px] font-semibold opacity-75">1 候选 / 块</div>
@@ -4299,7 +4587,7 @@ function HomeRunPanel({
                     type="button"
                     onClick={() => setRewriteCandidateMode("quality")}
                     disabled={busy || running}
-                    className={`rounded-xl border px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${rewriteCandidateMode === "quality" ? "border-violet-300 bg-violet-50 text-violet-900" : "border-slate-200 bg-white text-slate-600 hover:border-violet-200"}`}
+                    className={`fy-tile rounded-xl px-3 py-2 ${rewriteCandidateMode === "quality" ? "fy-tone-brand" : "text-slate-600 hover:border-violet-200"}`}
                   >
                     <div className="text-xs font-black">质量模式</div>
                     <div className="mt-0.5 text-[11px] font-semibold opacity-75">最多 2 候选 / 块</div>
@@ -4311,7 +4599,7 @@ function HomeRunPanel({
               </div>
               <RunRecoveryPanel state={runRecoveryState} />
               {resumableCheckpoint ? (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                <div className="fy-callout fy-tone-warning p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="font-black">发现第 {resumableCheckpoint.round} 轮断点</div>
@@ -4319,8 +4607,11 @@ function HomeRunPanel({
                         已完成 {resumableCheckpoint.completedChunks}/{resumableCheckpoint.totalChunks || "?"} 块
                         {resumableCheckpoint.progressPercent ? ` · 约 ${resumableCheckpoint.progressPercent}%` : ""}
                       </div>
+                      {resumableCheckpoint.resumeExplanation ? (
+                        <div className="mt-1 text-[11px] text-amber-800">{resumableCheckpoint.resumeExplanation}</div>
+                      ) : null}
                     </div>
-                    <Badge variant="warning">可续跑</Badge>
+                    <Badge variant="warning">{resumableCheckpoint.resumeActionLabel || "可续跑"}</Badge>
                   </div>
                   {resumableCheckpoint.lastError ? (
                     <div className="mt-2 rounded-xl bg-white/70 px-3 py-2 text-[11px] text-amber-800">
@@ -4329,12 +4620,13 @@ function HomeRunPanel({
                   ) : null}
                   <div className="mt-2 text-[11px] text-amber-700">
                     点击“继续”会保留已完成分块；点击“放弃本轮进度”才会清掉断点。
+                    {resumableCheckpoint.nextChunkId ? ` 下一块：${resumableCheckpoint.nextChunkId}。` : ""}
                     {checkpointUpdatedText ? ` 最近更新：${checkpointUpdatedText}` : ""}
                   </div>
                 </div>
               ) : null}
               {activeRunStatus ? (
-                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3 text-xs leading-5 text-blue-900">
+                <div className="fy-callout fy-tone-info p-3">
                   <div className="font-black">后台运行未结束</div>
                   <div className="mt-1 font-semibold">
                     状态：{activeRunStatus.status} · 事件 {activeRunStatus.eventCount} 条
@@ -4343,7 +4635,7 @@ function HomeRunPanel({
                 </div>
               ) : null}
               <Button
-                className={`h-14 w-full text-base shadow-soft ${canRunNextRound ? "bg-slate-950 text-white hover:bg-slate-800" : ""}`}
+                className={`h-14 w-full text-base ${canRunNextRound ? "fy-action-primary" : ""}`}
                 onClick={onRunRound}
                 disabled={!canRunNextRound}
               >
@@ -4359,7 +4651,7 @@ function HomeRunPanel({
               ) : null}
             </div>
           ) : (
-            <Button className="h-14 w-full bg-slate-950 text-base text-white shadow-soft hover:bg-slate-800" onClick={onPickFile} disabled={busy}>
+            <Button className="fy-action-primary h-14 w-full text-base" onClick={onPickFile} disabled={busy}>
               <FileText className="h-4 w-4" />
               {uploadButtonText}
             </Button>
@@ -4368,10 +4660,10 @@ function HomeRunPanel({
       </CardContent>
     </Card>
     {setupEditor ? (
-      <div className="fixed inset-0 z-[55]">
-        <button type="button" aria-label="关闭配置面板遮罩" className="absolute inset-0 bg-slate-950/20 backdrop-blur-[2px]" onClick={() => setSetupEditor(null)} />
-        <aside className="absolute right-5 top-5 flex h-[calc(100vh-40px)] w-[440px] max-w-[calc(100vw-40px)] flex-col overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-2xl">
-          <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-5">
+      <div className="fy-overlay z-[55]">
+        <button type="button" aria-label="关闭配置面板遮罩" className="fy-overlay-scrim" onClick={() => setSetupEditor(null)} />
+        <aside className={`fy-drawer ${setupEditor === "model" ? "fy-drawer-wide" : ""}`}>
+          <div className="fy-drawer-header flex items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2 text-lg font-black text-slate-950">
                 {setupEditor === "prompt" ? <Wand2 className="h-5 w-5 text-violet-600" /> : <Settings className="h-5 w-5 text-blue-600" />}
@@ -4386,7 +4678,7 @@ function HomeRunPanel({
             </Button>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto p-5">
+          <div className="fy-drawer-body">
             {setupEditor === "prompt" ? (
               <div className="space-y-4">
                 <div className="grid gap-2">
@@ -4395,7 +4687,7 @@ function HomeRunPanel({
                   <PromptModeButton active={promptProfile === "cn_custom"} title="自定义组合" text={formatPromptSequence(activeSequence)} onClick={() => onPromptProfileChange("cn_custom")} disabled={busy} />
                 </div>
                 {promptProfile === "cn_custom" ? (
-                  <div className="rounded-3xl border border-violet-100 bg-violet-50/70 p-4">
+                  <div className="fy-section border-violet-100 bg-violet-50/70 p-4">
                     <div className="grid grid-cols-4 gap-2">
                       {[1, 2, 3].map((length) => (
                         <Button key={length} type="button" variant={activeSequence.length === length ? "default" : "outline"} size="sm" onClick={() => updateSequenceLength(length)} disabled={busy}>{length} 轮</Button>
@@ -4420,7 +4712,7 @@ function HomeRunPanel({
               </div>
             ) : (
               <div className="space-y-4">
-                <div className="rounded-3xl border border-blue-100 bg-blue-50/60 p-4">
+                <div className="fy-section border-blue-100 bg-blue-50/60 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <div className="text-sm font-black text-blue-950">路线策略</div>
@@ -4433,12 +4725,15 @@ function HomeRunPanel({
                   <div className="mt-4 grid gap-2 sm:grid-cols-3">
                     <Button type="button" variant="outline" size="sm" onClick={resetModelRouteToDefault} disabled={busy}>全部继承默认</Button>
                     <Button type="button" variant="outline" size="sm" onClick={randomizeModelRoute} disabled={busy || providerOptions.length === 0}>顺序轮换服务商</Button>
+                    <Button type="button" variant="outline" size="sm" onClick={onRefreshAllProviderModels} disabled={busy || modelConfig.offlineMode || providerOptions.length === 0}>
+                      <RefreshCw className="h-4 w-4" />读取全部服务商
+                    </Button>
                     <Button type="button" variant="outline" size="sm" onClick={onRefreshDefaultModels} disabled={busy || modelCatalogBusy || modelConfig.offlineMode}>
                       {modelCatalogBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取默认模型
                     </Button>
                   </div>
                   {unavailableRouteCount ? (
-                    <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+                    <div className="fy-callout mt-3 border-amber-200 bg-amber-50 text-amber-800">
                       有轮次绑定的服务商已删除或关闭，请重新选择，或点击“全部继承默认”。
                     </div>
                   ) : null}
@@ -4453,8 +4748,19 @@ function HomeRunPanel({
                     const selectedModelValue = selectedProviderId === "__default"
                       ? selectedModels.includes(modelConfig.model) ? modelConfig.model : selectedModels[0]
                       : roundModel?.model || provider?.defaultModel || selectedModels[0];
+                    const routeIssues = modelConfig.offlineMode ? [] : selectedProviderId === "__default"
+                      ? [
+                        !modelConfig.baseUrl?.trim() ? "默认 API 地址未填" : "",
+                        !modelConfig.apiKey?.trim() ? "默认 API Key 未填" : "",
+                        !modelConfig.model?.trim() ? "默认模型未填" : "",
+                      ].filter(Boolean)
+                      : [
+                        !provider?.baseUrl?.trim() ? "服务商 API 地址未填" : "",
+                        !provider?.apiKey?.trim() ? "服务商 API Key 未填" : "",
+                        !String(selectedModelValue ?? "").trim() ? "本轮模型未选" : "",
+                      ].filter(Boolean);
                     return (
-                      <div key={`${promptId}-${index}-model`} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div key={`${promptId}-${index}-model`} className={`fy-section p-4 ${routeIssues.length ? "fy-tone-warning" : ""}`}>
                         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                           <div>
                             <div className="text-sm font-black text-slate-950">第 {index + 1} 轮 · {getPromptOptionLabel(promptId)}</div>
@@ -4481,13 +4787,24 @@ function HomeRunPanel({
                               onChange={(event) => updateRoundModel(index, event.target.value)}
                               disabled={busy}
                               placeholder="填写模型名称"
-                              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
+                              className="fy-input"
                             />
                           )}
                           {selectedProviderId !== "__default" && provider && selectedModels.length === 0 ? (
                             <Button type="button" variant="outline" size="sm" onClick={() => onRefreshProviderModels(provider.id)} disabled={busy || modelConfig.offlineMode}>
                               <RefreshCw className="h-4 w-4" />读取模型列表
                             </Button>
+                          ) : null}
+                          {selectedProviderId !== "__default" && provider ? (
+                            <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold text-slate-500">
+                              <span>缓存模型：{provider.models?.length ?? 0}</span>
+                              <span>限速：{provider.rateLimitWindowMinutes && provider.rateLimitMaxRequests ? `${provider.rateLimitWindowMinutes} 分钟 ${provider.rateLimitMaxRequests} 次` : "不限"}</span>
+                            </div>
+                          ) : null}
+                          {routeIssues.length ? (
+                            <div className="fy-callout border-amber-200 bg-white/70 text-amber-800">
+                              {routeIssues.join("，")}；修复后才能启动，避免跑错模型。
+                            </div>
                           ) : null}
                         </div>
                       </div>
@@ -4498,8 +4815,10 @@ function HomeRunPanel({
             )}
           </div>
           {setupEditor === "model" ? (
-            <div className="border-t border-slate-100 p-5">
-              <Button type="button" className="w-full" onClick={() => onSaveModelConfig(modelConfig)} disabled={busy}><Save className="h-4 w-4" />保存本次路线</Button>
+            <div className="fy-drawer-footer">
+              <Button type="button" className="w-full" onClick={() => onSaveModelConfig(modelConfig)} disabled={busy || unavailableRouteCount > 0}>
+                <Save className="h-4 w-4" />{unavailableRouteCount ? "先修复模型路线" : "保存本次路线"}
+              </Button>
             </div>
           ) : null}
         </aside>
@@ -4514,17 +4833,17 @@ function RunRecoveryPanel({ state }: { state: RunRecoveryPanelState | null }) {
     return null;
   }
   const toneClass = state.tone === "red"
-    ? "border-red-200 bg-red-50 text-red-900"
+    ? "fy-tone-danger"
     : state.tone === "amber"
-      ? "border-amber-200 bg-amber-50 text-amber-900"
-      : "border-blue-200 bg-blue-50 text-blue-900";
+      ? "fy-tone-warning"
+      : "fy-tone-info";
   const barClass = state.tone === "red"
     ? "bg-red-500"
     : state.tone === "amber"
       ? "bg-amber-500"
       : "bg-blue-500";
   return (
-    <div className={`rounded-2xl border p-3 text-xs leading-5 ${toneClass}`}>
+    <div className={`fy-callout p-3 ${toneClass}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="font-black">{state.title}</div>
@@ -4532,6 +4851,7 @@ function RunRecoveryPanel({ state }: { state: RunRecoveryPanelState | null }) {
         </div>
         <div className="flex flex-wrap gap-1">
           {state.phaseLabel ? <Badge variant="outline">{state.phaseLabel}</Badge> : null}
+          {state.resumeActionLabel ? <Badge variant="outline">{state.resumeActionLabel}</Badge> : null}
           {state.eventCount != null ? <Badge variant="outline">事件 {state.eventCount}</Badge> : null}
         </div>
       </div>
@@ -4551,12 +4871,16 @@ function RunRecoveryPanel({ state }: { state: RunRecoveryPanelState | null }) {
           上次停止：{state.error}
         </div>
       ) : null}
+      {state.nextChunkId ? (
+        <div className="mt-2 rounded-xl bg-white/70 px-3 py-2 text-[11px]">
+          下一步：第 {state.nextChunkIndex || "?"} 块 · {state.nextChunkId}
+          {state.remainingChunks != null ? ` · 剩余 ${state.remainingChunks} 块` : ""}
+        </div>
+      ) : null}
       <div className="mt-2 text-[11px] opacity-80">{state.actionHint}</div>
     </div>
   );
 }
-
-
 function ExperimentLabPage({
   records,
   recordsPath,
@@ -4634,7 +4958,7 @@ function ExperimentLabPage({
 
   return (
     <div className="grid gap-5">
-      <Card className="border-slate-200 bg-white/95 shadow-soft">
+      <Card className="fy-panel">
         <CardContent className="p-6">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
@@ -4655,7 +4979,7 @@ function ExperimentLabPage({
         </CardContent>
       </Card>
 
-      <Card className="border-blue-100 bg-gradient-to-br from-blue-50 via-white to-violet-50 shadow-soft">
+      <Card className="fy-banner-primary shadow-soft">
         <CardContent className="p-6">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
@@ -4682,7 +5006,7 @@ function ExperimentLabPage({
               ))}
             </div>
 
-            <div className="rounded-3xl border border-white/80 bg-white/80 p-4 shadow-sm">
+            <div className="fy-section p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-sm font-black text-slate-950">策略排行榜</div>
@@ -4694,7 +5018,7 @@ function ExperimentLabPage({
                 {analysis.rankings.length ? analysis.rankings.slice(0, 4).map((item, index) => (
                   <ExperimentStrategyRankItem key={item.strategy} item={item} index={index} />
                 )) : (
-                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-center text-xs leading-5 text-slate-500">
+                  <div className="fy-empty-state p-5 text-xs leading-5">
                     还没有足够记录。至少保存一次“两轮主流程”和一次外部平台分数，面板才会变聪明。
                   </div>
                 )}
@@ -4705,14 +5029,14 @@ function ExperimentLabPage({
       </Card>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
-        <Card className="border-slate-200 bg-white/95 shadow-soft">
+        <Card className="fy-panel">
           <CardContent className="space-y-4 p-6">
             <div>
               <div className="text-base font-bold text-slate-950">记录本次结果</div>
               <p className="mt-1 text-xs leading-5 text-slate-500">拿到外部平台分数后，把前后结果填进来。分数越低越好，变化值会自动计算。</p>
             </div>
 
-            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-600">
+            <div className="fy-soft-section p-4 text-xs leading-5 text-slate-600">
               <div><b className="text-slate-900">文档：</b>{formatDocLabel(documentStatus?.docId)}</div>
               <div><b className="text-slate-900">轮次：</b>{roundResult?.round ?? compareData?.round ?? "-"} / <b className="text-slate-900">Prompt：</b>{describePromptProfile(modelConfig.promptProfile)} · {formatPromptSequence(modelConfig.promptSequence)}</div>
               <div><b className="text-slate-900">分块：</b>{stats.chunkCount} 块，需处理 {stats.reviewChunkCount}，表达提示 {stats.machineLikeRiskCount}</div>
@@ -4723,7 +5047,7 @@ function ExperimentLabPage({
 
             <label className="grid gap-1 text-sm font-semibold text-slate-700">
               策略标签
-              <select value={strategy} onChange={(event) => setStrategy(event.target.value)} className="h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100">
+              <select value={strategy} onChange={(event) => setStrategy(event.target.value)} className="fy-input h-11 rounded-2xl">
                 <option>两轮主流程</option>
                 <option>三轮主流程</option>
                 <option>强命中重跑后</option>
@@ -4754,7 +5078,7 @@ function ExperimentLabPage({
           </CardContent>
         </Card>
 
-        <Card className="border-slate-200 bg-white/95 shadow-soft">
+        <Card className="fy-panel">
           <CardContent className="p-6">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -4768,7 +5092,7 @@ function ExperimentLabPage({
               {currentDocRecords.length ? currentDocRecords.map((record) => (
                 <ExperimentRecordItem key={record.id} record={record} busy={busy} onReplay={onReplay} onDelete={onDelete} />
               )) : (
-                <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-500">
+                <div className="fy-empty-state">
                   还没有这个文档的复盘记录。拿到一次外部平台分数后，把结果存下来。
                 </div>
               )}
@@ -4811,12 +5135,12 @@ type ExperimentAnalysis = {
 
 function ExperimentRecommendationCard({ item }: { item: ExperimentRecommendation }) {
   const toneClass = item.tone === "success"
-    ? "border-emerald-100 bg-emerald-50/80 text-emerald-700"
+    ? "fy-tone-success"
     : item.tone === "warning"
-      ? "border-amber-100 bg-amber-50/80 text-amber-700"
-      : "border-blue-100 bg-blue-50/80 text-blue-700";
+      ? "fy-tone-warning"
+      : "fy-tone-info";
   return (
-    <div className={`rounded-3xl border p-4 ${toneClass}`}>
+    <div className={`fy-callout p-4 ${toneClass}`}>
       <div className="text-xs font-black opacity-80">{item.metric}</div>
       <div className="mt-2 text-sm font-black text-slate-950">{item.title}</div>
       <div className="mt-1 text-xs leading-5 text-slate-600">{item.text}</div>
@@ -4829,7 +5153,7 @@ function ExperimentStrategyRankItem({ item, index }: { item: ExperimentStrategyR
   const scoreLabel = item.score == null ? "-" : item.score > 0 ? `+${item.score}` : String(item.score);
   const rankClass = index === 0 ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600";
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-3">
+    <div className="fy-section p-3">
       <div className="flex items-start gap-3">
         <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-black ${rankClass}`}>
           {index + 1}
@@ -4865,7 +5189,7 @@ function ScoreInput({ label, value, onChange }: { label: string; value: string; 
         onChange={(event) => onChange(event.target.value)}
         inputMode="decimal"
         placeholder="例如 5 或 35.2"
-        className="h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+        className="fy-input h-11 rounded-2xl"
       />
     </label>
   );
@@ -4886,7 +5210,7 @@ function ExperimentRecordItem({
   const replayDisabled = busy || (!record.sourcePath && !record.outputPath);
   const modelHint = [record.providerName || record.roundModel?.providerName, record.model || record.roundModel?.model].filter(Boolean).join(" · ");
   return (
-    <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+    <div className="fy-soft-section p-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -4924,7 +5248,7 @@ function ExperimentRecordItem({
 function ExperimentScoreBox({ provider, before, after, delta }: { provider: string; before?: number | null; after?: number | null; delta?: number | null }) {
   const hasScore = before != null || after != null;
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-3">
+    <div className="fy-stat-card p-3">
       <div className="text-xs font-semibold text-slate-500">{provider}</div>
       <div className="mt-2 text-sm font-bold text-slate-950">{hasScore ? `${formatScore(before)} → ${formatScore(after)}` : "-"}</div>
       <div className={delta == null ? "mt-1 text-xs text-slate-400" : delta <= 0 ? "mt-1 text-xs font-semibold text-emerald-600" : "mt-1 text-xs font-semibold text-red-600"}>
@@ -5327,9 +5651,17 @@ function buildShareableDiagnostics(value: EnvironmentDiagnostics) {
       path: redactLocalPath(item.path),
     })),
     activeRunCount: value.activeRunCount,
+    activeBatchRerunCount: value.activeBatchRerunCount ?? value.activeBatchReruns?.length ?? 0,
+    recentRunCount: value.recentRunCount ?? value.recentRuns?.length ?? 0,
+    recentBatchRerunCount: value.recentBatchRerunCount ?? value.recentBatchReruns?.length ?? 0,
+    taskStateStore: value.taskStateStore ? {
+      ...value.taskStateStore,
+      path: redactLocalPath(value.taskStateStore.path),
+    } : undefined,
     activeRuns: value.activeRuns.map((item) => ({
       runId: item.runId,
       sourcePath: redactLocalPath(item.sourcePath),
+      status: item.status,
       cancelRequested: item.cancelRequested,
       eventCount: item.eventCount,
       createdAt: item.createdAt,
@@ -5337,6 +5669,47 @@ function buildShareableDiagnostics(value: EnvironmentDiagnostics) {
       lastPhase: item.lastEvent?.phase,
       lastChunk: item.lastEvent?.chunkId,
       lastError: item.lastEvent?.error,
+    })),
+    recentRuns: (value.recentRuns ?? []).map((item) => ({
+      runId: item.runId,
+      sourcePath: redactLocalPath(item.sourcePath),
+      status: item.status,
+      completed: item.completed,
+      cancelRequested: item.cancelRequested,
+      eventCount: item.eventCount,
+      restoredFromDisk: item.restoredFromDisk,
+      persistedAt: item.persistedAt,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      lastPhase: item.lastEvent?.phase,
+      lastChunk: item.lastEvent?.chunkId,
+      lastError: item.lastEvent?.error,
+      error: item.error,
+    })),
+    activeBatchReruns: (value.activeBatchReruns ?? []).map((item) => ({
+      runId: item.runId,
+      outputPath: redactLocalPath(item.outputPath),
+      status: item.status,
+      cancelRequested: item.cancelRequested,
+      totalCount: item.totalCount,
+      completedCount: item.completedCount,
+      successCount: item.successCount,
+      failureCount: item.failureCount,
+      currentChunkId: item.currentChunkId,
+      updatedAt: item.updatedAt,
+    })),
+    recentBatchReruns: (value.recentBatchReruns ?? []).map((item) => ({
+      runId: item.runId,
+      outputPath: redactLocalPath(item.outputPath),
+      status: item.status,
+      totalCount: item.totalCount,
+      completedCount: item.completedCount,
+      successCount: item.successCount,
+      failureCount: item.failureCount,
+      currentChunkId: item.currentChunkId,
+      restoredFromDisk: item.restoredFromDisk,
+      persistedAt: item.persistedAt,
+      updatedAt: item.updatedAt,
     })),
   };
 }
@@ -5361,10 +5734,12 @@ function DiagnosticsPage({
   value,
   busy,
   onRefresh,
+  onCleanupTaskSnapshots,
 }: {
   value: EnvironmentDiagnostics | null;
   busy: boolean;
   onRefresh: () => void;
+  onCleanupTaskSnapshots: () => void;
 }) {
   const warningCount = value?.checks.filter((item) => item.level === "warning").length ?? 0;
   const errorCount = value?.checks.filter((item) => item.level === "error").length ?? 0;
@@ -5376,6 +5751,12 @@ function DiagnosticsPage({
       : warningCount
         ? "bg-amber-50 text-amber-700"
         : "bg-emerald-50 text-emerald-700";
+  const activeBatchRerunCount = value?.activeBatchRerunCount ?? value?.activeBatchReruns?.length ?? 0;
+  const recentRunCount = value?.recentRunCount ?? value?.recentRuns?.length ?? 0;
+  const recentBatchRerunCount = value?.recentBatchRerunCount ?? value?.recentBatchReruns?.length ?? 0;
+  const activeTaskCount = (value?.activeRunCount ?? 0) + activeBatchRerunCount;
+  const recentTaskCount = recentRunCount + recentBatchRerunCount;
+  const taskStateStore = value?.taskStateStore;
   const [copied, setCopied] = useState(false);
   const copyDiagnostics = async () => {
     if (!value) return;
@@ -5385,7 +5766,7 @@ function DiagnosticsPage({
   };
   return (
     <div className="grid gap-4">
-      <Card className="border-slate-200 bg-white/95 shadow-soft">
+      <Card className="fy-panel">
         <CardContent className="p-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -5411,17 +5792,18 @@ function DiagnosticsPage({
           </div>
           {value ? (
             <div className="mt-4 grid gap-3 text-xs text-slate-500 md:grid-cols-3">
-              <div className="rounded-2xl bg-slate-50 p-3">
+                <div className="fy-stat-card p-3">
                 <div className="font-black text-slate-400">工作区</div>
                 <div className="mt-1 truncate font-semibold text-slate-800">{value.workspace}</div>
               </div>
-              <div className="rounded-2xl bg-slate-50 p-3">
+                <div className="fy-stat-card p-3">
                 <div className="font-black text-slate-400">自检时间</div>
                 <div className="mt-1 font-semibold text-slate-800">{formatDateTime(value.createdAt)}</div>
               </div>
-              <div className="rounded-2xl bg-slate-50 p-3">
+                <div className="fy-stat-card p-3">
                 <div className="font-black text-slate-400">后台任务</div>
-                <div className="mt-1 font-semibold text-slate-800">{value.activeRunCount} 个运行中</div>
+                <div className="mt-1 font-semibold text-slate-800">{activeTaskCount} 个运行中</div>
+                <div className="mt-1 text-[11px] font-semibold text-slate-500">轮次 {value.activeRunCount} · 重跑 {activeBatchRerunCount} · 摘要 {recentTaskCount}</div>
               </div>
             </div>
           ) : null}
@@ -5432,7 +5814,7 @@ function DiagnosticsPage({
         <>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             {value.checks.map((item) => (
-              <Card key={item.key} className={`border-slate-200 shadow-sm ${item.level === "error" ? "bg-red-50" : item.level === "warning" ? "bg-amber-50" : "bg-white"}`}>
+              <Card key={item.key} className={`shadow-sm ${item.level === "error" ? "fy-tone-danger" : item.level === "warning" ? "fy-tone-warning" : "fy-section"}`}>
                 <CardContent className="p-4">
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-black text-slate-950">{item.label}</div>
@@ -5445,7 +5827,7 @@ function DiagnosticsPage({
           </div>
 
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
-            <Card className="border-slate-200 bg-white/95 shadow-soft">
+            <Card className="fy-panel">
               <CardContent className="p-5">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
@@ -5455,7 +5837,7 @@ function DiagnosticsPage({
                 </div>
                 <div className="grid gap-2">
                   {value.paths.map((item) => (
-                    <div key={item.key} className="grid gap-2 rounded-2xl border border-slate-100 bg-slate-50 p-3 text-xs md:grid-cols-[140px_minmax(0,1fr)_130px] md:items-center">
+                    <div key={item.key} className="fy-soft-section grid gap-2 p-3 text-xs md:grid-cols-[140px_minmax(0,1fr)_130px] md:items-center">
                       <div>
                         <div className="font-black text-slate-800">{item.label}</div>
                         <div className={item.exists && item.writable ? "text-emerald-600" : "text-amber-600"}>
@@ -5471,7 +5853,7 @@ function DiagnosticsPage({
             </Card>
 
             <div className="grid gap-4">
-              <Card className="border-slate-200 bg-white/95 shadow-soft">
+              <Card className="fy-panel">
                 <CardContent className="space-y-3 p-5">
                   <div className="text-base font-black text-slate-950">模型配置快照</div>
                   <div className="grid gap-2 text-xs">
@@ -5486,7 +5868,7 @@ function DiagnosticsPage({
                 </CardContent>
               </Card>
 
-              <Card className="border-slate-200 bg-white/95 shadow-soft">
+              <Card className="fy-panel">
                 <CardContent className="space-y-3 p-5">
                   <div className="text-base font-black text-slate-950">本地运行环境</div>
                   <div className="grid gap-2 text-xs">
@@ -5501,16 +5883,113 @@ function DiagnosticsPage({
             </div>
           </div>
 
-          {value.activeRuns.length ? (
-            <Card className="border-amber-200 bg-amber-50 shadow-soft">
+          {taskStateStore ? (
+            <Card className="fy-panel fy-tone-info">
+              <CardContent className="p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-base font-black text-blue-950">任务快照治理</div>
+                    <div className="mt-1 text-xs leading-5 text-blue-700">
+                      快照用于刷新或后端重启后的恢复提示；清理只会删除过期且非运行中的快照。
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={onCleanupTaskSnapshots}
+                    disabled={busy || taskStateStore.staleCount <= 0}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    清理过期快照
+                  </Button>
+                </div>
+                <div className="mt-4 grid gap-2 text-xs md:grid-cols-4">
+                  <div className="fy-status-tile bg-white/80 p-3">
+                    <div className="font-black text-blue-400">快照文件</div>
+                    <div className="mt-1 font-semibold text-blue-950">{taskStateStore.fileCount} 个 · {formatBytes(taskStateStore.sizeBytes)}</div>
+                  </div>
+                  <div className="fy-status-tile bg-white/80 p-3">
+                    <div className="font-black text-blue-400">任务类型</div>
+                    <div className="mt-1 font-semibold text-blue-950">轮次 {taskStateStore.runRoundCount} · 重跑 {taskStateStore.batchRerunCount}</div>
+                  </div>
+                  <div className="fy-status-tile bg-white/80 p-3">
+                    <div className="font-black text-blue-400">保护中</div>
+                    <div className="mt-1 font-semibold text-blue-950">{taskStateStore.activeSnapshotCount} 个运行中快照</div>
+                  </div>
+                  <div className="fy-status-tile bg-white/80 p-3">
+                    <div className="font-black text-blue-400">可清理</div>
+                    <div className="mt-1 font-semibold text-blue-950">{taskStateStore.staleCount} 个超过 {taskStateStore.retentionHours} 小时</div>
+                  </div>
+                </div>
+                <div className="mt-3 truncate text-[11px] font-semibold text-blue-700">{taskStateStore.path}</div>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {value.activeRuns.length || value.activeBatchReruns?.length ? (
+            <Card className="fy-panel fy-tone-warning">
               <CardContent className="p-5">
                 <div className="mb-3 text-base font-black text-amber-950">运行中的任务</div>
                 <div className="grid gap-2">
                   {value.activeRuns.map((item) => (
-                    <div key={item.runId} className="rounded-2xl bg-white/80 p-3 text-xs leading-5 text-amber-900">
-                      <div className="font-black">{item.runId}</div>
+                    <div key={item.runId} className="fy-callout bg-white/80 p-3 text-amber-900">
+                      <div className="font-black">轮次任务 · {item.runId}</div>
                       <div className="truncate">{item.sourcePath}</div>
                       <div>事件 {item.eventCount} 个 · {item.cancelRequested ? "已请求中断" : "运行中"} · 更新 {formatDateTime(item.updatedAt)}</div>
+                    </div>
+                  ))}
+                  {(value.activeBatchReruns ?? []).map((item) => (
+                    <div key={item.runId} className="fy-callout bg-white/80 p-3 text-amber-900">
+                      <div className="font-black">批量重跑 · {item.runId}</div>
+                      <div className="truncate">{item.outputPath}</div>
+                      <div>
+                        {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
+                        {item.currentChunkId ? ` · 当前 ${item.currentChunkId}` : ""} · {item.cancelRequested ? "已请求停止" : item.status}
+                      </div>
+                      <div className="text-[11px] text-amber-700">更新 {formatDateTime(item.updatedAt)}</div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {value.recentRuns?.length || value.recentBatchReruns?.length ? (
+            <Card className="fy-panel">
+              <CardContent className="p-5">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-base font-black text-slate-950">近期任务摘要</div>
+                  <div className="text-xs font-semibold text-slate-500">轮次 {recentRunCount} · 重跑 {recentBatchRerunCount}</div>
+                </div>
+                <div className="grid gap-2">
+                  {(value.recentRuns ?? []).map((item) => (
+                    <div key={item.runId} className="fy-callout fy-tone-info p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-black">{item.status === "interrupted" ? "轮次未完成" : "轮次已落盘"} · {item.runId}</div>
+                        <Badge variant={item.status === "interrupted" ? "warning" : "outline"}>{item.status}</Badge>
+                      </div>
+                      <div className="truncate">{item.sourcePath}</div>
+                      <div>
+                        事件 {item.eventCount} 个
+                        {item.lastEvent?.phase ? ` · 最后阶段 ${item.lastEvent.phase}` : ""}
+                        {item.lastEvent?.chunkId ? ` · 最后块 ${item.lastEvent.chunkId}` : ""}
+                      </div>
+                      {item.error ? <div className="mt-1 rounded-xl bg-white/80 px-3 py-2 text-[11px] text-blue-700">{item.error}</div> : null}
+                      <div className="text-[11px] text-blue-700">落盘 {formatDateTime(item.persistedAt || item.updatedAt)} · 更新 {formatDateTime(item.updatedAt)}</div>
+                    </div>
+                  ))}
+                  {(value.recentBatchReruns ?? []).map((item) => (
+                    <div key={item.runId} className="fy-callout fy-tone-neutral p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-black">{item.status === "interrupted" ? "重跑未完成" : "重跑已落盘"} · {item.runId}</div>
+                        <Badge variant={item.status === "interrupted" ? "warning" : "outline"}>{item.status}</Badge>
+                      </div>
+                      <div className="truncate">{item.outputPath}</div>
+                      <div>
+                        {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
+                        {item.currentChunkId ? ` · 最后 ${item.currentChunkId}` : ""}
+                      </div>
+                      {item.error ? <div className="mt-1 rounded-xl bg-white px-3 py-2 text-[11px] text-slate-500">{item.error}</div> : null}
+                      <div className="text-[11px] text-slate-500">落盘 {formatDateTime(item.persistedAt || item.updatedAt)} · 更新 {formatDateTime(item.updatedAt)}</div>
                     </div>
                   ))}
                 </div>
@@ -5519,7 +5998,7 @@ function DiagnosticsPage({
           ) : null}
         </>
       ) : (
-        <Card className="border-dashed border-slate-200 bg-white/80">
+        <Card className="fy-empty-state bg-white/80">
           <CardContent className="p-8 text-center text-sm text-slate-500">
             点击“重新自检”读取当前环境状态。
           </CardContent>
@@ -5587,20 +6066,20 @@ function DetectionReportPanel({
     }
   }, [report, strongMatchedRisky.length, reviewMatches.length, unmatchedRisky.length, weakMatches.length, matchFilter]);
   return (
-    <Card className="border-slate-200 bg-white/95 shadow-soft">
+    <Card className="fy-panel">
       <CardContent className="space-y-4 p-4">
-        <div className="rounded-[1.5rem] border border-slate-200 bg-slate-950 p-4 text-white">
+        <div className="fy-banner-primary p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-base font-black">外部报告反馈</div>
-              <div className="mt-1 truncate text-xs text-slate-300">
+              <div className="mt-1 truncate text-xs text-slate-500">
                 {documentLabel ? `绑定文档：${documentLabel}` : "先载入文档，再上传对应报告。"}
               </div>
-              {reportSourceLabel ? <div className="mt-1 truncate text-[11px] text-slate-400">报告文件：{reportSourceLabel}</div> : null}
+              {reportSourceLabel ? <div className="mt-1 truncate text-[11px] text-slate-500">报告文件：{reportSourceLabel}</div> : null}
             </div>
             {report
               ? <Badge variant={hasParsedSegments ? (highSegments.length ? "warning" : "success") : "warning"}>{hasParsedSegments ? `${providerLabel} ${overallRisk ?? "-"}%` : "未解析到片段"}</Badge>
-              : <Badge variant="outline" className="border-white/20 text-white">未接入</Badge>}
+              : <Badge variant="outline">未接入</Badge>}
           </div>
           <div className="mt-4 grid grid-cols-2 gap-2">
             <Button
@@ -5608,7 +6087,7 @@ function DetectionReportPanel({
               variant="outline"
               onClick={() => onPickReport("speedai")}
               disabled={busy || !documentLabel}
-              className={`h-11 border-white/15 bg-white/10 text-white hover:bg-white/20 hover:text-white ${report?.provider === "speedai" ? "ring-2 ring-blue-300" : ""}`}
+              className={`h-11 bg-white/80 ${report?.provider === "speedai" ? "ring-2 ring-blue-300" : ""}`}
             >
               上传 SpeedAI
             </Button>
@@ -5617,7 +6096,7 @@ function DetectionReportPanel({
               variant="outline"
               onClick={() => onPickReport("paperpass")}
               disabled={busy || !documentLabel}
-              className={`h-11 border-white/15 bg-white/10 text-white hover:bg-white/20 hover:text-white ${report?.provider === "paperpass" ? "ring-2 ring-amber-300" : ""}`}
+              className={`h-11 bg-white/80 ${report?.provider === "paperpass" ? "ring-2 ring-amber-300" : ""}`}
             >
               上传 PaperPass
             </Button>
@@ -5627,38 +6106,38 @@ function DetectionReportPanel({
         {report ? (
           <div className="space-y-3">
             <div className="grid grid-cols-4 gap-2 text-center text-xs">
-              <div className="rounded-2xl bg-slate-50 p-3 text-slate-700">
+              <div className="fy-status-tile fy-tone-neutral text-slate-700">
                 <div className="text-lg font-black">{report.segments.length}</div>
                 <div>报告片段</div>
               </div>
-              <div className="rounded-2xl bg-red-50 p-3 text-red-700">
+              <div className="fy-status-tile fy-tone-danger text-red-700">
                 <div className="text-lg font-black">{highSegments.length}</div>
                 <div>高风险</div>
               </div>
-              <div className="rounded-2xl bg-blue-50 p-3 text-blue-700">
+              <div className="fy-status-tile fy-tone-info text-blue-700">
                 <div className="text-lg font-black">{strongMatchedRisky.length}</div>
                 <div>强命中</div>
               </div>
-              <div className="rounded-2xl bg-amber-50 p-3 text-amber-700">
+              <div className="fy-status-tile fy-tone-warning text-amber-700">
                 <div className="text-lg font-black">{reviewMatches.length + weakMatches.length + unmatchedRisky.length}</div>
                 <div>需人工看</div>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <div className="fy-soft-section p-3">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
                 <span>来源：<b className="text-slate-900">{providerLabel}</b>{overallRisk != null ? ` · 报告分数 ${overallRisk}%` : ""}</span>
                 <Button variant="ghost" size="sm" onClick={onClearReport} disabled={busy}>清除报告</Button>
               </div>
               {report.summary.checkedScopeNotes?.length ? (
-                <div className="mt-2 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
+                <div className="fy-callout mt-2 border-amber-100 bg-amber-50 text-amber-900">
                   {report.summary.checkedScopeNotes.join("；")}
                 </div>
               ) : null}
             </div>
 
             {!hasParsedSegments ? (
-              <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm leading-6 text-red-800">
+              <div className="fy-callout border-red-100 bg-red-50 p-4 text-sm leading-6 text-red-800">
                 <div className="font-bold">没有解析到风险片段</div>
                 <div className="mt-1 text-xs">
                   请确认上传入口和 PDF 类型一致；如果报告版式不在现有解析范围内，可以先记录总分，再按报告页面人工定位。
@@ -5666,7 +6145,7 @@ function DetectionReportPanel({
               </div>
             ) : (
               <>
-                <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-xs leading-5 text-blue-900">
+                <div className="fy-callout border-blue-100 bg-blue-50 p-3 text-blue-900">
                   <div className="font-semibold">处理策略</div>
                   <div className="mt-1 text-blue-800">强命中才进入自动重跑；疑似、弱匹配、未匹配只用于定位，避免报告弱匹配误伤正文。</div>
                   <div className="mt-3">
@@ -5676,7 +6155,7 @@ function DetectionReportPanel({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-4 gap-1 rounded-2xl bg-slate-100 p-1 text-xs font-bold">
+                <div className="fy-filter-tabs grid-cols-4">
                   {[
                     { key: "strong" as const, label: `强命中 ${strongMatchedRisky.length}` },
                     { key: "review" as const, label: `疑似 ${reviewMatches.length}` },
@@ -5687,7 +6166,7 @@ function DetectionReportPanel({
                       key={item.key}
                       type="button"
                       onClick={() => setMatchFilter(item.key)}
-                      className={`rounded-xl px-2 py-2 transition ${matchFilter === item.key ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 hover:bg-white/70"}`}
+                      className={`fy-filter-tab ${matchFilter === item.key ? "fy-filter-tab-active" : ""}`}
                     >
                       {item.label}
                     </button>
@@ -5696,7 +6175,7 @@ function DetectionReportPanel({
 
                 <div className="max-h-72 space-y-2 overflow-auto pr-1">
                   {visibleSegmentSummaries.length ? visibleSegmentSummaries.map(({ segment, matchedItems, strongCount, reviewCount, weakCount, bestMatch, matchState }) => (
-                    <div key={segment.index} className={`rounded-2xl border p-3 text-xs leading-5 ${matchState === "strong" ? "border-blue-100 bg-blue-50" : matchState === "review" ? "border-amber-100 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+                    <div key={segment.index} className={`fy-callout p-3 ${matchState === "strong" ? "fy-tone-info" : matchState === "review" ? "fy-tone-warning" : "fy-tone-neutral"}`}>
                       <div className="mb-1 flex flex-wrap items-center gap-2">
                         <Badge variant={isDetectionHighRisk(segment) ? "warning" : "outline"}>#{segment.index} {segment.probability}%</Badge>
                         {segment.page ? <Badge variant="outline">第 {segment.page} 页</Badge> : null}
@@ -5716,7 +6195,7 @@ function DetectionReportPanel({
                       ) : null}
                     </div>
                   )) : (
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                    <div className="fy-empty-state p-4">
                       当前分层下没有可显示片段。
                     </div>
                   )}
@@ -5725,7 +6204,7 @@ function DetectionReportPanel({
             )}
           </div>
         ) : (
-          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-500">
+          <div className="fy-empty-state p-4 text-xs leading-5">
             选择上方任一入口上传 PDF。SpeedAI 更适合片段定位，PaperPass 更适合观察整体分布；两者都只作为外部反馈，不会跨文档复用。
           </div>
         )}
@@ -5753,12 +6232,12 @@ function PromptModeButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-2xl border px-3 py-2 text-left transition ${
-        active ? "border-primary bg-primary text-white shadow-soft" : "border-slate-200 bg-white text-slate-700 hover:border-primary/40"
+      className={`fy-tile px-3 py-2 ${
+        active ? "fy-tile-active text-slate-950" : "text-slate-700"
       } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
     >
       <div className="text-sm font-semibold">{title}</div>
-      <div className={active ? "mt-0.5 text-xs text-white/80" : "mt-0.5 text-xs text-slate-500"}>{text}</div>
+      <div className="mt-0.5 text-xs text-slate-500">{text}</div>
     </button>
   );
 }
@@ -5773,7 +6252,7 @@ function QualityReportPage({ compareData, exportResult }: { compareData: RoundCo
 
   return (
     <div className="grid gap-5">
-      <Card className="border-slate-200 bg-white/92 shadow-soft">
+      <Card className="fy-panel">
         <CardContent className="p-6">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
@@ -5792,21 +6271,21 @@ function QualityReportPage({ compareData, exportResult }: { compareData: RoundCo
       </Card>
 
       <div className="grid gap-5 xl:grid-cols-2">
-        <Card className="border-slate-200 bg-white/92 shadow-soft">
+        <Card className="fy-panel">
           <CardContent className="p-6">
             <div className="text-base font-bold text-slate-950">导出前风险</div>
             <div className="mt-4 grid gap-2">
               {riskMessages.length ? riskMessages.map((message) => (
-                <div key={message} className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">{message}</div>
-              )) : <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">当前没有发现需要阻止导出的显著风险。</div>}
+                <div key={message} className="fy-callout fy-tone-warning px-4 py-3 text-sm">{message}</div>
+              )) : <div className="fy-callout fy-tone-success px-4 py-3 text-sm">当前没有发现需要阻止导出的显著风险。</div>}
             </div>
           </CardContent>
         </Card>
 
-        <Card className="border-slate-200 bg-white/92 shadow-soft">
+        <Card className="fy-panel">
           <CardContent className="p-6">
             <div className="text-base font-bold text-slate-950">结构保护</div>
-            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">{protectedTypeText}</div>
+            <div className="fy-soft-section mt-4 px-4 py-3 text-sm leading-6 text-slate-600">{protectedTypeText}</div>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <ReportStat label="引用缺失" value={String(stats.missingCitationCount)} />
               <ReportStat label="硬审计" value={String(stats.guardIssueCount)} />
@@ -5821,7 +6300,7 @@ function QualityReportPage({ compareData, exportResult }: { compareData: RoundCo
 
 function ReportStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+    <div className="fy-stat-card">
       <div className="text-xs font-semibold text-slate-500">{label}</div>
       <div className="mt-2 text-2xl font-bold text-slate-950">{value}</div>
     </div>
@@ -5850,10 +6329,10 @@ function NotificationCenter({
   const errorCount = items.filter((item) => item.kind === "error").length;
 
   return (
-    <div className="fixed inset-0 z-[60]">
-      <button type="button" aria-label="关闭通知中心遮罩" className="absolute inset-0 bg-slate-950/18 backdrop-blur-[2px]" onClick={onClose} />
-      <aside className="absolute right-5 top-5 flex h-[calc(100vh-40px)] w-[420px] max-w-[calc(100vw-40px)] flex-col overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-2xl">
-        <div className="border-b border-slate-100 bg-white px-5 py-4">
+    <div className="fy-overlay">
+      <button type="button" aria-label="关闭通知中心遮罩" className="fy-overlay-scrim" onClick={onClose} />
+      <aside className="fy-drawer fy-drawer-narrow">
+        <div className="fy-drawer-header">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-950 text-white">
@@ -5873,7 +6352,7 @@ function NotificationCenter({
             </Button>
           </div>
 
-          <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2">
+          <div className="fy-soft-section mt-4 flex items-center justify-between gap-3 px-3 py-2">
             <span className="text-xs font-black text-slate-500">消息列表</span>
             <Button variant="outline" size="sm" onClick={onClear} disabled={!items.length} className="h-8 shrink-0 bg-white">
               清空
@@ -5881,7 +6360,7 @@ function NotificationCenter({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto bg-slate-50/70 px-4 py-4">
+        <div className="fy-drawer-body px-4 py-4">
           {items.length ? (
             <div className="space-y-2.5">
               {items.map((item) => {
@@ -5889,7 +6368,7 @@ function NotificationCenter({
                 return (
                   <div
                     key={item.id}
-                    className={`rounded-2xl border bg-white p-3 shadow-sm transition hover:shadow-md ${
+                    className={`fy-section p-3 transition hover:shadow-md ${
                       isError ? "border-red-100 text-red-900" : "border-emerald-100 text-emerald-900"
                     }`}
                   >
@@ -5913,7 +6392,7 @@ function NotificationCenter({
               })}
             </div>
           ) : (
-            <div className="flex h-full items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white p-8 text-center">
+            <div className="fy-empty-state flex h-full items-center justify-center bg-white">
               <div>
                 <Bell className="mx-auto h-8 w-8 text-slate-400" />
                 <div className="mt-3 text-sm font-semibold text-slate-700">暂无通知</div>
@@ -5925,55 +6404,3 @@ function NotificationCenter({
     </div>
   );
 }
-
-function ModelQuickCard({
-  model,
-  offlineMode,
-  modelCount,
-  busy,
-  error,
-  onRefresh,
-  onGoOnline,
-}: {
-  model: string;
-  offlineMode: boolean;
-  modelCount: number;
-  busy: boolean;
-  error: string;
-  onRefresh: () => void;
-  onGoOnline: () => void;
-}) {
-  return (
-    <Card className="surface-card">
-      <CardContent className="space-y-4 p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-950">{"模型目录"}</div>
-            <div className="mt-1 truncate text-xs text-slate-500">
-              {offlineMode ? "离线模式已开启" : model || "未选择模型"}
-            </div>
-          </div>
-          <Badge variant={offlineMode ? "warning" : modelCount ? "success" : "outline"}>
-            {offlineMode ? "离线" : `${modelCount} 个`}
-          </Badge>
-        </div>
-        <Button className="w-full" variant="outline" onClick={onRefresh} disabled={busy || offlineMode}>
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          {"刷新模型"}
-        </Button>
-        {offlineMode ? <p className="text-xs text-slate-500">{"关闭离线模式后才能读取远程模型。"}</p> : null}
-        {error ? <p className="text-xs text-red-600">{error}</p> : null}
-      </CardContent>
-    </Card>
-  );
-}
-
-function TopStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-soft">
-      <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{label}</div>
-      <div className="mt-2 truncate text-sm font-semibold text-slate-950">{value}</div>
-    </div>
-  );
-}
-

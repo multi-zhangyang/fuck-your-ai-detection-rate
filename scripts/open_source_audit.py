@@ -156,6 +156,49 @@ TEXT_RULES = [
 DOC_MOJIBAKE_RE = re.compile(r"\?{4,}")
 
 
+ISSUE_ACTIONS = {
+    "gitignore.missing_pattern": "把缺失规则加入 .gitignore，或确认同等范围的忽略规则已经存在。",
+    "release.missing_file": "补齐发布说明文件；如果暂不公开发布，可保留为后续发布前任务。",
+    "secret.openai_key": "立刻移除真实 Key，改用 .env、本地 Web 配置或系统环境变量；如已推送过，请轮换密钥。",
+    "secret.anthropic_key": "立刻移除真实 Key，改用 .env、本地 Web 配置或系统环境变量；如已推送过，请轮换密钥。",
+    "secret.github_token": "立刻移除 Token；如已推送过，请在 GitHub 中撤销并重新生成。",
+    "secret.aws_access_key": "立刻移除 Access Key；如已推送过，请在云厂商后台禁用并轮换。",
+    "secret.jwt": "删除真实 JWT 或会话凭据，不要把运行时令牌写入仓库。",
+    "secret.assignment": "把密钥、Token、密码改成空值或占位符，并从本地配置或环境变量读取。",
+    "secret.provider_url": "把私有模型厂商地址移到本地配置或 .env；仓库里只保留 localhost、example 域名或空值。",
+    "path.windows_absolute": "把个人绝对路径改成相对路径、环境变量说明或占位示例。",
+    "path.user_home": "把个人用户目录改成相对路径、环境变量说明或占位示例。",
+    "brand.old_project_name": "改成当前项目名、FYADR 缩写，或移入历史变更说明中。",
+    "text.mojibake_replacement": "用 UTF-8 重新保存并修正文案，避免开源后出现乱码。",
+    "text.mojibake_question_marks": "检查该段是否是编码损坏；确认后用正确文本替换。",
+    "file.unreadable": "确认文件是否应该作为文本提交；如果不是源码说明文件，应加入忽略或移出仓库。",
+    "local.config_artifact": "确认该配置文件没有被 git 跟踪；如包含接口或 Key，只能留在本机。",
+    "local.artifact": "确认该样例、截图或报告未被 git 跟踪；公开仓库只保留脱敏后的最小样例。",
+    "local.runtime_dir": "运行目录可以留在本机，但发布前必须确认它们被 .gitignore 忽略且没有被 git 跟踪。",
+}
+
+
+RELEASE_ACTION_ORDER = [
+    "secret.openai_key",
+    "secret.anthropic_key",
+    "secret.github_token",
+    "secret.aws_access_key",
+    "secret.jwt",
+    "secret.assignment",
+    "secret.provider_url",
+    "path.windows_absolute",
+    "path.user_home",
+    "brand.old_project_name",
+    "text.mojibake_replacement",
+    "text.mojibake_question_marks",
+    "gitignore.missing_pattern",
+    "release.missing_file",
+    "local.config_artifact",
+    "local.artifact",
+    "local.runtime_dir",
+]
+
+
 def _relative(path: Path) -> str:
     return path.relative_to(ROOT_DIR).as_posix()
 
@@ -212,6 +255,7 @@ def _issue(severity: str, code: str, message: str, *, path: Path | None = None, 
         "severity": severity,
         "code": code,
         "message": message,
+        "action": ISSUE_ACTIONS.get(code, "检查该项是否应进入公开仓库；不确定时先不要提交。"),
     }
     if path is not None:
         item["path"] = _relative(path)
@@ -327,6 +371,79 @@ def _scan_runtime_dirs() -> list[dict[str, Any]]:
     return warnings
 
 
+def _count_by_code(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        code = str(item.get("code") or "")
+        if not code:
+            continue
+        counts[code] = counts.get(code, 0) + 1
+    return counts
+
+
+def _build_next_actions(errors: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts = _count_by_code([*errors, *warnings])
+    actions: list[dict[str, Any]] = []
+    for code in RELEASE_ACTION_ORDER:
+        count = counts.get(code, 0)
+        if count <= 0:
+            continue
+        severity = "error" if any(item.get("code") == code for item in errors) else "warning"
+        actions.append(
+            {
+                "code": code,
+                "severity": severity,
+                "count": count,
+                "action": ISSUE_ACTIONS.get(code, "检查该项是否应进入公开仓库；不确定时先不要提交。"),
+            }
+        )
+    for code, count in sorted(counts.items()):
+        if any(item["code"] == code for item in actions):
+            continue
+        severity = "error" if any(item.get("code") == code for item in errors) else "warning"
+        actions.append(
+            {
+                "code": code,
+                "severity": severity,
+                "count": count,
+                "action": ISSUE_ACTIONS.get(code, "检查该项是否应进入公开仓库；不确定时先不要提交。"),
+            }
+        )
+    if not actions:
+        actions.append(
+            {
+                "code": "release.ready",
+                "severity": "info",
+                "count": 0,
+                "action": "未发现开源阻断项；提交前仍建议运行 pre_release_check.py 并确认 git status 干净。",
+            }
+        )
+    return actions
+
+
+def _build_release_summary(errors: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> dict[str, Any]:
+    error_codes = sorted({str(item.get("code") or "") for item in errors if item.get("code")})
+    warning_codes = sorted({str(item.get("code") or "") for item in warnings if item.get("code")})
+    blocking_secret_count = sum(1 for item in errors if str(item.get("code", "")).startswith("secret."))
+    blocking_path_count = sum(1 for item in errors if str(item.get("code", "")).startswith("path."))
+    local_artifact_warning_count = sum(1 for item in warnings if str(item.get("code", "")).startswith("local."))
+    return {
+        "readyForPublicRelease": not errors,
+        "blockingSecretCount": blocking_secret_count,
+        "blockingPathCount": blocking_path_count,
+        "localArtifactWarningCount": local_artifact_warning_count,
+        "errorCodes": error_codes,
+        "warningCodes": warning_codes,
+        "statusText": (
+            "存在阻断项，不能公开发布。"
+            if errors
+            else "未发现阻断项；仍需确认本地样例和运行目录没有被 git 跟踪。"
+            if warnings
+            else "未发现开源卫生问题。"
+        ),
+    }
+
+
 def run_audit(report_path: Path) -> dict[str, Any]:
     text_files = list(_iter_text_files())
     issues: list[dict[str, Any]] = []
@@ -339,6 +456,7 @@ def run_audit(report_path: Path) -> dict[str, Any]:
 
     errors = [item for item in issues if item["severity"] == "error"]
     warnings = [item for item in issues if item["severity"] == "warning"]
+    summary = _build_release_summary(errors, warnings)
     report = {
         "ok": not errors,
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -346,6 +464,8 @@ def run_audit(report_path: Path) -> dict[str, Any]:
         "errorCount": len(errors),
         "warningCount": len(warnings),
         "scannedTextFileCount": len(text_files),
+        "summary": summary,
+        "nextActions": _build_next_actions(errors, warnings),
         "errors": errors,
         "warnings": warnings,
     }

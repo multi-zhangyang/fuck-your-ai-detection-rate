@@ -63,12 +63,165 @@
 }
 
 @layer utilities {
+  .fy-app-shell {
+    @apply h-screen overflow-hidden bg-[#f6f8fc] text-slate-950;
+  }
+
+  .fy-sidebar {
+    @apply fixed inset-y-0 left-0 z-30 flex flex-col border-r border-slate-200/80 bg-white/90 px-3 py-5 shadow-[12px_0_40px_rgba(15,23,42,0.06)] backdrop-blur-xl transition-[width] duration-300;
+  }
+
+  .fy-panel {
+    @apply rounded-[1.75rem] border border-slate-200 bg-white/90 shadow-soft backdrop-blur-xl;
+  }
+
+  .fy-section {
+    @apply rounded-[1.5rem] border border-slate-200 bg-white/90 shadow-sm backdrop-blur-sm;
+  }
+
+  .fy-soft-section {
+    @apply rounded-[1.5rem] border border-slate-200 bg-slate-50/80;
+  }
+
+  .fy-sticky-toolbar {
+    @apply sticky top-0 z-10 flex shrink-0 items-center justify-between gap-3 rounded-[1.5rem] border border-slate-200 bg-white/95 px-4 py-3 shadow-soft backdrop-blur-xl;
+  }
+
+  .fy-inline-toolbar {
+    @apply flex max-w-full items-center gap-2 overflow-x-auto overflow-y-hidden pb-1;
+    scrollbar-width: thin;
+  }
+
+  .fy-inline-toolbar > * {
+    @apply shrink-0;
+  }
+
+  .fy-tile {
+    @apply min-w-0 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .fy-tile:hover {
+    @apply border-primary/25 bg-white;
+  }
+
+  .fy-tile-active {
+    @apply border-primary/30 bg-primary/5 shadow-sm;
+  }
+
+  .fy-tile-warning {
+    @apply border-amber-200 bg-amber-50 text-amber-950;
+  }
+
+  .fy-tile-danger {
+    @apply border-red-200 bg-red-50 text-red-950;
+  }
+
+  .fy-action-primary {
+    @apply bg-slate-950 text-white shadow-soft hover:bg-slate-800;
+  }
+
+  .fy-icon-cell {
+    @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl;
+  }
+
+  .fy-status-tile {
+    @apply rounded-[1.35rem] border p-3;
+  }
+
+  .fy-tone-neutral {
+    @apply border-slate-200 bg-slate-50 text-slate-800;
+  }
+
+  .fy-tone-brand {
+    @apply border-violet-200 bg-violet-50 text-violet-900;
+  }
+
+  .fy-tone-info {
+    @apply border-blue-200 bg-blue-50 text-blue-900;
+  }
+
+  .fy-tone-success {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-900;
+  }
+
+  .fy-tone-warning {
+    @apply border-amber-200 bg-amber-50 text-amber-900;
+  }
+
+  .fy-tone-danger {
+    @apply border-red-200 bg-red-50 text-red-900;
+  }
+
+  .fy-banner-primary {
+    @apply rounded-[1.5rem] border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-violet-50 text-slate-950;
+  }
+
+  .fy-overlay {
+    @apply fixed inset-0 z-[60];
+  }
+
+  .fy-overlay-scrim {
+    @apply absolute inset-0 bg-slate-950/20 backdrop-blur-[2px];
+  }
+
+  .fy-drawer {
+    @apply absolute right-5 top-5 flex h-[calc(100vh-40px)] w-[440px] max-w-[calc(100vw-40px)] flex-col overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-2xl;
+  }
+
+  .fy-drawer-narrow {
+    @apply w-[420px];
+  }
+
+  .fy-drawer-wide {
+    @apply w-[620px];
+  }
+
+  .fy-drawer-header {
+    @apply border-b border-slate-100 bg-white/95 px-5 py-4;
+  }
+
+  .fy-drawer-body {
+    @apply min-h-0 flex-1 overflow-auto bg-slate-50/70 p-5;
+  }
+
+  .fy-drawer-footer {
+    @apply border-t border-slate-100 bg-white/95 p-5;
+  }
+
+  .fy-empty-state {
+    @apply rounded-3xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-500;
+  }
+
+  .fy-callout {
+    @apply rounded-2xl border px-3 py-2 text-xs leading-5;
+  }
+
+  .fy-filter-tabs {
+    @apply grid gap-1 rounded-2xl bg-slate-100 p-1 text-xs font-bold;
+  }
+
+  .fy-filter-tab {
+    @apply rounded-xl px-2 py-2 text-slate-500 transition hover:bg-white/70;
+  }
+
+  .fy-filter-tab-active {
+    @apply bg-white text-slate-950 shadow-sm;
+  }
+
+  .fy-stat-card {
+    @apply rounded-2xl border border-slate-200 bg-slate-50 p-4;
+  }
+
+  .fy-input {
+    @apply h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:opacity-60;
+  }
+
   .glass-panel {
     @apply border border-white/70 bg-white/80 backdrop-blur-xl;
   }
 
   .surface-card {
-    @apply border border-white/70 bg-white/85 shadow-soft backdrop-blur-xl;
+    @apply border border-white/70 bg-white/90 shadow-soft backdrop-blur-xl;
   }
 
   .hero-orb {

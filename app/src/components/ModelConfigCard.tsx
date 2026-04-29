@@ -1,7 +1,7 @@
 import type { ChangeEvent } from "react";
 import { useState } from "react";
 
-import { Bot, CheckCircle2, DatabaseZap, Loader2, Plus, RefreshCw, Save, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CheckCircle2, DatabaseZap, Loader2, Plus, RefreshCw, Save, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -229,6 +229,43 @@ export function ModelConfigCard({
     }
   }
 
+  async function refreshAllProviderCatalogs() {
+    const enabledProviders = providers.filter((provider) => provider.enabled !== false);
+    if (!enabledProviders.length) return;
+    let nextProviders = [...providers];
+    for (const provider of enabledProviders) {
+      setProviderCatalogBusy((current) => ({ ...current, [provider.id]: true }));
+      setProviderCatalogErrors((current) => ({ ...current, [provider.id]: "" }));
+      try {
+        const catalog = await onListModelsForConfig(providerToModelConfig(value, provider));
+        if (catalog) {
+          nextProviders = nextProviders.map((item) => (
+            item.id === provider.id
+              ? {
+                ...item,
+                models: catalog.models.map((model) => model.id),
+                defaultModel: item.defaultModel || catalog.models[0]?.id || "",
+                updatedAt: new Date().toISOString(),
+              }
+              : item
+          ));
+        }
+      } catch (error) {
+        setProviderCatalogErrors((current) => ({ ...current, [provider.id]: error instanceof Error ? error.message : String(error) }));
+      } finally {
+        setProviderCatalogBusy((current) => ({ ...current, [provider.id]: false }));
+      }
+    }
+    const nextConfig = { ...value, modelProviders: nextProviders };
+    onChange(nextConfig);
+    onSave(nextConfig);
+  }
+
+  function saveProviderConfig(provider: ModelProviderConfig) {
+    const testValue = provider.enabled === false ? undefined : providerToModelConfig(value, provider);
+    onSave(value, testValue);
+  }
+
 
   function buildConfigWithRound(key: RoundModelKey, patch: Partial<RoundModelConfig> = {}): ModelConfig {
     const current = getEditableRoundModel(value, key);
@@ -301,32 +338,33 @@ export function ModelConfigCard({
   });
 
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="space-y-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary" className="rounded-full px-3 py-1">{text(0x6a21, 0x578b, 0x914d, 0x7f6e)}</Badge>
-              <Badge variant={value.offlineMode ? "warning" : "default"}>{value.offlineMode ? text(0x79bb, 0x7ebf, 0x6a21, 0x5f0f) : text(0x5728, 0x7ebf, 0x6a21, 0x5f0f)}</Badge>
-              {enabledRoundCount ? <Badge variant="outline">{text(0x5df2, 0x542f, 0x7528)} {enabledRoundCount} {text(0x4e2a, 0x8f6e, 0x6b21, 0x4e13, 0x5c5e, 0x6a21, 0x578b)}</Badge> : null}
+    <Card className="fy-panel flex h-full min-h-0 flex-col overflow-hidden">
+      <CardHeader className="shrink-0 border-b border-slate-100 bg-white px-6 py-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="secondary" className="rounded-full px-3 py-1">模型配置</Badge>
+              <Badge variant={value.offlineMode ? "warning" : "default"}>{value.offlineMode ? "离线模式" : "在线模式"}</Badge>
+              {enabledRoundCount ? <Badge variant="outline">专属轮次 {enabledRoundCount}</Badge> : null}
             </div>
-            <CardTitle className="text-xl">{text(0x6a21, 0x578b, 0x4e0e, 0x8f6e, 0x6b21, 0x7f16, 0x6392)}</CardTitle>
-            <CardDescription>{text(0x5148, 0x914d, 0x7f6e, 0x5168, 0x5c40, 0x9ed8, 0x8ba4, 0x6a21, 0x578b, 0xff0c, 0x9700, 0x8981, 0x6df7, 0x7528, 0x65f6, 0x518d, 0x5355, 0x72ec, 0x6253, 0x5f00, 0x67d0, 0x4e00, 0x8f6e, 0x7684, 0x4e13, 0x5c5e, 0x63d0, 0x4f9b, 0x5546, 0x3002)}</CardDescription>
+            <CardTitle className="mt-3 text-2xl">模型与路线</CardTitle>
           </div>
-          <div className="hidden rounded-2xl bg-primary/10 p-3 text-primary md:block">
-            <Bot className="h-6 w-6" />
+          <div className="grid gap-2 text-xs font-black text-slate-600 sm:grid-cols-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">默认：{value.model || "未配置"}</div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">服务商：{providers.length}</div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">启用：{providers.filter((provider) => provider.enabled).length}</div>
           </div>
         </div>
       </CardHeader>
 
-      <CardContent>
-        <Tabs defaultValue="default" className="space-y-5">
-          <TabsList className="grid w-full grid-cols-2 rounded-2xl bg-muted/70 p-1">
+      <CardContent className="min-h-0 flex-1 overflow-hidden p-5">
+        <Tabs defaultValue="default" className="flex h-full min-h-0 flex-col gap-5">
+          <TabsList className="inline-grid w-auto shrink-0 grid-cols-2 rounded-2xl bg-slate-100 p-1">
             <TabsTrigger value="default">{text(0x9ed8, 0x8ba4, 0x8fde, 0x63a5)}</TabsTrigger>
             <TabsTrigger value="providers">服务商仓库</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="default" className="space-y-5">
+          <TabsContent value="default" className="min-h-0 flex-1 overflow-auto pr-1">
             <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
               <div className="space-y-4 rounded-3xl border border-border/70 bg-background/70 p-4">
                 <div className="grid gap-4 md:grid-cols-2">
@@ -392,138 +430,180 @@ export function ModelConfigCard({
             </div>
           </TabsContent>
 
-          <TabsContent value="providers" className="space-y-4">
-            <div className="grid min-h-[560px] gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-              <div className="rounded-3xl border border-border/70 bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3 px-1 pb-3">
-                  <div>
-                    <div className="text-sm font-semibold text-foreground">服务商</div>
-                    <div className="mt-1 text-xs text-muted-foreground">先维护接口，主页只负责给每轮选择。</div>
+          <TabsContent value="providers" className="min-h-0 flex-1 overflow-hidden">
+            <div className="grid h-full min-h-0 gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+              <div className="fy-section flex min-h-0 flex-col overflow-hidden p-0">
+                <div className="shrink-0 border-b border-slate-100 bg-slate-950 px-4 py-4 text-white">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-base font-black">服务商仓库</div>
+                      <div className="mt-1 text-xs font-semibold text-white/60">{providers.length} 个服务商 · {providers.filter((provider) => provider.enabled).length} 个启用</div>
+                    </div>
+                    <Button type="button" size="sm" className="bg-white text-slate-950 hover:bg-white/90" onClick={addProvider} disabled={busy}>
+                      <Plus className="h-4 w-4" />添加
+                    </Button>
                   </div>
-                  <Button type="button" size="sm" variant="outline" onClick={addProvider} disabled={busy}>
-                    <Plus className="h-4 w-4" />添加
+                  <Button type="button" size="sm" variant="outline" className="mt-3 w-full border-white/20 bg-white/10 text-white hover:bg-white/15" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || value.offlineMode || providers.every((provider) => provider.enabled === false)}>
+                    <RefreshCw className="h-4 w-4" />读取全部模型列表
                   </Button>
                 </div>
-                <div className="space-y-2">
-                  {providers.length ? providers.map((provider) => (
-                    <button
-                      key={provider.id}
-                      type="button"
-                      onClick={() => setSelectedProviderId(provider.id)}
-                      className={`flex w-full items-center justify-between gap-3 rounded-2xl border px-3 py-3 text-left transition ${
-                        selectedProvider?.id === provider.id ? "border-primary/30 bg-background shadow-sm" : "border-transparent bg-background/50 hover:border-border"
-                      }`}
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold text-foreground">{provider.name || "未命名服务商"}</span>
-                        <span className="mt-1 block truncate text-xs text-muted-foreground">{provider.defaultModel || provider.models?.[0] || "未选择模型"}</span>
-                      </span>
-                      <Badge variant={provider.enabled ? "success" : "outline"}>{provider.enabled ? "ON" : "OFF"}</Badge>
-                    </button>
-                  )) : (
-                    <div className="rounded-2xl border border-dashed border-border bg-background/60 p-6 text-center text-sm leading-6 text-muted-foreground">
-                      还没有服务商。先添加一个，把 API 地址、Key 和模型列表放进仓库。
+
+                <div className="min-h-0 flex-1 space-y-2 overflow-auto p-3">
+                  {providers.length ? providers.map((provider) => {
+                    const active = selectedProvider?.id === provider.id;
+                    const modelLabel = provider.defaultModel || provider.models?.[0] || "未选择模型";
+                    const modelCount = provider.models?.length ?? 0;
+                    return (
+                      <button
+                        key={provider.id}
+                        type="button"
+                        onClick={() => setSelectedProviderId(provider.id)}
+                        className={`group w-full rounded-2xl border p-3 text-left transition ${
+                          active ? "border-blue-300 bg-blue-50 shadow-sm" : "border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-black text-slate-950">{provider.name || "未命名服务商"}</span>
+                            <span className="mt-1 block truncate text-xs font-semibold text-slate-500">{modelLabel}</span>
+                          </span>
+                          <Badge variant={provider.enabled ? "success" : "outline"}>{provider.enabled ? "启用" : "关闭"}</Badge>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-slate-500">
+                          <span className="rounded-xl bg-slate-100 px-2 py-1 text-center">{modelCount} 模型</span>
+                          <span className="rounded-xl bg-slate-100 px-2 py-1 text-center">{provider.apiType}</span>
+                        </div>
+                      </button>
+                    );
+                  }) : (
+                    <div className="fy-empty-state">
+                      <DatabaseZap className="mx-auto h-8 w-8 text-slate-400" />
+                      <div className="mt-3 font-black text-slate-700">还没有服务商</div>
+                      <Button type="button" className="mt-4" onClick={addProvider} disabled={busy}><Plus className="h-4 w-4" />添加服务商</Button>
                     </div>
                   )}
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-border/70 bg-background/80 p-4">
+              <div className="min-h-0 min-w-0 overflow-hidden">
                 {selectedProvider ? (
-                  <div className="space-y-4">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div>
-                        <div className="text-base font-semibold text-foreground">{selectedProvider.name || "未命名服务商"}</div>
-                        <p className="mt-1 text-sm leading-6 text-muted-foreground">这里保存服务商能力；主页按当前 Prompt 顺序选择服务商和模型。</p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button type="button" variant="outline" size="sm" disabled={busy || Boolean(providerCatalogBusy[selectedProvider.id]) || value.offlineMode} onClick={() => void refreshProviderCatalog(selectedProvider)}>
-                          {providerCatalogBusy[selectedProvider.id] ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}获取模型
-                        </Button>
-                        <Button type="button" size="sm" onClick={() => onSave(value, providerToModelConfig(value, selectedProvider))} disabled={busy}>
-                          <Save className="h-4 w-4" />保存配置
-                        </Button>
-                        <Button type="button" variant="ghost" size="sm" onClick={() => deleteProvider(selectedProvider.id)} disabled={busy}>
-                          <Trash2 className="h-4 w-4" />删除
-                        </Button>
+                  <div className="h-full space-y-4 overflow-auto pr-1">
+                    <div className="rounded-[2rem] border border-slate-200 bg-gradient-to-br from-slate-950 via-blue-950 to-indigo-950 p-5 text-white shadow-soft">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="truncate text-2xl font-black">{selectedProvider.name || "未命名服务商"}</div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Badge variant={selectedProvider.enabled ? "success" : "outline"}>{selectedProvider.enabled ? "已启用" : "已关闭"}</Badge>
+                            <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-black">{selectedProvider.models?.length ?? 0} 个缓存模型</span>
+                            <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-black">
+                              {selectedProvider.rateLimitWindowMinutes && selectedProvider.rateLimitMaxRequests ? `${selectedProvider.rateLimitWindowMinutes} 分钟 ${selectedProvider.rateLimitMaxRequests} 次` : "不限速"}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button type="button" size="sm" className="bg-white text-slate-950 hover:bg-white/90" disabled={busy || Boolean(providerCatalogBusy[selectedProvider.id]) || value.offlineMode} onClick={() => void refreshProviderCatalog(selectedProvider)}>
+                            {providerCatalogBusy[selectedProvider.id] ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}获取模型
+                          </Button>
+                          <Button type="button" size="sm" className="bg-blue-500 text-white hover:bg-blue-400" onClick={() => saveProviderConfig(selectedProvider)} disabled={busy}>
+                            <Save className="h-4 w-4" />保存
+                          </Button>
+                          <Button type="button" variant="outline" size="sm" className="border-white/20 bg-white/10 text-white hover:bg-white/15" onClick={() => deleteProvider(selectedProvider.id)} disabled={busy}>
+                            <Trash2 className="h-4 w-4" />删除
+                          </Button>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>服务商名称</Label>
-                        <Input value={selectedProvider.name} onChange={handleProviderFieldChange(selectedProvider.id, "name")} placeholder="例如：DeepSeek / Nebius / Groq" />
-                      </div>
-                      <div className="flex items-center justify-between rounded-2xl border border-border/70 px-4 py-3">
-                        <div>
-                          <div className="text-sm font-semibold">启用服务商</div>
-                          <div className="mt-1 text-xs text-muted-foreground">关闭后主页不会优先推荐它。</div>
-                        </div>
+                    <div className="fy-section p-5">
+                      <div className="mb-4 flex items-center justify-between gap-3">
+                        <div className="text-sm font-black text-slate-950">连接</div>
                         <Switch checked={selectedProvider.enabled} onCheckedChange={(enabled) => updateProvider(selectedProvider.id, { enabled })} />
                       </div>
-                      <div className="space-y-2 md:col-span-2">
-                        <Label>API 地址</Label>
-                        <Input value={selectedProvider.baseUrl} onChange={handleProviderFieldChange(selectedProvider.id, "baseUrl")} placeholder="https://api.example.com/v1" />
-                      </div>
-                      <div className="space-y-2 md:col-span-2">
-                        <Label>API Key</Label>
-                        <Input type="password" value={selectedProvider.apiKey} onChange={handleProviderFieldChange(selectedProvider.id, "apiKey")} placeholder="sk-..." />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>默认模型</Label>
-                        {(selectedProvider.models?.length ?? 0) > 0 ? (
-                          <Select value={selectedProvider.defaultModel || undefined} onValueChange={(defaultModel) => updateProvider(selectedProvider.id, { defaultModel })}>
-                            <SelectTrigger><SelectValue placeholder="选择默认模型" /></SelectTrigger>
-                            <SelectContent>{selectedProvider.models?.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}</SelectContent>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>服务商名称</Label>
+                          <Input value={selectedProvider.name} onChange={handleProviderFieldChange(selectedProvider.id, "name")} placeholder="例如：DeepSeek / Nebius / Groq" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>接口类型</Label>
+                          <Select value={selectedProvider.apiType} onValueChange={(apiType) => updateProvider(selectedProvider.id, { apiType: apiType as ModelConfig["apiType"] })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>{API_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
                           </Select>
-                        ) : (
-                          <Input value={selectedProvider.defaultModel ?? ""} onChange={handleProviderFieldChange(selectedProvider.id, "defaultModel")} placeholder="填写模型名称" />
-                        )}
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <Label>API 地址</Label>
+                          <Input value={selectedProvider.baseUrl} onChange={handleProviderFieldChange(selectedProvider.id, "baseUrl")} placeholder="https://api.example.com/v1" />
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <Label>API Key</Label>
+                          <Input type="password" value={selectedProvider.apiKey} onChange={handleProviderFieldChange(selectedProvider.id, "apiKey")} placeholder="sk-..." />
+                        </div>
                       </div>
-                      <div className="space-y-2">
-                        <Label>接口类型</Label>
-                        <Select value={selectedProvider.apiType} onValueChange={(apiType) => updateProvider(selectedProvider.id, { apiType: apiType as ModelConfig["apiType"] })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>{API_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-                        </Select>
+                    </div>
+
+                    <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+                      <div className="fy-section p-5">
+                        <div className="mb-4 text-sm font-black text-slate-950">模型与生成参数</div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="space-y-2 md:col-span-2">
+                            <Label>默认模型</Label>
+                            {(selectedProvider.models?.length ?? 0) > 0 ? (
+                              <Select value={selectedProvider.defaultModel || undefined} onValueChange={(defaultModel) => updateProvider(selectedProvider.id, { defaultModel })}>
+                                <SelectTrigger><SelectValue placeholder="选择默认模型" /></SelectTrigger>
+                                <SelectContent>{selectedProvider.models?.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}</SelectContent>
+                              </Select>
+                            ) : (
+                              <Input value={selectedProvider.defaultModel ?? ""} onChange={handleProviderFieldChange(selectedProvider.id, "defaultModel")} placeholder="填写模型名称" />
+                            )}
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Temperature</Label>
+                            <Input type="number" step="0.1" min="0" max="2" value={String(selectedProvider.temperature ?? value.temperature)} onChange={handleProviderFieldChange(selectedProvider.id, "temperature")} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>超时秒数</Label>
+                            <Input type="number" min="30" value={String(selectedProvider.requestTimeoutSeconds ?? value.requestTimeoutSeconds)} onChange={handleProviderFieldChange(selectedProvider.id, "requestTimeoutSeconds")} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>最大重试</Label>
+                            <Input type="number" min="0" max="10" value={String(selectedProvider.maxRetries ?? value.maxRetries)} onChange={handleProviderFieldChange(selectedProvider.id, "maxRetries")} />
+                          </div>
+                        </div>
                       </div>
-                      <div className="space-y-2">
-                        <Label>Temperature</Label>
-                        <Input type="number" step="0.1" min="0" max="2" value={String(selectedProvider.temperature ?? value.temperature)} onChange={handleProviderFieldChange(selectedProvider.id, "temperature")} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>超时秒数</Label>
-                        <Input type="number" min="30" value={String(selectedProvider.requestTimeoutSeconds ?? value.requestTimeoutSeconds)} onChange={handleProviderFieldChange(selectedProvider.id, "requestTimeoutSeconds")} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>最大重试</Label>
-                        <Input type="number" min="0" max="10" value={String(selectedProvider.maxRetries ?? value.maxRetries)} onChange={handleProviderFieldChange(selectedProvider.id, "maxRetries")} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>限速窗口（分钟）</Label>
-                        <Input type="number" min="0" step="0.1" value={String(selectedProvider.rateLimitWindowMinutes ?? 0)} onChange={handleProviderFieldChange(selectedProvider.id, "rateLimitWindowMinutes")} placeholder="0 为不限速" />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>窗口内最大请求</Label>
-                        <Input type="number" min="0" value={String(selectedProvider.rateLimitMaxRequests ?? 0)} onChange={handleProviderFieldChange(selectedProvider.id, "rateLimitMaxRequests")} placeholder="0 为不限速" />
+
+                      <div className="fy-section p-5">
+                        <div className="mb-4 text-sm font-black text-slate-950">请求限速</div>
+                        <div className="grid gap-4">
+                          <div className="space-y-2">
+                            <Label>窗口分钟数</Label>
+                            <Input type="number" min="0" step="0.1" value={String(selectedProvider.rateLimitWindowMinutes ?? 0)} onChange={handleProviderFieldChange(selectedProvider.id, "rateLimitWindowMinutes")} placeholder="0 为不限速" />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>窗口内最大请求</Label>
+                            <Input type="number" min="0" value={String(selectedProvider.rateLimitMaxRequests ?? 0)} onChange={handleProviderFieldChange(selectedProvider.id, "rateLimitMaxRequests")} placeholder="0 为不限速" />
+                          </div>
+                        </div>
                       </div>
                     </div>
 
                     {selectedProvider.models?.length ? (
-                      <div className="rounded-2xl border border-border/70 bg-muted/30 p-3">
-                        <div className="mb-2 text-xs font-semibold text-muted-foreground">已缓存模型列表（{selectedProvider.models.length}）</div>
-                        <div className="flex max-h-36 flex-wrap gap-2 overflow-auto">
+                      <div className="fy-section p-4">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div className="text-sm font-black text-slate-950">缓存模型</div>
+                          <Badge variant="outline">{selectedProvider.updatedAt ? new Date(selectedProvider.updatedAt).toLocaleString() : "未读取"}</Badge>
+                        </div>
+                        <div className="flex max-h-32 flex-wrap gap-2 overflow-auto">
                           {selectedProvider.models.slice(0, 80).map((model) => <Badge key={model} variant="outline">{model}</Badge>)}
                         </div>
                       </div>
                     ) : null}
-                    {providerCatalogErrors[selectedProvider.id] ? <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">{providerCatalogErrors[selectedProvider.id]}</div> : null}
+                    {providerCatalogErrors[selectedProvider.id] ? <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{providerCatalogErrors[selectedProvider.id]}</div> : null}
                   </div>
                 ) : (
-                  <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-3xl border border-dashed border-border bg-muted/20 p-8 text-center">
-                    <DatabaseZap className="h-8 w-8 text-primary" />
-                    <h3 className="mt-4 text-lg font-semibold text-foreground">先添加服务商</h3>
-                    <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">服务商只保存连接能力；真正每轮用哪个模型，会在主页按 Prompt 顺序编排。</p>
+                  <div className="fy-empty-state min-h-[560px]">
+                    <DatabaseZap className="mx-auto h-8 w-8 text-slate-400" />
+                    <h3 className="mt-4 text-lg font-black text-slate-800">先添加服务商</h3>
                     <Button type="button" className="mt-4" onClick={addProvider} disabled={busy}><Plus className="h-4 w-4" />添加服务商</Button>
                   </div>
                 )}

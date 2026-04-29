@@ -128,6 +128,8 @@ def _open_source_audit(*, strict_local_artifacts: bool) -> dict[str, Any]:
     error_count = int(report.get("errorCount") or 0)
     warning_codes = {str(item.get("code") or "") for item in report.get("warnings") or [] if isinstance(item, dict)}
     strict_warning_failure = strict_local_artifacts and bool(warning_codes & {"local.artifact", "local.runtime_dir"})
+    next_actions = report.get("nextActions") if isinstance(report.get("nextActions"), list) else []
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     return {
         "ok": bool(result["ok"]) and error_count == 0 and not strict_warning_failure,
         "commandOk": bool(result["ok"]),
@@ -135,15 +137,19 @@ def _open_source_audit(*, strict_local_artifacts: bool) -> dict[str, Any]:
         "warningCount": warning_count,
         "strictLocalArtifactFailure": strict_warning_failure,
         "reportPath": report.get("reportPath"),
+        "statusText": summary.get("statusText", ""),
+        "nextActions": next_actions[:8],
         "stdoutTail": result.get("stdoutTail"),
         "stderrTail": result.get("stderrTail"),
     }
 
 
-def _run_regressions(*, skip_frontend_build: bool) -> dict[str, Any]:
+def _run_regressions(*, skip_frontend_build: bool, include_browser_e2e: bool) -> dict[str, Any]:
     command = [sys.executable, "scripts/run_regressions.py", "--fail-fast"]
     if skip_frontend_build:
         command.append("--skip-frontend-build")
+    if include_browser_e2e:
+        command.append("--include-browser-e2e")
     result = _run_command("regression suite", command, timeout=1200)
     report = _parse_json_output(result) or {}
     return {
@@ -162,6 +168,7 @@ def run_pre_release_check(
     allow_dirty: bool,
     skip_regressions: bool,
     skip_frontend_build: bool,
+    include_browser_e2e: bool,
     strict_local_artifacts: bool,
 ) -> dict[str, Any]:
     started = time.monotonic()
@@ -190,7 +197,7 @@ def run_pre_release_check(
     if skip_regressions:
         warnings.append("regression suite skipped")
     else:
-        regressions = _run_regressions(skip_frontend_build=skip_frontend_build)
+        regressions = _run_regressions(skip_frontend_build=skip_frontend_build, include_browser_e2e=include_browser_e2e)
         if not regressions["ok"]:
             failures.append("regression suite failed")
 
@@ -201,6 +208,7 @@ def run_pre_release_check(
         "reportPath": str(report_path.resolve()),
         "failures": failures,
         "warnings": warnings,
+        "nextActions": audit.get("nextActions", []),
         "checks": {
             "gitStatus": git_status,
             "trackedArtifacts": tracked_artifacts,
@@ -221,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-dirty", action="store_true", help="Allow a dirty working tree while developing this gate.")
     parser.add_argument("--skip-regressions", action="store_true", help="Only run git/artifact checks and the open-source audit.")
     parser.add_argument("--skip-frontend-build", action="store_true", help="Pass through to run_regressions.py for a faster local gate.")
+    parser.add_argument("--include-browser-e2e", action="store_true", help="Also run the real browser UI smoke test through run_regressions.py.")
     parser.add_argument("--strict-local-artifacts", action="store_true", help="Fail on local artifact/runtime warnings from open_source_audit.py.")
     args = parser.parse_args(argv)
     report = run_pre_release_check(
@@ -228,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_dirty=bool(args.allow_dirty),
         skip_regressions=bool(args.skip_regressions),
         skip_frontend_build=bool(args.skip_frontend_build),
+        include_browser_e2e=bool(args.include_browser_e2e),
         strict_local_artifacts=bool(args.strict_local_artifacts),
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))

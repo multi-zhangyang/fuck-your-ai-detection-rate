@@ -9,7 +9,8 @@
     "build": "tsc && vite build",
     "build:web": "tsc && vite build",
     "preview": "vite preview",
-    "check:text": "python ../scripts/check_frontend_text.py"
+    "check:text": "python ../scripts/check_frontend_text.py",
+    "test:e2e:smoke": "node ../scripts/browser_e2e_smoke.mjs"
   },
   "dependencies": {
     "@radix-ui/react-progress": "^1.1.8",

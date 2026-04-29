@@ -68,12 +68,22 @@ function runRegression() {
     assertIncludes(appSource, "function createCheckpointProgress(", "Resumable checkpoints must seed visible progress.", failures);
     assertIncludes(appSource, "function buildRunRecoveryPanelState(", "Run recovery state must be derived by one helper.", failures);
     assertIncludes(appSource, "function RunRecoveryPanel(", "Home page must expose a visible run recovery panel.", failures);
+    assertIncludes(appSource, "resumeStage === \"finalize_output\"", "100% checkpoint recovery must be displayed as finalization, not chunk rerun.", failures);
+    assertIncludes(appSource, "resumeActionLabel", "Run recovery panel must show the backend-provided resume action.", failures);
+    assertIncludes(appSource, "nextChunkId", "Run recovery panel must show the next chunk when available.", failures);
+    assertIncludes(appSource, "不会重跑已完成分块", "Run recovery copy must explain that completed chunks are not rerun.", failures);
     assertIncludes(appSource, "next.phase === \"cancel-requested\"", "Cancel progress events must not reset visible round progress.", failures);
     assertIncludes(appSource, "正在中断当前轮次，已完成分块会保留。", "Cancel progress needs a stable runtime message.", failures);
+    assertIncludes(appSource, "recentRunCount", "Diagnostics must count persisted run-round summaries.", failures);
+    assertIncludes(appSource, "recentRuns", "Diagnostics must render/share persisted run-round summaries.", failures);
+    assertIncludes(appSource, "近期任务摘要", "Diagnostics task center should unify recent run and rerun summaries.", failures);
+    assertIncludes(appSource, "轮次未完成", "Interrupted run-round snapshots need a clear user-facing label.", failures);
+    assertIncludes(appSource, "任务快照治理", "Diagnostics must expose task snapshot governance.", failures);
+    assertIncludes(appSource, "cleanupTaskStateSnapshots", "Frontend must call backend task snapshot cleanup.", failures);
 
     const handleRunRoundSource = extractFunctionSource(appSource, "handleRunRound");
     assertIncludes(handleRunRoundSource, "const checkpointProgress = createCheckpointProgress", "Starting a round must seed UI from checkpoint status.", failures);
-    assertIncludes(handleRunRoundSource, "已识别断点，本次会从已完成分块后继续，不会重头跑。", "Resume state must be explained to the user.", failures);
+    assertIncludes(handleRunRoundSource, "checkpointProgress.resumeExplanation", "Resume notices must prefer backend checkpoint explanations.", failures);
     assertIncludes(handleRunRoundSource, "runSession = beginRunSession", "Started runs must be bound to a run session.", failures);
     assertRegex(handleRunRoundSource, /if \(!isActiveRunSession\(runSession\)\)\s*\{\s*return;\s*\}/, "Run result handling must ignore stale sessions.", failures);
     assertIncludes(handleRunRoundSource, "clearRunSession(runSession);", "Run finalization must clear the matching session.", failures);
@@ -111,6 +121,8 @@ function runRegression() {
       "checkpoint status seeds resume progress",
       "cancel targets the active run session",
       "SSE disconnect no longer equals run failure",
+      "diagnostics exposes persisted run task summaries",
+      "diagnostics exposes task snapshot governance",
     ],
   };
   mkdirSync(dirname(REPORT_PATH), { recursive: true });

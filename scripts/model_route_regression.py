@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+from copy import deepcopy
+
+from app_service import _resolve_round_model_config
+
+
+def _base_config() -> dict:
+    return {
+        "baseUrl": "https://default.example/v1",
+        "apiKey": "default-key",
+        "model": "default-model",
+        "apiType": "chat_completions",
+        "temperature": 0.7,
+        "offlineMode": False,
+        "promptProfile": "cn_prewrite",
+        "promptSequence": ["prewrite", "round1", "round2"],
+        "requestTimeoutSeconds": 600,
+        "maxRetries": 3,
+        "modelProviders": [
+            {
+                "id": "provider-a",
+                "name": "Provider A",
+                "enabled": True,
+                "baseUrl": "https://provider-a.example/v1",
+                "apiKey": "provider-a-key",
+                "apiType": "responses",
+                "temperature": 0.4,
+                "requestTimeoutSeconds": 900,
+                "maxRetries": 5,
+                "rateLimitWindowMinutes": 5,
+                "rateLimitMaxRequests": 18,
+                "models": ["a-model-1", "a-model-2"],
+                "defaultModel": "a-model-1",
+            },
+            {
+                "id": "provider-b",
+                "name": "Provider B",
+                "enabled": False,
+                "baseUrl": "https://provider-b.example/v1",
+                "apiKey": "provider-b-key",
+                "apiType": "chat_completions",
+                "temperature": 0.8,
+                "requestTimeoutSeconds": 300,
+                "maxRetries": 1,
+                "models": ["b-model-1"],
+                "defaultModel": "b-model-1",
+            },
+        ],
+        "roundModels": {
+            "cn_prewrite:1": {
+                "enabled": True,
+                "providerId": "provider-a",
+                "providerName": "Old Provider Name",
+                "baseUrl": "https://stale.example/v1",
+                "apiKey": "stale-key",
+                "model": "a-model-2",
+                "apiType": "chat_completions",
+                "temperature": 1.4,
+                "requestTimeoutSeconds": 60,
+                "maxRetries": 0,
+                "rateLimitWindowMinutes": 1,
+                "rateLimitMaxRequests": 2,
+            },
+            "cn_prewrite:2": {
+                "enabled": False,
+                "providerId": "provider-a",
+                "model": "a-model-2",
+            },
+        },
+    }
+
+
+def test_provider_repository_is_authoritative() -> None:
+    resolved = _resolve_round_model_config(_base_config(), "cn_prewrite", 1)
+    assert resolved["providerId"] == "provider-a"
+    assert resolved["providerName"] == "Provider A"
+    assert resolved["baseUrl"] == "https://provider-a.example/v1"
+    assert resolved["apiKey"] == "provider-a-key"
+    assert resolved["model"] == "a-model-2"
+    assert resolved["apiType"] == "responses"
+    assert resolved["temperature"] == 0.4
+    assert resolved["requestTimeoutSeconds"] == 900
+    assert resolved["maxRetries"] == 5
+    assert resolved["rateLimitWindowMinutes"] == 5
+    assert resolved["rateLimitMaxRequests"] == 18
+    assert resolved["routeSource"] == "provider"
+
+
+def test_disabled_round_inherits_default() -> None:
+    resolved = _resolve_round_model_config(_base_config(), "cn_prewrite", 2)
+    assert resolved["baseUrl"] == "https://default.example/v1"
+    assert resolved["model"] == "default-model"
+
+
+def test_missing_provider_does_not_silently_fallback() -> None:
+    config = _base_config()
+    config["roundModels"]["cn_prewrite:1"] = {
+        "enabled": True,
+        "providerId": "missing-provider",
+        "model": "",
+    }
+    try:
+        _resolve_round_model_config(config, "cn_prewrite", 1)
+    except ValueError as exc:
+        assert "provider no longer exists" in str(exc)
+    else:
+        raise AssertionError("missing provider should not silently use the default model")
+
+
+def test_disabled_provider_does_not_run() -> None:
+    config = _base_config()
+    config["roundModels"]["cn_prewrite:1"] = {
+        "enabled": True,
+        "providerId": "provider-b",
+        "model": "b-model-1",
+    }
+    try:
+        _resolve_round_model_config(config, "cn_prewrite", 1)
+    except ValueError as exc:
+        assert "provider is disabled" in str(exc)
+    else:
+        raise AssertionError("disabled provider should stop the run")
+
+
+def test_legacy_snapshot_still_works_without_provider_repository() -> None:
+    config = deepcopy(_base_config())
+    config["modelProviders"] = []
+    config["roundModels"]["cn_prewrite:1"] = {
+        "enabled": True,
+        "providerName": "Legacy",
+        "baseUrl": "https://legacy.example/v1",
+        "apiKey": "legacy-key",
+        "model": "legacy-model",
+        "apiType": "chat_completions",
+        "temperature": 0.9,
+        "requestTimeoutSeconds": 120,
+        "maxRetries": 2,
+        "rateLimitWindowMinutes": 1,
+        "rateLimitMaxRequests": 6,
+    }
+    resolved = _resolve_round_model_config(config, "cn_prewrite", 1)
+    assert resolved["routeSource"] == "round_snapshot"
+    assert resolved["providerName"] == "Legacy"
+    assert resolved["baseUrl"] == "https://legacy.example/v1"
+    assert resolved["model"] == "legacy-model"
+    assert resolved["rateLimitWindowMinutes"] == 1
+    assert resolved["rateLimitMaxRequests"] == 6
+
+
+def main() -> int:
+    test_provider_repository_is_authoritative()
+    test_disabled_round_inherits_default()
+    test_missing_provider_does_not_silently_fallback()
+    test_disabled_provider_does_not_run()
+    test_legacy_snapshot_still_works_without_provider_repository()
+    print("model route regression passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

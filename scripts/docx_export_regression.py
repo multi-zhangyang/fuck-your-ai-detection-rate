@@ -210,20 +210,6 @@ def _audit_exported_editable_format(export_path: Path, snapshot_path: Path) -> d
     return {"ok": not issues, "checked": len(checks), "issues": issues, "sampleChecks": checks[:8], "margins": margins}
 
 
-    if not path:
-        return {}
-    json_path = Path(path)
-    if not json_path.exists():
-        return {}
-    try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-
-
 def _read_json(path: str | Path | None) -> dict[str, Any]:
     if not path:
         return {}
@@ -279,6 +265,11 @@ def run_regression(sample_path: Path, export_path: Path, report_path: Path, *, r
         failures.append(f"preflight issues: {export_result.get('preflightIssueCount')}")
     if not bool(format_audit.get("ok")):
         failures.append(f"format audit issues: {len(format_audit.get('issues', []) or [])}")
+    for sample_key in ("guardIssueSamples", "auditIssueSamples", "preflightIssueSamples"):
+        if sample_key not in export_result:
+            failures.append(f"missing export issue sample field: {sample_key}")
+        elif not isinstance(export_result.get(sample_key), list):
+            failures.append(f"export issue sample field must be a list: {sample_key}")
 
     report = {
         "ok": not failures,
@@ -308,6 +299,11 @@ def run_regression(sample_path: Path, export_path: Path, report_path: Path, *, r
             "warningCount": int((applied_rules or {}).get("quality", {}).get("warningCount", 0)) if isinstance(applied_rules, dict) else 0,
         },
         "export": export_result,
+        "exportIssueSamples": {
+            "guard": len(export_result.get("guardIssueSamples", []) or []),
+            "audit": len(export_result.get("auditIssueSamples", []) or []),
+            "preflight": len(export_result.get("preflightIssueSamples", []) or []),
+        },
         "formatAudit": format_audit,
         "audit": {
             "ok": bool(audit_report.get("ok")),

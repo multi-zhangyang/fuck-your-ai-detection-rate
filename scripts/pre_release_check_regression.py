@@ -35,6 +35,18 @@ def _audit_stdout(*, error_count: int = 0, warnings: list[dict[str, Any]] | None
         "warningCount": len(warnings or []),
         "errors": [],
         "warnings": warnings or [],
+        "summary": {
+            "readyForPublicRelease": error_count == 0,
+            "statusText": "stub audit status",
+        },
+        "nextActions": [
+            {
+                "code": "local.artifact" if warnings else "release.ready",
+                "severity": "warning" if warnings else "info",
+                "count": len(warnings or []),
+                "action": "stub next action",
+            }
+        ],
         "reportPath": "finish/regression/open_source_audit_report.json",
     }
     return json.dumps(report, ensure_ascii=False)
@@ -58,6 +70,7 @@ def _run_with_stub(stub: CommandStub, **kwargs: Any) -> dict[str, Any]:
             allow_dirty=bool(kwargs.get("allow_dirty", False)),
             skip_regressions=True,
             skip_frontend_build=True,
+            include_browser_e2e=False,
             strict_local_artifacts=bool(kwargs.get("strict_local_artifacts", False)),
         )
     finally:
@@ -114,7 +127,10 @@ def run_regression() -> dict[str, Any]:
     )
     _assert(not strict_warning["ok"], "strict local artifact mode should fail on local artifact warnings")
     _assert(strict_warning["checks"]["openSourceAudit"]["strictLocalArtifactFailure"], "strict warning failure should be explicit")
+    _assert(strict_warning["nextActions"], "pre-release report should carry open-source audit next actions")
+    _assert(strict_warning["checks"]["openSourceAudit"]["nextActions"], "open-source audit check should expose next actions")
     checks.append("strict local artifact mode escalates warnings")
+    checks.append("open-source audit next actions are surfaced")
 
     return {"ok": True, "checks": checks}
 

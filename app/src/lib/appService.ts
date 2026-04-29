@@ -8,6 +8,9 @@ import type {
   DocumentStatus,
   EnvironmentDiagnostics,
   ExportResult,
+  BatchRerunResult,
+  BatchRerunStatus,
+  BatchRerunTarget,
   ExperimentDeleteResult,
   ExperimentListResponse,
   ExperimentRecordInput,
@@ -29,6 +32,7 @@ import type {
   RerunChunkResult,
   RunRoundStatus,
   RoundResult,
+  TaskStateCleanupResult,
   TestConnectionResult,
 } from "../types/app";
 
@@ -39,6 +43,7 @@ export type PickedDocument = {
 
 export interface AppService {
   getHealth(): Promise<EnvironmentDiagnostics>;
+  cleanupTaskStateSnapshots(mode?: "expired" | "completed" | "all", maxAgeHours?: number): Promise<TaskStateCleanupResult>;
   loadModelConfig(): Promise<ModelConfig>;
   saveModelConfig(config: ModelConfig): Promise<ModelConfig>;
   listModels(config: ModelConfig): Promise<ModelCatalogResult>;
@@ -71,6 +76,9 @@ export interface AppService {
   loadReviewDecisions(outputPath: string): Promise<ReviewDecisionsResult>;
   saveReviewDecisions(outputPath: string, decisions: Record<string, ReviewDecision>): Promise<ReviewDecisionsResult>;
   rerunChunk(outputPath: string, chunkId: string, modelConfig: ModelConfig, userFeedback?: string): Promise<RerunChunkResult>;
+  startBatchRerun(outputPath: string, targets: BatchRerunTarget[], modelConfig: ModelConfig): Promise<string>;
+  getBatchRerunStatus(runToken: string): Promise<BatchRerunStatus>;
+  cancelBatchRerun(runToken: string): Promise<void>;
   exportRound(outputPath: string, targetFormat: "txt" | "docx"): Promise<ExportResult>;
   exportReviewedRound(outputPath: string, targetFormat: "txt" | "docx", decisions: Record<string, ReviewDecision>): Promise<ExportResult>;
   listExperimentRecords(docId?: string): Promise<ExperimentListResponse>;

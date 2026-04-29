@@ -64,14 +64,24 @@ def _run_command(name: str, command: list[str], *, cwd: Path = ROOT_DIR, timeout
     }
 
 
-def build_commands(*, skip_frontend_build: bool, include_web_health: bool, strict_samples: bool) -> list[dict[str, Any]]:
+def build_commands(
+    *,
+    skip_frontend_build: bool,
+    include_web_health: bool,
+    include_browser_e2e: bool,
+    strict_samples: bool,
+) -> list[dict[str, Any]]:
     commands: list[dict[str, Any]] = [
         {"name": "format rules regression", "command": [sys.executable, "scripts/format_rules_regression.py"]},
         {"name": "detection report parser regression", "command": [sys.executable, "scripts/detection_report_regression.py", *(("--strict-missing",) if strict_samples else ())]},
         {"name": "detection matching regression", "command": ["node", "scripts/detection_matching_regression.mjs"]},
+        {"name": "batch rerun task regression", "command": [sys.executable, "scripts/batch_rerun_task_regression.py"]},
         {"name": "frontend batch rerun regression", "command": ["node", "scripts/frontend_batch_rerun_regression.mjs"]},
         {"name": "frontend state machine regression", "command": ["node", "scripts/frontend_state_machine_regression.mjs"]},
+        {"name": "frontend home layout regression", "command": ["node", "scripts/frontend_home_layout_regression.mjs"]},
+        {"name": "frontend UI consistency regression", "command": ["node", "scripts/frontend_ui_consistency_regression.mjs"]},
         {"name": "frontend history governance regression", "command": ["node", "scripts/frontend_history_governance_regression.mjs"]},
+        {"name": "model route regression", "command": [sys.executable, "scripts/model_route_regression.py"]},
         {"name": "factual guards regression", "command": [sys.executable, "scripts/factual_guards_regression.py"]},
         {"name": "validation fallback regression", "command": [sys.executable, "scripts/validation_fallback_regression.py"]},
         {"name": "checkpoint resume regression", "command": [sys.executable, "scripts/checkpoint_resume_regression.py"]},
@@ -91,6 +101,8 @@ def build_commands(*, skip_frontend_build: bool, include_web_health: bool, stric
         commands.append({"name": "frontend build", "command": ["npm", "run", "build"], "cwd": ROOT_DIR / "app", "timeout": 900})
     if include_web_health:
         commands.append({"name": "web health check", "command": [sys.executable, "scripts/web_health_check.py", "--timeout", "8", "--default-report"]})
+    if include_browser_e2e:
+        commands.append({"name": "browser E2E smoke", "command": ["node", "scripts/browser_e2e_smoke.mjs"], "timeout": 240})
     return commands
 
 
@@ -99,6 +111,7 @@ def run_regressions(
     report_path: Path,
     skip_frontend_build: bool,
     include_web_health: bool,
+    include_browser_e2e: bool,
     strict_samples: bool,
     fail_fast: bool,
 ) -> dict[str, Any]:
@@ -109,6 +122,7 @@ def run_regressions(
     for item in build_commands(
         skip_frontend_build=skip_frontend_build,
         include_web_health=include_web_health,
+        include_browser_e2e=include_browser_e2e,
         strict_samples=strict_samples,
     ):
         result = _run_command(
@@ -143,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT_PATH)
     parser.add_argument("--skip-frontend-build", action="store_true", help="Skip npm run build for faster local checks.")
     parser.add_argument("--include-web-health", action="store_true", help="Also check running local backend/frontend endpoints.")
+    parser.add_argument("--include-browser-e2e", action="store_true", help="Also run a real Chrome/Edge browser smoke test for critical UI clicks.")
     parser.add_argument("--strict-samples", action="store_true", help="Fail if local PDF/DOCX sample files are missing.")
     parser.add_argument("--fail-fast", action="store_true", help="Stop at the first failed check.")
     args = parser.parse_args(argv)
@@ -150,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         report_path=args.report.resolve(),
         skip_frontend_build=bool(args.skip_frontend_build),
         include_web_health=bool(args.include_web_health),
+        include_browser_e2e=bool(args.include_browser_e2e),
         strict_samples=bool(args.strict_samples),
         fail_fast=bool(args.fail_fast),
     )

@@ -88,6 +88,32 @@ export type EnvironmentPathSummary = {
   sizeBytes: number;
 };
 
+export type TaskStateStoreSummary = {
+  path: string;
+  fileCount: number;
+  sizeBytes: number;
+  runRoundCount: number;
+  batchRerunCount: number;
+  activeSnapshotCount: number;
+  staleCount: number;
+  retentionHours: number;
+  oldestUpdatedAt?: string;
+  newestUpdatedAt?: string;
+};
+
+export type TaskStateCleanupResult = {
+  ok: boolean;
+  mode: "expired" | "completed" | "all" | string;
+  maxAgeHours: number;
+  deletedCount: number;
+  deletedBytes: number;
+  deletedFiles: string[];
+  failedFiles: Array<{ file: string; message: string }>;
+  skippedActiveCount: number;
+  before: TaskStateStoreSummary;
+  after: TaskStateStoreSummary;
+};
+
 export type EnvironmentDiagnostics = {
   ok: boolean;
   createdAt: string;
@@ -95,19 +121,14 @@ export type EnvironmentDiagnostics = {
   activeRunCount: number;
   checks: EnvironmentCheck[];
   paths: EnvironmentPathSummary[];
-  activeRuns: Array<{
-    runId: string;
-    sourcePath: string;
-    status?: RunRoundStatus["status"];
-    completed?: boolean;
-    cancelRequested: boolean;
-    eventCount: number;
-    lastEvent?: RoundProgress | null;
-    result?: RoundResult | null;
-    error?: string | null;
-    createdAt: string;
-    updatedAt: string;
-  }>;
+  activeRuns: RunRoundStatus[];
+  activeBatchRerunCount?: number;
+  activeBatchReruns?: BatchRerunStatus[];
+  recentRunCount?: number;
+  recentRuns?: RunRoundStatus[];
+  recentBatchRerunCount?: number;
+  recentBatchReruns?: BatchRerunStatus[];
+  taskStateStore?: TaskStateStoreSummary;
   config: {
     path: string;
     exists: boolean;
@@ -137,6 +158,7 @@ export type EnvironmentDiagnostics = {
 export type RoundProgress = {
   phase: string;
   round: number;
+  roundModel?: RoundResult["roundModel"];
   currentChunk?: number;
   totalChunks?: number;
   completedChunks?: number;
@@ -145,6 +167,12 @@ export type RoundProgress = {
   estimatedApiCalls?: number;
   twoCandidateChunkCount?: number;
   chunkId?: string;
+  nextChunkId?: string;
+  nextChunkIndex?: number;
+  remainingChunks?: number;
+  resumeStage?: string;
+  resumeActionLabel?: string;
+  resumeExplanation?: string;
   paragraphIndex?: number;
   chunkIndex?: number;
   paragraphCount?: number;
@@ -256,6 +284,8 @@ export type RunRoundStatus = {
   lastEvent?: RoundProgress | null;
   result?: RoundResult | null;
   error?: string | null;
+  restoredFromDisk?: boolean;
+  persistedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -269,6 +299,13 @@ export type RoundProgressStatus = {
   canResume: boolean;
   completedChunks: number;
   totalChunks: number;
+  remainingChunks?: number;
+  nextChunkId?: string;
+  nextChunkIndex?: number;
+  failedChunkId?: string;
+  resumeStage?: "continue_chunks" | "finalize_output" | "inspect_checkpoint" | string;
+  resumeActionLabel?: string;
+  resumeExplanation?: string;
   progressPercent: number;
   checkpointPath: string;
   lastError: string;
@@ -362,6 +399,61 @@ export type RerunChunkResult = {
   comparePath: string;
 };
 
+export type BatchRerunTarget = {
+  chunkId: string;
+  userFeedback?: string;
+};
+
+export type BatchRerunFailure = {
+  chunkId: string;
+  error: string;
+  rejectedCandidates?: NonNullable<RoundCompareChunk["rejectedCandidates"]>;
+  rerunStatus?: string;
+  rerunFallbackMode?: string;
+  rerunFallbackError?: string;
+  quality?: RoundCompareChunk["quality"];
+};
+
+export type BatchRerunResult = {
+  ok: boolean;
+  runId?: string;
+  outputPath: string;
+  comparePath: string;
+  compare?: RoundCompareData;
+  successChunkIds?: string[];
+  totalCount: number;
+  completedCount: number;
+  successCount: number;
+  failureCount: number;
+  canceled: boolean;
+  failures: BatchRerunFailure[];
+};
+
+export type BatchRerunStatus = {
+  ok: boolean;
+  runId: string;
+  outputPath: string;
+  status: "running" | "canceling" | "completed" | "failed" | "canceled" | string;
+  completed: boolean;
+  cancelRequested: boolean;
+  totalCount: number;
+  completedCount: number;
+  successCount: number;
+  failureCount: number;
+  currentIndex: number;
+  currentChunkId: string;
+  successChunkIds?: string[];
+  failures?: BatchRerunFailure[];
+  eventCount: number;
+  lastEvent?: Record<string, unknown> | null;
+  result?: BatchRerunResult | null;
+  error?: string | null;
+  restoredFromDisk?: boolean;
+  persistedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type TestConnectionResult = {
   ok: boolean;
   offlineMode: boolean;
@@ -439,12 +531,16 @@ export type RoundResult = {
   offlineMode: boolean;
   roundModel?: {
     round: number;
+    providerId?: string;
     providerName?: string;
     baseUrl: string;
     model: string;
     apiType: "chat_completions" | "responses";
     temperature?: number;
+    rateLimitWindowMinutes?: number;
+    rateLimitMaxRequests?: number;
     rewriteCandidateMode?: "economy" | "quality";
+    routeSource?: "default" | "provider" | "round_snapshot" | string;
   };
   docEntry: Record<string, unknown>;
   roundContext: Record<string, unknown>;
@@ -592,6 +688,14 @@ export type DeleteHistoryOptions = {
   mode?: HistoryDeleteMode;
 };
 
+export type ExportIssueSample = {
+  code?: string;
+  severity?: string;
+  message: string;
+  location?: string;
+  sample?: string;
+};
+
 export type ExportResult = {
   format: "txt" | "docx";
   path: string;
@@ -609,6 +713,9 @@ export type ExportResult = {
   preflightIssueCount?: number;
   guardPath?: string;
   guardIssueCount?: number;
+  guardIssueSamples?: ExportIssueSample[];
+  auditIssueSamples?: ExportIssueSample[];
+  preflightIssueSamples?: ExportIssueSample[];
 };
 
 export type FormatRules = {

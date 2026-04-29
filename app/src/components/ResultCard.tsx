@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { DetectionReportMatch, ExportResult, OutputPreview, ReviewDecision, RoundCompareData, RoundQualitySummary, RoundResult } from "@/types/app";
+import type { DetectionReportMatch, ExportIssueSample, ExportResult, OutputPreview, ReviewDecision, RoundCompareData, RoundQualitySummary, RoundResult } from "@/types/app";
 
 const T = {
   result: "结果",
@@ -39,6 +39,16 @@ const T = {
   candidateChunks: "候选输出",
   candidateOnly: "只看候选",
   noCandidateChunks: "暂无候选输出块",
+  changedChunks: "新增/删除",
+  changedOnly: "只看增删",
+  noChangedChunks: "暂无新增/删除块",
+  numberRisk: "数字风险",
+  numberRiskOnly: "只看数字风险",
+  noNumberRiskChunks: "暂无数字风险块",
+  citationRisk: "引用风险",
+  citationRiskOnly: "只看引用风险",
+  noCitationRiskChunks: "暂无引用风险块",
+  filterEmptyHint: "当前筛选下没有命中的块，可切回全部继续查看。",
   rerunFailure: "重跑失败",
   rerunFailureHint: "该块上次重跑没有通过，可补充意见后单块重跑。",
   rerunFailureSummary: "部分块没有通过硬校验，系统已保留旧内容，不会自动污染导出。",
@@ -106,9 +116,45 @@ const T = {
 const zh = (...codes: number[]) => String.fromCharCode(...codes);
 const diffScrollPositions = new Map<string, number>();
 
+type RejectedCandidate = NonNullable<RoundCompareData["chunks"][number]["rejectedCandidates"]>[number];
+type CandidateInspectionLevel = "safe" | "review" | "danger";
+type CandidateInspection = {
+  level: CandidateInspectionLevel;
+  label: string;
+  summary: string;
+  lengthRatio: number | null;
+  lengthText: string;
+  languageText: string;
+  numberText: string;
+  citationText: string;
+  issues: string[];
+  warnings: string[];
+};
+type CandidateDiffKind = "same" | "added" | "removed";
+type CandidateDiffSegment = {
+  text: string;
+  kind: CandidateDiffKind;
+};
+type CandidateDiffView = {
+  sourceSegments: CandidateDiffSegment[];
+  candidateSegments: CandidateDiffSegment[];
+  tooLarge: boolean;
+  sourceTokenCount: number;
+  candidateTokenCount: number;
+  addedTokenCount: number;
+  removedTokenCount: number;
+  changeRatio: number;
+};
+type DiffFilterMode = "all" | "review" | "failed" | "candidate" | "changed" | "number" | "citation";
+
 type RerunFailure = {
   chunkId: string;
   error: string;
+  rejectedCandidates?: NonNullable<RoundCompareData["chunks"][number]["rejectedCandidates"]>;
+  rerunStatus?: string;
+  rerunFallbackMode?: string;
+  rerunFallbackError?: string;
+  quality?: RoundCompareData["chunks"][number]["quality"];
 };
 
 type Props = {
@@ -123,13 +169,16 @@ type Props = {
   onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void;
   onRerunChunk: (chunkId: string, userFeedback?: string) => void;
   onRerunRiskyChunks: () => void;
+  batchRerunRunning?: boolean;
+  batchRerunStatusText?: string;
+  onCancelBatchRerun?: () => void;
   onExportReviewedTxt: () => void;
   onExportReviewedDocx: () => void;
   onExportTxt: () => void;
   onExportDocx: () => void;
 };
 
-export function ResultCard({ result, preview, compareData, exportResult, busy, rerunFailures = [], detectionMatchesByChunk = {}, reviewDecisions, onReviewDecisionChange, onRerunChunk, onRerunRiskyChunks, onExportReviewedTxt, onExportReviewedDocx, onExportTxt, onExportDocx }: Props) {
+export function ResultCard({ result, preview, compareData, exportResult, busy, rerunFailures = [], detectionMatchesByChunk = {}, reviewDecisions, onReviewDecisionChange, onRerunChunk, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportReviewedTxt, onExportReviewedDocx, onExportTxt, onExportDocx }: Props) {
   const deferredPreviewText = useDeferredValue(preview?.text ?? "");
   const qualitySummary = result?.qualitySummary ?? compareData?.qualitySummary ?? null;
 
@@ -145,6 +194,11 @@ export function ResultCard({ result, preview, compareData, exportResult, busy, r
             <CardTitle className="text-xl">{T.title}</CardTitle>
           </div>
           <div className="flex flex-wrap gap-2">
+            {batchRerunRunning ? (
+              <Button variant="destructive" onClick={onCancelBatchRerun}>
+                停止重跑
+              </Button>
+            ) : null}
             <Button variant="outline" onClick={onExportTxt} disabled={!result || busy}>
               <Download className="h-4 w-4" />
               TXT
@@ -168,7 +222,18 @@ export function ResultCard({ result, preview, compareData, exportResult, busy, r
         </div>
       </CardHeader>
 
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+        {batchRerunRunning ? (
+          <div className="shrink-0 rounded-3xl border border-red-100 bg-red-50 p-4 text-sm leading-6 text-red-900">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="font-black">批量重跑进行中</div>
+                <div className="mt-1 text-xs font-semibold opacity-85">{batchRerunStatusText || "正在处理需重跑块；已完成的块会实时保留。"}</div>
+              </div>
+              <Button size="sm" variant="destructive" onClick={onCancelBatchRerun}>停止重跑</Button>
+            </div>
+          </div>
+        ) : null}
         {result || compareData?.chunks.length ? (
           <>
             <RewriteDiffPanel data={compareData} busy={busy} rerunFailures={rerunFailures} detectionMatchesByChunk={detectionMatchesByChunk} reviewDecisions={reviewDecisions} onReviewDecisionChange={onReviewDecisionChange} onRerunChunk={onRerunChunk} />
@@ -224,15 +289,22 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   const previousChunkCountRef = useRef(0);
   const previousFailedCountRef = useRef(0);
   const previousCandidateCountRef = useRef(0);
-  const [filterMode, setFilterMode] = useState<"all" | "review" | "failed" | "candidate">("all");
+  const [filterMode, setFilterMode] = useState<DiffFilterMode>("all");
   const [focusedReviewIndex, setFocusedReviewIndex] = useState(-1);
 
   const allChunks = data?.chunks ?? [];
   const rerunFailureByChunk = new Map(rerunFailures.map((failure) => [failure.chunkId, failure]));
+  const failureCandidateChunkIdSet = new Set(rerunFailures.filter((failure) => (failure.rejectedCandidates?.length ?? 0) > 0).map((failure) => failure.chunkId));
   const failedChunkIds = allChunks.filter((chunk) => rerunFailureByChunk.has(chunk.chunkId)).map((chunk) => chunk.chunkId);
   const failedChunkIdSet = new Set(failedChunkIds);
-  const candidateChunkIds = allChunks.filter((chunk) => (chunk.rejectedCandidates?.length ?? 0) > 0).map((chunk) => chunk.chunkId);
+  const candidateChunkIds = allChunks.filter((chunk) => (chunk.rejectedCandidates?.length ?? 0) > 0 || failureCandidateChunkIdSet.has(chunk.chunkId)).map((chunk) => chunk.chunkId);
   const candidateChunkIdSet = new Set(candidateChunkIds);
+  const changedChunkIds = allChunks.filter((chunk) => hasChunkTextChange(chunk, getDisplayRejectedCandidates(chunk, rerunFailureByChunk.get(chunk.chunkId)))).map((chunk) => chunk.chunkId);
+  const changedChunkIdSet = new Set(changedChunkIds);
+  const numberRiskChunkIds = allChunks.filter((chunk) => hasChunkNumberRisk(chunk, getDisplayRejectedCandidates(chunk, rerunFailureByChunk.get(chunk.chunkId)))).map((chunk) => chunk.chunkId);
+  const numberRiskChunkIdSet = new Set(numberRiskChunkIds);
+  const citationRiskChunkIds = allChunks.filter((chunk) => hasChunkCitationRisk(chunk, getDisplayRejectedCandidates(chunk, rerunFailureByChunk.get(chunk.chunkId)))).map((chunk) => chunk.chunkId);
+  const citationRiskChunkIdSet = new Set(citationRiskChunkIds);
   const reviewChunkIds = allChunks
     .filter((chunk) => isReviewChunk(chunk, detectionMatchesByChunk[chunk.chunkId] ?? []) || rerunFailureByChunk.has(chunk.chunkId) || candidateChunkIdSet.has(chunk.chunkId))
     .map((chunk) => chunk.chunkId);
@@ -241,6 +313,12 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
     ? allChunks.filter((chunk) => failedChunkIdSet.has(chunk.chunkId))
     : filterMode === "candidate"
       ? allChunks.filter((chunk) => candidateChunkIdSet.has(chunk.chunkId))
+    : filterMode === "changed"
+      ? allChunks.filter((chunk) => changedChunkIdSet.has(chunk.chunkId))
+    : filterMode === "number"
+      ? allChunks.filter((chunk) => numberRiskChunkIdSet.has(chunk.chunkId))
+    : filterMode === "citation"
+      ? allChunks.filter((chunk) => citationRiskChunkIdSet.has(chunk.chunkId))
     : filterMode === "review"
       ? allChunks.filter((chunk) => reviewChunkIdSet.has(chunk.chunkId))
       : allChunks;
@@ -248,7 +326,8 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   const baseScrollKey = data ? data.outputPath || `${data.docId}-${data.round}` : "empty";
   const scrollKey = `${baseScrollKey}:${filterMode}`;
   const chunkCount = shownChunks.length;
-  const shownLabel = filterMode === "failed" ? T.failedOnly : filterMode === "candidate" ? T.candidateOnly : filterMode === "review" ? T.reviewOnly : T.shown;
+  const shownLabel = getDiffFilterLabel(filterMode);
+  const emptyState = getDiffFilterEmptyState(filterMode);
 
   useEffect(() => {
     if (focusedReviewIndex >= reviewChunkIds.length) {
@@ -269,10 +348,16 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
       setFilterMode("all");
     } else if (candidateChunkIds.length === 0 && filterMode === "candidate") {
       setFilterMode("all");
+    } else if (changedChunkIds.length === 0 && filterMode === "changed") {
+      setFilterMode("all");
+    } else if (numberRiskChunkIds.length === 0 && filterMode === "number") {
+      setFilterMode("all");
+    } else if (citationRiskChunkIds.length === 0 && filterMode === "citation") {
+      setFilterMode("all");
     }
     previousFailedCountRef.current = failedChunkIds.length;
     previousCandidateCountRef.current = candidateChunkIds.length;
-  }, [candidateChunkIds.length, failedChunkIds.length, filterMode]);
+  }, [candidateChunkIds.length, changedChunkIds.length, citationRiskChunkIds.length, failedChunkIds.length, filterMode, numberRiskChunkIds.length]);
 
   useLayoutEffect(() => {
     const node = scrollRef.current;
@@ -341,7 +426,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
 
   if (!allChunks.length) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-3xl border border-dashed border-border bg-background/75 p-8 text-center">
+      <div className="fy-empty-state flex min-h-0 flex-1 flex-col items-center justify-center">
         <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
           <SplitSquareHorizontal className="h-7 w-7" />
         </div>
@@ -352,18 +437,22 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col rounded-3xl border border-border/70 bg-background/75 p-4 shadow-soft">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <SplitSquareHorizontal className="h-4 w-4 text-primary" />
-          {T.diff}
+    <div className="fy-panel flex min-h-[28rem] flex-[1_0_28rem] flex-col p-4">
+      <div className="mb-4 shrink-0 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <SplitSquareHorizontal className="h-4 w-4 text-primary" />
+            {T.diff}
+          </div>
+          <Badge variant="secondary">{shownLabel} {shownChunks.length}</Badge>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="fy-inline-toolbar">
           <Badge variant="outline">{data?.chunkCount ?? allChunks.length} {T.chunks}</Badge>
           <Badge variant={reviewChunkIds.length ? "warning" : "success"}>{T.reviewChunks} {reviewChunkIds.length}</Badge>
           <Badge variant={failedChunkIds.length ? "warning" : "outline"}>{T.failedChunks} {failedChunkIds.length}</Badge>
           <Badge variant={candidateChunkIds.length ? "outline" : "secondary"}>{T.candidateChunks} {candidateChunkIds.length}</Badge>
-          <Badge variant="secondary">{shownLabel} {shownChunks.length}</Badge>
+          <Badge variant={numberRiskChunkIds.length ? "warning" : "outline"}>{T.numberRisk} {numberRiskChunkIds.length}</Badge>
+          <Badge variant={citationRiskChunkIds.length ? "warning" : "outline"}>{T.citationRisk} {citationRiskChunkIds.length}</Badge>
           <Button size="sm" variant={filterMode === "review" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "review" ? "all" : "review")} disabled={!reviewChunkIds.length && filterMode !== "review"}>
             {filterMode === "review" ? T.showAll : T.reviewOnly}
           </Button>
@@ -373,12 +462,21 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
           <Button size="sm" variant={filterMode === "candidate" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "candidate" ? "all" : "candidate")} disabled={!candidateChunkIds.length && filterMode !== "candidate"}>
             {filterMode === "candidate" ? T.showAll : T.candidateOnly}
           </Button>
+          <Button size="sm" variant={filterMode === "changed" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "changed" ? "all" : "changed")} disabled={!changedChunkIds.length && filterMode !== "changed"}>
+            {filterMode === "changed" ? T.showAll : T.changedChunks}
+          </Button>
+          <Button size="sm" variant={filterMode === "number" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "number" ? "all" : "number")} disabled={!numberRiskChunkIds.length && filterMode !== "number"}>
+            {filterMode === "number" ? T.showAll : T.numberRisk}
+          </Button>
+          <Button size="sm" variant={filterMode === "citation" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "citation" ? "all" : "citation")} disabled={!citationRiskChunkIds.length && filterMode !== "citation"}>
+            {filterMode === "citation" ? T.showAll : T.citationRisk}
+          </Button>
           <Button size="sm" variant="outline" onClick={() => jumpToReviewChunk("previous")} disabled={!reviewChunkIds.length}>{T.previousReview}</Button>
           <Button size="sm" variant="outline" onClick={() => jumpToReviewChunk("next")} disabled={!reviewChunkIds.length}>{T.nextReview}</Button>
         </div>
       </div>
       {failedChunkIds.length ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-800">
+        <div className="fy-callout fy-tone-danger mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
             <span className="font-semibold">{T.failedChunks} {failedChunkIds.length}：</span>
             <span>{T.rerunFailureSummary}</span>
@@ -389,7 +487,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
         </div>
       ) : null}
       {candidateChunkIds.length ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
+        <div className="fy-callout mb-4 flex flex-wrap items-center justify-between gap-3 border-sky-200 bg-sky-50 text-sky-800">
           <div className="min-w-0 flex-1">
             <span className="font-semibold">{T.candidateChunks} {candidateChunkIds.length}：</span>
             <span>{T.rejectedCandidateHint}</span>
@@ -408,8 +506,15 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
           {shownChunks.length ? shownChunks.map((chunk) => {
             const detectionMatches = detectionMatchesByChunk[chunk.chunkId] ?? [];
             const rerunFailure = rerunFailureByChunk.get(chunk.chunkId);
+            const failureRejectedCandidates = rerunFailure?.rejectedCandidates ?? [];
+            const displayChunk = failureRejectedCandidates.length && !(chunk.rejectedCandidates?.length)
+              ? { ...chunk, rejectedCandidates: failureRejectedCandidates }
+              : chunk;
             const needsReview = reviewChunkIdSet.has(chunk.chunkId);
-            const hasRejectedCandidate = (chunk.rejectedCandidates?.length ?? 0) > 0;
+            const hasChangedText = changedChunkIdSet.has(chunk.chunkId);
+            const hasNumberRisk = numberRiskChunkIdSet.has(chunk.chunkId);
+            const hasCitationRisk = citationRiskChunkIdSet.has(chunk.chunkId);
+            const hasRejectedCandidate = (displayChunk.rejectedCandidates?.length ?? 0) > 0;
             const strongMatches = detectionMatches.filter((match) => match.confidence === "strong");
             const reviewMatches = detectionMatches.filter((match) => match.confidence === "review");
             const matchTone = strongMatches.length ? "strong" : reviewMatches.length ? "review" : "weak";
@@ -432,6 +537,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                     <span className="font-semibold">{T.rerunFailure}：</span>
                     <span>{rerunFailure.error}</span>
                     <span className="ml-2 opacity-80">{T.rerunFailureHint}</span>
+                    {failureRejectedCandidates.length ? <span className="ml-2 font-medium">已保留 {failureRejectedCandidates.length} 个模型候选，可在下方展开查看。</span> : null}
                   </div>
                 ) : null}
                 {detectionMatches.length ? (
@@ -444,23 +550,30 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                     ))}
                     {detectionMatches[0]?.reason ? <span className="basis-full text-[11px] opacity-80">{detectionMatches[0].reason}</span> : null}
                     {detectionMatches[0]?.evidence.matchedFragments?.[0] ? (
-                      <span className="basis-full break-all rounded-xl bg-white/70 px-2 py-1 text-[11px] opacity-80">
+                    <span className="basis-full break-all rounded-xl bg-white/70 px-2 py-1 text-[11px] opacity-80">
                         命中句段：{detectionMatches[0].evidence.matchedFragments[0]}
                       </span>
                     ) : null}
                   </div>
                 ) : null}
+                {hasChangedText || hasNumberRisk || hasCitationRisk ? (
+                  <div className="xl:col-span-2 flex flex-wrap items-center gap-2 text-xs">
+                    {hasChangedText ? <Badge variant="secondary">{T.changedChunks}</Badge> : null}
+                    {hasNumberRisk ? <Badge variant="warning">{T.numberRisk}</Badge> : null}
+                    {hasCitationRisk ? <Badge variant="warning">{T.citationRisk}</Badge> : null}
+                  </div>
+                ) : null}
                 <TextPane title={T.source} text={chunk.inputText} />
                 <TextPane title={T.rewrite} text={chunk.outputText} tone="rewrite" />
                 <div className="xl:col-span-2">
-                  <ChunkQualityBar chunk={chunk} busy={busy} decision={reviewDecisions[chunk.chunkId] ?? "rewrite"} onDecisionChange={(decision) => onReviewDecisionChange(chunk.chunkId, decision)} onRerun={(userFeedback) => onRerunChunk(chunk.chunkId, userFeedback)} />
+                  <ChunkQualityBar chunk={displayChunk} busy={busy} decision={reviewDecisions[chunk.chunkId] ?? "rewrite"} onDecisionChange={(decision) => onReviewDecisionChange(chunk.chunkId, decision)} onRerun={(userFeedback) => onRerunChunk(chunk.chunkId, userFeedback)} />
                 </div>
               </div>
             );
           }) : (
             <div className="rounded-3xl border border-dashed border-border bg-white/80 p-8 text-center">
-              <div className="text-base font-semibold text-foreground">{filterMode === "failed" ? T.noFailedChunks : filterMode === "candidate" ? T.noCandidateChunks : T.noReviewChunks}</div>
-              <div className="mt-2 text-sm text-muted-foreground">{T.noReviewHint}</div>
+              <div className="text-base font-semibold text-foreground">{emptyState.title}</div>
+              <div className="mt-2 text-sm text-muted-foreground">{emptyState.hint}</div>
               <Button className="mt-4" size="sm" variant="outline" onClick={() => setFilterMode("all")}>{T.showAll}</Button>
             </div>
           )}
@@ -475,6 +588,60 @@ function isReviewChunk(chunk: RoundCompareData["chunks"][number], detectionMatch
   const hasLocalReview = Boolean(chunk.quality?.needsReview) || chunk.fallbackMode === "source" || flags.includes("source_fallback");
   const hasReportReview = detectionMatches.some((match) => match.confidence === "strong" || match.confidence === "review");
   return hasLocalReview || hasReportReview;
+}
+
+function getDiffFilterLabel(mode: DiffFilterMode): string {
+  if (mode === "failed") return T.failedOnly;
+  if (mode === "candidate") return T.candidateOnly;
+  if (mode === "changed") return T.changedChunks;
+  if (mode === "number") return T.numberRisk;
+  if (mode === "citation") return T.citationRisk;
+  if (mode === "review") return T.reviewOnly;
+  return T.shown;
+}
+
+function getDiffFilterEmptyState(mode: DiffFilterMode): { title: string; hint: string } {
+  if (mode === "failed") return { title: T.noFailedChunks, hint: T.filterEmptyHint };
+  if (mode === "candidate") return { title: T.noCandidateChunks, hint: T.filterEmptyHint };
+  if (mode === "changed") return { title: T.noChangedChunks, hint: T.filterEmptyHint };
+  if (mode === "number") return { title: T.noNumberRiskChunks, hint: T.filterEmptyHint };
+  if (mode === "citation") return { title: T.noCitationRiskChunks, hint: T.filterEmptyHint };
+  return { title: T.noReviewChunks, hint: T.noReviewHint };
+}
+
+function getDisplayRejectedCandidates(chunk: RoundCompareData["chunks"][number], rerunFailure?: RerunFailure): NonNullable<RoundCompareData["chunks"][number]["rejectedCandidates"]> {
+  if (chunk.rejectedCandidates?.length) {
+    return chunk.rejectedCandidates;
+  }
+  return rerunFailure?.rejectedCandidates ?? [];
+}
+
+function hasTokenDifference(sourceText: string, outputText: string, extractor: (text: string) => string[]): boolean {
+  const sourceTokens = extractor(sourceText);
+  const outputTokens = extractor(outputText);
+  return findMissingTokens(sourceTokens, outputTokens).length > 0 || findMissingTokens(outputTokens, sourceTokens).length > 0;
+}
+
+function hasChunkTextChange(chunk: RoundCompareData["chunks"][number], candidates: RejectedCandidate[]): boolean {
+  const inputText = normalizeDiffText(chunk.inputText);
+  if (normalizeDiffText(chunk.outputText) !== inputText) {
+    return true;
+  }
+  return candidates.some((candidate) => normalizeDiffText(candidate.outputText ?? "") !== inputText);
+}
+
+function hasChunkNumberRisk(chunk: RoundCompareData["chunks"][number], candidates: RejectedCandidate[]): boolean {
+  if (hasTokenDifference(chunk.inputText, chunk.outputText, extractNumberTokens)) {
+    return true;
+  }
+  return candidates.some((candidate) => hasTokenDifference(chunk.inputText, candidate.outputText ?? "", extractNumberTokens));
+}
+
+function hasChunkCitationRisk(chunk: RoundCompareData["chunks"][number], candidates: RejectedCandidate[]): boolean {
+  if ((chunk.quality?.missingCitationCount ?? 0) > 0 || hasTokenDifference(chunk.inputText, chunk.outputText, extractCitationTokens)) {
+    return true;
+  }
+  return candidates.some((candidate) => hasTokenDifference(chunk.inputText, candidate.outputText ?? "", extractCitationTokens));
 }
 
 function TextPane({ title, text, tone = "source" }: { title: string; text: string; tone?: "source" | "rewrite" }) {
@@ -521,6 +688,7 @@ function ExportSafetyReport({ result }: { result: ExportResult | null }) {
             count={result?.guardIssueCount ?? 0}
             path={result?.guardPath}
             text="阻止目录、表格、参考文献、保护区内容被误改。"
+            samples={result?.guardIssueSamples}
           />
           <AuditStep
             title="保护区审计"
@@ -528,6 +696,7 @@ function ExportSafetyReport({ result }: { result: ExportResult | null }) {
             count={result?.auditIssueCount ?? 0}
             path={result?.auditPath}
             text="核对保护区文本、表格结构和导出回填边界。"
+            samples={result?.auditIssueSamples}
           />
           <AuditStep
             title="排版预检"
@@ -535,6 +704,7 @@ function ExportSafetyReport({ result }: { result: ExportResult | null }) {
             count={result?.preflightIssueCount ?? 0}
             path={result?.preflightPath}
             text="检查学校规范样式、段落行距和导出前风险。"
+            samples={result?.preflightIssueSamples}
           />
         </div>
       ) : null}
@@ -547,7 +717,7 @@ function ExportSafetyReport({ result }: { result: ExportResult | null }) {
   );
 }
 
-function AuditStep({ title, ok, count, path, text }: { title: string; ok: boolean; count: number; path?: string; text: string }) {
+function AuditStep({ title, ok, count, path, text, samples = [] }: { title: string; ok: boolean; count: number; path?: string; text: string; samples?: ExportIssueSample[] }) {
   return (
     <div className={`rounded-2xl border p-3 ${ok ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
       <div className="flex items-center justify-between gap-2">
@@ -555,6 +725,22 @@ function AuditStep({ title, ok, count, path, text }: { title: string; ok: boolea
         <Badge variant={ok ? "success" : "warning"}>{count} 问题</Badge>
       </div>
       <div className="mt-1 text-xs leading-5 opacity-80">{text}</div>
+      {samples.length ? (
+        <div className="mt-2 space-y-1">
+          {samples.slice(0, 3).map((sample, index) => (
+            <div key={`${sample.code ?? "issue"}-${index}`} className="rounded-xl bg-white/70 px-2 py-1 text-[11px] leading-5">
+              <div className="flex flex-wrap items-center gap-1 font-semibold">
+                {sample.code ? <span>{sample.code}</span> : null}
+                {sample.location ? <span className="opacity-70">{sample.location}</span> : null}
+              </div>
+              <div>{sample.message}</div>
+              {sample.sample ? <div className="line-clamp-2 opacity-70">{sample.sample}</div> : null}
+            </div>
+          ))}
+        </div>
+      ) : count > 0 ? (
+        <div className="mt-2 rounded-xl bg-white/70 px-2 py-1 text-[11px] leading-5 opacity-75">打开报告文件可查看详细问题。</div>
+      ) : null}
       {path ? <div className="mt-2 truncate text-[11px] opacity-75">{formatArtifactLabel("报告", path)}</div> : null}
     </div>
   );
@@ -592,6 +778,341 @@ function isReviewDecisionConfirmed(decision: ReviewDecision): boolean {
   return typeof decision === "object" || decision === "rewrite_confirmed" || decision === "source_confirmed";
 }
 
+function countMatches(text: string, pattern: RegExp): number {
+  return text.match(pattern)?.length ?? 0;
+}
+
+function countCjkChars(text: string): number {
+  return [...text].filter((char) => {
+    const code = char.charCodeAt(0);
+    return isCjkCode(code);
+  }).length;
+}
+
+function isCjkCode(code: number): boolean {
+  return code >= 0x3400 && code <= 0x9fff;
+}
+
+function isLatinLikeChar(char: string): boolean {
+  return /[A-Za-z0-9_.%+\-/]/.test(char);
+}
+
+function countVisibleChars(text: string): number {
+  return text.replace(/\s+/g, "").length;
+}
+
+function classifyLanguage(text: string): "cn" | "en" | "mixed" {
+  const cjk = countCjkChars(text);
+  const latin = countMatches(text, /[A-Za-z]/g);
+  const total = cjk + latin;
+  if (total < 8) return "mixed";
+  if (cjk / total >= 0.45) return "cn";
+  if (latin / total >= 0.65) return "en";
+  return "mixed";
+}
+
+function extractNumberTokens(text: string): string[] {
+  return [...text.matchAll(/(?:^|[^\w.])(\d+(?:\.\d+)?%?)/g)].map((match) => match[1]).filter(Boolean);
+}
+
+function extractCitationTokens(text: string): string[] {
+  const bracketCitations = text.match(/\[[\d,\-\s]+]/g) ?? [];
+  const authorYearCitations = text.match(/[（(][^（）()]{0,24}\d{4}[a-z]?[^（）()]{0,24}[）)]/gi) ?? [];
+  return [...bracketCitations, ...authorYearCitations];
+}
+
+function uniqueTokens(tokens: string[]): string[] {
+  return [...new Set(tokens.map((token) => token.replace(/\s+/g, "").trim()).filter(Boolean))];
+}
+
+function findMissingTokens(sourceTokens: string[], outputTokens: string[]): string[] {
+  const outputSet = new Set(uniqueTokens(outputTokens));
+  return uniqueTokens(sourceTokens).filter((token) => !outputSet.has(token));
+}
+
+function getLineUnitCount(text: string): number {
+  const units = text.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+  return Math.max(1, units.length);
+}
+
+function hasTemplateMarker(text: string): boolean {
+  return /^(修改后|改写后|润色后|说明|以下是|Here is|Here are)[:：\s]/i.test(text.trim()) || /作为(?:一个|一名)?AI|as an ai/i.test(text);
+}
+
+function normalizeDiffText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function tokenizeCandidateDiff(text: string): string[] {
+  const normalized = normalizeDiffText(text);
+  const tokens: string[] = [];
+  let buffer = "";
+  const flushBuffer = () => {
+    if (buffer) {
+      tokens.push(buffer);
+      buffer = "";
+    }
+  };
+  for (const char of normalized) {
+    if (/\s/.test(char)) {
+      flushBuffer();
+      if (tokens[tokens.length - 1] !== " ") {
+        tokens.push(" ");
+      }
+      continue;
+    }
+    const code = char.charCodeAt(0);
+    if (isCjkCode(code)) {
+      flushBuffer();
+      tokens.push(char);
+      continue;
+    }
+    if (isLatinLikeChar(char)) {
+      buffer += char;
+      continue;
+    }
+    flushBuffer();
+    tokens.push(char);
+  }
+  flushBuffer();
+  return tokens.filter((token, index, list) => token !== " " || (index > 0 && index < list.length - 1));
+}
+
+function mergeDiffSegments(segments: CandidateDiffSegment[]): CandidateDiffSegment[] {
+  const merged: CandidateDiffSegment[] = [];
+  for (const segment of segments) {
+    if (!segment.text) continue;
+    const previous = merged[merged.length - 1];
+    if (previous && previous.kind === segment.kind) {
+      previous.text += segment.text;
+    } else {
+      merged.push({ ...segment });
+    }
+  }
+  return merged;
+}
+
+function buildCandidateDiffView(sourceText: string, candidateText: string): CandidateDiffView {
+  const sourceTokens = tokenizeCandidateDiff(sourceText);
+  const candidateTokens = tokenizeCandidateDiff(candidateText);
+  const maxTokenCount = 900;
+  const maxCellCount = 420000;
+  const tooLarge = sourceTokens.length > maxTokenCount || candidateTokens.length > maxTokenCount || sourceTokens.length * candidateTokens.length > maxCellCount;
+  if (tooLarge) {
+    return {
+      sourceSegments: [{ text: normalizeDiffText(sourceText), kind: "same" }],
+      candidateSegments: [{ text: normalizeDiffText(candidateText), kind: "same" }],
+      tooLarge: true,
+      sourceTokenCount: sourceTokens.length,
+      candidateTokenCount: candidateTokens.length,
+      addedTokenCount: 0,
+      removedTokenCount: 0,
+      changeRatio: 0,
+    };
+  }
+
+  const sourceLength = sourceTokens.length;
+  const candidateLength = candidateTokens.length;
+  const table = Array.from({ length: sourceLength + 1 }, () => new Uint16Array(candidateLength + 1));
+  for (let sourceIndex = sourceLength - 1; sourceIndex >= 0; sourceIndex -= 1) {
+    for (let candidateIndex = candidateLength - 1; candidateIndex >= 0; candidateIndex -= 1) {
+      table[sourceIndex][candidateIndex] = sourceTokens[sourceIndex] === candidateTokens[candidateIndex]
+        ? table[sourceIndex + 1][candidateIndex + 1] + 1
+        : Math.max(table[sourceIndex + 1][candidateIndex], table[sourceIndex][candidateIndex + 1]);
+    }
+  }
+
+  const sourceSegments: CandidateDiffSegment[] = [];
+  const candidateSegments: CandidateDiffSegment[] = [];
+  let addedTokenCount = 0;
+  let removedTokenCount = 0;
+  let sourceIndex = 0;
+  let candidateIndex = 0;
+  while (sourceIndex < sourceLength || candidateIndex < candidateLength) {
+    if (sourceIndex < sourceLength && candidateIndex < candidateLength && sourceTokens[sourceIndex] === candidateTokens[candidateIndex]) {
+      sourceSegments.push({ text: sourceTokens[sourceIndex], kind: "same" });
+      candidateSegments.push({ text: candidateTokens[candidateIndex], kind: "same" });
+      sourceIndex += 1;
+      candidateIndex += 1;
+    } else if (candidateIndex < candidateLength && (sourceIndex >= sourceLength || table[sourceIndex][candidateIndex + 1] >= table[sourceIndex + 1][candidateIndex])) {
+      candidateSegments.push({ text: candidateTokens[candidateIndex], kind: "added" });
+      addedTokenCount += candidateTokens[candidateIndex].trim() ? 1 : 0;
+      candidateIndex += 1;
+    } else if (sourceIndex < sourceLength) {
+      sourceSegments.push({ text: sourceTokens[sourceIndex], kind: "removed" });
+      removedTokenCount += sourceTokens[sourceIndex].trim() ? 1 : 0;
+      sourceIndex += 1;
+    }
+  }
+
+  const baseTokenCount = Math.max(1, Math.max(sourceTokens.filter((token) => token.trim()).length, candidateTokens.filter((token) => token.trim()).length));
+  return {
+    sourceSegments: mergeDiffSegments(sourceSegments),
+    candidateSegments: mergeDiffSegments(candidateSegments),
+    tooLarge: false,
+    sourceTokenCount: sourceTokens.length,
+    candidateTokenCount: candidateTokens.length,
+    addedTokenCount,
+    removedTokenCount,
+    changeRatio: (addedTokenCount + removedTokenCount) / baseTokenCount,
+  };
+}
+
+function formatDiffRatio(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function compactFeedbackText(text: string, maxLength = 220): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
+}
+
+function buildCandidateRerunFeedback(inspection: CandidateInspection, candidate: RejectedCandidate): string {
+  const findings = [...inspection.issues, ...inspection.warnings].slice(0, 6);
+  const lines = [
+    "请重新改写本块，重点修复上一候选暴露的问题：",
+    ...(findings.length ? findings : ["候选未通过硬校验，请保持原事实顺序、数字、引用和语言不变。"]).map((item) => `- ${item}`),
+  ];
+  if (candidate.error) {
+    lines.push(`- 算法拦截信息：${compactFeedbackText(candidate.error)}`);
+  }
+  lines.push("要求：不要直接复用上一候选；只调整表达，不改变事实、顺序、数字、引用和语言。");
+  return lines.join("\n");
+}
+
+function inspectRejectedCandidate(sourceText: string, candidate: RejectedCandidate): CandidateInspection {
+  const outputText = candidate.outputText ?? "";
+  const sourceLength = countVisibleChars(sourceText);
+  const outputLength = countVisibleChars(outputText);
+  const lengthRatio = sourceLength > 0 ? outputLength / sourceLength : null;
+  const sourceLanguage = classifyLanguage(sourceText);
+  const outputLanguage = classifyLanguage(outputText);
+  const sourceNumbers = extractNumberTokens(sourceText);
+  const outputNumbers = extractNumberTokens(outputText);
+  const sourceCitations = extractCitationTokens(sourceText);
+  const outputCitations = extractCitationTokens(outputText);
+  const missingNumbers = findMissingTokens(sourceNumbers, outputNumbers);
+  const addedNumbers = findMissingTokens(outputNumbers, sourceNumbers);
+  const missingCitations = findMissingTokens(sourceCitations, outputCitations);
+  const issues: string[] = [];
+  const warnings: string[] = [];
+  const errorText = String(candidate.error ?? "");
+
+  if (!outputText.trim()) issues.push("候选为空，不能采用");
+  if (candidate.truncated) issues.push("候选被截断，不能直接采用");
+  if (lengthRatio !== null && (lengthRatio < 0.65 || lengthRatio > 1.45)) issues.push("长度偏离明显");
+  else if (lengthRatio !== null && (lengthRatio < 0.8 || lengthRatio > 1.25)) warnings.push("长度略有偏离");
+  if (sourceLanguage === "en" && outputLanguage === "cn") issues.push("英文段落被改成中文");
+  if (sourceLanguage === "cn" && outputLanguage === "en") issues.push("中文段落被改成英文");
+  if (getLineUnitCount(outputText) > Math.max(1, getLineUnitCount(sourceText) + 1)) issues.push("候选出现额外断行");
+  if (hasTemplateMarker(outputText)) issues.push("候选带有说明性前后缀");
+  if (missingCitations.length) issues.push(`缺少引用 ${missingCitations.slice(0, 3).join("、")}`);
+  if (missingNumbers.length || addedNumbers.length) warnings.push("数字或指标需要核对");
+  if (/entity_order_changed|factual order|item-value bindings/i.test(errorText)) issues.push("事实顺序或键值绑定被算法拦截");
+  else if (/citation|reference|引用/i.test(errorText)) issues.push("引用保护被算法拦截");
+  else if (/language|英文|中文/i.test(errorText)) issues.push("语言一致性被算法拦截");
+  else if (errorText && !issues.length) warnings.push("候选未通过硬校验");
+
+  const level: CandidateInspectionLevel = issues.length ? "danger" : warnings.length ? "review" : "safe";
+  return {
+    level,
+    label: level === "danger" ? "不建议直接采用" : level === "review" ? "需要人工核对" : "可重点查看",
+    summary: level === "danger"
+      ? "该候选触发硬风险，除非你确认算法误判，否则建议补充反馈后重跑。"
+      : level === "review"
+        ? "该候选没有明显硬伤，但采用前需要核对数字、引用或长度。"
+        : "该候选未发现明显硬伤，可与原文对照后人工采用。",
+    lengthRatio,
+    lengthText: lengthRatio === null ? "长度 - " : `长度 ${(lengthRatio * 100).toFixed(0)}%`,
+    languageText: sourceLanguage === outputLanguage || sourceLanguage === "mixed" || outputLanguage === "mixed" ? "语言一致" : "语言变化",
+    numberText: missingNumbers.length || addedNumbers.length ? `数字差异 ${missingNumbers.length + addedNumbers.length}` : "数字稳定",
+    citationText: missingCitations.length ? `引用缺失 ${missingCitations.length}` : "引用稳定",
+    issues,
+    warnings,
+  };
+}
+
+function CandidateInspectionPanel({ inspection }: { inspection: CandidateInspection }) {
+  const toneClass = inspection.level === "danger"
+    ? "border-red-200 bg-red-50 text-red-900"
+    : inspection.level === "review"
+      ? "border-amber-200 bg-amber-50 text-amber-950"
+      : "border-emerald-200 bg-emerald-50 text-emerald-900";
+  const badgeVariant = inspection.level === "safe" ? "success" : inspection.level === "review" ? "warning" : "outline";
+  return (
+    <div className={`mb-3 rounded-xl border p-3 text-[11px] leading-5 ${toneClass}`}>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <Badge variant={badgeVariant}>候选体检</Badge>
+        <span className="font-semibold">{inspection.summary}</span>
+      </div>
+      <div className="mb-2 flex flex-wrap gap-2">
+        <Badge variant="outline">{inspection.lengthText}</Badge>
+        <Badge variant="outline">{inspection.languageText}</Badge>
+        <Badge variant="outline">{inspection.numberText}</Badge>
+        <Badge variant="outline">{inspection.citationText}</Badge>
+      </div>
+      {inspection.issues.length || inspection.warnings.length ? (
+        <div className="grid gap-1">
+          {inspection.issues.slice(0, 4).map((item) => <div key={`issue-${item}`}>- {item}</div>)}
+          {inspection.warnings.slice(0, 3).map((item) => <div key={`warning-${item}`}>- {item}</div>)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CandidateDiffPanel({ sourceText, candidateText }: { sourceText: string; candidateText: string }) {
+  const diff = buildCandidateDiffView(sourceText, candidateText);
+  const changedTokenCount = diff.addedTokenCount + diff.removedTokenCount;
+  return (
+    <details className="mb-3 rounded-xl border border-slate-200 bg-slate-50/90 p-3 text-slate-900" open={!diff.tooLarge && changedTokenCount > 0}>
+      <summary className="cursor-pointer select-none">
+        <span className="inline-flex flex-wrap items-center gap-2 text-[11px]">
+          <Badge variant="outline">差异审稿</Badge>
+          {diff.tooLarge ? (
+            <span>文本较长，已保留完整候选，建议重点看体检项与原文。</span>
+          ) : (
+            <>
+              <Badge variant="outline">新增 {diff.addedTokenCount}</Badge>
+              <Badge variant="outline">删除 {diff.removedTokenCount}</Badge>
+              <Badge variant={diff.changeRatio > 0.45 ? "warning" : "outline"}>改动 {formatDiffRatio(diff.changeRatio)}</Badge>
+            </>
+          )}
+        </span>
+      </summary>
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <CandidateDiffPane title="原文删减视图" segments={diff.sourceSegments} focusKind="removed" />
+        <CandidateDiffPane title="候选新增视图" segments={diff.candidateSegments} focusKind="added" />
+      </div>
+    </details>
+  );
+}
+
+function CandidateDiffPane({ title, segments, focusKind }: { title: string; segments: CandidateDiffSegment[]; focusKind: CandidateDiffKind }) {
+  return (
+    <div className="fy-section rounded-xl p-3">
+      <div className="mb-2 text-[11px] font-semibold text-slate-600">{title}</div>
+      <div className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-800">
+        {segments.length ? segments.map((segment, index) => (
+          <span key={`${segment.kind}-${index}`} className={getCandidateDiffSegmentClass(segment.kind, focusKind)}>
+            {segment.text}
+          </span>
+        )) : <span className="text-slate-400">暂无文本</span>}
+      </div>
+    </div>
+  );
+}
+
+function getCandidateDiffSegmentClass(kind: CandidateDiffKind, focusKind: CandidateDiffKind): string {
+  if (kind === "added") {
+    return "rounded bg-emerald-100 px-0.5 font-medium text-emerald-900";
+  }
+  if (kind === "removed") {
+    return "rounded bg-red-100 px-0.5 font-medium text-red-900 line-through decoration-red-500";
+  }
+  return focusKind === "removed" ? "text-slate-700" : "text-slate-800";
+}
+
 function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: { chunk: RoundCompareData["chunks"][number]; busy: boolean; decision: ReviewDecision; onDecisionChange: (decision: ReviewDecision) => void; onRerun: (userFeedback?: string) => void }) {
   const quality = chunk.quality;
   const needsReview = Boolean(quality?.needsReview);
@@ -602,10 +1123,31 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
   const isSourceFallback = chunk.fallbackMode === "source" || flags.includes("source_fallback");
   const [feedback, setFeedback] = useState("");
   const [copiedCandidateKey, setCopiedCandidateKey] = useState("");
+  const [pendingAdoptCandidateKey, setPendingAdoptCandidateKey] = useState("");
   const selectedBaseDecision = getReviewDecisionMode(decision);
   const isConfirmed = isReviewDecisionConfirmed(decision);
   const rejectedCandidates = chunk.rejectedCandidates ?? [];
+  const reviewToolsVisible = needsReview || rejectedCandidates.length > 0;
   const decisionLabel = selectedBaseDecision === "custom" ? T.customChoice : selectedBaseDecision === "rewrite" ? T.useRewrite : T.useSource;
+  function adoptRejectedCandidate(candidate: RejectedCandidate, inspection: CandidateInspection, candidateKey: string) {
+    if (!candidate.outputText?.trim() || candidate.truncated) {
+      return;
+    }
+    if (inspection.level !== "safe" && pendingAdoptCandidateKey !== candidateKey) {
+      setPendingAdoptCandidateKey(candidateKey);
+      setFeedback(buildCandidateRerunFeedback(inspection, candidate));
+      return;
+    }
+    setPendingAdoptCandidateKey("");
+    onDecisionChange({
+      mode: "custom",
+      text: candidate.outputText,
+      source: "rejected_candidate",
+      attempt: candidate.attempt,
+      candidate: candidate.candidate,
+      error: candidate.error,
+    });
+  }
   return (
     <div className="space-y-2 rounded-2xl border border-border/60 bg-white/75 px-3 py-2 text-xs text-muted-foreground">
       <div className="flex flex-wrap items-center gap-2">
@@ -634,11 +1176,16 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
           <div className="mt-3 grid gap-3">
             {rejectedCandidates.map((candidate, index) => {
               const candidateKey = `${candidate.attempt ?? "?"}-${candidate.candidate ?? index}`;
+              const inspection = inspectRejectedCandidate(chunk.inputText, candidate);
               const canAdopt = Boolean(candidate.outputText?.trim()) && !candidate.truncated;
+              const needsAdoptConfirm = inspection.level !== "safe";
+              const isPendingAdopt = pendingAdoptCandidateKey === candidateKey;
+              const candidateFeedback = buildCandidateRerunFeedback(inspection, candidate);
               return (
                 <div key={candidateKey} className="rounded-2xl border border-sky-200 bg-white/90 p-3">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <Badge variant="outline">尝试 {candidate.attempt ?? "-"} / 候选 {candidate.candidate ?? index + 1}</Badge>
+                    <Badge variant={inspection.level === "safe" ? "success" : inspection.level === "review" ? "warning" : "outline"}>{inspection.label}</Badge>
                     {candidate.truncated ? <Badge variant="warning">内容过长已截断</Badge> : null}
                     {candidate.error ? <span className="min-w-0 flex-1 truncate text-[11px] opacity-75">{candidate.error}</span> : null}
                     <Button
@@ -653,20 +1200,30 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
                     </Button>
                     <Button
                       size="sm"
-                      variant={selectedBaseDecision === "custom" && typeof decision === "object" && decision.text === candidate.outputText ? "default" : "outline"}
-                      disabled={!canAdopt}
-                      onClick={() => onDecisionChange({
-                        mode: "custom",
-                        text: candidate.outputText,
-                        source: "rejected_candidate",
-                        attempt: candidate.attempt,
-                        candidate: candidate.candidate,
-                        error: candidate.error,
-                      })}
+                      variant="outline"
+                      onClick={() => {
+                        setFeedback(candidateFeedback);
+                        setPendingAdoptCandidateKey(candidateKey);
+                      }}
                     >
-                      {T.adoptCandidate}
+                      生成重跑意见
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={selectedBaseDecision === "custom" && typeof decision === "object" && decision.text === candidate.outputText ? "default" : isPendingAdopt ? "destructive" : "outline"}
+                      disabled={!canAdopt}
+                      onClick={() => adoptRejectedCandidate(candidate, inspection, candidateKey)}
+                    >
+                      {needsAdoptConfirm && !isPendingAdopt ? "先确认风险" : isPendingAdopt ? "确认采用候选" : T.adoptCandidate}
                     </Button>
                   </div>
+                  {isPendingAdopt ? (
+                    <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] leading-5 text-red-900">
+                      已把候选体检问题写入下方反馈框。若要继续使用该候选，请再次点击“确认采用候选”；否则建议直接定向重跑。
+                    </div>
+                  ) : null}
+                  <CandidateInspectionPanel inspection={inspection} />
+                  <CandidateDiffPanel sourceText={chunk.inputText} candidateText={candidate.outputText ?? ""} />
                   <div className="max-h-56 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950/95 p-3 text-xs leading-6 text-slate-50">
                     {candidate.outputText}
                   </div>
@@ -676,7 +1233,7 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
           </div>
         </details>
       ) : null}
-      {needsReview ? (
+      {reviewToolsVisible ? (
         <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50/80 p-3 text-amber-950 lg:grid-cols-[1fr_1fr_1.2fr]">
           {isSourceFallback ? (
             <div className="rounded-xl border border-amber-300 bg-white/70 p-2 leading-5 lg:col-span-3">
@@ -689,7 +1246,7 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
             <div className="mb-1 font-semibold">{zh(0x95ee, 0x9898, 0x8bca, 0x65ad)}</div>
             {reasons.length ? reasons.slice(0, 3).map((reason, index) => (
               <div key={`${reason.code}-${index}`} className="leading-5">- {reason.message || formatChunkFlag(reason.code)}</div>
-            )) : <div>{zh(0x7cfb, 0x7edf, 0x5df2, 0x6807, 0x8bb0, 0x6b64, 0x5757, 0x9700, 0x5ba1, 0x9605, 0xff0c, 0x5efa, 0x8bae, 0x5b9a, 0x5411, 0x91cd, 0x8dd1, 0x6216, 0x4eba, 0x5de5, 0x786e, 0x8ba4, 0x3002)}</div>}
+            )) : <div>{rejectedCandidates.length ? "候选输出需要人工判断，可生成反馈后重跑，或二次确认后采用。" : zh(0x7cfb, 0x7edf, 0x5df2, 0x6807, 0x8bb0, 0x6b64, 0x5757, 0x9700, 0x5ba1, 0x9605, 0xff0c, 0x5efa, 0x8bae, 0x5b9a, 0x5411, 0x91cd, 0x8dd1, 0x6216, 0x4eba, 0x5de5, 0x786e, 0x8ba4, 0x3002)}</div>}
           </div>
           <div>
             <div className="mb-1 font-semibold">{T.systemFeedback}</div>
@@ -701,7 +1258,7 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
               value={feedback}
               onChange={(event) => setFeedback(event.target.value)}
               placeholder={T.feedbackPlaceholder}
-              className="min-h-20 w-full resize-none rounded-xl border border-amber-200 bg-white/85 px-3 py-2 text-xs text-foreground outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-200"
+                    className="min-h-20 w-full resize-none rounded-xl border border-amber-200 bg-white/90 px-3 py-2 text-xs text-foreground outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-200"
             />
             {chunk.rerunUserFeedback ? <div className="line-clamp-2 text-[11px] opacity-75">{T.lastFeedback}：{chunk.rerunUserFeedback}</div> : null}
           </div>
