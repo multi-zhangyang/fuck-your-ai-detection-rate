@@ -3,13 +3,21 @@ import { useRef, useState } from "react";
 
 import { CheckCircle2, DatabaseZap, Loader2, Plus, RefreshCw, Route, Save, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import type { FormatRules, ModelCatalogResult, ModelConfig, ModelProviderConfig } from "@/types/app";
 
 type ModelConfigCardProps = {
@@ -253,334 +261,373 @@ export function ModelConfigCard({
       : "中文三轮预改写";
 
   return (
-    <Card className="fy-panel flex h-full min-h-0 flex-col overflow-hidden">
-      <CardHeader className="fy-panel-header">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="secondary" className="rounded-full px-3 py-1">模型配置</Badge>
-              <Badge variant={value.offlineMode ? "warning" : "default"}>{value.offlineMode ? "离线模式" : "在线模式"}</Badge>
-              {enabledRoundCount ? <Badge variant="outline">专属轮次 {enabledRoundCount}</Badge> : null}
-            </div>
-            <CardTitle className="mt-3 text-2xl">模型配置中枢</CardTitle>
-            <CardDescription className="mt-1">默认连接兜底，服务商仓库存能力，首页负责每轮怎么用。</CardDescription>
+    <Card className="flex h-full min-h-0 flex-col overflow-hidden border-border bg-card shadow-sm">
+      <CardHeader className="shrink-0 border-b px-5 py-4">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
+            <CardTitle className="text-xl">模型配置</CardTitle>
+            <CardDescription className="mt-1">管理默认连接、服务商仓库和首页运行路线。</CardDescription>
           </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <div className="fy-kpi-chip fy-tone-info">默认：{value.model || "未配置"}</div>
-            <div className="fy-kpi-chip fy-tone-success">服务商：{enabledProviderCount}/{providers.length}</div>
-            <div className="fy-kpi-chip fy-tone-brand">路线：{promptProfileLabel}</div>
+          <div className="grid gap-2 sm:grid-cols-3 xl:w-[520px]">
+            <ModelConfigMetric label="默认模型" value={value.model || "未配置"} />
+            <ModelConfigMetric label="服务商" value={`${enabledProviderCount}/${providers.length} 启用`} />
+            <ModelConfigMetric label="运行路线" value={`${promptProfileLabel} · ${activePromptCount} 轮`} />
           </div>
         </div>
       </CardHeader>
 
       <CardContent className="min-h-0 flex-1 overflow-hidden p-5">
-        <div className="grid h-full min-h-0 gap-5 2xl:grid-cols-[340px_minmax(0,1fr)_300px]">
-          <section data-ui-section="model-default-connection" className="fy-section flex min-h-0 flex-col overflow-hidden p-0">
-            <div className="shrink-0 border-b border-blue-100 bg-blue-950 px-4 py-4 text-white">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-base font-black">1 默认连接</div>
-                  <div className="mt-1 text-xs font-semibold text-white/60">{value.model || "未配置模型"}</div>
-                </div>
-                <Badge variant={value.offlineMode ? "warning" : "secondary"}>{value.offlineMode ? "离线" : "在线"}</Badge>
-              </div>
+        <Tabs defaultValue="default" className="flex h-full min-h-0 flex-col gap-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <TabsList className="grid h-auto w-full grid-cols-3 xl:w-[560px]">
+              <TabsTrigger value="default">默认连接</TabsTrigger>
+              <TabsTrigger value="providers">服务商仓库</TabsTrigger>
+              <TabsTrigger value="route">运行路线</TabsTrigger>
+            </TabsList>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant={value.offlineMode ? "warning" : "secondary"}>{value.offlineMode ? "离线模式" : "在线模式"}</Badge>
+              {enabledRoundCount ? <Badge variant="outline">专属轮次 {enabledRoundCount}</Badge> : <Badge variant="outline">轮次继承默认</Badge>}
             </div>
+          </div>
 
-            <div className="min-h-0 flex-1 overflow-auto p-4">
-              <div className="space-y-4">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="baseUrl">API 地址</Label>
-                    <Input id="baseUrl" value={value.baseUrl} onChange={handleFieldChange("baseUrl")} placeholder="https://api.example.com/v1" />
-                  </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="apiKey">API Key</Label>
-                    <Input id="apiKey" type="password" value={value.apiKey} onChange={handleFieldChange("apiKey")} placeholder="sk-..." />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="model">默认模型</Label>
-                    {hasModelOptions ? (
-                      <Select value={value.model || undefined} onValueChange={(model) => onChange({ ...value, model })}>
-                        <SelectTrigger><SelectValue placeholder="选择模型" /></SelectTrigger>
-                        <SelectContent>{modelCatalog?.models.map((item) => <SelectItem key={item.id} value={item.id}>{item.id}</SelectItem>)}</SelectContent>
-                      </Select>
-                    ) : (
-                      <Input id="model" value={value.model} onChange={handleFieldChange("model")} placeholder="填写模型名称" />
-                    )}
-                  </div>
-                  <div className="space-y-2">
-                    <Label>接口类型</Label>
-                    <Select value={value.apiType} onValueChange={(apiType) => onChange({ ...value, apiType: apiType as ModelConfig["apiType"] })}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>{API_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="temperature">Temperature</Label>
-                    <Input id="temperature" type="number" step="0.1" min="0" max="2" value={value.temperature} onChange={handleFieldChange("temperature")} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="requestTimeoutSeconds">超时秒数</Label>
-                    <Input id="requestTimeoutSeconds" type="number" min="30" value={value.requestTimeoutSeconds} onChange={handleFieldChange("requestTimeoutSeconds")} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="maxRetries">最大重试</Label>
-                    <Input id="maxRetries" type="number" min="0" max="10" value={value.maxRetries} onChange={handleFieldChange("maxRetries")} />
-                  </div>
-                  <div className="flex items-center justify-between rounded-2xl border border-border/70 px-4 py-3 md:col-span-2">
-                    <div>
-                      <div className="text-sm font-semibold">离线模式</div>
-                    </div>
-                    <Switch checked={value.offlineMode} onCheckedChange={(offlineMode) => onChange({ ...value, offlineMode })} />
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-3 pt-1">
-                  <Button variant="outline" onClick={onTestConnection} disabled={busy}><ShieldCheck className="h-4 w-4" />测试连接</Button>
-                  <Button variant="outline" onClick={onRefreshModels} disabled={busy || modelCatalogBusy || value.offlineMode}>{modelCatalogBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取默认模型列表</Button>
-                  <Button onClick={() => onSave(value, value)} disabled={busy}><Save className="h-4 w-4" />保存默认配置</Button>
-                </div>
-                {modelCatalogError ? <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{modelCatalogError}</div> : null}
-                {modelCatalog ? <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm font-semibold text-blue-900">已读取 {modelCatalog.total} 个默认模型</div> : null}
-              </div>
-            </div>
-          </section>
+          <TabsContent value="default" className="min-h-0 flex-1 overflow-hidden">
+            <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+              <Card className="flex min-h-0 flex-col overflow-hidden shadow-none">
+                <CardHeader className="border-b px-4 py-3">
+                  <CardTitle className="text-base">默认连接</CardTitle>
+                  <CardDescription>没有指定专属服务商的轮次会使用这里。</CardDescription>
+                </CardHeader>
+                <ScrollArea className="min-h-0 flex-1">
+                  <CardContent className="flex flex-col gap-4 p-4">
+                    <FieldGroup className="grid gap-4 md:grid-cols-2">
+                      <Field className="md:col-span-2">
+                        <FieldLabel htmlFor="baseUrl">API 地址</FieldLabel>
+                        <Input id="baseUrl" value={value.baseUrl} onChange={handleFieldChange("baseUrl")} placeholder="https://api.example.com/v1" />
+                      </Field>
+                      <Field className="md:col-span-2">
+                        <FieldLabel htmlFor="apiKey">API Key</FieldLabel>
+                        <Input id="apiKey" type="password" value={value.apiKey} onChange={handleFieldChange("apiKey")} placeholder="sk-..." />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="model">默认模型</FieldLabel>
+                        {hasModelOptions ? (
+                          <Select value={value.model || undefined} onValueChange={(model) => onChange({ ...value, model })}>
+                            <SelectTrigger><SelectValue placeholder="选择模型" /></SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                {modelCatalog?.models.map((item) => <SelectItem key={item.id} value={item.id}>{item.id}</SelectItem>)}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input id="model" value={value.model} onChange={handleFieldChange("model")} placeholder="填写模型名称" />
+                        )}
+                      </Field>
+                      <Field>
+                        <FieldLabel>接口类型</FieldLabel>
+                        <Select value={value.apiType} onValueChange={(apiType) => onChange({ ...value, apiType: apiType as ModelConfig["apiType"] })}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              {API_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="temperature">Temperature</FieldLabel>
+                        <Input id="temperature" type="number" step="0.1" min="0" max="2" value={value.temperature} onChange={handleFieldChange("temperature")} />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="requestTimeoutSeconds">超时秒数</FieldLabel>
+                        <Input id="requestTimeoutSeconds" type="number" min="30" value={value.requestTimeoutSeconds} onChange={handleFieldChange("requestTimeoutSeconds")} />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="maxRetries">最大重试</FieldLabel>
+                        <Input id="maxRetries" type="number" min="0" max="10" value={value.maxRetries} onChange={handleFieldChange("maxRetries")} />
+                      </Field>
+                      <Field orientation="horizontal" className="rounded-lg border bg-muted/40 px-4 py-3 md:col-span-2">
+                        <FieldContent>
+                          <FieldTitle>离线模式</FieldTitle>
+                          <FieldDescription>开启后不请求远程模型。</FieldDescription>
+                        </FieldContent>
+                        <Switch checked={value.offlineMode} onCheckedChange={(offlineMode) => onChange({ ...value, offlineMode })} />
+                      </Field>
+                    </FieldGroup>
+                  </CardContent>
+                </ScrollArea>
+              </Card>
 
-          <section data-ui-section="model-provider-repository" className="fy-section flex min-h-0 flex-col overflow-hidden p-0">
-            <div className="shrink-0 border-b border-emerald-100 bg-emerald-950 px-4 py-4 text-white">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <div className="text-base font-black">2 服务商仓库</div>
-                  <div className="mt-1 text-xs font-semibold text-white/60">{providers.length} 个服务商 · {enabledProviderCount} 个启用</div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" size="sm" className="bg-white text-slate-950 hover:bg-white/90" onClick={addProvider} disabled={busy}>
-                    <Plus className="h-4 w-4" />添加
-                  </Button>
-                  {providerCatalogRunning ? (
-                    <Button type="button" size="sm" variant="outline" className="border-red-200 bg-red-500/20 text-white hover:bg-red-500/30" onClick={stopProviderCatalogRequest}>
-                      <X className="h-4 w-4" />停止读取
+              <div className="flex min-h-0 flex-col gap-4">
+                <Card className="shadow-none">
+                  <CardHeader className="p-4">
+                    <CardTitle className="text-base">连接操作</CardTitle>
+                    <CardDescription>测试、读取模型列表并保存默认配置。</CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-2 p-4 pt-0">
+                    <Button variant="outline" onClick={onTestConnection} disabled={busy}>
+                      <ShieldCheck data-icon="inline-start" />测试连接
                     </Button>
-                  ) : null}
-                  <Button type="button" size="sm" variant="outline" className="border-white/20 bg-white/10 text-white hover:bg-white/15" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || value.offlineMode || providers.every((provider) => provider.enabled === false)}>
-                    <RefreshCw className="h-4 w-4" />读取全部模型列表
-                  </Button>
-                </div>
+                    <Button variant="outline" onClick={onRefreshModels} disabled={busy || modelCatalogBusy || value.offlineMode}>
+                      {modelCatalogBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读取模型列表
+                    </Button>
+                    <Button onClick={() => onSave(value, value)} disabled={busy}>
+                      <Save data-icon="inline-start" />保存默认配置
+                    </Button>
+                  </CardContent>
+                </Card>
+                {modelCatalogError ? (
+                  <Alert variant="destructive">
+                    <AlertTitle>读取默认模型失败</AlertTitle>
+                    <AlertDescription>{modelCatalogError}</AlertDescription>
+                  </Alert>
+                ) : null}
+                {modelCatalog ? (
+                  <Alert>
+                    <CheckCircle2 />
+                    <AlertTitle>模型列表已读取</AlertTitle>
+                    <AlertDescription>共 {modelCatalog.total} 个模型。</AlertDescription>
+                  </Alert>
+                ) : null}
               </div>
             </div>
+          </TabsContent>
 
-            <div className="grid min-h-0 flex-1 gap-4 p-4 xl:grid-cols-[280px_minmax(0,1fr)]">
-              <div className="flex min-h-0 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-slate-50/70">
-                <div className="shrink-0 border-b border-slate-200 px-3 py-3 text-sm font-black text-slate-800">服务商列表</div>
-                <div className="min-h-0 flex-1 space-y-2 overflow-auto p-3">
-                  {providers.length ? providers.map((provider) => {
-                    const active = selectedProvider?.id === provider.id;
-                    const modelLabel = provider.defaultModel || provider.models?.[0] || "未选择模型";
-                    const modelCount = provider.models?.length ?? 0;
-                    const providerEnabled = provider.enabled !== false;
-                    return (
-                      <button
-                        key={provider.id}
-                        type="button"
-                        onClick={() => setSelectedProviderId(provider.id)}
-                        className={`group w-full rounded-2xl border p-3 text-left transition ${
-                          active ? "border-emerald-300 bg-white shadow-sm ring-2 ring-emerald-100" : "border-slate-200 bg-white hover:border-emerald-200 hover:bg-emerald-50/40"
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-black text-slate-950">{provider.name || "未命名服务商"}</span>
-                            <span className="mt-1 block truncate text-xs font-semibold text-slate-500">{modelLabel}</span>
-                          </span>
-                          <Badge variant={providerEnabled ? "success" : "outline"}>{providerEnabled ? "启用" : "关闭"}</Badge>
-                        </div>
-                        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-slate-500">
-                          <span className="rounded-xl bg-slate-100 px-2 py-1 text-center">{modelCount} 模型</span>
-                          <span className="rounded-xl bg-slate-100 px-2 py-1 text-center">{provider.apiType}</span>
-                        </div>
-                      </button>
-                    );
-                  }) : (
-                    <div className="fy-empty-state">
-                      <DatabaseZap className="mx-auto h-8 w-8 text-slate-400" />
-                      <div className="mt-3 font-black text-slate-700">还没有服务商</div>
-                      <Button type="button" className="mt-4" onClick={addProvider} disabled={busy}><Plus className="h-4 w-4" />添加服务商</Button>
+          <TabsContent value="providers" className="min-h-0 flex-1 overflow-hidden">
+            <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
+              <Card className="flex min-h-0 flex-col overflow-hidden shadow-none">
+                <CardHeader className="border-b p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-base">服务商</CardTitle>
+                      <CardDescription>{providers.length} 个，{enabledProviderCount} 个启用</CardDescription>
                     </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="min-h-0 min-w-0 overflow-hidden">
-                {selectedProvider ? (
-                  <div className="h-full space-y-4 overflow-auto pr-1">
-                    <div className="rounded-[2rem] border border-slate-200 bg-gradient-to-br from-slate-950 via-emerald-950 to-blue-950 p-5 text-white shadow-soft">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0">
-                          <div className="truncate text-2xl font-black">{selectedProvider.name || "未命名服务商"}</div>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <Badge variant={selectedProvider.enabled !== false ? "success" : "outline"}>{selectedProvider.enabled !== false ? "已启用" : "已关闭"}</Badge>
-                            <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-black">{selectedProvider.models?.length ?? 0} 个缓存模型</span>
-                            <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-black">
-                              {selectedProvider.rateLimitWindowMinutes && selectedProvider.rateLimitMaxRequests ? `${selectedProvider.rateLimitWindowMinutes} 分钟 ${selectedProvider.rateLimitMaxRequests} 次` : "不限速"}
+                    <Button type="button" size="sm" onClick={addProvider} disabled={busy}>
+                      <Plus data-icon="inline-start" />添加
+                    </Button>
+                  </div>
+                </CardHeader>
+                <ScrollArea className="min-h-0 flex-1">
+                  <CardContent className="flex flex-col gap-2 p-3">
+                    {providers.length ? providers.map((provider) => {
+                      const active = selectedProvider?.id === provider.id;
+                      const modelLabel = provider.defaultModel || provider.models?.[0] || "未选择模型";
+                      const modelCount = provider.models?.length ?? 0;
+                      const providerEnabled = provider.enabled !== false;
+                      return (
+                        <Button
+                          key={provider.id}
+                          type="button"
+                          variant="outline"
+                          onClick={() => setSelectedProviderId(provider.id)}
+                          className={cn(
+                            "h-auto w-full flex-col items-stretch justify-start gap-2 whitespace-normal p-3 text-left",
+                            active && "border-primary bg-muted shadow-sm",
+                          )}
+                        >
+                          <span className="flex items-start justify-between gap-3">
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm font-semibold">{provider.name || "未命名服务商"}</span>
+                              <span className="mt-1 block truncate text-xs text-muted-foreground">{modelLabel}</span>
                             </span>
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <Button type="button" size="sm" className="bg-white text-slate-950 hover:bg-white/90" disabled={busy || providerCatalogRunning || value.offlineMode} onClick={() => void refreshProviderCatalog(selectedProvider)}>
-                            {providerCatalogBusy[selectedProvider.id] ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}获取模型
+                            <Badge variant={providerEnabled ? "secondary" : "outline"}>{providerEnabled ? "启用" : "关闭"}</Badge>
+                          </span>
+                          <span className="flex gap-2 text-xs text-muted-foreground">
+                            <span>{modelCount} 模型</span>
+                            <span>{provider.apiType}</span>
+                          </span>
+                        </Button>
+                      );
+                    }) : (
+                      <Empty className="border bg-background">
+                        <EmptyHeader>
+                          <EmptyMedia variant="icon"><DatabaseZap /></EmptyMedia>
+                          <EmptyTitle>还没有服务商</EmptyTitle>
+                          <EmptyDescription>添加后可为不同轮次指定模型。</EmptyDescription>
+                        </EmptyHeader>
+                        <Button type="button" onClick={addProvider} disabled={busy}><Plus data-icon="inline-start" />添加服务商</Button>
+                      </Empty>
+                    )}
+                  </CardContent>
+                </ScrollArea>
+              </Card>
+
+              {selectedProvider ? (
+                <Card className="flex min-h-0 flex-col overflow-hidden shadow-none">
+                  <CardHeader className="border-b p-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0">
+                        <CardTitle className="truncate text-base">{selectedProvider.name || "未命名服务商"}</CardTitle>
+                        <CardDescription>
+                          {selectedProvider.models?.length ?? 0} 个缓存模型 · {selectedProvider.enabled !== false ? "启用" : "关闭"}
+                        </CardDescription>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" variant="outline" disabled={busy || providerCatalogRunning || value.offlineMode} onClick={() => void refreshProviderCatalog(selectedProvider)}>
+                          {providerCatalogBusy[selectedProvider.id] ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取模型
+                        </Button>
+                        {providerCatalogRunning ? (
+                          <Button type="button" size="sm" variant="outlineDanger" onClick={stopProviderCatalogRequest}>
+                            <X data-icon="inline-start" />停止
                           </Button>
-                          <Button type="button" size="sm" className="bg-emerald-500 text-white hover:bg-emerald-400" onClick={() => saveProviderConfig(selectedProvider)} disabled={busy}>
-                            <Save className="h-4 w-4" />保存
-                          </Button>
-                          <Button type="button" variant="outline" size="sm" className="border-white/20 bg-white/10 text-white hover:bg-white/15" onClick={() => deleteProvider(selectedProvider.id)} disabled={busy}>
-                            <Trash2 className="h-4 w-4" />删除
-                          </Button>
-                        </div>
+                        ) : null}
+                        <Button type="button" size="sm" onClick={() => saveProviderConfig(selectedProvider)} disabled={busy}>
+                          <Save data-icon="inline-start" />保存
+                        </Button>
+                        <Button type="button" variant="outlineDanger" size="sm" onClick={() => deleteProvider(selectedProvider.id)} disabled={busy}>
+                          <Trash2 data-icon="inline-start" />删除
+                        </Button>
                       </div>
                     </div>
-
-                    <div className="fy-section p-5">
-                      <div className="mb-4 flex items-center justify-between gap-3">
-                        <div className="text-sm font-black text-slate-950">连接</div>
+                  </CardHeader>
+                  <ScrollArea className="min-h-0 flex-1">
+                    <CardContent className="flex flex-col gap-4 p-4">
+                      <Field orientation="horizontal" className="rounded-lg border bg-muted/40 px-4 py-3">
+                        <FieldContent>
+                          <FieldTitle>启用服务商</FieldTitle>
+                          <FieldDescription>关闭后不会被运行路线选用。</FieldDescription>
+                        </FieldContent>
                         <Switch checked={selectedProvider.enabled !== false} onCheckedChange={(enabled) => updateProvider(selectedProvider.id, { enabled })} />
-                      </div>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2">
-                          <Label>服务商名称</Label>
+                      </Field>
+
+                      <FieldGroup className="grid gap-4 md:grid-cols-2">
+                        <Field>
+                          <FieldLabel>服务商名称</FieldLabel>
                           <Input value={selectedProvider.name} onChange={handleProviderFieldChange(selectedProvider.id, "name")} placeholder="例如：DeepSeek / Nebius / Groq" />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>接口类型</Label>
+                        </Field>
+                        <Field>
+                          <FieldLabel>接口类型</FieldLabel>
                           <Select value={selectedProvider.apiType} onValueChange={(apiType) => updateProvider(selectedProvider.id, { apiType: apiType as ModelConfig["apiType"] })}>
                             <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>{API_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                            <SelectContent>
+                              <SelectGroup>
+                                {API_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                              </SelectGroup>
+                            </SelectContent>
                           </Select>
-                        </div>
-                        <div className="space-y-2 md:col-span-2">
-                          <Label>API 地址</Label>
+                        </Field>
+                        <Field className="md:col-span-2">
+                          <FieldLabel>API 地址</FieldLabel>
                           <Input value={selectedProvider.baseUrl} onChange={handleProviderFieldChange(selectedProvider.id, "baseUrl")} placeholder="https://api.example.com/v1" />
-                        </div>
-                        <div className="space-y-2 md:col-span-2">
-                          <Label>API Key</Label>
+                        </Field>
+                        <Field className="md:col-span-2">
+                          <FieldLabel>API Key</FieldLabel>
                           <Input type="password" value={selectedProvider.apiKey} onChange={handleProviderFieldChange(selectedProvider.id, "apiKey")} placeholder="sk-..." />
-                        </div>
-                      </div>
-                    </div>
+                        </Field>
+                      </FieldGroup>
 
-                    <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-                      <div className="fy-section p-5">
-                        <div className="mb-4 text-sm font-black text-slate-950">模型与生成参数</div>
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <div className="space-y-2 md:col-span-2">
-                            <Label>默认模型</Label>
-                            {(selectedProvider.models?.length ?? 0) > 0 ? (
-                              <Select value={selectedProvider.defaultModel || undefined} onValueChange={(defaultModel) => updateProvider(selectedProvider.id, { defaultModel })}>
-                                <SelectTrigger><SelectValue placeholder="选择默认模型" /></SelectTrigger>
-                                <SelectContent>{selectedProvider.models?.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}</SelectContent>
-                              </Select>
-                            ) : (
-                              <Input value={selectedProvider.defaultModel ?? ""} onChange={handleProviderFieldChange(selectedProvider.id, "defaultModel")} placeholder="填写模型名称" />
-                            )}
-                          </div>
-                          <div className="space-y-2">
-                            <Label>Temperature</Label>
-                            <Input type="number" step="0.1" min="0" max="2" value={String(selectedProvider.temperature ?? value.temperature)} onChange={handleProviderFieldChange(selectedProvider.id, "temperature")} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label>超时秒数</Label>
-                            <Input type="number" min="30" value={String(selectedProvider.requestTimeoutSeconds ?? value.requestTimeoutSeconds)} onChange={handleProviderFieldChange(selectedProvider.id, "requestTimeoutSeconds")} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label>最大重试</Label>
-                            <Input type="number" min="0" max="10" value={String(selectedProvider.maxRetries ?? value.maxRetries)} onChange={handleProviderFieldChange(selectedProvider.id, "maxRetries")} />
-                          </div>
-                        </div>
-                      </div>
+                      <Separator />
 
-                      <div className="fy-section p-5">
-                        <div className="mb-4 text-sm font-black text-slate-950">请求限速</div>
-                        <div className="grid gap-4">
-                          <div className="space-y-2">
-                            <Label>窗口分钟数</Label>
-                            <Input type="number" min="0" step="0.1" value={String(selectedProvider.rateLimitWindowMinutes ?? 0)} onChange={handleProviderFieldChange(selectedProvider.id, "rateLimitWindowMinutes")} placeholder="0 为不限速" />
-                          </div>
-                          <div className="space-y-2">
-                            <Label>窗口内最大请求</Label>
-                            <Input type="number" min="0" value={String(selectedProvider.rateLimitMaxRequests ?? 0)} onChange={handleProviderFieldChange(selectedProvider.id, "rateLimitMaxRequests")} placeholder="0 为不限速" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                      <FieldGroup className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                        <Field className="md:col-span-2 xl:col-span-4">
+                          <FieldLabel>默认模型</FieldLabel>
+                          {(selectedProvider.models?.length ?? 0) > 0 ? (
+                            <Select value={selectedProvider.defaultModel || undefined} onValueChange={(defaultModel) => updateProvider(selectedProvider.id, { defaultModel })}>
+                              <SelectTrigger><SelectValue placeholder="选择默认模型" /></SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  {selectedProvider.models?.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Input value={selectedProvider.defaultModel ?? ""} onChange={handleProviderFieldChange(selectedProvider.id, "defaultModel")} placeholder="填写模型名称" />
+                          )}
+                        </Field>
+                        <Field>
+                          <FieldLabel>Temperature</FieldLabel>
+                          <Input type="number" step="0.1" min="0" max="2" value={String(selectedProvider.temperature ?? value.temperature)} onChange={handleProviderFieldChange(selectedProvider.id, "temperature")} />
+                        </Field>
+                        <Field>
+                          <FieldLabel>超时秒数</FieldLabel>
+                          <Input type="number" min="30" value={String(selectedProvider.requestTimeoutSeconds ?? value.requestTimeoutSeconds)} onChange={handleProviderFieldChange(selectedProvider.id, "requestTimeoutSeconds")} />
+                        </Field>
+                        <Field>
+                          <FieldLabel>窗口分钟数</FieldLabel>
+                          <Input type="number" min="0" step="0.1" value={String(selectedProvider.rateLimitWindowMinutes ?? 0)} onChange={handleProviderFieldChange(selectedProvider.id, "rateLimitWindowMinutes")} placeholder="0 为不限速" />
+                        </Field>
+                        <Field>
+                          <FieldLabel>窗口请求数</FieldLabel>
+                          <Input type="number" min="0" value={String(selectedProvider.rateLimitMaxRequests ?? 0)} onChange={handleProviderFieldChange(selectedProvider.id, "rateLimitMaxRequests")} placeholder="0 为不限速" />
+                        </Field>
+                        <Field>
+                          <FieldLabel>最大重试</FieldLabel>
+                          <Input type="number" min="0" max="10" value={String(selectedProvider.maxRetries ?? value.maxRetries)} onChange={handleProviderFieldChange(selectedProvider.id, "maxRetries")} />
+                        </Field>
+                      </FieldGroup>
 
-                    {selectedProvider.models?.length ? (
-                      <div className="fy-section p-4">
-                        <div className="mb-3 flex items-center justify-between gap-3">
-                          <div className="text-sm font-black text-slate-950">缓存模型</div>
-                          <Badge variant="outline">{selectedProvider.updatedAt ? new Date(selectedProvider.updatedAt).toLocaleString() : "未读取"}</Badge>
+                      {selectedProvider.models?.length ? (
+                        <div className="rounded-lg border bg-muted/30 p-3">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <div className="text-sm font-semibold">缓存模型</div>
+                            <Badge variant="outline">{selectedProvider.updatedAt ? new Date(selectedProvider.updatedAt).toLocaleString() : "未读取"}</Badge>
+                          </div>
+                          <div className="flex max-h-28 flex-wrap gap-2 overflow-auto">
+                            {selectedProvider.models.slice(0, 80).map((model) => <Badge key={model} variant="outline">{model}</Badge>)}
+                          </div>
                         </div>
-                        <div className="flex max-h-32 flex-wrap gap-2 overflow-auto">
-                          {selectedProvider.models.slice(0, 80).map((model) => <Badge key={model} variant="outline">{model}</Badge>)}
-                        </div>
-                      </div>
-                    ) : null}
-                    {providerCatalogErrors[selectedProvider.id] ? <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{providerCatalogErrors[selectedProvider.id]}</div> : null}
-                  </div>
-                ) : (
-                  <div className="fy-empty-state min-h-[560px]">
-                    <DatabaseZap className="mx-auto h-8 w-8 text-slate-400" />
-                    <h3 className="mt-4 text-lg font-black text-slate-800">先添加服务商</h3>
-                    <Button type="button" className="mt-4" onClick={addProvider} disabled={busy}><Plus className="h-4 w-4" />添加服务商</Button>
-                  </div>
-                )}
+                      ) : null}
+
+                      {providerCatalogErrors[selectedProvider.id] ? (
+                        <Alert variant="destructive">
+                          <AlertTitle>模型列表读取失败</AlertTitle>
+                          <AlertDescription>{providerCatalogErrors[selectedProvider.id]}</AlertDescription>
+                        </Alert>
+                      ) : null}
+                    </CardContent>
+                  </ScrollArea>
+                </Card>
+              ) : (
+                <Empty className="min-h-[28rem] border bg-background">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon"><DatabaseZap /></EmptyMedia>
+                    <EmptyTitle>先添加服务商</EmptyTitle>
+                    <EmptyDescription>服务商会沉淀模型列表、API 类型和限速策略。</EmptyDescription>
+                  </EmptyHeader>
+                  <Button type="button" onClick={addProvider} disabled={busy}><Plus data-icon="inline-start" />添加服务商</Button>
+                </Empty>
+              )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="route" className="min-h-0 flex-1 overflow-hidden">
+            <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+              <Card className="shadow-none">
+                <CardHeader className="border-b p-4">
+                  <CardTitle className="text-base">运行路线</CardTitle>
+                  <CardDescription>首页执行时按这套流程读取轮次和专属模型。</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 p-4 md:grid-cols-3">
+                  <ModelConfigMetric label="Prompt 流程" value={promptProfileLabel} />
+                  <ModelConfigMetric label="轮次数" value={`${activePromptCount} 轮`} />
+                  <ModelConfigMetric label="专属轮次" value={enabledRoundCount ? `${enabledRoundCount} 轮` : "未指定"} />
+                </CardContent>
+              </Card>
+
+              <div className="flex flex-col gap-4">
+                <Alert>
+                  <Route />
+                  <AlertTitle>路线在首页编排</AlertTitle>
+                  <AlertDescription>服务商仓库只负责保存连接能力，具体每轮使用哪个模型在首页任务控制台里设置。</AlertDescription>
+                </Alert>
+                <Button type="button" className="w-full" onClick={onOpenRoutePlanner} disabled={!onOpenRoutePlanner}>
+                  <Route data-icon="inline-start" />去首页编排轮次
+                </Button>
               </div>
             </div>
-          </section>
-
-          <section data-ui-section="model-home-route-planner" className="fy-section flex min-h-0 flex-col overflow-hidden p-0">
-            <div className="shrink-0 border-b border-violet-100 bg-violet-950 px-4 py-4 text-white">
-              <div className="flex items-center gap-3">
-                <Route className="h-5 w-5" />
-                <div>
-                  <div className="text-base font-black">3 首页编排</div>
-                  <div className="mt-1 text-xs font-semibold text-white/60">{promptProfileLabel} · {activePromptCount} 轮</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
-              <div className="rounded-3xl border border-violet-200 bg-violet-50 p-4">
-                <div className="text-sm font-black text-violet-950">当前路线</div>
-                <div className="mt-3 grid gap-2 text-sm font-semibold text-violet-900">
-                  <div className="rounded-2xl bg-white/80 px-3 py-2">Prompt：{promptProfileLabel}</div>
-                  <div className="rounded-2xl bg-white/80 px-3 py-2">轮次数：{activePromptCount}</div>
-                  <div className="rounded-2xl bg-white/80 px-3 py-2">专属模型：{enabledRoundCount || "未单独指定"}</div>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="text-sm font-black text-slate-950">先建仓库</div>
-                  <div className="mt-1 text-xs font-semibold text-slate-500">这里保存服务商、模型列表和限速。</div>
-                </div>
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="text-sm font-black text-slate-950">再排轮次</div>
-                  <div className="mt-1 text-xs font-semibold text-slate-500">首页按 Prompt 顺序选择每轮用哪个服务商和模型。</div>
-                </div>
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="text-sm font-black text-slate-950">运行时继承</div>
-                  <div className="mt-1 text-xs font-semibold text-slate-500">未指定的轮次走默认连接；指定的轮次走服务商仓库。</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="shrink-0 border-t border-violet-100 bg-white/80 p-4">
-              <Button type="button" className="w-full bg-violet-600 text-white hover:bg-violet-500" onClick={onOpenRoutePlanner} disabled={!onOpenRoutePlanner}>
-                <Route className="h-4 w-4" />去首页编排轮次
-              </Button>
-            </div>
-          </section>
-        </div>
+          </TabsContent>
+        </Tabs>
       </CardContent>
     </Card>
+  );
+}
+
+function ModelConfigMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-lg border bg-muted/40 px-3 py-2">
+      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate text-sm font-semibold text-foreground">{value}</div>
+    </div>
   );
 }
 
@@ -623,9 +670,9 @@ export function SchoolFormatCard({
   ].filter(Boolean)));
   return (
     <Card className="overflow-hidden">
-      <CardHeader className="space-y-4">
+      <CardHeader className="flex flex-col gap-4">
         <div className="flex items-start justify-between gap-4">
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="secondary">学校规范</Badge>
               <Badge variant={pendingFormatRules ? "warning" : "success"}>{pendingFormatRules ? "等待确认" : usingDefault ? "默认规范生效" : "已启用"}</Badge>
@@ -634,14 +681,14 @@ export function SchoolFormatCard({
             <CardTitle className="text-2xl">学校排版规范</CardTitle>
             <CardDescription>不填写时自动使用内置默认规范；填写后先解析成结构化规则，确认启用后才影响 Word 导出。</CardDescription>
           </div>
-          <div className="hidden rounded-2xl bg-primary/10 p-3 text-primary md:block">
-            <SlidersHorizontal className="h-6 w-6" />
+          <div className="hidden rounded-md bg-primary/10 p-3 text-primary md:block">
+            <SlidersHorizontal className="size-6" />
           </div>
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-5">
-        <div className="rounded-3xl border border-primary/15 bg-primary/5 p-5">
+      <CardContent className="flex flex-col gap-5">
+        <div className="rounded-lg border border-primary/15 bg-primary/5 p-5">
           <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center">
             <div className="min-w-[240px] flex-1">
               <div className="flex flex-wrap items-center gap-2">
@@ -652,48 +699,52 @@ export function SchoolFormatCard({
             </div>
 
             <div className="grid min-w-0 flex-[2] gap-3 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label>模型来源</Label>
+              <Field>
+                <FieldLabel>模型来源</FieldLabel>
                 <Select value={parserProviderValue} onValueChange={onParserProviderChange} disabled={busy}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={FORMAT_PARSER_DEFAULT_PROVIDER_ID}>默认连接</SelectItem>
-                    {providers.map((provider) => (
-                      <SelectItem key={provider.id} value={provider.id}>
-                        {provider.name || "未命名服务商"}{provider.enabled === false ? "（已关闭）" : ""}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      <SelectItem value={FORMAT_PARSER_DEFAULT_PROVIDER_ID}>默认连接</SelectItem>
+                      {providers.map((provider) => (
+                        <SelectItem key={provider.id} value={provider.id}>
+                          {provider.name || "未命名服务商"}{provider.enabled === false ? "（已关闭）" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
-              </div>
+              </Field>
 
-              <div className="space-y-2">
-                <Label>解析模型</Label>
+              <Field>
+                <FieldLabel>解析模型</FieldLabel>
                 {parserModelOptions.length > 0 ? (
                   <Select value={effectiveParserModel || undefined} onValueChange={onParserModelChange} disabled={busy}>
                     <SelectTrigger>
                       <SelectValue placeholder="选择模型" />
                     </SelectTrigger>
                     <SelectContent>
-                      {parserModelOptions.map((model) => (
-                        <SelectItem key={model} value={model}>{model}</SelectItem>
-                      ))}
+                      <SelectGroup>
+                        {parserModelOptions.map((model) => (
+                          <SelectItem key={model} value={model}>{model}</SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 ) : (
                   <Input value={parserModel} onChange={(event) => onParserModelChange(event.target.value)} placeholder="填写能稳定输出 JSON 的模型" disabled={busy} />
                 )}
-              </div>
+              </Field>
             </div>
 
-            <div className="flex min-w-0 flex-col gap-2 rounded-2xl border border-primary/10 bg-white/75 px-4 py-3 2xl:w-[340px]">
+            <div className="flex min-w-0 flex-col gap-2 rounded-md border border-primary/10 bg-background/80 px-4 py-3 2xl:w-[340px]">
               <div className="text-xs font-semibold text-foreground">解析专用配置</div>
               <div className="text-[11px] leading-4 text-muted-foreground">建议选择遵循 schema、结构化 JSON 输出稳定的模型。</div>
               {selectedParserProvider ? (
                 <Button type="button" variant="outline" size="sm" onClick={() => onRefreshParserProviderModels(selectedParserProvider.id)} disabled={busy} className="w-fit">
-                  <RefreshCw className="h-3.5 w-3.5" />
+                  <RefreshCw data-icon="inline-start" />
                   刷新模型
                 </Button>
               ) : null}
@@ -702,7 +753,7 @@ export function SchoolFormatCard({
         </div>
 
         <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="flex min-h-[480px] flex-col gap-4 rounded-3xl border border-border/70 bg-background/70 p-4">
+          <div className="flex min-h-[480px] flex-col gap-4 rounded-lg border border-border/70 bg-background/70 p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
                 <Label htmlFor="formatRuleText">学校模板说明文档</Label>
@@ -710,22 +761,22 @@ export function SchoolFormatCard({
               </div>
               <Badge variant={hasInput ? "default" : "outline"}>{hasInput ? `${formatRuleText.trim().length} 字` : "未填写"}</Badge>
             </div>
-            <textarea
+            <Textarea
               id="formatRuleText"
               value={formatRuleText}
               onChange={(event) => onFormatRuleTextChange(event.target.value)}
               placeholder="例如：正文 5 号宋体，固定行距 20 磅；一级标题 4 号黑体；A4 上下 2.5cm、左 3cm、右 3cm……"
               disabled={busy}
-              className="min-h-[320px] flex-1 resize-y rounded-2xl border border-input bg-background px-4 py-3 text-sm leading-6 shadow-sm outline-none transition placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              className="min-h-[320px] flex-1 resize-y"
             />
             <div className="flex flex-wrap gap-3">
               <Button type="button" onClick={() => onParseFormatRules(formatRuleText)} disabled={busy}>
-                {formatParsing ? <Loader2 className="h-4 w-4 animate-spin" /> : <SlidersHorizontal className="h-4 w-4" />}
+              {formatParsing ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <SlidersHorizontal data-icon="inline-start" />}
                 {hasInput ? "解析规范" : "使用默认规范"}
               </Button>
               {formatParsing ? (
                 <Button type="button" variant="destructive" onClick={onCancelParseFormatRules}>
-                  <X className="h-4 w-4" />
+                <X data-icon="inline-start" />
                   停止解析
                 </Button>
               ) : null}
@@ -735,8 +786,8 @@ export function SchoolFormatCard({
             </div>
           </div>
 
-          <div className="space-y-4">
-            <div className="rounded-3xl border border-border/70 bg-muted/30 p-5">
+            <div className="flex flex-col gap-4">
+            <div className="rounded-lg border border-border/70 bg-muted/30 p-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-black text-foreground">当前导出规则</div>
@@ -751,10 +802,12 @@ export function SchoolFormatCard({
               </div>
             </div>
 
-            <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
-              <div className="font-black">解析边界</div>
-              <p className="mt-2">可执行规则会进入样式；封面、目录、页码分节、公式、图表不跨页等结构要求只记录为审计提示，不伪装成样式。</p>
-            </div>
+            <Alert>
+              <AlertTitle>解析边界</AlertTitle>
+              <AlertDescription>
+                可执行规则会进入样式；封面、目录、页码分节、公式、图表不跨页等结构要求只记录为审计提示，不伪装成样式。
+              </AlertDescription>
+            </Alert>
           </div>
         </div>
 
@@ -768,9 +821,9 @@ export function SchoolFormatCard({
             onDiscard={onDiscardFormatRules}
           />
         ) : (
-          <div className="rounded-3xl border border-dashed border-border bg-background/70 p-8 text-center">
-            <div className="mx-auto w-fit rounded-2xl bg-primary/10 p-4 text-primary">
-              <SlidersHorizontal className="h-7 w-7" />
+          <div className="rounded-lg border border-dashed border-border bg-background/70 p-8 text-center">
+            <div className="mx-auto w-fit rounded-md bg-primary/10 p-4 text-primary">
+            <SlidersHorizontal className="size-7" />
             </div>
             <h3 className="mt-4 text-lg font-semibold text-foreground">默认规范会自动兜底</h3>
             <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted-foreground">后端导出时如果没有自定义学校规范，会使用内置默认规则。点击“使用默认规范”只是显式启用默认值，不会假装解析出了学校专属规则。</p>
@@ -786,7 +839,7 @@ const zh = (...codes: number[]) => String.fromCharCode(...codes);
 
 function FormatStep({ active, done, title, text }: { active: boolean; done: boolean; title: string; text: string }) {
   return (
-    <div className={`rounded-2xl border p-3 ${active ? "border-primary/20 bg-white" : "border-border/70 bg-white/60"}`}>
+    <div className={`rounded-md border p-3 ${active ? "border-primary/20 bg-background" : "border-border/70 bg-background/70"}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="text-sm font-black text-foreground">{title}</div>
         <Badge variant={done ? "success" : active ? "default" : "outline"}>{done ? "完成" : active ? "进行中" : "等待"}</Badge>
@@ -872,8 +925,8 @@ function FormatRulesPreview({
   const explicitCoverage = quality.explicitCoveragePercent ?? Math.round((REQUIRED_FORMAT_ROLES.filter((role) => explicitRoles.includes(role)).length / REQUIRED_FORMAT_ROLES.length) * 100);
   const usableCoverage = quality.usableCoveragePercent ?? Math.round((REQUIRED_FORMAT_ROLES.filter((role) => explicitRoles.includes(role) || inheritedRoles.includes(role)).length / REQUIRED_FORMAT_ROLES.length) * 100);
   return (
-    <div className="overflow-hidden rounded-3xl border border-primary/20 bg-primary/5 shadow-soft">
-      <div className="border-b border-primary/10 bg-white/70 p-5">
+    <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+      <div className="border-b border-border bg-muted/50 p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -904,25 +957,25 @@ function FormatRulesPreview({
       {missingSourceRoles.length || inheritedRoles.length || defaultRoles.length || lowConfidenceRoles.length ? (
         <div className="mx-5 mb-4 grid gap-3 xl:grid-cols-2">
           {missingSourceRoles.length ? (
-            <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm leading-6 text-red-900">
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm leading-6 text-destructive">
               <div className="mb-2 font-semibold">建议补充来源</div>
               <div>{missingSourceRoles.map((role) => ROLE_LABELS[role] ?? role).join(" / ")}</div>
             </div>
           ) : null}
           {inheritedRoles.length ? (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+            <div className="rounded-md border border-primary/20 bg-muted/60 p-4 text-sm leading-6 text-foreground">
               <div className="mb-2 font-semibold">继承项</div>
               <div>{inheritedRoles.slice(0, 12).map((role) => ROLE_LABELS[role] ?? role).join(" / ")}</div>
             </div>
           ) : null}
           {defaultRoles.length ? (
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">
+            <div className="rounded-md border border-border bg-muted/50 p-4 text-sm leading-6 text-foreground">
               <div className="mb-2 font-semibold">默认项</div>
               <div>{defaultRoles.slice(0, 12).map((role) => ROLE_LABELS[role] ?? role).join(" / ")}</div>
             </div>
           ) : null}
           {lowConfidenceRoles.length ? (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+            <div className="rounded-md border border-primary/20 bg-muted/60 p-4 text-sm leading-6 text-foreground">
               <div className="mb-2 font-semibold">低置信项</div>
               <div>{lowConfidenceRoles.map((role) => ROLE_LABELS[role] ?? role).join(" / ")}</div>
             </div>
@@ -930,18 +983,18 @@ function FormatRulesPreview({
         </div>
       ) : null}
       {warnings.length ? (
-        <div className="mx-5 mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+        <div className="mx-5 mb-4 rounded-md border border-primary/20 bg-muted/60 p-4 text-sm leading-6 text-foreground">
           {warnings.map((warning, index) => <p key={index}>- {warning}</p>)}
         </div>
       ) : null}
       {suggestions.length ? (
-        <div className="mx-5 mb-4 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
+        <div className="mx-5 mb-4 rounded-md border border-border bg-muted/50 p-4 text-sm leading-6 text-foreground">
           {suggestions.map((suggestion, index) => <p key={index}>- {suggestion}</p>)}
         </div>
       ) : null}
-      <div className="space-y-4 px-5 pb-5">
+          <div className="flex flex-col gap-4 px-5 pb-5">
         {ROLE_GROUPS.map((group) => (
-          <div key={group.title} className="rounded-2xl border border-border/70 bg-white/75 p-4">
+          <div key={group.title} className="rounded-md border border-border/70 bg-background p-4">
             <div className="mb-3 text-sm font-semibold text-foreground">{group.title}</div>
             <div className="grid gap-3 xl:grid-cols-2">
               {group.roles.map((role) => (
@@ -956,15 +1009,15 @@ function FormatRulesPreview({
           {rules.notes.slice(0, 6).map((note, index) => <p key={index}>- {note}</p>)}
         </div>
       ) : null}
-      <div className="flex flex-col gap-3 border-t border-primary/10 bg-white/50 p-5 md:flex-row md:items-center md:justify-between">
-        <div className={missingSourceRoles.length ? "text-sm text-amber-700" : "text-sm text-emerald-700"}>
+      <div className="flex flex-col gap-3 border-t border-border bg-muted/40 p-5 md:flex-row md:items-center md:justify-between">
+        <div className={cn("text-sm", missingSourceRoles.length ? "text-foreground" : "text-muted-foreground")}>
           {missingSourceRoles.length ? "存在关键规则未命中来源，将使用默认值；建议确认后再启用。" : "关键规则已命中来源，可以确认启用。"}
         </div>
         <div className="flex flex-wrap gap-3">
           {isPending ? (
             <>
               <Button type="button" onClick={onConfirm} disabled={busy}>
-                <CheckCircle2 className="h-4 w-4" />
+            <CheckCircle2 data-icon="inline-start" />
                 {zh(0x786e, 0x8ba4, 0x542f, 0x7528)}
               </Button>
               <Button type="button" variant="outline" onClick={onDiscard} disabled={busy}>
@@ -1015,7 +1068,7 @@ function formatAlignment(value: unknown): string {
 
 function RuleMetric({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-white/75 p-4">
+    <div className="rounded-md border border-border/70 bg-background/80 p-4">
       <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
       <div className="mt-2 text-base font-semibold text-foreground">{value}</div>
       <div className="mt-1 text-xs text-muted-foreground">{hint}</div>

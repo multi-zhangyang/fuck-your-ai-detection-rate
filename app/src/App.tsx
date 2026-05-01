@@ -1,25 +1,22 @@
-import { startTransition, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
   Activity,
   Bell,
   CheckCircle2,
   Clock3,
   FileText,
-  Gauge,
   History,
   Home,
   BarChart3,
   Loader2,
-  PanelLeftClose,
-  PanelLeftOpen,
   RefreshCw,
   Route,
   Save,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkles,
   Trash2,
   Wand2,
   X,
@@ -30,14 +27,61 @@ import { HistoryCard } from "@/components/HistoryCard";
 import { ModelConfigCard, SchoolFormatCard } from "@/components/ModelConfigCard";
 import { ProtectionMapCard } from "@/components/ProtectionMapCard";
 import { DiffReviewCard, ResultCard, type DiffFilterMode, type DiffFocusRequest } from "@/components/ResultCard";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarRail,
+  SidebarSeparator,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
+import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useAppState } from "@/hooks/useAppState";
 import type { AppService } from "@/lib/appService";
 import { getTaskPhaseLabel, isTaskBlocking, isTaskRunningPhase, type TaskPhase } from "@/lib/taskState";
+import { cn } from "@/lib/utils";
 import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, PromptPreviewResponse, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const PREVIEW_MAX_CHARS = 12000;
 const FORMAT_RULE_DRAFT_KEY = "fyadr.formatRuleDraft";
@@ -57,7 +101,24 @@ type Props = {
   pickerLabel?: string;
 };
 
-type WorkbenchView = "home" | "diff" | "quality" | "experiment" | "model" | "prompts" | "format" | "protection" | "history" | "diagnostics";
+type WorkbenchView = "home" | "quality" | "experiment" | "model" | "prompts" | "format" | "protection" | "history" | "diagnostics";
+
+const WORKBENCH_NAV_ITEMS = [
+  { view: "home", label: "工作台", description: "文档、导出、任务控制", icon: Home },
+  { view: "quality", label: "改写检查", description: "风险与质量统计", icon: BarChart3 },
+  { view: "model", label: "模型配置", description: "连接、服务商、路线", icon: Settings },
+  { view: "prompts", label: "提示词预览", description: "只读模板", icon: FileText },
+  { view: "format", label: "学校规范", description: "Word 导出规则", icon: SlidersHorizontal },
+  { view: "protection", label: "保护区地图", description: "结构锁定", icon: ShieldCheck },
+  { view: "history", label: "历史记录", description: "文档与轮次归档", icon: History },
+  { view: "diagnostics", label: "启动诊断", description: "运行环境状态", icon: Activity },
+  { view: "experiment", label: "策略复盘", description: "策略对比实验", icon: Clock3 },
+] satisfies Array<{
+  view: WorkbenchView;
+  label: string;
+  description: string;
+  icon: typeof Home;
+}>;
 type NotificationKind = "success" | "error";
 type AppNotification = {
   id: string;
@@ -1689,28 +1750,6 @@ function getPhaseTaskTone(phase: TaskPhase): RuntimeTaskTone {
   return "slate";
 }
 
-function getRuntimeTaskCardClass(tone: RuntimeTaskTone): string {
-  const classes: Record<RuntimeTaskTone, string> = {
-    amber: "border-amber-100 bg-amber-50/75 text-amber-950",
-    blue: "border-blue-100 bg-blue-50/75 text-blue-950",
-    emerald: "border-emerald-100 bg-emerald-50/75 text-emerald-950",
-    red: "border-red-100 bg-red-50/75 text-red-950",
-    slate: "border-slate-100 bg-slate-50/75 text-slate-950",
-  };
-  return classes[tone];
-}
-
-function getRuntimeTaskIconClass(tone: RuntimeTaskTone): string {
-  const classes: Record<RuntimeTaskTone, string> = {
-    amber: "bg-amber-100 text-amber-700",
-    blue: "bg-blue-100 text-blue-700",
-    emerald: "bg-emerald-100 text-emerald-700",
-    red: "bg-red-100 text-red-700",
-    slate: "bg-white text-slate-600",
-  };
-  return classes[tone];
-}
-
 function getTaskPhaseRecoveryHint(phase: TaskPhase): string {
   const hints: Partial<Record<TaskPhase, string>> = {
     "running-round": "可中断；再次开始会优先读取断点，不会从头覆盖已完成分块。",
@@ -1860,7 +1899,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const [formatRuleText, setFormatRuleTextState] = useState(() => localStorage.getItem(FORMAT_RULE_DRAFT_KEY) ?? "");
   const [formatParserRoute, setFormatParserRoute] = useState<FormatParserModelRoute>(() => loadStoredFormatParserRoute());
   const [activeView, setActiveView] = useState<WorkbenchView>("home");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("fyadr.sidebarCollapsed") === "1");
   const [reviewDecisions, setReviewDecisions] = useState<Record<string, ReviewDecision>>({});
   const [currentRunToken, setCurrentRunToken] = useState<string | null>(null);
   const [currentBatchRerunToken, setCurrentBatchRerunToken] = useState<string | null>(null);
@@ -2049,10 +2087,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const unreadNotificationCount = notifications.filter((item) => !item.read).length;
 
   useEffect(() => {
-    localStorage.setItem("fyadr.sidebarCollapsed", sidebarCollapsed ? "1" : "0");
-  }, [sidebarCollapsed]);
-
-  useEffect(() => {
     const text = error || notice;
     if (!text) {
       notificationMessageKeyRef.current = "";
@@ -2144,13 +2178,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
     setRerunFailures((current) => current.filter((item) => !(item.scopeKey === activeRerunFailureScopeKey && item.chunkId === chunkId)));
   }
-
-  function dismissCurrentNotification() {
-    setError("");
-    setNotice("");
-    notificationMessageKeyRef.current = "";
-  }
-
 
   function setFormatRuleText(value: string) {
     setFormatRuleTextState(value);
@@ -4450,46 +4477,25 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       onResetFormatRules={() => void handleResetFormatRules()}
     />
   );
+  const activeViewMeta = WORKBENCH_NAV_ITEMS.find((item) => item.view === activeView) ?? WORKBENCH_NAV_ITEMS[0];
+  const notificationStatusText = currentNotification
+    ? currentNotification.text
+    : unreadNotificationCount
+      ? `${unreadNotificationCount} 未读`
+      : activeRuntimeTaskCount
+        ? `${activeRuntimeTaskCount} 个运行中`
+        : "无未读";
+  const NotificationStatusIcon = currentNotification?.kind === "error" ? AlertCircle : currentNotification ? CheckCircle2 : Bell;
 
   return (
-    <div className="fy-app-shell">
-      <div className="flex h-screen min-h-0">
-        <aside className={`fy-sidebar ${sidebarCollapsed ? "w-[92px]" : "w-[304px]"}`}>
-          <div className="shrink-0 px-0 pb-4 pt-1">
-            <div className={`flex items-center overflow-visible ${sidebarCollapsed ? "h-[74px] justify-center" : "h-[112px] justify-center"}`}>
-              <img src="/brand-logo.png" alt="Fuck your AI detection rate" className={`max-w-none object-contain drop-shadow-[0_14px_28px_rgba(249,115,22,0.18)] transition-all duration-300 ${sidebarCollapsed ? "w-[74px]" : "w-[286px]"}`} />
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className={`mt-3 w-full rounded-2xl ${sidebarCollapsed ? "px-0" : "justify-start"}`}
-              onClick={() => setSidebarCollapsed((value) => !value)}
-              title={sidebarCollapsed ? "展开导航" : "收起导航"}
-              aria-expanded={!sidebarCollapsed}
-            >
-              {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-              {sidebarCollapsed ? null : <span className="ml-2">收起导航</span>}
-            </Button>
-          </div>
-
-          <nav className="fy-nav-list">
-            <SidebarItem collapsed={sidebarCollapsed} active={activeView === "home"} tone="slate" icon={<Home className="h-4 w-4" />} label="主页 / 实时 Diff" onClick={() => setActiveView("home")} />
-            <SidebarItem collapsed={sidebarCollapsed} active={activeView === "quality"} tone="blue" icon={<BarChart3 className="h-4 w-4" />} label="改写检查" onClick={() => setActiveView("quality")} />
-            <SidebarItem collapsed={sidebarCollapsed} active={activeView === "model"} tone="violet" icon={<Settings className="h-4 w-4" />} label="模型配置" onClick={() => setActiveView("model")} />
-            <SidebarItem collapsed={sidebarCollapsed} active={activeView === "prompts"} tone="fuchsia" icon={<FileText className="h-4 w-4" />} label="提示词预览" onClick={() => setActiveView("prompts")} />
-            <SidebarItem collapsed={sidebarCollapsed} active={activeView === "format"} tone="emerald" icon={<SlidersHorizontal className="h-4 w-4" />} label="学校规范" onClick={() => setActiveView("format")} />
-            <SidebarItem collapsed={sidebarCollapsed} active={activeView === "protection"} tone="teal" icon={<ShieldCheck className="h-4 w-4" />} label="保护区地图" onClick={() => setActiveView("protection")} />
-            <SidebarItem collapsed={sidebarCollapsed} active={activeView === "history"} tone="amber" icon={<History className="h-4 w-4" />} label="历史记录" onClick={() => setActiveView("history")} />
-            <SidebarItem collapsed={sidebarCollapsed} active={activeView === "diagnostics"} tone="rose" icon={<Activity className="h-4 w-4" />} label="启动诊断" onClick={() => setActiveView("diagnostics")} />
-            <SidebarItem collapsed={sidebarCollapsed} active={activeView === "experiment"} tone="indigo" icon={<Clock3 className="h-4 w-4" />} label="策略复盘" onClick={() => setActiveView("experiment")} />
-          </nav>
-          <div className={`fy-sidebar-footer ${sidebarCollapsed ? "text-center" : ""}`}>
-            {sidebarCollapsed ? "FYADR" : "FYADR 本地工作台"}
-          </div>
-        </aside>
-
-        <main className={`flex h-screen min-h-0 flex-1 flex-col overflow-hidden transition-[margin] duration-300 ${activeView === "diff" ? "px-3 py-3" : "px-6 py-4"} ${sidebarCollapsed ? "ml-[92px]" : "ml-[304px]"}`}>
+    <SidebarProvider defaultOpen className="h-svh min-h-0 overflow-hidden">
+      <AppSidebar
+        activeView={activeView}
+        onViewChange={setActiveView}
+        runtimeStatus={runtimeStatus}
+        progressPercent={progressPercent}
+      />
+      <SidebarInset className="h-svh overflow-hidden md:h-[calc(100svh-1rem)]">
           <NotificationCenter
             open={notificationCenterOpen}
             items={notifications}
@@ -4504,31 +4510,58 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
             onConfirm={() => settleConfirmDialog(true)}
           />
 
-          <GlobalTaskStatusBar
-            documentStatus={documentStatus}
-            activeView={activeView}
-            promptProfile={modelConfig.promptProfile}
-            promptSequence={modelConfig.promptSequence}
-            runtimeStatus={runtimeStatus}
-            runtimeLabel={runtimeLabel}
-            progressPercent={progressPercent}
-            running={running}
-            diffStats={diffDashboardStats}
-            reportBound={Boolean(detectionReport)}
-            notification={currentNotification}
-            unreadNotificationCount={unreadNotificationCount}
-            taskItemCount={runtimeTaskItems.length}
-            activeTaskCount={activeRuntimeTaskCount}
-            onOpenHome={() => setActiveView("home")}
-            onOpenDiff={() => openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)}
-            onOpenNotifications={openNotificationCenter}
-          />
+          <header className="shrink-0 border-b bg-background/95">
+            <div className="flex h-12 items-center gap-3 px-4">
+              <SidebarTrigger className="border bg-card" />
+              <div className="min-w-0 flex flex-1 items-center gap-3">
+                <Breadcrumb>
+                  <BreadcrumbList>
+                    <BreadcrumbItem>
+                      <span className="text-muted-foreground">FYADR</span>
+                    </BreadcrumbItem>
+                    <BreadcrumbSeparator />
+                    <BreadcrumbItem>
+                      <BreadcrumbPage>{activeViewMeta.label}</BreadcrumbPage>
+                    </BreadcrumbItem>
+                  </BreadcrumbList>
+                </Breadcrumb>
+                <Badge variant="outline" className="hidden max-w-[240px] truncate md:inline-flex">
+                  {activeViewMeta.description}
+                </Badge>
+              </div>
+            </div>
+            <div className="flex h-9 items-center gap-2 overflow-x-auto border-t bg-muted/35 px-4 text-xs">
+              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" onClick={() => setActiveView("home")}>
+                <FileText data-icon="inline-start" />
+                <span className="text-muted-foreground">当前文件</span>
+                <span className="max-w-[240px] truncate text-foreground">{documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : "未选择"}</span>
+              </Button>
+              <Separator orientation="vertical" className="h-4" />
+              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" onClick={() => setActiveView("model")}>
+                <Route data-icon="inline-start" />
+                <span className="text-muted-foreground">路线</span>
+                <span className="max-w-[260px] truncate text-foreground">{describePromptProfile(modelConfig.promptProfile)} · {formatPromptSequence(modelConfig.promptSequence)}</span>
+              </Button>
+              <Separator orientation="vertical" className="h-4" />
+              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" onClick={() => openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)}>
+                <Wand2 data-icon="inline-start" />
+                <span className="text-muted-foreground">Diff</span>
+                <span className="text-foreground">{diffDashboardStats.chunkCount ? `${diffDashboardStats.chunkCount} 块 · ${diffDashboardStats.reviewCount} 待处理` : "未生成"}</span>
+              </Button>
+              <Separator orientation="vertical" className="h-4" />
+              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" aria-label="打开通知与任务中心" onClick={openNotificationCenter}>
+                <NotificationStatusIcon data-icon="inline-start" />
+                <span className="text-muted-foreground">通知</span>
+                <span className="max-w-[260px] truncate text-foreground">{notificationStatusText}</span>
+              </Button>
+            </div>
+          </header>
 
-          <section className="mt-2 min-h-0 flex-1 overflow-hidden">
+          <section className="min-h-0 flex-1 overflow-hidden bg-muted/30 p-4">
             {activeView === "home" ? (
-              <div className="fy-page-scroll fy-home-page">
-                <div className="fy-home-control-grid">
-                  <div className="fy-home-result-area">
+              <div className="h-full min-h-0 overflow-hidden">
+                <div className="grid h-full min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
+                  <div className="flex min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
                     <ResultCard
                       result={roundResult}
                       preview={preview}
@@ -4550,7 +4583,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                       onExportTxt={() => void handleExportCurrent("txt")}
                       onExportDocx={() => void handleExportCurrent("docx")}
                     />
-                    <div className="fy-home-diff-panel">
+                    <div className="min-h-0 flex-1 overflow-hidden">
                       <DiffReviewCard
                         result={roundResult}
                         compareData={activeCompareData}
@@ -4568,7 +4601,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                       />
                     </div>
                   </div>
-                  <div className="fy-home-side-stack">
+                  <div className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
                     <HomeRunPanel
                       value={documentStatus}
                       busy={uiBusy}
@@ -4605,28 +4638,10 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                   </div>
                 </div>
               </div>
-            ) : activeView === "diff" ? (
-              <div className="fy-page-fixed fy-diff-page">
-                <DiffReviewCard
-                  result={roundResult}
-                  compareData={activeCompareData}
-                  busy={uiBusy}
-                  rerunFailures={activeRerunFailures}
-                  detectionMatchesByChunk={detectionMatchesByChunk}
-                  diffFocusRequest={diffFocusRequest}
-                  reviewDecisions={reviewDecisions}
-                  onReviewDecisionChange={updateReviewDecision}
-                  onRerunChunk={(chunkId, userFeedback) => void handleRerunChunk(chunkId, userFeedback)}
-                  onRerunRiskyChunks={() => void handleRerunRiskyChunks()}
-                  batchRerunRunning={Boolean(currentBatchRerunToken)}
-                  batchRerunStatusText={runtimeLabel}
-                  onCancelBatchRerun={() => void handleCancelBatchRerun()}
-                />
-              </div>
             ) : activeView === "quality" ? (
-              <div className="fy-page-scroll"><QualityReportPage compareData={activeCompareData} exportResult={lastExportResult} /></div>
+              <div className="h-full min-h-0 overflow-auto"><QualityReportPage compareData={activeCompareData} exportResult={lastExportResult} /></div>
             ) : activeView === "experiment" ? (
-              <div className="fy-page-scroll">
+              <div className="h-full min-h-0 overflow-auto">
                 <ExperimentLabPage
                   records={experimentRecords}
                   recordsPath={experimentRecordsPath}
@@ -4644,9 +4659,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                 />
               </div>
             ) : activeView === "model" ? (
-              <div className="fy-page-fixed">{modelPanel}</div>
+              <div className="h-full min-h-0 overflow-hidden">{modelPanel}</div>
             ) : activeView === "prompts" ? (
-              <div className="fy-page-fixed">
+              <div className="h-full min-h-0 overflow-hidden">
                 <PromptPreviewPage
                   value={promptPreviews}
                   busy={promptPreviewBusy}
@@ -4657,11 +4672,11 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                 />
               </div>
             ) : activeView === "format" ? (
-              <div className="fy-page-scroll">{formatPanel}</div>
+              <div className="h-full min-h-0 overflow-auto">{formatPanel}</div>
             ) : activeView === "protection" ? (
-              <div className="fy-page-scroll"><ProtectionMapCard value={protectionMap} /></div>
+              <div className="h-full min-h-0 overflow-auto"><ProtectionMapCard value={protectionMap} /></div>
             ) : activeView === "diagnostics" ? (
-              <div className="fy-page-scroll">
+              <div className="h-full min-h-0 overflow-auto">
                 <DiagnosticsPage
                   value={diagnostics}
                   busy={uiBusy}
@@ -4670,7 +4685,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                 />
               </div>
             ) : (
-              <div className="fy-page-scroll"><HistoryCard
+              <div className="h-full min-h-0 overflow-auto"><HistoryCard
                 currentDocId={documentStatus?.docId ?? null}
                 currentHistory={history}
                 items={historyItems}
@@ -4689,53 +4704,144 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
               /></div>
             )}
           </section>
-        </main>
-      </div>
-    </div>
+        </SidebarInset>
+      <SidebarRail />
+    </SidebarProvider>
   );
 
 }
 
-type SidebarTone = "slate" | "blue" | "violet" | "fuchsia" | "emerald" | "cyan" | "teal" | "amber" | "rose" | "indigo";
+function AppSidebar({
+  activeView,
+  onViewChange,
+  runtimeStatus,
+  progressPercent,
+}: {
+  activeView: WorkbenchView;
+  onViewChange: (view: WorkbenchView) => void;
+  runtimeStatus: string;
+  progressPercent: number;
+}) {
+  const primaryItems = WORKBENCH_NAV_ITEMS.filter((item) => ["home", "quality", "model"].includes(item.view));
+  const documentItems = WORKBENCH_NAV_ITEMS.filter((item) => ["prompts", "format", "protection", "history"].includes(item.view));
+  const systemItems = WORKBENCH_NAV_ITEMS.filter((item) => ["diagnostics", "experiment"].includes(item.view));
+  const renderNavItems = (items: typeof WORKBENCH_NAV_ITEMS) => items.map((item) => {
+    const Icon = item.icon;
+    return (
+      <SidebarMenuItem key={item.view}>
+        <SidebarMenuButton
+          isActive={activeView === item.view}
+          tooltip={item.label}
+          className="h-9 px-2 data-[active=true]:shadow-sm"
+          onClick={() => onViewChange(item.view)}
+        >
+          <Icon />
+          <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+            <span className="truncate">{item.label}</span>
+          </span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  });
 
-function SidebarItem({ active, icon, label, onClick, collapsed = false, tone }: { active: boolean; icon: ReactNode; label: string; onClick: () => void; collapsed?: boolean; tone: SidebarTone }) {
-  const activeClass: Record<SidebarTone, string> = {
-    slate: "bg-slate-950",
-    blue: "bg-blue-600",
-    violet: "bg-violet-600",
-    fuchsia: "bg-fuchsia-600",
-    emerald: "bg-emerald-600",
-    cyan: "bg-cyan-600",
-    teal: "bg-teal-600",
-    amber: "bg-amber-600",
-    rose: "bg-rose-600",
-    indigo: "bg-indigo-600",
-  };
-  const idleIconClass: Record<SidebarTone, string> = {
-    slate: "text-slate-500 group-hover:bg-slate-200/70",
-    blue: "text-blue-600 group-hover:bg-blue-50",
-    violet: "text-violet-600 group-hover:bg-violet-50",
-    fuchsia: "text-fuchsia-600 group-hover:bg-fuchsia-50",
-    emerald: "text-emerald-600 group-hover:bg-emerald-50",
-    cyan: "text-cyan-600 group-hover:bg-cyan-50",
-    teal: "text-teal-600 group-hover:bg-teal-50",
-    amber: "text-amber-600 group-hover:bg-amber-50",
-    rose: "text-rose-600 group-hover:bg-rose-50",
-    indigo: "text-indigo-600 group-hover:bg-indigo-50",
-  };
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={collapsed ? label : undefined}
-      aria-current={active ? "page" : undefined}
-      className={`fy-nav-item group ${collapsed ? "justify-center gap-0" : "gap-3 text-left"} ${
-        active ? `fy-nav-item-active ${activeClass[tone]}` : "fy-nav-item-idle"
-      }`}
-    >
-      <span className={`fy-nav-icon ${active ? "bg-white/15 text-white" : idleIconClass[tone]}`}>{icon}</span>
-      {collapsed ? null : <span>{label}</span>}
-    </button>
+    <Sidebar variant="inset" collapsible="icon">
+      <SidebarHeader className="p-3">
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              size="lg"
+              tooltip="FYADR"
+              className="h-14 items-center gap-2.5 px-1.5"
+              onClick={() => onViewChange("home")}
+            >
+              <img src="/brand-logo.png" alt="FYADR" className="size-11 shrink-0 object-contain" />
+              <span className="flex min-w-0 flex-col justify-center">
+                <span className="block truncate text-sm font-semibold">FYADR</span>
+                <span className="block truncate text-xs text-muted-foreground">本地改写工作台</span>
+              </span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarHeader>
+      <SidebarSeparator />
+      <SidebarContent>
+        <SidebarGroup className="px-3 py-2">
+          <SidebarGroupLabel className="px-1">主工作流</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu className="gap-1.5">
+              {renderNavItems(primaryItems)}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup className="px-3 py-1.5">
+          <SidebarGroupLabel className="px-1">文档资产</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu className="gap-1.5">
+              {renderNavItems(documentItems)}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup className="px-3 py-1.5">
+          <SidebarGroupLabel className="px-1">运行与复盘</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu className="gap-1.5">
+              {renderNavItems(systemItems)}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+      <SidebarRuntimeProgress status={runtimeStatus} percent={progressPercent} />
+    </Sidebar>
+  );
+}
+
+function SidebarRuntimeProgress({ status, percent }: { status: string; percent: number }) {
+  const { state } = useSidebar();
+  const value = Math.max(0, Math.min(100, Math.round(percent)));
+  const radius = 13;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (value / 100) * circumference;
+
+  if (state === "collapsed") {
+    return (
+      <SidebarFooter className="items-center px-2 pb-3 pt-2">
+        <div
+          data-runtime-progress-ring
+          className="relative flex size-8 items-center justify-center rounded-md border bg-card text-foreground shadow-sm"
+          title={`${status} ${value}%`}
+          aria-label={`${status} ${value}%`}
+        >
+          <svg viewBox="0 0 32 32" className="size-7 -rotate-90" aria-hidden="true">
+            <circle cx="16" cy="16" r={radius} fill="none" stroke="currentColor" strokeWidth="3" className="text-muted" />
+            <circle
+              cx="16"
+              cy="16"
+              r={radius}
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeWidth="3"
+              className="text-primary"
+              style={{ strokeDasharray: circumference, strokeDashoffset: offset }}
+            />
+          </svg>
+          <span className="absolute text-[10px] font-semibold">{value}</span>
+        </div>
+      </SidebarFooter>
+    );
+  }
+
+  return (
+    <SidebarFooter className="px-3 pb-3 pt-2">
+      <div className="rounded-lg border bg-card p-3 shadow-sm">
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <span className="truncate text-muted-foreground">{status}</span>
+          <span className="font-medium text-foreground">{value}%</span>
+        </div>
+        <Progress value={value} className="mt-2 h-1.5" />
+      </div>
+    </SidebarFooter>
   );
 }
 
@@ -4748,36 +4854,11 @@ function UnifiedConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  useEffect(() => {
-    if (!value) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onCancel, value]);
-
   if (!value) {
     return null;
   }
 
   const tone = value.tone ?? "neutral";
-  const toneClass: Record<ConfirmDialogTone, string> = {
-    neutral: "border-slate-200",
-    info: "border-blue-200",
-    warning: "border-amber-200",
-    danger: "border-red-200",
-  };
-  const iconClass: Record<ConfirmDialogTone, string> = {
-    neutral: "bg-slate-100 text-slate-700",
-    info: "bg-blue-100 text-blue-700",
-    warning: "bg-amber-100 text-amber-700",
-    danger: "bg-red-100 text-red-700",
-  };
   const confirmVariant: Record<ConfirmDialogTone, "neutral" | "brand" | "warning" | "destructive"> = {
     neutral: "neutral",
     info: "brand",
@@ -4786,39 +4867,47 @@ function UnifiedConfirmDialog({
   };
 
   return (
-    <div className="fy-overlay" role="dialog" aria-modal="true" aria-labelledby={`confirm-dialog-title-${value.id}`}>
-      <button type="button" className="fy-overlay-scrim" aria-label="关闭确认弹窗" onClick={onCancel} />
-      <div className={`fy-modal ${toneClass[tone]}`}>
-        <div className="fy-modal-header">
-          <div className={`rounded-2xl p-2 ${iconClass[tone]}`}>
-            <AlertCircle className="h-5 w-5" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div id={`confirm-dialog-title-${value.id}`} className="text-lg font-black text-slate-950">
-              {value.title}
+    <AlertDialog open onOpenChange={(open) => {
+      if (!open) onCancel();
+    }}>
+      <AlertDialogContent className={cn(tone === "danger" && "border-destructive/40")}>
+        <AlertDialogHeader>
+          <div className="flex items-start gap-3">
+            <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground", tone === "danger" && "border-destructive/30 bg-destructive/10 text-destructive")}>
+              <AlertCircle />
+            </span>
+            <div className="min-w-0 flex-1">
+              <AlertDialogTitle>{value.title}</AlertDialogTitle>
+              {value.description ? <AlertDialogDescription>{value.description}</AlertDialogDescription> : null}
             </div>
-            {value.description ? <p className="mt-1 text-sm leading-6 text-slate-600">{value.description}</p> : null}
           </div>
-        </div>
-
+        </AlertDialogHeader>
         {value.details?.length ? (
-          <div className="fy-modal-body">
-            <div className="space-y-2">
+          <div className="flex flex-col gap-2">
               {value.details.map((detail, index) => (
-                <div key={`${value.id}-${index}-${detail}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2 text-sm font-semibold leading-6 text-slate-600">
+                <div key={`${value.id}-${index}-${detail}`} className="rounded-md border bg-muted/40 px-3 py-2 text-sm font-medium leading-6 text-muted-foreground">
                   {detail}
                 </div>
               ))}
-            </div>
           </div>
         ) : null}
-
-        <div className="fy-modal-footer">
-          <Button type="button" variant="outline" onClick={onCancel}>{value.cancelLabel ?? "取消"}</Button>
-          <Button type="button" variant={confirmVariant[tone]} onClick={onConfirm}>{value.confirmLabel ?? "确定"}</Button>
-        </div>
-      </div>
-    </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{value.cancelLabel ?? "取消"}</AlertDialogCancel>
+          <AlertDialogAction asChild>
+            <Button
+              type="button"
+              variant={confirmVariant[tone]}
+              onClick={(event) => {
+                event.preventDefault();
+                onConfirm();
+              }}
+            >
+              {value.confirmLabel ?? "确定"}
+            </Button>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -4843,278 +4932,115 @@ function PromptPreviewPage({
 
   return (
     <div className="grid h-full min-h-0 gap-5 overflow-hidden xl:grid-cols-[300px_minmax(0,1fr)]">
-      <Card className="fy-panel h-full min-h-0 overflow-hidden">
-        <CardContent className="flex h-full min-h-0 flex-col gap-4 p-5">
-          <div className="shrink-0 rounded-3xl border border-fuchsia-100 bg-fuchsia-50/80 p-4">
+      <Card className="h-full min-h-0 overflow-hidden">
+        <CardHeader className="pb-3">
+          <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <Badge variant="neutral">只读</Badge>
-                <span className="text-xs font-black uppercase tracking-[0.22em] text-fuchsia-500">Prompt Preview</span>
+              <div className="mb-2 flex items-center gap-2">
+                <Badge variant="secondary">只读</Badge>
+                <Badge variant="outline">Prompt</Badge>
               </div>
-              <h2 className="mt-2 text-lg font-black text-slate-950">提示词预览</h2>
-              <p className="mt-1 text-xs leading-5 text-slate-600">查看内置提示词和仓库路径，不在界面编辑。</p>
+              <CardTitle className="text-lg">提示词预览</CardTitle>
+              <CardDescription className="mt-1">查看内置提示词和仓库路径。</CardDescription>
             </div>
-            <Button type="button" variant="outline" size="sm" className="mt-3 w-full" onClick={onRefresh} disabled={busy}>
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={busy}>
+              {busy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
               刷新
             </Button>
           </div>
+        </CardHeader>
 
+        <CardContent className="flex h-[calc(100%-6.5rem)] min-h-0 flex-col gap-4 px-5 pb-5">
           {error ? (
-            <div className="fy-callout border-red-100 bg-red-50 text-red-700">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              <span>{error}</span>
-            </div>
+            <Alert variant="destructive">
+              <AlertCircle />
+              <AlertTitle>读取失败</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           ) : null}
 
-          <div className="min-h-0 flex-1 space-y-2 overflow-auto pr-1">
-            {items.map((item) => {
-              const active = activeItem?.id === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => onActivePromptIdChange(item.id)}
-                  className={`w-full rounded-2xl border p-3 text-left transition ${
-                    active
-                      ? "border-fuchsia-200 bg-fuchsia-50 shadow-sm"
-                      : "border-slate-200 bg-white hover:border-fuchsia-100 hover:bg-fuchsia-50/40"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-black text-slate-950">{item.label}</div>
-                    <Badge variant={active ? "brand" : "outline"}>{item.id}</Badge>
-                  </div>
-                  <div className="mt-1 text-xs leading-5 text-slate-500">{item.description}</div>
-                  <div className="mt-2 truncate rounded-xl bg-white/80 px-2.5 py-1.5 text-[11px] font-semibold text-slate-500">
-                    {item.relativePath}
-                  </div>
-                </button>
-              );
-            })}
-            {!items.length ? (
-              <div className="fy-empty-state min-h-[18rem]">
-                <FileText className="h-8 w-8 text-slate-300" />
-                <div className="text-sm font-bold text-slate-600">{busy ? "正在读取提示词文件。" : "暂无可预览的提示词。"}</div>
+          {items.length ? (
+            <ScrollArea className="min-h-0 flex-1 pr-1">
+              <div className="flex flex-col gap-2">
+                {items.map((item) => {
+                  const active = activeItem?.id === item.id;
+                  return (
+                    <Button
+                      key={item.id}
+                      type="button"
+                      variant={active ? "secondary" : "outline"}
+                      className={cn("h-auto w-full justify-start px-3 py-3 text-left", active && "border-primary bg-muted")}
+                      onClick={() => onActivePromptIdChange(item.id)}
+                    >
+                      <span className="flex min-w-0 flex-1 flex-col gap-1">
+                        <span className="flex items-center justify-between gap-3">
+                          <span className="truncate font-semibold">{item.label}</span>
+                          <Badge variant={active ? "brand" : "outline"}>{item.id}</Badge>
+                        </span>
+                        <span className="line-clamp-2 text-xs font-normal leading-5 text-muted-foreground">{item.description}</span>
+                        <span className="truncate text-[11px] font-medium text-muted-foreground">{item.relativePath}</span>
+                      </span>
+                    </Button>
+                  );
+                })}
               </div>
-            ) : null}
-          </div>
+            </ScrollArea>
+          ) : (
+            <Empty className="min-h-[18rem] flex-1 border">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  {busy ? <Loader2 className="animate-spin" /> : <FileText />}
+                </EmptyMedia>
+                <EmptyTitle>{busy ? "正在读取提示词文件" : "暂无可预览的提示词"}</EmptyTitle>
+                <EmptyDescription>提示词文件来自 prompts 目录，页面只读展示。</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}
         </CardContent>
       </Card>
 
-      <Card className="fy-panel h-full min-h-0 overflow-hidden">
-        <CardContent className="flex h-full min-h-0 flex-col gap-4 p-5">
-          {activeItem ? (
-            <>
-              <div className="fy-panel-header">
+      <Card className="h-full min-h-0 overflow-hidden">
+        {activeItem ? (
+          <>
+            <CardHeader className="pb-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="outline">{activeItem.fileName}</Badge>
                     <Badge variant="outline">{formatBytes(activeItem.sizeBytes)}</Badge>
                     <Badge variant="outline">{contentLineCount} 行</Badge>
                   </div>
-                  <h3 className="mt-2 text-2xl font-black text-slate-950">{activeItem.label}</h3>
-                  <div className="mt-1 break-all text-sm font-semibold text-slate-500">文件位置：{activeItem.relativePath}</div>
+                  <CardTitle className="mt-2 text-xl">{activeItem.label}</CardTitle>
+                  <CardDescription className="mt-1 break-all">文件位置：{activeItem.relativePath}</CardDescription>
                 </div>
-                <div className="text-right text-xs font-semibold text-slate-400">
-                  {formatDateTime(activeItem.updatedAt)}
-                </div>
+                <Badge variant="secondary">{formatDateTime(activeItem.updatedAt)}</Badge>
               </div>
-
-              <pre className="min-h-0 flex-1 overflow-auto rounded-3xl border border-slate-200 bg-slate-950 p-5 text-[12px] leading-6 text-slate-100 shadow-inner">
-                <code>{activeItem.content}</code>
-              </pre>
-            </>
-          ) : (
-            <div className="fy-empty-state min-h-[34rem]">
-              {busy ? <Loader2 className="h-10 w-10 animate-spin text-fuchsia-400" /> : <FileText className="h-10 w-10 text-slate-300" />}
-              <div className="text-base font-black text-slate-700">
-                {busy ? "正在读取提示词内容" : error ? "提示词读取失败" : "选择左侧提示词后查看内容"}
-              </div>
-              <div className="mt-2 text-xs leading-5 text-slate-500">
-                {busy ? "如果长时间停留在这里，请确认后端已经重启到最新版本。" : error || "提示词文件来自 prompts 目录，页面只读展示。"}
-              </div>
-            </div>
-          )}
-        </CardContent>
+            </CardHeader>
+            <CardContent className="flex h-[calc(100%-7rem)] min-h-0 flex-col px-5 pb-5">
+              <ScrollArea className="min-h-0 flex-1 rounded-md border bg-muted">
+                <pre className="p-4 text-[12px] leading-6 text-foreground">
+                  <code>{activeItem.content}</code>
+                </pre>
+              </ScrollArea>
+            </CardContent>
+          </>
+        ) : (
+          <CardContent className="flex h-full min-h-0 p-5">
+            <Empty className="min-h-[24rem] flex-1 border">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  {busy ? <Loader2 className="animate-spin" /> : <FileText />}
+                </EmptyMedia>
+                <EmptyTitle>{busy ? "正在读取提示词内容" : error ? "提示词读取失败" : "选择左侧提示词后查看内容"}</EmptyTitle>
+                <EmptyDescription>
+                  {busy ? "如果长时间停留在这里，请确认后端已经重启到最新版本。" : error || "提示词文件来自 prompts 目录，页面只读展示。"}
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          </CardContent>
+        )}
       </Card>
     </div>
-  );
-}
-
-function GlobalTaskStatusBar({
-  documentStatus,
-  activeView,
-  promptProfile,
-  promptSequence,
-  runtimeStatus,
-  runtimeLabel,
-  progressPercent,
-  running,
-  diffStats,
-  reportBound,
-  notification,
-  unreadNotificationCount,
-  taskItemCount,
-  activeTaskCount,
-  onOpenHome,
-  onOpenDiff,
-  onOpenNotifications,
-}: {
-  documentStatus: DocumentStatus | null;
-  activeView: WorkbenchView;
-  promptProfile: ModelConfig["promptProfile"];
-  promptSequence: PromptId[];
-  runtimeStatus: string;
-  runtimeLabel: string;
-  progressPercent: number;
-  running: boolean;
-  diffStats: DiffDashboardStats;
-  reportBound: boolean;
-  notification: AppNotification | null;
-  unreadNotificationCount: number;
-  taskItemCount: number;
-  activeTaskCount: number;
-  onOpenHome: () => void;
-  onOpenDiff: () => void;
-  onOpenNotifications: () => void;
-}) {
-  const documentName = documentStatus ? formatDocLabel(documentStatus.docId || documentStatus.sourcePath) : "未载入文档";
-  const sourceKind = documentStatus?.sourceKind === ".docx" ? "Word 文档" : documentStatus?.sourceKind === ".txt" ? "TXT 文档" : "等待上传";
-  const nextRoundText = documentStatus
-    ? documentStatus.hasNextRound && documentStatus.nextRound
-      ? `第 ${documentStatus.nextRound} 轮`
-      : "已完成"
-    : "未开始";
-  const promptText = promptProfile === "cn_custom" ? formatPromptSequence(promptSequence) : describePromptProfile(promptProfile);
-  const contentText = diffStats.chunkCount ? "Diff 已载入" : "等待 Diff";
-  const contentDetail = reportBound ? "已绑定检测报告" : "未绑定报告";
-  const progressTone = running ? "from-fuchsia-500 via-sky-500 to-emerald-400" : documentStatus ? "from-indigo-500 via-sky-500 to-cyan-400" : "from-slate-300 via-slate-200 to-slate-300";
-  const viewLabel = activeView === "home" ? "主页" : activeView === "diff" ? "Diff" : activeView === "model" ? "模型" : activeView === "format" ? "规范" : activeView === "history" ? "历史" : "工作台";
-
-  return (
-    <div className="fy-global-statusbar">
-      <div className="fy-global-statusgrid">
-        <button type="button" onClick={onOpenHome} className={`fy-global-status-card fy-global-document-card ${documentStatus ? "rainbow-marquee-card" : "fy-current-document-card-empty"}`}>
-          <div className="flex min-w-0 items-center gap-3">
-            <div className={`fy-icon-cell ${documentStatus ? "bg-slate-950 text-white" : "bg-white text-slate-400"}`}>
-              <FileText className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 text-left">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-black text-slate-500">当前文件</span>
-                <Badge variant={documentStatus ? "default" : "outline"}>{documentStatus ? "正在操作" : viewLabel}</Badge>
-              </div>
-              <div className="mt-0.5 truncate text-sm font-black text-slate-950">{documentName}</div>
-            </div>
-          </div>
-        </button>
-
-        <button type="button" onClick={onOpenHome} className="fy-global-mini-card fy-tone-brand">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="fy-icon-cell bg-violet-100 text-violet-700">
-              <Route className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="fy-global-mini-head">改写路线</div>
-              <div className="fy-global-mini-value">{promptText}</div>
-              <div className="fy-global-mini-detail">{sourceKind} · {nextRoundText}</div>
-            </div>
-          </div>
-        </button>
-
-        <button type="button" onClick={onOpenDiff} className="fy-global-mini-card fy-tone-success">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="fy-icon-cell bg-emerald-100 text-emerald-700">
-              <Sparkles className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="fy-global-mini-head">内容反馈</div>
-              <div className="fy-global-mini-value">{contentText}</div>
-              <div className="fy-global-mini-detail">{contentDetail}</div>
-            </div>
-          </div>
-        </button>
-
-        <div className="fy-global-mini-card fy-global-progress-card fy-tone-neutral">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="fy-global-mini-head text-slate-500">
-                <Gauge className="h-4 w-4" />
-                <span>{runtimeStatus}</span>
-              </div>
-              <div className="fy-global-mini-detail mt-0.5">{runtimeLabel}</div>
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
-                <div className={`h-full rounded-full bg-gradient-to-r ${progressTone} transition-all`} style={{ width: `${Math.max(0, Math.min(100, progressPercent))}%` }} />
-              </div>
-            </div>
-            <div className="text-xl font-black text-slate-950">{progressPercent}%</div>
-          </div>
-        </div>
-
-        <NotificationStripItem
-          notification={notification}
-          unreadNotificationCount={unreadNotificationCount}
-          taskItemCount={taskItemCount}
-          activeTaskCount={activeTaskCount}
-          onOpenNotifications={onOpenNotifications}
-        />
-      </div>
-    </div>
-  );
-}
-
-function NotificationStripItem({
-  notification,
-  unreadNotificationCount,
-  taskItemCount,
-  activeTaskCount,
-  onOpenNotifications,
-}: {
-  notification: AppNotification | null;
-  unreadNotificationCount: number;
-  taskItemCount: number;
-  activeTaskCount: number;
-  onOpenNotifications: () => void;
-}) {
-  const isError = notification?.kind === "error";
-  const title = activeTaskCount ? "通知与任务" : notification ? notification.title : "通知与任务";
-  const text = activeTaskCount
-    ? `${activeTaskCount} 个任务正在运行，点开可查看或停止。`
-    : taskItemCount
-      ? "有可继续的任务断点，点开查看。"
-      : notification
-        ? notification.text
-        : "暂无新通知";
-  const badgeText = activeTaskCount
-    ? `${activeTaskCount}任务`
-    : unreadNotificationCount
-      ? `${unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}未读`
-      : taskItemCount
-        ? `${taskItemCount}待办`
-        : "";
-  return (
-    <button
-      type="button"
-      onClick={onOpenNotifications}
-      aria-label="打开通知与任务中心"
-      className={`fy-status-tile relative flex min-w-0 items-center gap-3 text-left transition ${
-        activeTaskCount ? "fy-tone-warning hover:bg-amber-100/70" : notification ? isError ? "fy-tone-danger hover:bg-red-100/70" : "fy-tone-success hover:bg-emerald-100/70" : "fy-tone-neutral hover:bg-white"
-      }`}
-    >
-      <div className={`fy-icon-cell ${activeTaskCount ? "bg-amber-100 text-amber-700" : isError ? "bg-red-100 text-red-700" : notification ? "bg-emerald-100 text-emerald-700" : "bg-white text-slate-500"}`}>
-        {activeTaskCount ? <Loader2 className="h-4 w-4 animate-spin" /> : isError ? <AlertCircle className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-      </div>
-      <div className="fy-notification-text min-w-0 flex-1">
-        <div className="text-[11px] font-black opacity-65">{title}</div>
-        <div className="mt-0.5 truncate text-xs font-semibold leading-4 opacity-90">{text}</div>
-      </div>
-      {badgeText ? (
-        <span className="absolute right-2 top-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-slate-950 px-1.5 text-[10px] font-bold text-white">
-          {badgeText}
-        </span>
-      ) : null}
-    </button>
   );
 }
 
@@ -5242,18 +5168,6 @@ function HomeRunPanel({
       : "专属轮次外继承默认。";
   const rewriteCandidateMode = modelConfig.rewriteCandidateMode === "quality" ? "quality" : "economy";
   const candidateMaxPerChunk = rewriteCandidateMode === "quality" ? 2 : 1;
-  const candidateModeLabel = rewriteCandidateMode === "quality" ? "质量模式 · 最多 2 候选" : "省钱模式 · 1 候选";
-  const candidateModeDetail = rewriteCandidateMode === "quality"
-    ? "长中文块最多 2 候选，调用量可能翻倍。"
-    : "每块 1 次请求，调用量最低。";
-  const progressEstimatedApiCalls = progress?.estimatedApiCalls ?? (
-    progress?.totalChunks ? progress.totalChunks * candidateMaxPerChunk : null
-  );
-  const progressCallText = progress?.totalChunks
-    ? `本轮预计约 ${progressEstimatedApiCalls ?? progress.totalChunks} 次 API 调用，已到第 ${progress.currentChunk ?? progress.completedChunks ?? 0}/${progress.totalChunks} 块`
-    : rewriteCandidateMode === "quality"
-      ? "质量模式可能追加第二候选。"
-      : "省钱模式不追加候选。";
   const activeRunStatus = roundProgressStatus?.activeRun && !roundProgressStatus.activeRun.completed ? roundProgressStatus.activeRun : null;
   const resumableCheckpoint = roundProgressStatus?.canResume && roundProgressStatus.round === value?.nextRound
     ? roundProgressStatus
@@ -5265,6 +5179,14 @@ function HomeRunPanel({
     resumableCheckpoint,
     nextRound: value?.nextRound,
   });
+  const currentRunProgressPercent = progress?.totalChunks
+    ? clampPercent(Math.round(((progress.completedChunks ?? 0) / progress.totalChunks) * 100))
+    : null;
+  const checkpointRunLabel = resumableCheckpoint
+    ? resumableCheckpoint.resumeActionLabel?.includes("收尾")
+      ? "继续收尾"
+      : "继续本轮"
+    : "";
   const setRewriteCandidateMode = (mode: "economy" | "quality") => {
     onModelConfigChange({ ...modelConfig, rewriteCandidateMode: mode });
   };
@@ -5277,7 +5199,7 @@ function HomeRunPanel({
     ? "先修复模型路线"
     : value?.hasNextRound
       ? resumableCheckpoint
-        ? resumableCheckpoint.resumeActionLabel || `继续第 ${value.nextRound} 轮`
+        ? checkpointRunLabel
         : `开始第 ${value.nextRound} 轮`
       : value
         ? "全部轮次已完成"
@@ -5392,13 +5314,22 @@ function HomeRunPanel({
   };
   return (
     <>
-    <Card className="fy-panel min-w-0 shrink-0 overflow-hidden">
-      <CardContent className="space-y-3 p-4">
-        <div className="fy-control-card fy-control-card-document">
+    <Card className="shadcn-control-panel min-w-0 shrink-0 overflow-hidden">
+      <CardHeader className="p-4 pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle className="truncate text-base">任务控制台</CardTitle>
+            <CardDescription>导入文档、设定路线并启动下一轮。</CardDescription>
+          </div>
+          <Badge variant={hasDocument ? "default" : "outline"}>{hasDocument ? "已载入" : "待上传"}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4 p-4 pt-0">
+        <div className="rounded-lg border bg-background p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-sm font-black text-slate-950">文档入口</div>
-              <div className="mt-1 text-xs leading-5 text-slate-500">{hasDocument ? "源文件操作" : "Word / TXT"}</div>
+              <div className="text-sm font-semibold">文档入口</div>
+              <div className="mt-1 text-xs leading-5 text-muted-foreground">{hasDocument ? "源文件操作" : "Word / TXT"}</div>
             </div>
             <Button
               type="button"
@@ -5407,157 +5338,224 @@ function HomeRunPanel({
               disabled={busy || running}
               className="shrink-0"
             >
-              <FileText className="h-4 w-4" />
+              <FileText data-icon="inline-start" />
               {hasDocument ? "更换文档" : "上传文档"}
             </Button>
           </div>
+          <Separator className="my-3" />
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Checkbox checked={value?.sourceKind === ".docx"} disabled aria-label="DOCX 结构保护" />
+            DOCX 正文映射与结构保护
+          </label>
         </div>
 
-        <div className="fy-control-card fy-control-card-route">
-          <div className="grid grid-cols-2 gap-2">
-            <button
+        <div className="rounded-lg border bg-background p-3">
+          <div className="grid gap-2">
+            <Button
               type="button"
+              variant="outline"
               onClick={() => setSetupEditor(setupEditor === "prompt" ? null : "prompt")}
               disabled={busy}
               aria-expanded={setupEditor === "prompt"}
-              className={`fy-tile ${setupEditor === "prompt" ? "fy-tile-active" : ""}`}
+              className={cn("shadcn-choice-card", setupEditor === "prompt" && "shadcn-choice-card-active")}
             >
               <div className="flex items-center justify-between gap-2">
-                <div className="text-xs font-black text-violet-700">改写流程</div>
+                <div className="text-xs font-semibold text-muted-foreground">改写流程</div>
                 <Badge variant={setupEditor === "prompt" ? "default" : "outline"}>{setupEditor === "prompt" ? "已打开" : "编辑"}</Badge>
               </div>
-              <div className="mt-2 truncate text-sm font-black text-slate-950">{promptSummary}</div>
+              <div className="mt-2 truncate text-sm font-semibold">{promptSummary}</div>
               <div className="mt-2 flex min-h-6 flex-wrap gap-1">
                 {activeFlowSequence.map((promptId, index) => (
-                  <span key={`${promptId}-${index}-flow`} className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-slate-600 shadow-sm">
+                  <span key={`${promptId}-${index}-flow`} className="rounded-full border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
                     {index + 1}. {PROMPT_OPTIONS.find((option) => option.id === promptId)?.label ?? promptId}
                   </span>
                 ))}
               </div>
-            </button>
+            </Button>
 
-            <button
+            <Button
               type="button"
+              variant="outline"
               onClick={() => setSetupEditor(setupEditor === "model" ? null : "model")}
               disabled={busy}
               aria-expanded={setupEditor === "model"}
-              className={`fy-tile ${unavailableRouteCount ? "fy-tile-danger" : setupEditor === "model" ? "fy-tile-active" : ""}`}
+              className={cn(
+                "shadcn-choice-card",
+                unavailableRouteCount ? "border-destructive/40 bg-destructive/5" : setupEditor === "model" && "shadcn-choice-card-active",
+              )}
             >
               <div className="flex items-center justify-between gap-2">
-                <div className={`text-xs font-black ${unavailableRouteCount ? "text-red-700" : "text-blue-700"}`}>模型路线</div>
+                <div className={`text-xs font-semibold ${unavailableRouteCount ? "text-destructive" : "text-muted-foreground"}`}>模型路线</div>
                 <Badge variant={unavailableRouteCount ? "warning" : setupEditor === "model" ? "default" : "outline"}>
                   {setupEditor === "model" ? "已打开" : modelRouteStatus}
                 </Badge>
               </div>
-              <div className="mt-2 truncate text-sm font-black text-slate-950">
+              <div className="mt-2 truncate text-sm font-semibold">
                 {customizedRouteCount ? `${customizedRouteCount} 轮使用专属服务商` : "每轮继承默认连接"}
               </div>
               <div className="mt-2 grid gap-1">
                 {modelRouteSummary.slice(0, 3).map((item) => (
-                  <div key={`${item.index}-${item.providerLabel}-${item.modelLabel}`} className="min-w-0 truncate text-[11px] font-semibold text-slate-500">
+                  <div key={`${item.index}-${item.providerLabel}-${item.modelLabel}`} className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">
                     {item.index + 1}. {item.providerLabel} · {item.modelLabel}
                   </div>
                 ))}
               </div>
-            </button>
+            </Button>
           </div>
         </div>
 
-        <div className={`fy-control-card fy-control-card-run p-4 ${running ? "fy-control-card-running" : ""}`}>
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-black text-slate-950">{running ? "正在运行" : "执行动作"}</div>
-              {!runRecoveryState ? <div className="mt-1 text-xs leading-5 text-slate-500">{runHelperText}</div> : null}
+        <section className={cn("flex flex-col gap-3", running && "rounded-lg border border-destructive/30 bg-destructive/5 p-3")}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">{running ? "正在运行" : "执行动作"}</div>
+              {!runRecoveryState ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{runHelperText}</p> : null}
             </div>
             {value?.hasNextRound ? (
-              <Badge variant={running ? "warning" : "outline"} className={running ? "border-red-200 bg-red-100 text-red-700" : ""}>
+              <Badge variant={running ? "warning" : "outline"} className={running ? "border-destructive/30 bg-destructive/5 text-destructive" : ""}>
                 第 {value.nextRound} 轮
               </Badge>
             ) : null}
           </div>
           {hasDocument ? (
-            <div className="grid gap-2">
-              <div className="fy-soft-section rounded-2xl p-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setRewriteCandidateMode("economy")}
-                    disabled={busy || running}
-                    className={`fy-tile rounded-xl px-3 py-2 ${rewriteCandidateMode === "economy" ? "fy-tone-success" : "text-slate-600 hover:border-emerald-200"}`}
-                  >
-                    <div className="text-xs font-black">省钱模式</div>
-                    <div className="mt-0.5 text-[11px] font-semibold opacity-75">1 候选 / 块</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRewriteCandidateMode("quality")}
-                    disabled={busy || running}
-                    className={`fy-tile rounded-xl px-3 py-2 ${rewriteCandidateMode === "quality" ? "fy-tone-brand" : "text-slate-600 hover:border-violet-200"}`}
-                  >
-                    <div className="text-xs font-black">质量模式</div>
-                    <div className="mt-0.5 text-[11px] font-semibold opacity-75">最多 2 候选 / 块</div>
-                  </button>
+            <>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs font-medium text-muted-foreground">候选策略</div>
+                  <Badge variant="secondary">{candidateMaxPerChunk} 候选/块</Badge>
                 </div>
-                <div className="mt-2 rounded-xl bg-white px-3 py-2 text-[11px] leading-5 text-slate-500">
-                  <span className="font-black text-slate-700">{candidateModeLabel}</span>：{candidateModeDetail} {progressCallText}
-                </div>
+                <ToggleGroup
+                  type="single"
+                  value={rewriteCandidateMode}
+                  onValueChange={(mode) => {
+                    if (mode === "economy" || mode === "quality") {
+                      setRewriteCandidateMode(mode);
+                    }
+                  }}
+                  className="!grid w-full grid-cols-2 rounded-lg border bg-background p-1"
+                >
+                  <ToggleGroupItem
+                    value="economy"
+                    variant="outline"
+                    disabled={busy || running}
+                    className="h-10 w-full rounded-md border-0 px-3 text-xs data-[state=on]:bg-muted data-[state=on]:shadow-sm"
+                  >
+                    省钱模式
+                  </ToggleGroupItem>
+                  <ToggleGroupItem
+                    value="quality"
+                    variant="outline"
+                    disabled={busy || running}
+                    className="h-10 w-full rounded-md border-0 px-3 text-xs data-[state=on]:bg-muted data-[state=on]:shadow-sm"
+                  >
+                    质量模式
+                  </ToggleGroupItem>
+                </ToggleGroup>
               </div>
               <RunRecoveryPanel state={runRecoveryState} />
-              <Button
-                variant={canRunNextRound ? "neutral" : "default"}
-                className="h-14 w-full text-base"
-                onClick={onRunRound}
-                disabled={!canRunNextRound}
-              >
-                {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-                {runButtonText}
-              </Button>
-              {running ? (
-                <Button className="h-11" variant="destructive" onClick={onCancelRun}>中断当前轮</Button>
-              ) : value?.hasNextRound ? (
-                <Button className="h-11" variant="outlineWarning" onClick={onResetRound} disabled={busy}>
-                  放弃本轮进度
-                </Button>
+              {progress?.totalChunks && !runRecoveryState && currentRunProgressPercent != null ? (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
+                    <span>运行进度</span>
+                    <span>{currentRunProgressPercent}%</span>
+                  </div>
+                  <Progress value={currentRunProgressPercent} className="h-2" />
+                </div>
               ) : null}
-            </div>
+              <div className="grid gap-2">
+                <Button
+                  variant={canRunNextRound ? "default" : "secondary"}
+                  className="h-11 w-full"
+                  onClick={onRunRound}
+                  disabled={!canRunNextRound}
+                >
+                  {running ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Wand2 data-icon="inline-start" />}
+                  {runButtonText}
+                </Button>
+                {running ? (
+                  <Button className="h-10" variant="destructive" onClick={onCancelRun}>中断当前轮</Button>
+                ) : value?.hasNextRound ? (
+                  <Button className="h-10" variant="outline" onClick={onResetRound} disabled={busy}>
+                    放弃本轮进度
+                  </Button>
+                ) : null}
+              </div>
+            </>
           ) : (
-              <Button variant="neutral" className="h-14 w-full text-base" onClick={onPickFile} disabled={busy}>
-              <FileText className="h-4 w-4" />
+              <Button variant="default" className="h-11 w-full" onClick={onPickFile} disabled={busy}>
+              <FileText data-icon="inline-start" />
               {uploadButtonText}
             </Button>
           )}
-        </div>
+        </section>
       </CardContent>
     </Card>
     {setupEditor ? (
-      <div className="fy-overlay z-[55]">
-        <button type="button" aria-label="关闭配置面板遮罩" className="fy-overlay-scrim" onClick={() => setSetupEditor(null)} />
-        <aside className={`fy-drawer ${setupEditor === "model" ? "fy-drawer-wide" : ""}`} role="dialog" aria-modal="true" aria-label={setupEditor === "prompt" ? "改写流程配置" : "模型路线配置"}>
-          <div className="fy-drawer-header flex items-start justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2 text-lg font-black text-slate-950">
-                {setupEditor === "prompt" ? <Wand2 className="h-5 w-5 text-violet-600" /> : <Settings className="h-5 w-5 text-blue-600" />}
-                {setupEditor === "prompt" ? "改写流程" : "模型路线"}
-              </div>
-              <p className="mt-1 text-xs text-slate-500">
-                {setupEditor === "prompt" ? "只调整本次任务的轮次顺序，不改变核心 prompt 文件。" : "按当前流程为每一轮选择服务商和模型。"}
-              </p>
-            </div>
-            <Button variant="ghost" size="icon" onClick={() => setSetupEditor(null)} aria-label="关闭配置面板">
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
+      <Sheet open={Boolean(setupEditor)} onOpenChange={(open) => {
+        if (!open) setSetupEditor(null);
+      }}>
+        <SheetContent side="right" className={`shadcn-config-sheet ${setupEditor === "model" ? "sm:max-w-[760px]" : "sm:max-w-[520px]"}`}>
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              {setupEditor === "prompt" ? <Wand2 /> : <Settings />}
+              {setupEditor === "prompt" ? "改写流程" : "模型路线"}
+            </SheetTitle>
+            <SheetDescription>
+              {setupEditor === "prompt" ? "只调整本次任务的轮次顺序，不改变核心 prompt 文件。" : "按当前流程为每一轮选择服务商和模型。"}
+            </SheetDescription>
+          </SheetHeader>
+          <Separator />
 
-          <div className="fy-drawer-body">
+          <ScrollArea className="min-h-0 flex-1 pr-3">
+            <div className="flex flex-col gap-4 pb-4">
             {setupEditor === "prompt" ? (
-              <div className="space-y-4">
+              <div className="flex flex-col gap-4">
+                <ToggleGroup
+                  type="single"
+                  value={promptProfile}
+                  onValueChange={(nextProfile) => {
+                    if (nextProfile === "cn_prewrite" || nextProfile === "cn" || nextProfile === "cn_custom") {
+                      onPromptProfileChange(nextProfile);
+                    }
+                  }}
+                  className="!grid w-full grid-cols-1 items-stretch justify-stretch gap-2"
+                >
+                  <ToggleGroupItem
+                    value="cn_prewrite"
+                    variant="outline"
+                    disabled={busy}
+                    className="h-auto min-h-[4.25rem] w-full flex-col items-start justify-center gap-1 px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
+                    aria-label="中文三轮预改写"
+                  >
+                    <span className="text-sm font-semibold">中文三轮预改写</span>
+                    <span className="text-xs text-muted-foreground">预改写 → 一轮 → 二轮</span>
+                  </ToggleGroupItem>
+                  <ToggleGroupItem
+                    value="cn"
+                    variant="outline"
+                    disabled={busy}
+                    className="h-auto min-h-[4.25rem] w-full flex-col items-start justify-center gap-1 px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
+                    aria-label="中文双轮"
+                  >
+                    <span className="text-sm font-semibold">中文双轮</span>
+                    <span className="text-xs text-muted-foreground">一轮 → 二轮</span>
+                  </ToggleGroupItem>
+                  <ToggleGroupItem
+                    value="cn_custom"
+                    variant="outline"
+                    disabled={busy}
+                    className="h-auto min-h-[4.25rem] w-full flex-col items-start justify-center gap-1 px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
+                    aria-label="自定义组合"
+                  >
+                    <span className="text-sm font-semibold">自定义组合</span>
+                    <span className="text-xs text-muted-foreground">{formatPromptSequence(activeSequence)}</span>
+                  </ToggleGroupItem>
+                </ToggleGroup>
                 <div className="grid gap-2">
-                  <PromptModeButton active={promptProfile === "cn_prewrite"} title="中文三轮预改写" text="预改写 → 一轮 → 二轮" onClick={() => onPromptProfileChange("cn_prewrite")} disabled={busy} />
-                  <PromptModeButton active={promptProfile === "cn"} title="中文双轮" text="一轮 → 二轮" onClick={() => onPromptProfileChange("cn")} disabled={busy} />
-                  <PromptModeButton active={promptProfile === "cn_custom"} title="自定义组合" text={formatPromptSequence(activeSequence)} onClick={() => onPromptProfileChange("cn_custom")} disabled={busy} />
+                  <label className="text-xs font-medium text-muted-foreground">当前流程摘要</label>
+                  <Textarea value={formatPromptSequence(activeFlowSequence)} readOnly className="min-h-20 resize-none" />
                 </div>
                 {promptProfile === "cn_custom" ? (
-                  <div className="fy-section border-violet-100 bg-violet-50/70 p-4">
+                  <div className="rounded-lg border bg-background p-4">
                     <div className="grid grid-cols-4 gap-2">
                       {[1, 2, 3].map((length) => (
                         <Button key={length} type="button" variant={activeSequence.length === length ? "default" : "outline"} size="sm" onClick={() => updateSequenceLength(length)} disabled={busy}>{length} 轮</Button>
@@ -5567,11 +5565,13 @@ function HomeRunPanel({
                     <div className="mt-4 grid gap-3">
                       {activeSequence.map((promptId, index) => (
                         <div key={`${index}-${promptId}`} className="grid gap-2">
-                          <div className="text-xs font-bold text-violet-700">第 {index + 1} 轮</div>
+                          <div className="text-xs font-semibold text-muted-foreground">第 {index + 1} 轮</div>
                           <Select value={promptId} onValueChange={(nextPromptId) => updateSequenceRound(index, nextPromptId as PromptId)} disabled={busy}>
-                            <SelectTrigger className="bg-white"><SelectValue /></SelectTrigger>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              {PROMPT_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label} · {option.desc}</SelectItem>)}
+                              <SelectGroup>
+                                {PROMPT_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label} · {option.desc}</SelectItem>)}
+                              </SelectGroup>
                             </SelectContent>
                           </Select>
                         </div>
@@ -5581,12 +5581,12 @@ function HomeRunPanel({
                 ) : null}
               </div>
             ) : (
-              <div className="space-y-4">
-                <div data-ui-section="model-route-overview" className="fy-section border-blue-100 bg-blue-50/60 p-4">
+              <div className="flex flex-col gap-4">
+                <div data-ui-section="model-route-overview" className="rounded-lg border bg-background p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <div className="text-sm font-black text-blue-950">路线总览</div>
-                      <div className="mt-1 text-xs leading-5 text-blue-700">
+                      <div className="text-sm font-semibold text-foreground">路线总览</div>
+                      <div className="mt-1 text-xs leading-5 text-muted-foreground">
                         先确认默认兜底，再为每轮指定服务商；每轮没有单独指定时会继承默认连接。
                       </div>
                     </div>
@@ -5612,29 +5612,31 @@ function HomeRunPanel({
                       tone={unavailableRouteCount ? "danger" : customizedRouteCount ? "brand" : "slate"}
                     />
                   </div>
-                  <div className="mt-4 rounded-2xl border border-white/80 bg-white/80 p-3">
+                  <div className="mt-4 rounded-md border bg-muted/30 p-3">
                     <div className="mb-2 flex items-center justify-between gap-3">
-                      <div className="text-xs font-black text-slate-500">批量动作</div>
+                      <div className="text-xs font-semibold text-muted-foreground">批量动作</div>
                       <Badge variant="outline">{formatPromptSequence(activeFlowSequence)}</Badge>
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                  <Button type="button" variant="outline" size="sm" onClick={resetModelRouteToDefault} disabled={busy}>全部继承默认</Button>
-                  <Button type="button" variant="outlineBrand" size="sm" onClick={randomizeModelRoute} disabled={busy || providerOptions.length === 0}>轮换服务商</Button>
+                      <Button type="button" variant="outline" size="sm" onClick={resetModelRouteToDefault} disabled={busy}>全部继承默认</Button>
+                      <Button type="button" variant="outline" size="sm" onClick={randomizeModelRoute} disabled={busy || providerOptions.length === 0}>轮换服务商</Button>
                       <Button type="button" variant="outline" size="sm" onClick={onRefreshAllProviderModels} disabled={busy || modelConfig.offlineMode || providerOptions.length === 0}>
-                        <RefreshCw className="h-4 w-4" />读取服务商模型
+                        <RefreshCw data-icon="inline-start" />读取服务商模型
                       </Button>
                       <Button type="button" variant="outline" size="sm" onClick={onRefreshDefaultModels} disabled={busy || modelCatalogBusy || modelConfig.offlineMode}>
-                        {modelCatalogBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取默认模型
+                        {modelCatalogBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读取默认模型
                       </Button>
                     </div>
                   </div>
                   {unavailableRouteCount ? (
-                    <div className="fy-callout mt-3 border-amber-200 bg-amber-50 text-amber-800">
-                      有轮次绑定的服务商已删除或关闭，请重新选择，或点击“全部继承默认”。
-                    </div>
+                    <Alert variant="destructive" className="mt-3">
+                      <AlertCircle />
+                      <AlertTitle>模型路线不可启动</AlertTitle>
+                      <AlertDescription>有轮次绑定的服务商已删除或关闭，请重新选择，或点击“全部继承默认”。</AlertDescription>
+                    </Alert>
                   ) : null}
                 </div>
-                <div className="space-y-3">
+                <div className="flex flex-col gap-3">
                   {activeFlowSequence.map((promptId, index) => {
                     const roundKey = getRoundModelKey(promptProfile, index + 1);
                     const roundModel = roundKey ? modelConfig.roundModels?.[roundKey] : undefined;
@@ -5656,51 +5658,58 @@ function HomeRunPanel({
                         !String(selectedModelValue ?? "").trim() ? "本轮模型未选" : "",
                       ].filter(Boolean);
                     return (
-                      <div key={`${promptId}-${index}-model`} className={`fy-section p-4 ${routeIssues.length ? "fy-tone-warning" : ""}`}>
+                      <div key={`${promptId}-${index}-model`} className={cn("rounded-lg border bg-background p-4", routeIssues.length && "border-destructive/40 bg-destructive/5")}>
                         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                           <div>
-                            <div className="text-sm font-black text-slate-950">第 {index + 1} 轮 · {getPromptOptionLabel(promptId)}</div>
-                            <div className="mt-0.5 text-xs text-slate-500">{selectedProviderId === "__default" ? "继承默认连接" : "使用专属服务商"}</div>
+                            <div className="text-sm font-semibold text-foreground">第 {index + 1} 轮 · {getPromptOptionLabel(promptId)}</div>
+                            <div className="mt-0.5 text-xs text-muted-foreground">{selectedProviderId === "__default" ? "继承默认连接" : "使用专属服务商"}</div>
                           </div>
                           <Badge variant={selectedProviderId === "__default" ? "outline" : "default"}>{selectedProviderId === "__default" ? "默认" : "混用"}</Badge>
                         </div>
                         <div className="grid gap-3">
                           <Select value={selectedProviderId || "__default"} onValueChange={(providerId) => updateRoundProvider(index, providerId)} disabled={busy}>
-                            <SelectTrigger className="bg-white"><SelectValue placeholder="选择服务商" /></SelectTrigger>
+                            <SelectTrigger><SelectValue placeholder="选择服务商" /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="__default">默认连接 · {modelConfig.model || "未选模型"}</SelectItem>
-                              {providerOptions.map((item) => <SelectItem key={item.id} value={item.id}>{item.name || "未命名服务商"} · {item.defaultModel || item.models?.[0] || "未选模型"}</SelectItem>)}
+                              <SelectGroup>
+                                <SelectItem value="__default">默认连接 · {modelConfig.model || "未选模型"}</SelectItem>
+                                {providerOptions.map((item) => <SelectItem key={item.id} value={item.id}>{item.name || "未命名服务商"} · {item.defaultModel || item.models?.[0] || "未选模型"}</SelectItem>)}
+                              </SelectGroup>
                             </SelectContent>
                           </Select>
                           {selectedModels.length > 0 ? (
                             <Select value={selectedModelValue} onValueChange={(model) => updateRoundModel(index, model)} disabled={busy}>
-                              <SelectTrigger className="bg-white"><SelectValue placeholder="选择模型" /></SelectTrigger>
-                              <SelectContent>{selectedModels.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}</SelectContent>
+                              <SelectTrigger><SelectValue placeholder="选择模型" /></SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  {selectedModels.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}
+                                </SelectGroup>
+                              </SelectContent>
                             </Select>
                           ) : (
-                            <input
+                            <Input
                               value={selectedProviderId === "__default" ? modelConfig.model : roundModel?.model ?? ""}
                               onChange={(event) => updateRoundModel(index, event.target.value)}
                               disabled={busy}
                               placeholder="填写模型名称"
-                              className="fy-input"
                             />
                           )}
                           {selectedProviderId !== "__default" && provider && selectedModels.length === 0 ? (
                             <Button type="button" variant="outline" size="sm" onClick={() => onRefreshProviderModels(provider.id)} disabled={busy || modelConfig.offlineMode}>
-                              <RefreshCw className="h-4 w-4" />读取模型列表
+                              <RefreshCw data-icon="inline-start" />读取模型列表
                             </Button>
                           ) : null}
                           {selectedProviderId !== "__default" && provider ? (
-                            <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold text-slate-500">
+                            <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold text-muted-foreground">
                               <span>缓存模型：{provider.models?.length ?? 0}</span>
                               <span>限速：{provider.rateLimitWindowMinutes && provider.rateLimitMaxRequests ? `${provider.rateLimitWindowMinutes} 分钟 ${provider.rateLimitMaxRequests} 次` : "不限"}</span>
                             </div>
                           ) : null}
                           {routeIssues.length ? (
-                            <div className="fy-callout border-amber-200 bg-white/70 text-amber-800">
-                              {routeIssues.join("，")}；修复后才能启动，避免跑错模型。
-                            </div>
+                            <Alert variant="destructive">
+                              <AlertCircle />
+                              <AlertTitle>本轮配置不完整</AlertTitle>
+                              <AlertDescription>{routeIssues.join("，")}；修复后才能启动，避免跑错模型。</AlertDescription>
+                            </Alert>
                           ) : null}
                         </div>
                       </div>
@@ -5709,16 +5718,17 @@ function HomeRunPanel({
                 </div>
               </div>
             )}
-          </div>
-          {setupEditor === "model" ? (
-            <div className="fy-drawer-footer">
-              <Button type="button" variant="neutral" className="w-full" onClick={() => onSaveModelConfig(modelConfig)} disabled={busy || unavailableRouteCount > 0}>
-                <Save className="h-4 w-4" />{unavailableRouteCount ? "先修复模型路线" : "保存本次路线"}
-              </Button>
             </div>
+          </ScrollArea>
+          {setupEditor === "model" ? (
+            <SheetFooter className="border-t pt-4">
+              <Button type="button" variant="neutral" className="w-full" onClick={() => onSaveModelConfig(modelConfig)} disabled={busy || unavailableRouteCount > 0}>
+                <Save data-icon="inline-start" />{unavailableRouteCount ? "先修复模型路线" : "保存本次路线"}
+              </Button>
+            </SheetFooter>
           ) : null}
-        </aside>
-      </div>
+        </SheetContent>
+      </Sheet>
     ) : null}
     </>
   );
@@ -5728,47 +5738,33 @@ function RunRecoveryPanel({ state }: { state: RunRecoveryPanelState | null }) {
   if (!state) {
     return null;
   }
-  const toneClass = state.tone === "red"
-    ? "fy-tone-danger"
-    : state.tone === "amber"
-      ? "fy-tone-warning"
-      : "fy-tone-info";
-  const barClass = state.tone === "red"
-    ? "bg-red-500"
-    : state.tone === "amber"
-      ? "bg-amber-500"
-      : "bg-blue-500";
+  const percent = clampPercent(state.percent);
+  const recoveryLabel = state.resumeActionLabel?.includes("收尾") ? "等待收尾" : "断点续跑";
   return (
-    <div className={`fy-callout p-3 ${toneClass}`}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="font-black">{state.title}</div>
-          <div className="mt-1 font-semibold opacity-90">{state.message}</div>
+    <Alert
+      variant={state.tone === "red" ? "destructive" : "default"}
+      className={cn(
+        "border-0 bg-muted/50 p-3 shadow-none [&>svg]:left-3 [&>svg]:top-3",
+        state.tone === "amber" && "border-primary/25 bg-muted/50",
+      )}
+    >
+      <AlertCircle />
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <AlertTitle className="mb-0 truncate text-sm">{recoveryLabel}</AlertTitle>
+          </div>
+          {state.totalChunks ? (
+            <span className="shrink-0 text-xs font-medium text-muted-foreground">
+              {state.completedChunks}/{state.totalChunks} · {percent}%
+            </span>
+          ) : null}
         </div>
-        <div className="flex flex-wrap gap-1">
-          {state.phaseLabel ? <Badge variant="outline">{state.phaseLabel}</Badge> : null}
-          {state.resumeActionLabel ? <Badge variant="outline">{state.resumeActionLabel}</Badge> : null}
-          {state.eventCount != null ? <Badge variant="outline">事件 {state.eventCount}</Badge> : null}
-        </div>
+        {state.totalChunks ? (
+          <Progress value={percent} className="h-1.5" />
+        ) : null}
       </div>
-      {state.totalChunks ? (
-        <div className="mt-3">
-          <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold">
-            <span>已完成 {state.completedChunks}/{state.totalChunks} 块</span>
-            <span>{state.percent}%</span>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-white/80">
-            <div className={`h-full rounded-full ${barClass}`} style={{ width: `${state.percent}%` }} />
-          </div>
-        </div>
-      ) : null}
-      {state.error ? (
-        <div className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-[11px]">
-          上次停止：{state.error}
-        </div>
-      ) : null}
-      {state.actionHint ? <div className="mt-2 text-[11px] opacity-80">{state.actionHint}</div> : null}
-    </div>
+    </Alert>
   );
 }
 function ExperimentLabPage({
@@ -5847,147 +5843,198 @@ function ExperimentLabPage({
   }
 
   return (
-    <div className="grid gap-5">
-      <Card className="fy-panel">
-        <CardContent className="p-6">
-          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-            <div>
-              <div className="text-xl font-black text-slate-950">策略复盘</div>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
-                记录每次模型、轮次、prompt 组合和 SpeedAI / PaperPass 分数，把尝试沉淀成可复现的策略数据。
-              </p>
-            </div>
-            <Button variant="outline" onClick={onRefresh} disabled={busy}>刷新记录</Button>
-          </div>
-
-          <div className="mt-5 grid gap-3 md:grid-cols-4">
-            <ReportStat label="当前文档记录" value={String(currentDocRecords.length)} />
-            <ReportStat label="有分数记录" value={String(scoredRecordCount)} />
-            <ReportStat label="SpeedAI 最低" value={bestSpeedAI == null ? "-" : `${bestSpeedAI}%`} />
-            <ReportStat label="PaperPass 最低" value={bestPaperPass == null ? "-" : `${bestPaperPass}%`} />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="fy-banner-primary shadow-soft">
-        <CardContent className="p-6">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <Badge variant={analysis.scopeCount >= 3 ? "success" : "warning"}>
-                  {analysis.scopeCount >= 3 ? "可参考" : "样本偏少"}
-                </Badge>
-                <div className="text-lg font-black text-slate-950">策略复盘面板</div>
-              </div>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                按“分数下降幅度、是否反噬、双平台一致性、样本数量”自动排序；先避免把偶然结果当规律。
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/70 bg-white/75 px-4 py-3 text-right shadow-sm">
-              <div className="text-xs font-semibold text-slate-500">当前建议</div>
-              <div className="mt-1 text-sm font-black text-slate-950">{analysis.primaryAction}</div>
-            </div>
-          </div>
-
-          <div className="mt-5 grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-            <div className="grid gap-3 sm:grid-cols-2">
-              {analysis.recommendations.map((item) => (
-                <ExperimentRecommendationCard key={item.title} item={item} />
-              ))}
-            </div>
-
-            <div className="fy-section p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-black text-slate-950">策略排行榜</div>
-                  <div className="mt-1 text-xs text-slate-500">综合越高越值得复测，反噬会被扣分。</div>
+    <div className="grid h-full min-h-0 gap-5 overflow-hidden xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]">
+      <div className="flex min-h-0 flex-col gap-5 overflow-hidden">
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <Badge variant={analysis.scopeCount >= 3 ? "success" : "warning"}>
+                    {analysis.scopeCount >= 3 ? "可参考" : "样本偏少"}
+                  </Badge>
+                  <Badge variant="outline">策略复盘</Badge>
                 </div>
-                <Badge variant="outline">{analysis.rankings.length} 类</Badge>
+                <CardTitle>策略复盘</CardTitle>
+                <CardDescription className="mt-1">记录模型、轮次、Prompt 组合和外部检测分数。</CardDescription>
               </div>
-              <div className="mt-4 space-y-3">
-                {analysis.rankings.length ? analysis.rankings.slice(0, 4).map((item, index) => (
-                  <ExperimentStrategyRankItem key={item.strategy} item={item} index={index} />
-                )) : (
-                  <div className="fy-empty-state p-5 text-xs leading-5">
-                    还没有足够记录。至少保存一次“两轮主流程”和一次外部平台分数，面板才会变聪明。
-                  </div>
-                )}
-              </div>
+              <Button variant="outline" onClick={onRefresh} disabled={busy}>
+                <RefreshCw data-icon="inline-start" />
+                刷新记录
+              </Button>
             </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
-        <Card className="fy-panel">
-          <CardContent className="space-y-4 p-6">
-            <div>
-              <div className="text-base font-bold text-slate-950">记录本次结果</div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">拿到外部平台分数后，把前后结果填进来。分数越低越好，变化值会自动计算。</p>
-            </div>
-
-            <div className="fy-soft-section p-4 text-xs leading-5 text-slate-600">
-              <div><b className="text-slate-900">文档：</b>{formatDocLabel(documentStatus?.docId)}</div>
-              <div><b className="text-slate-900">轮次：</b>{roundResult?.round ?? compareData?.round ?? "-"} / <b className="text-slate-900">Prompt：</b>{describePromptProfile(modelConfig.promptProfile)} · {formatPromptSequence(modelConfig.promptSequence)}</div>
-              <div><b className="text-slate-900">分块：</b>{stats.chunkCount} 块，需处理 {stats.reviewChunkCount}，表达提示 {stats.machineLikeRiskCount}</div>
-              <div><b className="text-slate-900">运行审计：</b>{auditCandidateLabel}，预计 {currentRunAudit.estimatedApiCalls ?? "-"} 次调用，校验重试 {currentRunAudit.validationRetryCount ?? 0}，安全回退 {currentRunAudit.sourceFallbackCount ?? 0}</div>
-              <div><b className="text-slate-900">模型：</b>{auditModelLabel}</div>
-              <div><b className="text-slate-900">当前报告：</b>{providerLabel || "未上传"}{reportOverall != null ? ` · ${reportOverall}%` : ""}</div>
-            </div>
-
-            <label className="grid gap-1 text-sm font-semibold text-slate-700">
-              策略标签
-              <select value={strategy} onChange={(event) => setStrategy(event.target.value)} className="fy-input h-11 rounded-2xl">
-                <option>两轮主流程</option>
-                <option>三轮主流程</option>
-                <option>强命中重跑后</option>
-                <option>局部重跑后</option>
-                <option>更换模型后</option>
-                <option>手动精修后</option>
-              </select>
-            </label>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <ScoreInput label="SpeedAI 前" value={speedaiBefore} onChange={setSpeedaiBefore} />
-              <ScoreInput label="SpeedAI 后" value={speedaiAfter} onChange={setSpeedaiAfter} />
-              <ScoreInput label="PaperPass 前" value={paperpassBefore} onChange={setPaperpassBefore} />
-              <ScoreInput label="PaperPass 后" value={paperpassAfter} onChange={setPaperpassAfter} />
-            </div>
-
-            <textarea
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              placeholder="备注：例如第一轮用 A 模型，第二轮用 B 模型；PaperPass 没降，SpeedAI 降到 5%。"
-              className="min-h-24 w-full resize-none rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm leading-6 text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-            />
-
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Button variant="outline" onClick={fillFromCurrentReport} disabled={busy || reportOverall == null}>从当前报告填入“后”分数</Button>
-              <Button onClick={submitRecord} disabled={busy || !documentStatus}>保存复盘记录</Button>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 md:grid-cols-4">
+              <ReportStat label="当前文档记录" value={String(currentDocRecords.length)} />
+              <ReportStat label="有分数记录" value={String(scoredRecordCount)} />
+              <ReportStat label="SpeedAI 最低" value={bestSpeedAI == null ? "-" : `${bestSpeedAI}%`} />
+              <ReportStat label="PaperPass 最低" value={bestPaperPass == null ? "-" : `${bestPaperPass}%`} />
             </div>
           </CardContent>
         </Card>
 
-        <Card className="fy-panel">
-          <CardContent className="p-6">
+        <Card className="min-h-0 flex-1 overflow-hidden">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle className="text-lg">策略面板</CardTitle>
+                <CardDescription className="mt-1">按分数下降、反噬风险、平台一致性和样本数排序。</CardDescription>
+              </div>
+              <div className="rounded-md border bg-muted/50 px-3 py-2 text-sm">
+                <div className="text-xs font-medium text-muted-foreground">当前建议</div>
+                <div className="mt-1 font-semibold text-foreground">{analysis.primaryAction}</div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="grid h-[calc(100%-6.75rem)] min-h-0 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+            <ScrollArea className="min-h-0 pr-1">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                {analysis.recommendations.map((item) => (
+                  <ExperimentRecommendationCard key={item.title} item={item} />
+                ))}
+              </div>
+            </ScrollArea>
+
+            <Card className="min-h-0 overflow-hidden shadow-none">
+              <CardHeader className="px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <CardTitle className="text-sm">策略排行榜</CardTitle>
+                    <CardDescription className="mt-1 text-xs">综合越高越值得复测。</CardDescription>
+                  </div>
+                  <Badge variant="outline">{analysis.rankings.length} 类</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="h-[calc(100%-5.25rem)] min-h-0 px-4 pb-4">
+                {analysis.rankings.length ? (
+                  <ScrollArea className="h-full pr-1">
+                    <div className="flex flex-col gap-3">
+                      {analysis.rankings.slice(0, 4).map((item, index) => (
+                        <ExperimentStrategyRankItem key={item.strategy} item={item} index={index} />
+                      ))}
+                    </div>
+                  </ScrollArea>
+                ) : (
+                  <Empty className="h-full min-h-[16rem] border">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <BarChart3 />
+                      </EmptyMedia>
+                      <EmptyTitle>暂无排行</EmptyTitle>
+                      <EmptyDescription>保存一次外部平台分数后再对比策略。</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                )}
+              </CardContent>
+            </Card>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-5 overflow-hidden">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">记录本次结果</CardTitle>
+            <CardDescription>拿到外部平台分数后，把前后结果填进来。</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <Alert>
+              <FileText />
+              <AlertTitle>当前运行</AlertTitle>
+              <AlertDescription className="mt-2 grid gap-1 text-xs">
+                <span>文档：{formatDocLabel(documentStatus?.docId)}</span>
+                <span>轮次：{roundResult?.round ?? compareData?.round ?? "-"} / Prompt：{describePromptProfile(modelConfig.promptProfile)} · {formatPromptSequence(modelConfig.promptSequence)}</span>
+                <span>分块：{stats.chunkCount} 块，需处理 {stats.reviewChunkCount}，表达提示 {stats.machineLikeRiskCount}</span>
+                <span>审计：{auditCandidateLabel}，预计 {currentRunAudit.estimatedApiCalls ?? "-"} 次调用，校验重试 {currentRunAudit.validationRetryCount ?? 0}，安全回退 {currentRunAudit.sourceFallbackCount ?? 0}</span>
+                <span>模型：{auditModelLabel}</span>
+                <span>报告：{providerLabel || "未上传"}{reportOverall != null ? ` · ${reportOverall}%` : ""}</span>
+              </AlertDescription>
+            </Alert>
+
+            <FieldGroup className="gap-4">
+              <Field>
+                <FieldLabel>策略标签</FieldLabel>
+                <Select value={strategy} onValueChange={setStrategy}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="选择策略标签" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="两轮主流程">两轮主流程</SelectItem>
+                      <SelectItem value="三轮主流程">三轮主流程</SelectItem>
+                      <SelectItem value="强命中重跑后">强命中重跑后</SelectItem>
+                      <SelectItem value="局部重跑后">局部重跑后</SelectItem>
+                      <SelectItem value="更换模型后">更换模型后</SelectItem>
+                      <SelectItem value="手动精修后">手动精修后</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <ScoreInput label="SpeedAI 前" value={speedaiBefore} onChange={setSpeedaiBefore} />
+                <ScoreInput label="SpeedAI 后" value={speedaiAfter} onChange={setSpeedaiAfter} />
+                <ScoreInput label="PaperPass 前" value={paperpassBefore} onChange={setPaperpassBefore} />
+                <ScoreInput label="PaperPass 后" value={paperpassAfter} onChange={setPaperpassAfter} />
+              </div>
+
+              <Field>
+                <FieldLabel>备注</FieldLabel>
+                <Textarea
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  placeholder="例如第一轮用 A 模型，第二轮用 B 模型；PaperPass 没降，SpeedAI 降到 5%。"
+                  className="min-h-24 resize-none"
+                />
+                <FieldDescription>记录会保存到本地工作区，便于后续复现。</FieldDescription>
+              </Field>
+            </FieldGroup>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button variant="outline" onClick={fillFromCurrentReport} disabled={busy || reportOverall == null}>
+                <Wand2 data-icon="inline-start" />
+                填入当前报告
+              </Button>
+              <Button onClick={submitRecord} disabled={busy || !documentStatus}>
+                <Save data-icon="inline-start" />
+                保存记录
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="min-h-0 overflow-hidden">
+          <CardHeader className="pb-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-base font-bold text-slate-950">复盘记录</div>
-                <p className="mt-1 text-xs text-slate-500">当前文档优先显示；换文档后仍可看到全部历史记录。</p>
+                <CardTitle className="text-lg">复盘记录</CardTitle>
+                <CardDescription className="mt-1">当前文档优先显示。</CardDescription>
               </div>
               <Badge variant="outline">{records.length} 条</Badge>
             </div>
-
-            <div className="mt-4 max-h-[620px] space-y-3 overflow-auto pr-1">
-              {currentDocRecords.length ? currentDocRecords.map((record) => (
-                <ExperimentRecordItem key={record.id} record={record} busy={busy} onReplay={onReplay} onDelete={onDelete} />
-              )) : (
-                <div className="fy-empty-state">
-                  还没有这个文档的复盘记录。拿到一次外部平台分数后，把结果存下来。
+          </CardHeader>
+          <CardContent className="h-[calc(100%-5.75rem)] min-h-0 px-5 pb-5">
+            {currentDocRecords.length ? (
+              <ScrollArea className="h-full pr-1">
+                <div className="flex flex-col gap-3">
+                  {currentDocRecords.map((record) => (
+                    <ExperimentRecordItem key={record.id} record={record} busy={busy} onReplay={onReplay} onDelete={onDelete} />
+                  ))}
+                  {recordsPath ? <div className="text-xs text-muted-foreground">复盘记录保存在本地工作区。</div> : null}
                 </div>
-              )}
-            </div>
-            {recordsPath ? <div className="mt-4 text-xs text-slate-400">复盘记录保存在本地工作区。</div> : null}
+              </ScrollArea>
+            ) : (
+              <Empty className="h-full min-h-[16rem] border">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <History />
+                  </EmptyMedia>
+                  <EmptyTitle>暂无复盘记录</EmptyTitle>
+                  <EmptyDescription>拿到一次外部平台分数后，把结果存下来。</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -6024,64 +6071,60 @@ type ExperimentAnalysis = {
 };
 
 function ExperimentRecommendationCard({ item }: { item: ExperimentRecommendation }) {
-  const toneClass = item.tone === "success"
-    ? "fy-tone-success"
-    : item.tone === "warning"
-      ? "fy-tone-warning"
-      : "fy-tone-info";
   return (
-    <div className={`fy-callout p-4 ${toneClass}`}>
-      <div className="text-xs font-black opacity-80">{item.metric}</div>
-      <div className="mt-2 text-sm font-black text-slate-950">{item.title}</div>
-      <div className="mt-1 text-xs leading-5 text-slate-600">{item.text}</div>
-    </div>
+    <Alert className={cn(item.tone === "warning" && "border-primary/25 bg-muted/60")}>
+      {item.tone === "warning" ? <AlertTriangle /> : <CheckCircle2 />}
+      <AlertTitle className="flex items-center gap-2">
+        {item.title}
+        <Badge variant={item.tone === "warning" ? "warning" : "outline"}>{item.metric}</Badge>
+      </AlertTitle>
+      <AlertDescription>{item.text}</AlertDescription>
+    </Alert>
   );
 }
 
 
 function ExperimentStrategyRankItem({ item, index }: { item: ExperimentStrategyRanking; index: number }) {
   const scoreLabel = item.score == null ? "-" : item.score > 0 ? `+${item.score}` : String(item.score);
-  const rankClass = index === 0 ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600";
   return (
-    <div className="fy-section p-3">
-      <div className="flex items-start gap-3">
-        <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-black ${rankClass}`}>
-          {index + 1}
-        </div>
+    <Card className="shadow-none">
+      <CardContent className="p-3">
+        <div className="flex items-start gap-3">
+        <Badge variant={index === 0 ? "neutral" : "secondary"}>#{index + 1}</Badge>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="font-bold text-slate-950">{item.strategy}</div>
+            <div className="font-semibold text-foreground">{item.strategy}</div>
             <Badge variant={item.warningCount ? "warning" : "outline"}>{item.confidence}</Badge>
             <Badge variant="secondary">综合 {scoreLabel}</Badge>
           </div>
-          <div className="mt-1 text-xs leading-5 text-slate-500">{item.summary}</div>
+          <div className="mt-1 text-xs leading-5 text-muted-foreground">{item.summary}</div>
           <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
-            <div className="rounded-xl bg-slate-50 px-3 py-2">
+            <div className="rounded-md bg-muted px-3 py-2 text-muted-foreground">
               SpeedAI：{formatDeltaLabel(item.speedaiAverageDelta)} · 最低 {formatScore(item.bestSpeedaiAfter)}
             </div>
-            <div className="rounded-xl bg-slate-50 px-3 py-2">
+            <div className="rounded-md bg-muted px-3 py-2 text-muted-foreground">
               PaperPass：{formatDeltaLabel(item.paperpassAverageDelta)} · 最低 {formatScore(item.bestPaperpassAfter)}
             </div>
           </div>
         </div>
       </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
 
 function ScoreInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
-    <label className="grid gap-1 text-sm font-semibold text-slate-700">
-      {label}
-      <input
+    <Field className="gap-2">
+      <FieldLabel>{label}</FieldLabel>
+      <Input
         value={value}
         onChange={(event) => onChange(event.target.value)}
         inputMode="decimal"
         placeholder="例如 5 或 35.2"
-        className="fy-input h-11 rounded-2xl"
       />
-    </label>
+    </Field>
   );
 }
 
@@ -6100,21 +6143,28 @@ function ExperimentRecordItem({
   const replayDisabled = busy || (!record.sourcePath && !record.outputPath);
   const modelHint = [record.providerName || record.roundModel?.providerName, record.model || record.roundModel?.model].filter(Boolean).join(" · ");
   return (
-    <div className="fy-soft-section p-4">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+    <Card className="shadow-none">
+      <CardContent className="p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{record.strategy || "未标记策略"}</Badge>
             {record.round ? <Badge variant="outline">第 {record.round} 轮</Badge> : null}
             {record.reportProvider ? <Badge variant="outline">{record.reportProvider}</Badge> : null}
           </div>
-          <div className="mt-2 truncate text-sm font-bold text-slate-950">{record.model || "未记录模型"}</div>
-          <div className="mt-1 text-xs text-slate-500">{formatDateTime(record.createdAt)} · {record.promptSequence?.join(" → ") || record.promptProfile || "-"}</div>
-          {modelHint ? <div className="mt-1 text-xs text-slate-500">模型提示：{modelHint}</div> : null}
+          <div className="mt-2 truncate text-sm font-semibold text-foreground">{record.model || "未记录模型"}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{formatDateTime(record.createdAt)} · {record.promptSequence?.join(" → ") || record.promptProfile || "-"}</div>
+          {modelHint ? <div className="mt-1 text-xs text-muted-foreground">模型提示：{modelHint}</div> : null}
         </div>
         <div className="flex shrink-0 gap-2">
-          <Button size="sm" variant="outline" disabled={replayDisabled} onClick={() => onReplay(record)}>复现</Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDelete(record.id)}>删除</Button>
+          <Button size="sm" variant="outline" disabled={replayDisabled} onClick={() => onReplay(record)}>
+            <RefreshCw data-icon="inline-start" />
+            复现
+          </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDelete(record.id)}>
+            <Trash2 data-icon="inline-start" />
+            删除
+          </Button>
         </div>
       </div>
 
@@ -6129,8 +6179,9 @@ function ExperimentRecordItem({
         <ReportStat label="安全回退" value={record.sourceFallbackCount == null ? "-" : `${record.sourceFallbackCount}`} />
       </div>
 
-      {record.notes ? <div className="mt-3 rounded-2xl bg-white px-3 py-2 text-xs leading-5 text-slate-600">{record.notes}</div> : null}
-    </div>
+        {record.notes ? <div className="mt-3 rounded-md bg-muted px-3 py-2 text-xs leading-5 text-muted-foreground">{record.notes}</div> : null}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -6138,13 +6189,15 @@ function ExperimentRecordItem({
 function ExperimentScoreBox({ provider, before, after, delta }: { provider: string; before?: number | null; after?: number | null; delta?: number | null }) {
   const hasScore = before != null || after != null;
   return (
-    <div className="fy-stat-card p-3">
-      <div className="text-xs font-semibold text-slate-500">{provider}</div>
-      <div className="mt-2 text-sm font-bold text-slate-950">{hasScore ? `${formatScore(before)} → ${formatScore(after)}` : "-"}</div>
-      <div className={delta == null ? "mt-1 text-xs text-slate-400" : delta <= 0 ? "mt-1 text-xs font-semibold text-emerald-600" : "mt-1 text-xs font-semibold text-red-600"}>
-        {delta == null ? "未计算" : `${delta > 0 ? "+" : ""}${delta}%`}
-      </div>
-    </div>
+    <Card className="border-border bg-muted/50 shadow-none">
+      <CardContent className="p-3">
+        <div className="text-xs font-medium text-muted-foreground">{provider}</div>
+        <div className="mt-2 text-sm font-semibold text-foreground">{hasScore ? `${formatScore(before)} → ${formatScore(after)}` : "-"}</div>
+        <Badge className="mt-2" variant={delta == null ? "outline" : delta <= 0 ? "success" : "danger"}>
+          {delta == null ? "未计算" : `${delta > 0 ? "+" : ""}${delta}%`}
+        </Badge>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -6484,9 +6537,10 @@ function formatBytes(value: number): string {
   return `${size >= 10 || unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function getDiagnosticBadgeVariant(level?: string): "success" | "warning" | "outline" {
+function getDiagnosticBadgeVariant(level?: string): "success" | "warning" | "danger" | "outline" {
   if (level === "success") return "success";
-  if (level === "warning" || level === "error") return "warning";
+  if (level === "warning") return "warning";
+  if (level === "error") return "danger";
   return "outline";
 }
 
@@ -6634,13 +6688,7 @@ function DiagnosticsPage({
   const warningCount = value?.checks.filter((item) => item.level === "warning").length ?? 0;
   const errorCount = value?.checks.filter((item) => item.level === "error").length ?? 0;
   const statusText = !value ? "等待自检" : errorCount ? `${errorCount} 个错误` : warningCount ? `${warningCount} 个提示` : "全部通过";
-  const statusClass = !value
-    ? "bg-slate-50 text-slate-700"
-    : errorCount
-      ? "bg-red-50 text-red-700"
-      : warningCount
-        ? "bg-amber-50 text-amber-700"
-        : "bg-emerald-50 text-emerald-700";
+  const statusVariant = errorCount ? "danger" : warningCount ? "warning" : value ? "secondary" : "outline";
   const activeBatchRerunCount = value?.activeBatchRerunCount ?? value?.activeBatchReruns?.length ?? 0;
   const recentRunCount = value?.recentRunCount ?? value?.recentRuns?.length ?? 0;
   const recentBatchRerunCount = value?.recentBatchRerunCount ?? value?.recentBatchReruns?.length ?? 0;
@@ -6655,245 +6703,264 @@ function DiagnosticsPage({
     window.setTimeout(() => setCopied(false), 1600);
   };
   return (
-    <div className="grid gap-4">
-      <Card className="fy-panel">
-        <CardContent className="p-5">
+    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden">
+      <Card>
+        <CardHeader className="pb-3">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <div className="flex items-center gap-2 text-xl font-black text-slate-950">
-                <Activity className="h-5 w-5 text-blue-600" />
+              <div className="mb-2 flex items-center gap-2">
+                <Badge variant={statusVariant}>{statusText}</Badge>
+                <Badge variant="outline">环境诊断</Badge>
+              </div>
+              <CardTitle className="flex items-center gap-2">
+                <Activity />
                 启动诊断
-              </div>
-              <div className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-                这里检查后端是否在线、模型配置是否完整、工作目录是否可写，以及本地 Python / Node 环境是否可见。
-              </div>
+              </CardTitle>
+              <CardDescription className="mt-1">后端、模型配置、工作目录和本地运行环境。</CardDescription>
             </div>
-            <div className="flex items-center gap-2">
-              <Badge className={statusClass} variant="outline">{statusText}</Badge>
+            <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" onClick={() => void copyDiagnostics()} disabled={!value}>
-                {copied ? <CheckCircle2 className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
-                {copied ? "已复制" : "复制诊断信息"}
+                {copied ? <CheckCircle2 data-icon="inline-start" /> : <FileText data-icon="inline-start" />}
+                {copied ? "已复制" : "复制诊断"}
               </Button>
               <Button onClick={onRefresh} disabled={busy}>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {busy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
                 重新自检
               </Button>
             </div>
           </div>
-          {value ? (
-            <div className="mt-4 grid gap-3 text-xs text-slate-500 md:grid-cols-3">
-                <div className="fy-stat-card p-3">
-                <div className="font-black text-slate-400">工作区</div>
-                <div className="mt-1 truncate font-semibold text-slate-800">{value.workspace}</div>
-              </div>
-                <div className="fy-stat-card p-3">
-                <div className="font-black text-slate-400">自检时间</div>
-                <div className="mt-1 font-semibold text-slate-800">{formatDateTime(value.createdAt)}</div>
-              </div>
-                <div className="fy-stat-card p-3">
-                <div className="font-black text-slate-400">后台任务</div>
-                <div className="mt-1 font-semibold text-slate-800">{activeTaskCount} 个运行中</div>
-                <div className="mt-1 text-[11px] font-semibold text-slate-500">轮次 {value.activeRunCount} · 重跑 {activeBatchRerunCount} · 摘要 {recentTaskCount}</div>
-              </div>
+        </CardHeader>
+        {value ? (
+          <CardContent>
+            <div className="grid gap-3 md:grid-cols-3">
+              <ReportStat label="工作区" value={value.workspace} />
+              <ReportStat label="自检时间" value={formatDateTime(value.createdAt)} />
+              <ReportStat label="后台任务" value={`${activeTaskCount} 运行中 / ${recentTaskCount} 摘要`} />
             </div>
-          ) : null}
-        </CardContent>
+          </CardContent>
+        ) : null}
       </Card>
 
       {value ? (
-        <>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            {value.checks.map((item) => (
-              <Card key={item.key} className={`shadow-sm ${item.level === "error" ? "fy-tone-danger" : item.level === "warning" ? "fy-tone-warning" : "fy-section"}`}>
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-black text-slate-950">{item.label}</div>
-                    <Badge variant={getDiagnosticBadgeVariant(item.level)}>{item.level === "success" ? "通过" : item.level === "error" ? "错误" : item.level === "warning" ? "提示" : "信息"}</Badge>
-                  </div>
-                  <div className="mt-2 text-xs leading-5 text-slate-600">{item.message}</div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
-            <Card className="fy-panel">
-              <CardContent className="p-5">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-base font-black text-slate-950">工作目录</div>
-                    <div className="mt-1 text-xs text-slate-500">项目内文件统计只用于判断占用和权限，不会删除任何内容。</div>
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  {value.paths.map((item) => (
-                    <div key={item.key} className="fy-soft-section grid gap-2 p-3 text-xs md:grid-cols-[140px_minmax(0,1fr)_130px] md:items-center">
-                      <div>
-                        <div className="font-black text-slate-800">{item.label}</div>
-                        <div className={item.exists && item.writable ? "text-emerald-600" : "text-amber-600"}>
-                          {item.exists ? item.writable ? "可写" : "不可写" : "不存在"}
-                        </div>
-                      </div>
-                      <div className="min-w-0 truncate text-slate-500">{item.path}</div>
-                      <div className="font-semibold text-slate-700 md:text-right">{item.fileCount} 文件 · {formatBytes(item.sizeBytes)}</div>
+        <ScrollArea className="min-h-0 pr-1">
+          <div className="flex flex-col gap-4 pb-2">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              {value.checks.map((item) => (
+                <Card
+                  key={item.key}
+                  className={cn(
+                    "shadow-sm",
+                    item.level === "error" && "border-destructive/30 bg-destructive/5",
+                    item.level === "warning" && "border-primary/25 bg-muted/60",
+                  )}
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-semibold text-foreground">{item.label}</div>
+                      <Badge variant={getDiagnosticBadgeVariant(item.level)}>{item.level === "success" ? "通过" : item.level === "error" ? "错误" : item.level === "warning" ? "提示" : "信息"}</Badge>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            <div className="grid gap-4">
-              <Card className="fy-panel">
-                <CardContent className="space-y-3 p-5">
-                  <div className="text-base font-black text-slate-950">模型配置快照</div>
-                  <div className="grid gap-2 text-xs">
-                    <div className="flex justify-between gap-3"><span className="text-slate-500">模式</span><b>{value.config.offlineMode ? "离线模式" : "远程模型"}</b></div>
-                    <div className="flex justify-between gap-3"><span className="text-slate-500">默认模型</span><b className="truncate">{value.config.model || "未填写"}</b></div>
-                    <div className="flex justify-between gap-3"><span className="text-slate-500">Base URL</span><b>{value.config.hasBaseUrl ? "已填写" : "未填写"}</b></div>
-                    <div className="flex justify-between gap-3"><span className="text-slate-500">API Key</span><b>{value.config.hasApiKey ? "已填写" : "未填写"}</b></div>
-                    <div className="flex justify-between gap-3"><span className="text-slate-500">服务商</span><b>{value.config.enabledProviderCount}/{value.config.providerCount} 启用</b></div>
-                    <div className="flex justify-between gap-3"><span className="text-slate-500">专属轮次</span><b>{value.config.customRoundCount} 个</b></div>
-                    <div className="flex justify-between gap-3"><span className="text-slate-500">超时/重试</span><b>{value.config.requestTimeoutSeconds ?? "-"}s / {value.config.maxRetries ?? "-"} 次</b></div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card className="fy-panel">
-                <CardContent className="space-y-3 p-5">
-                  <div className="text-base font-black text-slate-950">本地运行环境</div>
-                  <div className="grid gap-2 text-xs">
-                    <div><span className="text-slate-500">Python：</span><b>{value.runtime.pythonVersion}</b></div>
-                    <div className="truncate"><span className="text-slate-500">Python 路径：</span>{value.runtime.pythonExecutable}</div>
-                    <div className="truncate"><span className="text-slate-500">Node：</span>{value.runtime.nodeExecutable || "未在后端 PATH 中发现"}</div>
-                    <div className="truncate"><span className="text-slate-500">npm：</span>{value.runtime.npmExecutable || "未在后端 PATH 中发现"}</div>
-                    <div className="truncate"><span className="text-slate-500">平台：</span>{value.runtime.platform}</div>
-                  </div>
-                </CardContent>
-              </Card>
+                    <div className="mt-2 text-xs leading-5 text-muted-foreground">{item.message}</div>
+                  </CardContent>
+                </Card>
+              ))}
             </div>
+
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg">工作目录</CardTitle>
+                  <CardDescription>项目内文件统计只用于判断占用和权限。</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-2">
+                    {value.paths.map((item) => (
+                      <Card key={item.key} className="shadow-none">
+                        <CardContent className="grid gap-2 p-3 text-xs md:grid-cols-[140px_minmax(0,1fr)_130px] md:items-center">
+                          <div>
+                            <div className="font-semibold text-foreground">{item.label}</div>
+                            <div className="text-muted-foreground">
+                              {item.exists ? item.writable ? "可写" : "不可写" : "不存在"}
+                            </div>
+                          </div>
+                          <div className="min-w-0 truncate text-muted-foreground">{item.path}</div>
+                          <div className="font-semibold text-foreground md:text-right">{item.fileCount} 文件 · {formatBytes(item.sizeBytes)}</div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="grid gap-4">
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg">模型配置</CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid gap-2 text-xs">
+                    <DiagnosticRow label="模式" value={value.config.offlineMode ? "离线模式" : "远程模型"} />
+                    <DiagnosticRow label="默认模型" value={value.config.model || "未填写"} />
+                    <DiagnosticRow label="Base URL" value={value.config.hasBaseUrl ? "已填写" : "未填写"} />
+                    <DiagnosticRow label="API Key" value={value.config.hasApiKey ? "已填写" : "未填写"} />
+                    <DiagnosticRow label="服务商" value={`${value.config.enabledProviderCount}/${value.config.providerCount} 启用`} />
+                    <DiagnosticRow label="专属轮次" value={`${value.config.customRoundCount} 个`} />
+                    <DiagnosticRow label="超时/重试" value={`${value.config.requestTimeoutSeconds ?? "-"}s / ${value.config.maxRetries ?? "-"} 次`} />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg">本地环境</CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid gap-2 text-xs">
+                    <DiagnosticRow label="Python" value={value.runtime.pythonVersion} />
+                    <DiagnosticRow label="Python 路径" value={value.runtime.pythonExecutable} />
+                    <DiagnosticRow label="Node" value={value.runtime.nodeExecutable || "未在后端 PATH 中发现"} />
+                    <DiagnosticRow label="npm" value={value.runtime.npmExecutable || "未在后端 PATH 中发现"} />
+                    <DiagnosticRow label="平台" value={value.runtime.platform} />
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+
+            {taskStateStore ? (
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-lg">任务快照治理</CardTitle>
+                      <CardDescription className="mt-1">清理只会删除过期且非运行中的快照。</CardDescription>
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={onCleanupTaskSnapshots}
+                      disabled={busy || taskStateStore.staleCount <= 0}
+                    >
+                      <Trash2 data-icon="inline-start" />
+                      清理过期快照
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-3">
+                  <div className="grid gap-2 md:grid-cols-4">
+                    <ReportStat label="快照文件" value={`${taskStateStore.fileCount} 个 · ${formatBytes(taskStateStore.sizeBytes)}`} />
+                    <ReportStat label="任务类型" value={`轮次 ${taskStateStore.runRoundCount} · 重跑 ${taskStateStore.batchRerunCount}`} />
+                    <ReportStat label="保护中" value={`${taskStateStore.activeSnapshotCount} 个`} />
+                    <ReportStat label="可清理" value={`${taskStateStore.staleCount} 个`} />
+                  </div>
+                  <div className="truncate text-[11px] font-medium text-muted-foreground">{taskStateStore.path}</div>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {value.activeRuns.length || value.activeBatchReruns?.length ? (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg">运行中的任务</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-2">
+                    {value.activeRuns.map((item) => (
+                      <Alert key={item.runId}>
+                        <Activity />
+                        <AlertTitle>轮次任务 · {item.runId}</AlertTitle>
+                        <AlertDescription className="grid gap-1 text-xs">
+                          <span className="truncate">{item.sourcePath}</span>
+                          <span>事件 {item.eventCount} 个 · {item.cancelRequested ? "已请求中断" : "运行中"} · 更新 {formatDateTime(item.updatedAt)}</span>
+                        </AlertDescription>
+                      </Alert>
+                    ))}
+                    {(value.activeBatchReruns ?? []).map((item) => (
+                      <Alert key={item.runId}>
+                        <RefreshCw />
+                        <AlertTitle>批量重跑 · {item.runId}</AlertTitle>
+                        <AlertDescription className="grid gap-1 text-xs">
+                          <span className="truncate">{item.outputPath}</span>
+                          <span>
+                            {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
+                            {item.currentChunkId ? ` · 当前 ${item.currentChunkId}` : ""} · {item.cancelRequested ? "已请求停止" : item.status}
+                          </span>
+                          <span>更新 {formatDateTime(item.updatedAt)}</span>
+                        </AlertDescription>
+                      </Alert>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {value.recentRuns?.length || value.recentBatchReruns?.length ? (
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <CardTitle className="text-lg">近期任务摘要</CardTitle>
+                    <Badge variant="outline">轮次 {recentRunCount} · 重跑 {recentBatchRerunCount}</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-2">
+                    {(value.recentRuns ?? []).map((item) => (
+                      <Alert key={item.runId} className={cn(item.status === "interrupted" && "border-primary/25 bg-muted/60")}>
+                        <Clock3 />
+                        <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
+                          <span>{item.status === "interrupted" ? "轮次未完成" : "轮次已落盘"} · {item.runId}</span>
+                          <Badge variant={item.status === "interrupted" ? "warning" : "outline"}>{item.status}</Badge>
+                        </AlertTitle>
+                        <AlertDescription className="grid gap-1 text-xs">
+                          <span className="truncate">{item.sourcePath}</span>
+                          <span>
+                            事件 {item.eventCount} 个
+                            {item.lastEvent?.phase ? ` · 最后阶段 ${item.lastEvent.phase}` : ""}
+                            {item.lastEvent?.chunkId ? ` · 最后块 ${item.lastEvent.chunkId}` : ""}
+                          </span>
+                          {item.error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{item.error}</span> : null}
+                          <span>落盘 {formatDateTime(item.persistedAt || item.updatedAt)} · 更新 {formatDateTime(item.updatedAt)}</span>
+                        </AlertDescription>
+                      </Alert>
+                    ))}
+                    {(value.recentBatchReruns ?? []).map((item) => (
+                      <Alert key={item.runId}>
+                        <RefreshCw />
+                        <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
+                          <span>{item.status === "interrupted" ? "重跑未完成" : "重跑已落盘"} · {item.runId}</span>
+                          <Badge variant={item.status === "interrupted" ? "warning" : "outline"}>{item.status}</Badge>
+                        </AlertTitle>
+                        <AlertDescription className="grid gap-1 text-xs">
+                          <span className="truncate">{item.outputPath}</span>
+                          <span>
+                            {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
+                            {item.currentChunkId ? ` · 最后 ${item.currentChunkId}` : ""}
+                          </span>
+                          {item.error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{item.error}</span> : null}
+                          <span>落盘 {formatDateTime(item.persistedAt || item.updatedAt)} · 更新 {formatDateTime(item.updatedAt)}</span>
+                        </AlertDescription>
+                      </Alert>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
           </div>
-
-          {taskStateStore ? (
-            <Card className="fy-panel fy-tone-info">
-              <CardContent className="p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div className="text-base font-black text-blue-950">任务快照治理</div>
-                    <div className="mt-1 text-xs leading-5 text-blue-700">
-                      快照用于刷新或后端重启后的恢复提示；清理只会删除过期且非运行中的快照。
-                    </div>
-                  </div>
-                  <Button
-                    variant="outline"
-                    onClick={onCleanupTaskSnapshots}
-                    disabled={busy || taskStateStore.staleCount <= 0}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    清理过期快照
-                  </Button>
-                </div>
-                <div className="mt-4 grid gap-2 text-xs md:grid-cols-4">
-                  <div className="fy-status-tile bg-white/80 p-3">
-                    <div className="font-black text-blue-400">快照文件</div>
-                    <div className="mt-1 font-semibold text-blue-950">{taskStateStore.fileCount} 个 · {formatBytes(taskStateStore.sizeBytes)}</div>
-                  </div>
-                  <div className="fy-status-tile bg-white/80 p-3">
-                    <div className="font-black text-blue-400">任务类型</div>
-                    <div className="mt-1 font-semibold text-blue-950">轮次 {taskStateStore.runRoundCount} · 重跑 {taskStateStore.batchRerunCount}</div>
-                  </div>
-                  <div className="fy-status-tile bg-white/80 p-3">
-                    <div className="font-black text-blue-400">保护中</div>
-                    <div className="mt-1 font-semibold text-blue-950">{taskStateStore.activeSnapshotCount} 个运行中快照</div>
-                  </div>
-                  <div className="fy-status-tile bg-white/80 p-3">
-                    <div className="font-black text-blue-400">可清理</div>
-                    <div className="mt-1 font-semibold text-blue-950">{taskStateStore.staleCount} 个超过 {taskStateStore.retentionHours} 小时</div>
-                  </div>
-                </div>
-                <div className="mt-3 truncate text-[11px] font-semibold text-blue-700">{taskStateStore.path}</div>
-              </CardContent>
-            </Card>
-          ) : null}
-
-          {value.activeRuns.length || value.activeBatchReruns?.length ? (
-            <Card className="fy-panel fy-tone-warning">
-              <CardContent className="p-5">
-                <div className="mb-3 text-base font-black text-amber-950">运行中的任务</div>
-                <div className="grid gap-2">
-                  {value.activeRuns.map((item) => (
-                    <div key={item.runId} className="fy-callout bg-white/80 p-3 text-amber-900">
-                      <div className="font-black">轮次任务 · {item.runId}</div>
-                      <div className="truncate">{item.sourcePath}</div>
-                      <div>事件 {item.eventCount} 个 · {item.cancelRequested ? "已请求中断" : "运行中"} · 更新 {formatDateTime(item.updatedAt)}</div>
-                    </div>
-                  ))}
-                  {(value.activeBatchReruns ?? []).map((item) => (
-                    <div key={item.runId} className="fy-callout bg-white/80 p-3 text-amber-900">
-                      <div className="font-black">批量重跑 · {item.runId}</div>
-                      <div className="truncate">{item.outputPath}</div>
-                      <div>
-                        {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
-                        {item.currentChunkId ? ` · 当前 ${item.currentChunkId}` : ""} · {item.cancelRequested ? "已请求停止" : item.status}
-                      </div>
-                      <div className="text-[11px] text-amber-700">更新 {formatDateTime(item.updatedAt)}</div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          ) : null}
-
-          {value.recentRuns?.length || value.recentBatchReruns?.length ? (
-            <Card className="fy-panel">
-              <CardContent className="p-5">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-base font-black text-slate-950">近期任务摘要</div>
-                  <div className="text-xs font-semibold text-slate-500">轮次 {recentRunCount} · 重跑 {recentBatchRerunCount}</div>
-                </div>
-                <div className="grid gap-2">
-                  {(value.recentRuns ?? []).map((item) => (
-                    <div key={item.runId} className="fy-callout fy-tone-info p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="font-black">{item.status === "interrupted" ? "轮次未完成" : "轮次已落盘"} · {item.runId}</div>
-                        <Badge variant={item.status === "interrupted" ? "warning" : "outline"}>{item.status}</Badge>
-                      </div>
-                      <div className="truncate">{item.sourcePath}</div>
-                      <div>
-                        事件 {item.eventCount} 个
-                        {item.lastEvent?.phase ? ` · 最后阶段 ${item.lastEvent.phase}` : ""}
-                        {item.lastEvent?.chunkId ? ` · 最后块 ${item.lastEvent.chunkId}` : ""}
-                      </div>
-                      {item.error ? <div className="mt-1 rounded-xl bg-white/80 px-3 py-2 text-[11px] text-blue-700">{item.error}</div> : null}
-                      <div className="text-[11px] text-blue-700">落盘 {formatDateTime(item.persistedAt || item.updatedAt)} · 更新 {formatDateTime(item.updatedAt)}</div>
-                    </div>
-                  ))}
-                  {(value.recentBatchReruns ?? []).map((item) => (
-                    <div key={item.runId} className="fy-callout fy-tone-neutral p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="font-black">{item.status === "interrupted" ? "重跑未完成" : "重跑已落盘"} · {item.runId}</div>
-                        <Badge variant={item.status === "interrupted" ? "warning" : "outline"}>{item.status}</Badge>
-                      </div>
-                      <div className="truncate">{item.outputPath}</div>
-                      <div>
-                        {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
-                        {item.currentChunkId ? ` · 最后 ${item.currentChunkId}` : ""}
-                      </div>
-                      {item.error ? <div className="mt-1 rounded-xl bg-white px-3 py-2 text-[11px] text-slate-500">{item.error}</div> : null}
-                      <div className="text-[11px] text-slate-500">落盘 {formatDateTime(item.persistedAt || item.updatedAt)} · 更新 {formatDateTime(item.updatedAt)}</div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          ) : null}
-        </>
+        </ScrollArea>
       ) : (
-        <Card className="fy-empty-state bg-white/80">
-          <CardContent className="p-8 text-center text-sm text-slate-500">
-            点击“重新自检”读取当前环境状态。
-          </CardContent>
-        </Card>
+        <Empty className="min-h-0 border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Activity />
+            </EmptyMedia>
+            <EmptyTitle>等待自检</EmptyTitle>
+            <EmptyDescription>点击“重新自检”读取当前环境状态。</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
+    </div>
+  );
+}
+
+function DiagnosticRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex min-w-0 justify-between gap-3 rounded-md bg-muted/50 px-3 py-2">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <b className="min-w-0 truncate text-right text-foreground">{value}</b>
     </div>
   );
 }
@@ -6956,28 +7023,31 @@ function DetectionReportPanel({
     }
   }, [report, strongMatchedRisky.length, reviewMatches.length, unmatchedRisky.length, weakMatches.length, matchFilter]);
   return (
-    <Card className="fy-panel fy-detection-panel">
-      <CardContent className="space-y-3 p-3">
-        <div className="fy-banner-primary p-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-black">检测反馈</div>
-              <div className="mt-1 truncate text-xs text-slate-500">
-                {documentLabel ? `文档：${documentLabel}` : "上传文档后可接入报告"}
-              </div>
+    <Card className="min-h-0 overflow-hidden">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Badge variant="secondary">检测反馈</Badge>
+              {report
+                ? <Badge variant={hasParsedSegments ? (highSegments.length ? "warning" : "success") : "warning"}>{hasParsedSegments ? `${providerLabel} ${overallRisk ?? "-"}%` : "未解析到片段"}</Badge>
+                : <Badge variant="outline">未接入</Badge>}
             </div>
-            {report
-              ? <Badge variant={hasParsedSegments ? (highSegments.length ? "warning" : "success") : "warning"}>{hasParsedSegments ? `${providerLabel} ${overallRisk ?? "-"}%` : "未解析到片段"}</Badge>
-              : <Badge variant="outline">未接入</Badge>}
+            <CardTitle className="text-lg">外部报告</CardTitle>
+            <CardDescription className="mt-1 truncate">
+              {documentLabel ? `文档：${documentLabel}` : "上传文档后可接入报告"}
+            </CardDescription>
           </div>
-          <div className="mt-4 grid grid-cols-2 gap-2">
+        </div>
+        <div className="grid grid-cols-2 gap-2">
             <Button
               type="button"
               variant="outline"
               onClick={() => onPickReport("speedai")}
               disabled={busy || !documentLabel}
-              className={`h-10 bg-white/80 ${report?.provider === "speedai" ? "ring-2 ring-blue-300" : ""}`}
+              className={cn(report?.provider === "speedai" && "ring-2 ring-primary/25")}
             >
+              <FileText data-icon="inline-start" />
               上传 SpeedAI
             </Button>
             <Button
@@ -6985,86 +7055,100 @@ function DetectionReportPanel({
               variant="outline"
               onClick={() => onPickReport("paperpass")}
               disabled={busy || !documentLabel}
-              className={`h-10 bg-white/80 ${report?.provider === "paperpass" ? "ring-2 ring-amber-300" : ""}`}
+              className={cn(report?.provider === "paperpass" && "ring-2 ring-primary/25")}
             >
+              <FileText data-icon="inline-start" />
               上传 PaperPass
             </Button>
           </div>
-        </div>
+      </CardHeader>
 
+      <CardContent className="flex min-h-0 flex-col gap-3">
         {report ? (
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <div className="grid grid-cols-4 gap-2 text-center text-xs">
-              <div className="fy-status-tile fy-tone-neutral text-slate-700">
+              <div className="rounded-md border bg-muted/50 p-3 text-foreground">
                 <div className="text-lg font-black">{report.segments.length}</div>
                 <div>报告片段</div>
               </div>
-              <div className="fy-status-tile fy-tone-danger text-red-700">
+              <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-destructive">
                 <div className="text-lg font-black">{highSegments.length}</div>
                 <div>高风险</div>
               </div>
-              <div className="fy-status-tile fy-tone-info text-blue-700">
+              <div className="rounded-md border bg-muted/50 p-3 text-foreground">
                 <div className="text-lg font-black">{strongMatchedRisky.length}</div>
                 <div>强命中</div>
               </div>
-              <div className="fy-status-tile fy-tone-warning text-amber-700">
+              <div className="rounded-md border border-primary/25 bg-muted/60 p-3 text-foreground">
                 <div className="text-lg font-black">{reviewMatches.length + weakMatches.length + unmatchedRisky.length}</div>
                 <div>需人工看</div>
               </div>
             </div>
 
-            <div className="fy-soft-section p-2">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
-                <span className="truncate">来源：<b className="text-slate-900">{providerLabel}</b>{reportSourceLabel ? ` · ${reportSourceLabel}` : ""}</span>
+            <div className="rounded-md border bg-muted/50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span className="truncate">来源：<b className="text-foreground">{providerLabel}</b>{reportSourceLabel ? ` · ${reportSourceLabel}` : ""}</span>
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
                   {hasParsedSegments ? (
                     <Button size="sm" onClick={onRerunMatchedChunks} disabled={busy || strongMatchedRisky.length === 0}>
+                      <RefreshCw data-icon="inline-start" />
                       重跑强命中 {strongMatchedRisky.length}
                     </Button>
                   ) : null}
-                  <Button variant="ghost" size="sm" onClick={onClearReport} disabled={busy}>清除</Button>
+                  <Button variant="ghost" size="sm" onClick={onClearReport} disabled={busy}>
+                    <Trash2 data-icon="inline-start" />
+                    清除
+                  </Button>
                 </div>
               </div>
               {report.summary.checkedScopeNotes?.length ? (
-                <div className="mt-2 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                <div className="mt-2 rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">
                   {report.summary.checkedScopeNotes.join("；")}
                 </div>
               ) : null}
             </div>
 
             {!hasParsedSegments ? (
-              <div className="fy-callout border-red-100 bg-red-50 p-3 text-xs leading-5 text-red-800">
-                <div className="font-bold">没有解析到风险片段</div>
-              </div>
+              <Alert variant="destructive">
+                <AlertCircle />
+                <AlertTitle>没有解析到风险片段</AlertTitle>
+                <AlertDescription>请确认报告格式或重新上传。</AlertDescription>
+              </Alert>
             ) : (
-              <details className="fy-disclosure group">
-                <summary className="fy-disclosure-summary">
-                  <span>报告片段</span>
-                  <span className="text-xs text-muted-foreground group-open:hidden">展开</span>
-                  <span className="hidden text-xs text-muted-foreground group-open:inline">收起</span>
-                </summary>
-                <div className="fy-disclosure-body">
-                <div className="fy-filter-tabs grid-cols-4">
+              <div className="flex min-h-0 flex-col gap-3 rounded-md border bg-muted/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-semibold text-foreground">报告片段</div>
+                  <Badge variant="outline">{visibleSegmentSummaries.length} 条</Badge>
+                </div>
+                <ToggleGroup
+                  type="single"
+                  value={matchFilter}
+                  onValueChange={(value) => value && setMatchFilter(value as typeof matchFilter)}
+                  className="grid grid-cols-4"
+                >
                   {[
                     { key: "strong" as const, label: `强命中 ${strongMatchedRisky.length}` },
                     { key: "review" as const, label: `疑似 ${reviewMatches.length}` },
                     { key: "unmatched" as const, label: `未确认 ${unmatchedRisky.length + weakMatches.length}` },
                     { key: "all" as const, label: `全部 ${riskySegments.length}` },
                   ].map((item) => (
-                    <button
+                    <ToggleGroupItem
                       key={item.key}
-                      type="button"
-                      onClick={() => setMatchFilter(item.key)}
-                      className={`fy-filter-tab ${matchFilter === item.key ? "fy-filter-tab-active" : ""}`}
+                      value={item.key}
+                      className="h-9 px-2 text-xs"
                     >
                       {item.label}
-                    </button>
+                    </ToggleGroupItem>
                   ))}
-                </div>
+                </ToggleGroup>
 
-                <div className="max-h-72 space-y-2 overflow-auto pr-1">
-                  {visibleSegmentSummaries.length ? visibleSegmentSummaries.map(({ segment, matchedItems, strongCount, reviewCount, weakCount, bestMatch, matchState }) => (
-                    <div key={segment.index} className={`fy-callout p-3 ${matchState === "strong" ? "fy-tone-info" : matchState === "review" ? "fy-tone-warning" : "fy-tone-neutral"}`}>
+                {visibleSegmentSummaries.length ? (
+                  <ScrollArea className="h-72 pr-1">
+                    <div className="flex flex-col gap-2">
+                      {visibleSegmentSummaries.map(({ segment, matchedItems, strongCount, reviewCount, weakCount, bestMatch, matchState }) => (
+                    <Alert key={segment.index} className={cn(matchState === "review" && "border-primary/25 bg-muted/60")}>
+                      <AlertCircle />
+                      <AlertTitle>
                       <div className="mb-1 flex flex-wrap items-center gap-2">
                         <Badge variant={isDetectionHighRisk(segment) ? "warning" : "outline"}>#{segment.index} {segment.probability}%</Badge>
                         {segment.page ? <Badge variant="outline">第 {segment.page} 页</Badge> : null}
@@ -7072,28 +7156,50 @@ function DetectionReportPanel({
                         {strongCount ? <Badge variant="success">强命中 {strongCount}</Badge> : reviewCount ? <Badge variant="warning">疑似 {reviewCount}</Badge> : weakCount ? <Badge variant="outline">弱匹配 {weakCount}</Badge> : <Badge variant="outline">未匹配</Badge>}
                         {bestMatch ? <Badge variant="secondary">最高 {Math.round(bestMatch.score * 100)}%</Badge> : null}
                       </div>
-                      <div className="line-clamp-3 text-slate-700">{segment.content}</div>
-                      {bestMatch ? <div className="mt-2 rounded-xl bg-white/80 px-2 py-1 text-[11px] text-slate-600">{bestMatch.reason}</div> : null}
-                      {bestMatch?.evidence.matchedFragments?.[0] ? (
-                        <div className="mt-2 break-all rounded-xl border border-white bg-white/80 px-2 py-1 text-[11px] text-slate-500">
-                          命中句段：{bestMatch.evidence.matchedFragments[0]}
-                        </div>
-                      ) : null}
-                      {matchedItems.length > 1 ? (
-                        <div className="mt-2 text-[11px] font-semibold text-slate-500">候选匹配：{matchedItems.map((item) => `${item.chunkId} ${Math.round(item.score * 100)}%`).join(" / ")}</div>
-                      ) : null}
+                      </AlertTitle>
+                      <AlertDescription className="grid gap-2">
+                        <span className="line-clamp-3 text-foreground">{segment.content}</span>
+                        {bestMatch ? <span className="rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground">{bestMatch.reason}</span> : null}
+                        {bestMatch?.evidence.matchedFragments?.[0] ? (
+                          <span className="break-all rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground">
+                            命中句段：{bestMatch.evidence.matchedFragments[0]}
+                          </span>
+                        ) : null}
+                        {matchedItems.length > 1 ? (
+                          <span className="text-[11px] font-semibold text-muted-foreground">候选匹配：{matchedItems.map((item) => `${item.chunkId} ${Math.round(item.score * 100)}%`).join(" / ")}</span>
+                        ) : null}
+                      </AlertDescription>
+                    </Alert>
+                      ))}
                     </div>
-                  )) : (
-                    <div className="fy-empty-state p-4">
+                  </ScrollArea>
+                ) : (
+                  <Empty className="min-h-[12rem] border">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <FileText />
+                      </EmptyMedia>
+                      <EmptyTitle>当前分层为空</EmptyTitle>
+                      <EmptyDescription>
                       当前分层下没有可显示片段。
-                    </div>
-                  )}
-                </div>
-                </div>
-              </details>
+                      </EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                )}
+              </div>
             )}
           </div>
-        ) : null}
+        ) : (
+          <Empty className="min-h-[18rem] border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <FileText />
+              </EmptyMedia>
+              <EmptyTitle>未接入外部报告</EmptyTitle>
+              <EmptyDescription>上传 SpeedAI 或 PaperPass 报告后，这里会显示命中片段和重跑入口。</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
       </CardContent>
     </Card>
   );
@@ -7111,51 +7217,12 @@ function RouteOverviewCard({
   detail: string;
   tone: "success" | "warning" | "danger" | "info" | "brand" | "slate";
 }) {
-  const toneClass = tone === "success"
-    ? "border-emerald-200 bg-emerald-50 text-emerald-900"
-    : tone === "warning"
-      ? "border-amber-200 bg-amber-50 text-amber-900"
-      : tone === "danger"
-        ? "border-red-200 bg-red-50 text-red-900"
-        : tone === "info"
-          ? "border-blue-200 bg-blue-50 text-blue-900"
-          : tone === "brand"
-            ? "border-violet-200 bg-violet-50 text-violet-900"
-            : "border-slate-200 bg-slate-50 text-slate-800";
   return (
-    <div className={`rounded-2xl border p-3 ${toneClass}`}>
-      <div className="text-[10px] font-black opacity-70">{label}</div>
-      <div className="mt-1 truncate text-sm font-black">{value}</div>
-      <div className="mt-1 line-clamp-2 text-[11px] leading-5 opacity-80">{detail}</div>
+    <div className={cn("rounded-md border bg-muted/30 p-3", tone === "danger" && "border-destructive/40 bg-destructive/5")}>
+      <Badge variant={tone === "slate" ? "outline" : "secondary"}>{label}</Badge>
+      <div className={cn("mt-2 truncate text-sm font-semibold", tone === "danger" ? "text-destructive" : "text-foreground")}>{value}</div>
+      <div className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">{detail}</div>
     </div>
-  );
-}
-
-function PromptModeButton({
-  active,
-  title,
-  text,
-  disabled,
-  onClick,
-}: {
-  active: boolean;
-  title: string;
-  text: string;
-  disabled: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`fy-tile px-3 py-2 ${
-        active ? "fy-tile-active text-slate-950" : "text-slate-700"
-      } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
-    >
-      <div className="text-sm font-semibold">{title}</div>
-      <div className="mt-0.5 text-xs text-slate-500">{text}</div>
-    </button>
   );
 }
 
@@ -7169,15 +7236,19 @@ function QualityReportPage({ compareData, exportResult }: { compareData: RoundCo
 
   return (
     <div className="grid gap-5">
-      <Card className="fy-panel">
-        <CardContent className="p-6">
+      <Card className="border-border bg-card shadow-sm">
+        <CardHeader>
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-            <div>
-              <div className="text-xl font-bold text-slate-950">改写检查</div>
-              <p className="mt-2 text-sm text-slate-500">这里不是外部平台分数，只展示可解释的结构、引用、排版与表达提示。</p>
+            <div className="min-w-0">
+              <CardTitle>改写检查</CardTitle>
+              <CardDescription>展示结构、引用、排版与表达提示。</CardDescription>
             </div>
-            <Badge variant={riskMessages.length ? "warning" : "success"}>{riskMessages.length ? `${riskMessages.length} 类风险` : "当前稳定"}</Badge>
+            <Badge variant={riskMessages.length ? "warning" : "success"}>
+              {riskMessages.length ? `${riskMessages.length} 类风险` : "当前稳定"}
+            </Badge>
           </div>
+        </CardHeader>
+        <CardContent>
           <div className="mt-5 grid gap-3 md:grid-cols-4">
             <ReportStat label="Diff 块" value={String(stats.chunkCount)} />
             <ReportStat label="需处理块" value={String(stats.reviewChunkCount)} />
@@ -7188,21 +7259,31 @@ function QualityReportPage({ compareData, exportResult }: { compareData: RoundCo
       </Card>
 
       <div className="grid gap-5 xl:grid-cols-2">
-        <Card className="fy-panel">
-          <CardContent className="p-6">
-            <div className="text-base font-bold text-slate-950">导出前风险</div>
-            <div className="mt-4 grid gap-2">
-              {riskMessages.length ? riskMessages.map((message) => (
-                <div key={message} className="fy-callout fy-tone-warning px-4 py-3 text-sm">{message}</div>
-              )) : <div className="fy-callout fy-tone-success px-4 py-3 text-sm">当前没有发现需要阻止导出的显著风险。</div>}
-            </div>
+        <Card className="border-border bg-card shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-base">导出前风险</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {riskMessages.length ? riskMessages.map((message) => (
+              <Alert key={message}>
+                <AlertTitle>需确认</AlertTitle>
+                <AlertDescription>{message}</AlertDescription>
+              </Alert>
+            )) : (
+              <Alert>
+                <AlertTitle>当前稳定</AlertTitle>
+                <AlertDescription>当前没有发现需要阻止导出的显著风险。</AlertDescription>
+              </Alert>
+            )}
           </CardContent>
         </Card>
 
-        <Card className="fy-panel">
-          <CardContent className="p-6">
-            <div className="text-base font-bold text-slate-950">结构保护</div>
-            <div className="fy-soft-section mt-4 px-4 py-3 text-sm leading-6 text-slate-600">{protectedTypeText}</div>
+        <Card className="border-border bg-card shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-base">结构保护</CardTitle>
+            <CardDescription>{protectedTypeText}</CardDescription>
+          </CardHeader>
+          <CardContent>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <ReportStat label="引用缺失" value={String(stats.missingCitationCount)} />
               <ReportStat label="硬审计" value={String(stats.guardIssueCount)} />
@@ -7217,10 +7298,12 @@ function QualityReportPage({ compareData, exportResult }: { compareData: RoundCo
 
 function ReportStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="fy-stat-card">
-      <div className="text-xs font-semibold text-slate-500">{label}</div>
-      <div className="mt-2 text-2xl font-bold text-slate-950">{value}</div>
-    </div>
+    <Card className="border-border bg-muted/50 shadow-none">
+      <CardContent className="p-4">
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+        <div className="mt-2 text-2xl font-semibold text-foreground">{value}</div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -7241,181 +7324,170 @@ function NotificationCenter({
   onClose: () => void;
   onClear: () => void;
 }) {
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, open]);
-
-  if (!open) {
-    return null;
-  }
   const unreadCount = items.filter((item) => !item.read).length;
   const errorCount = items.filter((item) => item.kind === "error").length;
   const runningTaskCount = taskItems.filter((item) => item.running).length;
 
   return (
-    <div className="fy-overlay">
-      <button type="button" aria-label="关闭通知与任务中心遮罩" className="fy-overlay-scrim" onClick={onClose} />
-      <aside className="fy-drawer fy-drawer-narrow" role="dialog" aria-modal="true" aria-labelledby="notification-center-title">
-        <div className="fy-drawer-header">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-950 text-white">
-                <Bell className="h-5 w-5" />
-              </div>
-              <div className="min-w-0">
-                <div id="notification-center-title" className="text-lg font-black text-slate-950">通知与任务中心</div>
-                <div className="mt-0.5 flex flex-wrap gap-1.5">
-                  <Badge variant={runningTaskCount ? "warning" : "outline"}>{runningTaskCount} 运行中</Badge>
-                  {taskItems.length ? <Badge variant="outline">{taskItems.length} 任务</Badge> : null}
-                  <Badge variant="outline">{items.length} 条</Badge>
-                  {unreadCount ? <Badge variant="secondary">{unreadCount} 未读</Badge> : null}
-                  {errorCount ? <Badge variant="warning">{errorCount} 错误</Badge> : null}
-                </div>
-              </div>
+    <Sheet open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <SheetContent
+        side="right"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="notification-center-title"
+        className="flex w-[min(92vw,440px)] flex-col p-0 sm:max-w-none [&>button]:hidden"
+      >
+        <SheetHeader className="border-b px-5 py-4 text-left">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <SheetTitle id="notification-center-title" className="flex items-center gap-2">
+                <Bell />
+                通知与任务中心
+              </SheetTitle>
+              <SheetDescription>运行任务、恢复提示和历史通知。</SheetDescription>
             </div>
             <Button variant="ghost" size="icon" onClick={onClose} aria-label="关闭通知与任务中心">
-              <X className="h-4 w-4" />
+              <X data-icon="inline-start" />
             </Button>
           </div>
-
-          <div className="fy-soft-section mt-4 flex items-center justify-between gap-3 px-3 py-2">
-            <span className="text-xs font-black text-slate-500">运行任务 / 历史通知</span>
-            <Button variant="outline" size="sm" onClick={onClear} disabled={!items.length} className="h-8 shrink-0 bg-white">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/50 px-3 py-2">
+            <div className="flex flex-wrap gap-2">
+              <Badge variant={runningTaskCount ? "warning" : "outline"}>{runningTaskCount} 运行中</Badge>
+              {taskItems.length ? <Badge variant="outline">{taskItems.length} 任务</Badge> : null}
+              <Badge variant="outline">{items.length} 条</Badge>
+              {unreadCount ? <Badge variant="secondary">{unreadCount} 未读</Badge> : null}
+              {errorCount ? <Badge variant="warning">{errorCount} 错误</Badge> : null}
+            </div>
+            <Button variant="outline" size="sm" onClick={onClear} disabled={!items.length}>
               清空
             </Button>
           </div>
-        </div>
+        </SheetHeader>
 
-        <div className="fy-drawer-body space-y-5 px-4 py-4">
-          <section data-ui-section="runtime-task-center" className="space-y-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-sm font-black text-slate-950">
-                <Activity className="h-4 w-4 text-blue-600" />
-                运行任务
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-5 p-4">
+            <section data-ui-section="runtime-task-center" className="flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <Activity />
+                  运行任务
+                </div>
+                <Badge variant={runningTaskCount ? "warning" : "outline"}>
+                  {runningTaskCount ? `${runningTaskCount} 个运行中` : "无运行任务"}
+                </Badge>
               </div>
-              <Badge variant={runningTaskCount ? "warning" : "outline"}>
-                {runningTaskCount ? `${runningTaskCount} 个运行中` : "无运行任务"}
-              </Badge>
-            </div>
 
-            {taskItems.length ? (
-              <div className="space-y-2.5">
-                {taskItems.map((item) => (
-                  <div key={item.id} className={`fy-section p-3 transition hover:shadow-md ${getRuntimeTaskCardClass(item.tone)}`}>
-                    <div className="flex items-start gap-3">
-                      <div className={`mt-0.5 rounded-xl p-1.5 ${getRuntimeTaskIconClass(item.tone)}`}>
-                        {item.running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock3 className="h-4 w-4" />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-black">{item.title}</div>
-                            {item.meta ? <div className="mt-0.5 truncate text-[11px] font-semibold opacity-60">{item.meta}</div> : null}
+              {taskItems.length ? (
+                <div className="flex flex-col gap-3">
+                  {taskItems.map((item) => (
+                    <Card key={item.id} className={cn("shadow-sm", item.tone === "red" && "border-destructive/30 bg-destructive/5")}>
+                      <CardHeader className="px-4 py-3">
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 rounded-md border bg-background p-1.5 text-muted-foreground">
+                            {item.running ? <Loader2 className="animate-spin" /> : <Clock3 />}
                           </div>
-                          <Badge className="shrink-0 bg-white/75" variant="outline">{item.status}</Badge>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <CardTitle className="truncate text-sm">{item.title}</CardTitle>
+                                {item.meta ? <CardDescription className="truncate text-xs">{item.meta}</CardDescription> : null}
+                              </div>
+                              <Badge className="shrink-0" variant="outline">{item.status}</Badge>
+                            </div>
+                          </div>
                         </div>
-                        <p className="mt-1 line-clamp-3 text-sm leading-6 opacity-85">{item.detail}</p>
+                      </CardHeader>
+                      <CardContent className="flex flex-col gap-3 px-4 pb-4 pt-0">
+                        <p className="line-clamp-3 text-sm leading-6 text-muted-foreground">{item.detail}</p>
                         {item.recoveryHint ? (
-                          <div className="mt-2 rounded-2xl bg-white/70 px-3 py-2 text-xs font-semibold leading-5 opacity-85">
+                          <div className="rounded-md border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
                             下一步：{item.recoveryHint}
                           </div>
                         ) : null}
                         {typeof item.percent === "number" ? (
-                          <div className="mt-3">
-                            <div className="h-2 overflow-hidden rounded-full bg-white/80">
-                              <div className="h-full rounded-full bg-slate-950/75 transition-all" style={{ width: `${clampPercent(item.percent)}%` }} />
-                            </div>
-                            <div className="mt-1 text-[11px] font-black opacity-60">{clampPercent(item.percent)}%</div>
+                          <div className="flex flex-col gap-1">
+                            <Progress value={clampPercent(item.percent)} className="h-2" />
+                            <div className="text-xs font-medium text-muted-foreground">{clampPercent(item.percent)}%</div>
                           </div>
                         ) : null}
                         {item.onAction || item.onCancel ? (
-                          <div className="mt-3 flex flex-wrap gap-2">
+                          <div className="flex flex-wrap gap-2">
                             {item.onAction && item.actionLabel ? (
-                              <Button type="button" variant="outline" size="sm" className="h-8 bg-white/80" onClick={item.onAction}>
+                              <Button type="button" variant="outline" size="sm" onClick={item.onAction}>
                                 {item.actionLabel}
                               </Button>
                             ) : null}
                             {item.onCancel && item.cancelLabel ? (
-                              <Button type="button" variant="outline" size="sm" className="h-8 border-red-200 bg-white/80 text-red-700 hover:bg-red-50" onClick={item.onCancel}>
+                              <Button type="button" variant="destructive" size="sm" onClick={item.onCancel}>
                                 {item.cancelLabel}
                               </Button>
                             ) : null}
                           </div>
                         ) : null}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="fy-empty-state flex min-h-[8rem] items-center justify-center bg-white">
-                <div>
-                  <CheckCircle2 className="mx-auto h-8 w-8 text-emerald-500" />
-                  <div className="mt-3 text-sm font-semibold text-slate-700">当前没有运行或待继续的任务</div>
+                      </CardContent>
+                    </Card>
+                  ))}
                 </div>
-              </div>
-            )}
-          </section>
+              ) : (
+                <Empty className="min-h-[8rem] border bg-background">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
+                    <EmptyTitle>当前没有运行或待继续的任务</EmptyTitle>
+                    <EmptyDescription>任务恢复信息会出现在这里。</EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              )}
+            </section>
 
-          <section className="space-y-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-sm font-black text-slate-950">
-                <Bell className="h-4 w-4 text-slate-600" />
-                历史通知
+            <section className="flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <Bell />
+                  历史通知
+                </div>
+                <Badge variant="outline">{items.length} 条</Badge>
               </div>
-              <Badge variant="outline">{items.length} 条</Badge>
-            </div>
 
-            {items.length ? (
-              <div className="space-y-2.5">
-                {items.map((item) => {
-                  const isError = item.kind === "error";
-                  return (
-                    <div
-                      key={item.id}
-                      className={`fy-section p-3 transition hover:shadow-md ${
-                        isError ? "border-red-100 text-red-900" : "border-emerald-100 text-emerald-900"
-                      }`}
-                    >
-                      <div className="flex items-start gap-2.5">
-                        <div className={`mt-0.5 rounded-xl p-1.5 ${isError ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>
-                          {isError ? <AlertCircle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex min-w-0 items-center gap-2">
-                              {!item.read ? <span className="h-2 w-2 shrink-0 rounded-full bg-primary" /> : null}
-                              <div className="truncate text-sm font-black">{item.title}</div>
+              {items.length ? (
+                <div className="flex flex-col gap-3">
+                  {items.map((item) => {
+                    const isError = item.kind === "error";
+                    return (
+                      <Card key={item.id} className={cn("shadow-sm", isError && "border-destructive/30 bg-destructive/5")}>
+                        <CardContent className="p-3">
+                          <div className="flex items-start gap-3">
+                            <div className="mt-0.5 rounded-md border bg-background p-1.5 text-muted-foreground">
+                              {isError ? <AlertCircle /> : <CheckCircle2 />}
                             </div>
-                            <div className="shrink-0 text-xs font-semibold opacity-55">{formatNotificationTime(item.time)}</div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  {!item.read ? <span className="size-2 shrink-0 rounded-full bg-primary" /> : null}
+                                  <div className="truncate text-sm font-semibold">{item.title}</div>
+                                </div>
+                                <div className="shrink-0 text-xs text-muted-foreground">{formatNotificationTime(item.time)}</div>
+                              </div>
+                              <p className="mt-1 line-clamp-3 text-sm leading-6 text-muted-foreground">{item.text}</p>
+                            </div>
                           </div>
-                          <p className="mt-1 line-clamp-3 text-sm leading-6 opacity-85">{item.text}</p>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="fy-empty-state flex min-h-[8rem] items-center justify-center bg-white">
-                <div>
-                  <Bell className="mx-auto h-8 w-8 text-slate-400" />
-                  <div className="mt-3 text-sm font-semibold text-slate-700">暂无通知</div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
                 </div>
-              </div>
-            )}
-          </section>
-        </div>
-      </aside>
-    </div>
+              ) : (
+                <Empty className="min-h-[8rem] border bg-background">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon"><Bell /></EmptyMedia>
+                    <EmptyTitle>暂无通知</EmptyTitle>
+                    <EmptyDescription>完成、失败和提醒会沉淀到这里。</EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              )}
+            </section>
+          </div>
+        </ScrollArea>
+      </SheetContent>
+    </Sheet>
   );
 }

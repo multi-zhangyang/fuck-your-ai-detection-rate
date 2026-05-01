@@ -1,9 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Download, FileOutput, SplitSquareHorizontal } from "lucide-react";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import type { DetectionReportMatch, ExportResult, OutputPreview, ReviewDecision, RoundCompareData, RoundResult } from "@/types/app";
 
 const T = {
@@ -179,48 +184,51 @@ type Props = {
 };
 
 export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportReviewedTxt, onExportReviewedDocx, onExportTxt, onExportDocx }: Props) {
+  const hasOutput = Boolean(result || compareData?.chunks.length);
   return (
-    <Card className="fy-result-workbench fy-home-result-card">
-      <CardHeader className="fy-result-header">
+    <Card className={cn("flex h-auto min-h-[11rem] w-full shrink-0 flex-col overflow-hidden border-border bg-card shadow-sm", hasOutput && "min-h-0")}>
+      <CardHeader className="shrink-0 border-b border-border bg-card px-5 py-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="min-w-0">
-            <CardTitle className="truncate text-base">导出</CardTitle>
+            <CardTitle className="truncate text-base">输出与导出</CardTitle>
           </div>
         </div>
       </CardHeader>
 
-      <CardContent className="fy-home-result-body flex min-h-0 flex-1 flex-col gap-3 px-5 pb-5 pt-4">
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-visible px-5 pb-5 pt-4">
         {batchRerunRunning ? (
-          <div className="shrink-0 rounded-3xl border border-red-100 bg-red-50 p-4 text-sm leading-6 text-red-900">
+          <Alert variant="destructive" className="shrink-0">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="font-black">批量重跑进行中</div>
-                <div className="mt-1 text-xs font-semibold opacity-85">{batchRerunStatusText || "正在处理需重跑块；已完成的块会实时保留。"}</div>
+                <AlertTitle>批量重跑进行中</AlertTitle>
+                <AlertDescription className="text-xs font-semibold opacity-85">
+                  {batchRerunStatusText || "正在处理需重跑块；已完成的块会实时保留。"}
+                </AlertDescription>
               </div>
               <Button size="sm" variant="destructive" onClick={onCancelBatchRerun}>停止重跑</Button>
             </div>
-          </div>
+          </Alert>
         ) : null}
-        {result || compareData?.chunks.length ? (
+        {hasOutput ? (
           <>
-            <div className="fy-result-action-grid">
-              <Button className="fy-result-action fy-result-action-primary" onClick={onExportDocx} disabled={!result || busy}>
-                <Download className="h-4 w-4" />
+            <div className="grid shrink-0 gap-2 sm:grid-cols-2 xl:grid-cols-5">
+              <Button className="h-auto min-h-12 justify-start px-4 py-3" onClick={onExportDocx} disabled={!result || busy}>
+                <Download data-icon="inline-start" />
                 导出 Word
               </Button>
-              <Button className="fy-result-action" variant="outlineSuccess" onClick={onExportReviewedDocx} disabled={!result || !compareData?.chunks.length || busy}>
-                <Download className="h-4 w-4" />
+              <Button className="h-auto min-h-12 justify-start px-4 py-3" variant="outline" onClick={onExportReviewedDocx} disabled={!result || !compareData?.chunks.length || busy}>
+                <Download data-icon="inline-start" />
                 审阅 Word
               </Button>
-              <Button className="fy-result-action" variant="outlineBrand" onClick={onExportReviewedTxt} disabled={!result || !compareData?.chunks.length || busy}>
-                <Download className="h-4 w-4" />
+              <Button className="h-auto min-h-12 justify-start px-4 py-3" variant="outline" onClick={onExportReviewedTxt} disabled={!result || !compareData?.chunks.length || busy}>
+                <Download data-icon="inline-start" />
                 审阅 TXT
               </Button>
-              <Button className="fy-result-action" variant="outline" onClick={onExportTxt} disabled={!result || busy}>
-                <Download className="h-4 w-4" />
+              <Button className="h-auto min-h-12 justify-start px-4 py-3" variant="outline" onClick={onExportTxt} disabled={!result || busy}>
+                <Download data-icon="inline-start" />
                 TXT
               </Button>
-              <Button className="fy-result-action" variant="outlineWarning" onClick={onRerunRiskyChunks} disabled={!result || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview) || busy}>
+              <Button className="h-auto min-h-12 justify-start px-4 py-3" variant="outline" onClick={onRerunRiskyChunks} disabled={!result || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview) || busy}>
                 {T.rerunRisky}
               </Button>
             </div>
@@ -228,13 +236,15 @@ export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batc
             {!result ? <LiveHint /> : null}
           </>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-3xl border border-dashed border-border bg-background/70 p-8 text-center">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <FileOutput className="h-7 w-7" />
-            </div>
-            <h3 className="mt-4 text-lg font-semibold text-foreground">{T.noResult}</h3>
-            <p className="mt-2 text-sm text-muted-foreground">{T.noResultHint}</p>
-          </div>
+          <Empty className="min-h-0 flex-1 border bg-background/70">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <FileOutput />
+              </EmptyMedia>
+              <EmptyTitle>{T.noResult}</EmptyTitle>
+              <EmptyDescription>{T.noResultHint}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         )}
       </CardContent>
     </Card>
@@ -243,18 +253,20 @@ export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batc
 
 export function DiffReviewCard({ result, compareData, busy, rerunFailures = [], detectionMatchesByChunk = {}, diffFocusRequest = null, reviewDecisions, onReviewDecisionChange, onRerunChunk, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun }: Pick<Props, "result" | "compareData" | "busy" | "rerunFailures" | "detectionMatchesByChunk" | "diffFocusRequest" | "reviewDecisions" | "onReviewDecisionChange" | "onRerunChunk" | "onRerunRiskyChunks" | "batchRerunRunning" | "batchRerunStatusText" | "onCancelBatchRerun">) {
   return (
-    <Card className="fy-result-workbench fy-diff-review-card">
+    <Card className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden border-border bg-card shadow-sm">
       <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 pb-4 pt-3">
         {batchRerunRunning ? (
-          <div className="shrink-0 rounded-3xl border border-red-100 bg-red-50 p-4 text-sm leading-6 text-red-900">
+          <Alert variant="destructive" className="shrink-0">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="font-black">批量重跑进行中</div>
-                <div className="mt-1 text-xs font-semibold opacity-85">{batchRerunStatusText || "正在处理需重跑块；已完成的块会实时保留。"}</div>
+                <AlertTitle>批量重跑进行中</AlertTitle>
+                <AlertDescription className="text-xs font-semibold opacity-85">
+                  {batchRerunStatusText || "正在处理需重跑块；已完成的块会实时保留。"}
+                </AlertDescription>
               </div>
               <Button size="sm" variant="destructive" onClick={onCancelBatchRerun}>停止重跑</Button>
             </div>
-          </div>
+          </Alert>
         ) : null}
         <RewriteDiffPanel data={compareData} busy={busy} rerunFailures={rerunFailures} detectionMatchesByChunk={detectionMatchesByChunk} diffFocusRequest={diffFocusRequest} reviewDecisions={reviewDecisions} onReviewDecisionChange={onReviewDecisionChange} onRerunChunk={onRerunChunk} />
       </CardContent>
@@ -423,20 +435,22 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
 
   if (!allChunks.length) {
     return (
-      <div className="fy-empty-state flex min-h-0 flex-1 flex-col items-center justify-center">
-        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <SplitSquareHorizontal className="h-7 w-7" />
-        </div>
-        <h3 className="mt-4 text-lg font-semibold text-foreground">{T.diff}</h3>
-        <div className="mt-2 text-sm text-muted-foreground">{T.noDiff}</div>
-      </div>
+      <Empty className="min-h-0 flex-1 border bg-background/70">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <SplitSquareHorizontal />
+          </EmptyMedia>
+          <EmptyTitle>{T.diff}</EmptyTitle>
+          <EmptyDescription>{T.noDiff}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   }
 
   return (
-    <div className="fy-diff-workbench">
-      <div className="fy-diff-header">
-        <div className="fy-diff-toolbar">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+      <div className="sticky top-0 z-20 shrink-0 border-b border-border bg-card px-3 py-2">
+        <div className="flex items-center gap-2 overflow-x-auto overflow-y-hidden pb-1">
           <span className="flex items-center gap-2 text-sm font-black text-foreground">
             <SplitSquareHorizontal className="h-4 w-4 text-primary" />
             {T.diff}
@@ -444,31 +458,30 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
           <Badge variant="outline">{shownChunks.length}/{data?.chunkCount ?? allChunks.length}</Badge>
           {numberRiskChunkIds.length ? <Badge variant="warning">{T.numberRisk} {numberRiskChunkIds.length}</Badge> : null}
           {citationRiskChunkIds.length ? <Badge variant="warning">{T.citationRisk} {citationRiskChunkIds.length}</Badge> : null}
-          <Button size="sm" variant={filterMode === "all" ? "default" : "outline"} onClick={() => setFilterMode("all")}>
-            全部
-          </Button>
-          <Button size="sm" variant={filterMode === "review" ? "default" : "outline"} onClick={() => setFilterMode("review")} disabled={!reviewChunkIds.length}>
-            需处理 {reviewChunkIds.length}
-          </Button>
-          <Button size="sm" variant={filterMode === "failed" ? "default" : "outline"} onClick={() => setFilterMode("failed")} disabled={!failedChunkIds.length}>
-            失败 {failedChunkIds.length}
-          </Button>
-          <Button size="sm" variant={filterMode === "candidate" ? "default" : "outline"} onClick={() => setFilterMode("candidate")} disabled={!candidateChunkIds.length}>
-            候选 {candidateChunkIds.length}
-          </Button>
+          <ToggleGroup
+            type="single"
+            value={filterMode}
+            onValueChange={(value) => value && setFilterMode(value as DiffFilterMode)}
+            className="justify-start"
+          >
+            <ToggleGroupItem value="all" aria-label="显示全部">全部</ToggleGroupItem>
+            <ToggleGroupItem value="review" aria-label="只看需处理" disabled={!reviewChunkIds.length}>需处理 {reviewChunkIds.length}</ToggleGroupItem>
+            <ToggleGroupItem value="failed" aria-label="只看失败" disabled={!failedChunkIds.length}>失败 {failedChunkIds.length}</ToggleGroupItem>
+            <ToggleGroupItem value="candidate" aria-label="只看候选" disabled={!candidateChunkIds.length}>候选 {candidateChunkIds.length}</ToggleGroupItem>
+          </ToggleGroup>
           <Badge variant="secondary" className="ml-auto">{shownLabel}</Badge>
         </div>
       </div>
       {failedChunkIds.length ? (
-        <div className="fy-diff-alert fy-tone-danger">
-          <span className="font-semibold">{T.failedChunks} {failedChunkIds.length}</span>
-          <span>{T.rerunFailureSummary}</span>
-        </div>
+        <Alert variant="destructive" className="mx-3 mt-3 shrink-0">
+          <AlertTitle>{T.failedChunks} {failedChunkIds.length}</AlertTitle>
+          <AlertDescription>{T.rerunFailureSummary}</AlertDescription>
+        </Alert>
       ) : null}
       <div
         ref={scrollRef}
         onScroll={(event) => diffScrollPositions.set(scrollKey, event.currentTarget.scrollTop)}
-        className="fy-diff-scroll"
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-muted/40 p-4 pr-3"
       >
         <div className="grid gap-4">
           {shownChunks.length ? shownChunks.map((chunk) => {
@@ -488,10 +501,10 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
             const matchTone = strongMatches.length ? "strong" : reviewMatches.length ? "review" : "weak";
             const matchTitle = matchTone === "strong" ? "外部报告强命中" : matchTone === "review" ? "外部报告疑似命中" : "外部报告仅参考";
             const matchClassName = matchTone === "strong"
-              ? "border-red-200 bg-red-50 text-red-800"
+              ? "border-destructive/30 bg-destructive/5 text-destructive"
               : matchTone === "review"
-                ? "border-amber-200 bg-amber-50 text-amber-800"
-                : "border-slate-200 bg-slate-50 text-slate-600";
+                ? "border-primary/20 bg-muted/60 text-foreground"
+                : "border-border bg-muted/50 text-muted-foreground";
             const decision = reviewDecisions[chunk.chunkId] ?? "rewrite";
             const displayOutput = getDecisionDisplayOutput(chunk, decision);
             return (
@@ -500,18 +513,28 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                 ref={(node) => {
                   chunkRefs.current[chunk.chunkId] = node;
                 }}
-                className={`fy-diff-chunk ${rerunFailure ? "border-red-200 bg-red-50/40" : hasRejectedCandidate ? "border-sky-200 bg-sky-50/35" : needsReview ? "border-amber-200 bg-amber-50/35" : "border-border/70 bg-muted/30"} ${focusedChunkId === chunk.chunkId ? "ring-2 ring-amber-300 ring-offset-2" : ""}`}
+                className={cn(
+                  "grid min-w-0 gap-4 overflow-hidden rounded-lg border p-4 transition xl:grid-cols-2",
+                  rerunFailure
+                    ? "border-destructive/30 bg-destructive/5"
+                    : hasRejectedCandidate || needsReview
+                      ? "border-primary/20 bg-muted/60"
+                      : "border-border/70 bg-muted/30",
+                  focusedChunkId === chunk.chunkId && "ring-2 ring-primary/25 ring-offset-2",
+                )}
               >
                 {rerunFailure ? (
-                  <div className="xl:col-span-2 rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-800">
-                    <span className="font-semibold">{T.rerunFailure}：</span>
-                    <span>{rerunFailure.error}</span>
-                    <span className="ml-2 opacity-80">{T.rerunFailureHint}</span>
-                    {failureRejectedCandidates.length ? <span className="ml-2 font-medium">已保留 {failureRejectedCandidates.length} 个模型候选，可在下方展开查看。</span> : null}
-                  </div>
+                  <Alert variant="destructive" className="xl:col-span-2 py-3 text-xs leading-5">
+                    <AlertTitle>{T.rerunFailure}</AlertTitle>
+                    <AlertDescription className="text-xs">
+                      <span>{rerunFailure.error}</span>
+                      <span className="ml-2 opacity-80">{T.rerunFailureHint}</span>
+                      {failureRejectedCandidates.length ? <span className="ml-2 font-medium">已保留 {failureRejectedCandidates.length} 个模型候选，可在下方展开查看。</span> : null}
+                    </AlertDescription>
+                  </Alert>
                 ) : null}
                 {detectionMatches.length ? (
-                  <div className={`xl:col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${matchClassName}`}>
+                  <div className={`xl:col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-xs ${matchClassName}`}>
                     <span className="font-semibold">{matchTitle}</span>
                     {detectionMatches.slice(0, 3).map((match) => (
                       <Badge key={`${match.segment.index}-${match.confidence}`} variant={match.confidence === "strong" ? "success" : match.confidence === "review" ? "warning" : "outline"}>
@@ -520,7 +543,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                     ))}
                     {detectionMatches[0]?.reason ? <span className="basis-full text-[11px] opacity-80">{detectionMatches[0].reason}</span> : null}
                     {detectionMatches[0]?.evidence.matchedFragments?.[0] ? (
-                    <span className="basis-full break-all rounded-xl bg-white/70 px-2 py-1 text-[11px] opacity-80">
+                    <span className="basis-full break-all rounded-md bg-muted px-2 py-1 text-[11px] opacity-80">
                         命中句段：{detectionMatches[0].evidence.matchedFragments[0]}
                       </span>
                     ) : null}
@@ -541,11 +564,16 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
               </div>
             );
           }) : (
-            <div className="rounded-3xl border border-dashed border-border bg-white/80 p-8 text-center">
-              <div className="text-base font-semibold text-foreground">{emptyState.title}</div>
-              <div className="mt-2 text-sm text-muted-foreground">{emptyState.hint}</div>
-              <Button className="mt-4" size="sm" variant="outline" onClick={() => setFilterMode("all")}>{T.showAll}</Button>
-            </div>
+            <Empty className="border bg-background">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <SplitSquareHorizontal />
+                </EmptyMedia>
+                <EmptyTitle>{emptyState.title}</EmptyTitle>
+                <EmptyDescription>{emptyState.hint}</EmptyDescription>
+              </EmptyHeader>
+              <Button size="sm" variant="outline" onClick={() => setFilterMode("all")}>{T.showAll}</Button>
+            </Empty>
           )}
         </div>
       </div>
@@ -616,19 +644,19 @@ function hasChunkCitationRisk(chunk: RoundCompareData["chunks"][number], candida
 
 function TextPane({ title, text, tone = "source" }: { title: string; text: string; tone?: "source" | "rewrite" }) {
   return (
-    <div className={tone === "rewrite" ? "fy-diff-text-pane bg-emerald-50" : "fy-diff-text-pane bg-white"}>
-      <div className={tone === "rewrite" ? "mb-2 text-xs font-semibold text-emerald-700" : "mb-2 text-xs font-semibold text-slate-500"}>{title}</div>
-      <div className="fy-diff-text-body">{text}</div>
+    <div className={cn("min-w-0 overflow-hidden rounded-lg border border-border p-3", tone === "rewrite" ? "bg-muted/40" : "bg-background")}>
+      <div className={cn("mb-2 text-xs font-semibold text-muted-foreground", tone === "rewrite" && "text-foreground")}>{title}</div>
+      <div className="max-h-[min(58vh,42rem)] min-h-[8rem] overflow-auto whitespace-pre-wrap break-words pr-2 text-sm leading-7 text-foreground">{text}</div>
     </div>
   );
 }
 
 function LiveHint() {
   return (
-    <div className="shrink-0 rounded-3xl border border-primary/15 bg-primary/5 p-4 text-sm text-primary">
-      <div className="font-semibold">{T.liveRunning}</div>
-      <div className="mt-1 opacity-80">{T.liveHint}</div>
-    </div>
+    <Alert className="shrink-0">
+      <AlertTitle>{T.liveRunning}</AlertTitle>
+      <AlertDescription>{T.liveHint}</AlertDescription>
+    </Alert>
   );
 }
 
@@ -926,11 +954,11 @@ function inspectRejectedCandidate(sourceText: string, candidate: RejectedCandida
 
 function CandidateInspectionPanel({ inspection }: { inspection: CandidateInspection }) {
   const toneClass = inspection.level === "danger"
-    ? "border-red-200 bg-red-50 text-red-900"
+    ? "border-destructive/30 bg-destructive/5 text-destructive"
     : inspection.level === "review"
-      ? "border-amber-200 bg-amber-50 text-amber-950"
-      : "border-emerald-200 bg-emerald-50 text-emerald-900";
-  const badgeVariant = inspection.level === "safe" ? "success" : inspection.level === "review" ? "warning" : "outline";
+      ? "border-primary/20 bg-muted/60 text-foreground"
+      : "border-border bg-muted/50 text-foreground";
+  const badgeVariant = inspection.level === "safe" ? "secondary" : inspection.level === "review" ? "warning" : "danger";
   return (
     <div className={`mb-3 rounded-xl border p-3 text-[11px] leading-5 ${toneClass}`}>
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -957,7 +985,7 @@ function CandidateDiffPanel({ sourceText, candidateText }: { sourceText: string;
   const diff = buildCandidateDiffView(sourceText, candidateText);
   const changedTokenCount = diff.addedTokenCount + diff.removedTokenCount;
   return (
-    <details className="mb-3 min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/90 p-3 text-slate-900" open={!diff.tooLarge && changedTokenCount > 0}>
+    <details className="mb-3 min-w-0 overflow-hidden rounded-xl border border-border bg-muted/50 p-3 text-foreground" open={!diff.tooLarge && changedTokenCount > 0}>
       <summary className="cursor-pointer select-none">
         <span className="inline-flex flex-wrap items-center gap-2 text-[11px]">
           <Badge variant="outline">差异审稿</Badge>
@@ -982,14 +1010,14 @@ function CandidateDiffPanel({ sourceText, candidateText }: { sourceText: string;
 
 function CandidateDiffPane({ title, segments, focusKind }: { title: string; segments: CandidateDiffSegment[]; focusKind: CandidateDiffKind }) {
   return (
-    <div className="fy-section min-w-0 overflow-hidden rounded-xl p-3">
-      <div className="mb-2 text-[11px] font-semibold text-slate-600">{title}</div>
-      <div className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-800">
+    <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-card p-3 shadow-sm">
+      <div className="mb-2 text-[11px] font-semibold text-muted-foreground">{title}</div>
+      <div className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-foreground">
         {segments.length ? segments.map((segment, index) => (
           <span key={`${segment.kind}-${index}`} className={getCandidateDiffSegmentClass(segment.kind, focusKind)}>
             {segment.text}
           </span>
-        )) : <span className="text-slate-400">暂无文本</span>}
+        )) : <span className="text-muted-foreground">暂无文本</span>}
       </div>
     </div>
   );
@@ -997,12 +1025,12 @@ function CandidateDiffPane({ title, segments, focusKind }: { title: string; segm
 
 function getCandidateDiffSegmentClass(kind: CandidateDiffKind, focusKind: CandidateDiffKind): string {
   if (kind === "added") {
-    return "rounded bg-emerald-100 px-0.5 font-medium text-emerald-900";
+    return "rounded bg-primary/10 px-0.5 font-medium text-foreground";
   }
   if (kind === "removed") {
-    return "rounded bg-red-100 px-0.5 font-medium text-red-900 line-through decoration-red-500";
+    return "rounded bg-destructive/10 px-0.5 font-medium text-destructive line-through decoration-destructive";
   }
-  return focusKind === "removed" ? "text-slate-700" : "text-slate-800";
+  return focusKind === "removed" ? "text-muted-foreground" : "text-foreground";
 }
 
 function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: { chunk: RoundCompareData["chunks"][number]; busy: boolean; decision: ReviewDecision; onDecisionChange: (decision: ReviewDecision) => void; onRerun: (userFeedback?: string) => void }) {
@@ -1041,7 +1069,7 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
     });
   }
   return (
-    <div className="min-w-0 space-y-3 rounded-2xl border border-border/60 bg-white/75 px-3 py-3 text-xs text-muted-foreground">
+    <div className="flex min-w-0 flex-col gap-3 rounded-md border border-border/60 bg-background px-3 py-3 text-xs text-muted-foreground">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant={needsReview ? "warning" : "success"}>{needsReview ? T.needsReview : T.stable}</Badge>
         {isSourceFallback ? <Badge variant="warning">{T.sourceFallback}</Badge> : null}
@@ -1054,13 +1082,13 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
         {!needsReview && advisoryFlags.length ? <Badge variant="outline">{T.risk} {advisoryFlags.slice(0, 2).map(formatChunkFlag).join(" / ")}</Badge> : null}
         <Badge variant={isConfirmed ? "success" : "secondary"}>{isConfirmed ? T.confirmedChoice : T.defaultChoice}：{decisionLabel}</Badge>
       </div>
-      <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-2">
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-2">
         <Button size="sm" variant={selectedBaseDecision === "rewrite" && isConfirmed ? "default" : "outline"} onClick={() => onDecisionChange("rewrite_confirmed")}>{isConfirmed && selectedBaseDecision === "rewrite" ? `${T.confirmedChoice}${T.useRewrite}` : T.useRewrite}</Button>
         <Button size="sm" variant={selectedBaseDecision === "source" && isConfirmed ? "default" : "outline"} onClick={() => onDecisionChange("source_confirmed")}>{isConfirmed && selectedBaseDecision === "source" ? `${T.confirmedChoice}${T.useSource}` : T.useSource}</Button>
         <Button size="sm" variant="outline" onClick={() => onRerun(feedback)} disabled={busy}>{zh(0x5b9a, 0x5411, 0x91cd, 0x8dd1)}</Button>
       </div>
       {rejectedCandidates.length ? (
-        <details className="rounded-xl border border-sky-200 bg-sky-50/85 p-3 text-sky-950">
+        <details className="rounded-xl border border-border bg-muted/50 p-3 text-foreground">
           <summary className="cursor-pointer select-none font-semibold">
             {T.rejectedCandidate}（{rejectedCandidates.length}）
           </summary>
@@ -1082,9 +1110,9 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
                     ? "确认采用候选"
                     : T.adoptCandidate;
               return (
-                <div key={candidateKey} className="fy-candidate-card">
+                <div key={candidateKey} className="min-w-0 overflow-hidden rounded-lg border border-border bg-card p-3">
                   <div className="mb-3 grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
-                    <div className="min-w-0 space-y-2">
+                    <div className="flex min-w-0 flex-col gap-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant="outline">候选 {index + 1}</Badge>
                         <Badge variant="secondary">尝试 {candidate.attempt ?? "-"}</Badge>
@@ -1092,9 +1120,9 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
                         {isSelectedCandidate ? <Badge variant="success">已采用</Badge> : null}
                         {candidate.truncated ? <Badge variant="warning">内容过长已截断</Badge> : null}
                       </div>
-                      {candidate.error ? <div className="break-words rounded-xl bg-slate-50 px-3 py-2 text-[11px] leading-5 opacity-75">{candidate.error}</div> : null}
+                      {candidate.error ? <div className="break-words rounded-xl bg-muted px-3 py-2 text-[11px] leading-5 opacity-75">{candidate.error}</div> : null}
                     </div>
-                    <div className="fy-candidate-actionbar">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
                       <Button
                         size="sm"
                         variant="outline"
@@ -1126,16 +1154,16 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
                     </div>
                   </div>
                   {isPendingAdopt ? (
-                    <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] leading-5 text-red-900">
+                    <div className="mb-3 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] leading-5 text-destructive">
                       已把候选体检问题写入下方反馈框。若要继续使用该候选，请再次点击“确认采用候选”；否则建议直接定向重跑。
                     </div>
                   ) : null}
-                   <div className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950/95 p-3 text-xs leading-6 text-slate-50">
+                   <div className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl border bg-muted p-3 text-xs leading-6 text-foreground">
                      {candidate.outputText}
                    </div>
-                   <details className="mt-3 rounded-xl border border-slate-200 bg-white/85 p-3">
-                     <summary className="cursor-pointer select-none text-xs font-black text-slate-600">查看体检和差异</summary>
-                     <div className="mt-3 space-y-3">
+                  <details className="mt-3 rounded-xl border border-border bg-background p-3">
+                    <summary className="cursor-pointer select-none text-xs font-black text-muted-foreground">查看体检和差异</summary>
+                    <div className="mt-3 flex flex-col gap-3">
                        <CandidateInspectionPanel inspection={inspection} />
                        <CandidateDiffPanel sourceText={chunk.inputText} candidateText={candidate.outputText ?? ""} />
                      </div>
@@ -1147,9 +1175,9 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
         </details>
       ) : null}
       {reviewToolsVisible ? (
-        <div className="grid min-w-0 gap-3 rounded-xl border border-amber-200 bg-amber-50/80 p-3 text-amber-950 xl:grid-cols-2">
+        <div className="grid min-w-0 gap-3 rounded-xl border border-border bg-muted/50 p-3 text-foreground xl:grid-cols-2">
           {isSourceFallback ? (
-            <div className="rounded-xl border border-amber-300 bg-white/70 p-2 leading-5 xl:col-span-2">
+            <div className="rounded-xl border border-primary/20 bg-background p-2 leading-5 xl:col-span-2">
               <span className="font-semibold">{T.sourceFallback}：</span>
               {T.sourceFallbackHint}
               {chunk.fallbackError ? <span className="ml-1 opacity-80">{chunk.fallbackError}</span> : null}
@@ -1165,13 +1193,13 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
             <div className="mb-1 font-semibold">{T.systemFeedback}</div>
             {advice.length ? advice.slice(0, 3).map((item, index) => <div key={index} className="leading-5">- {item}</div>) : <div>{zh(0x91cd, 0x8dd1, 0x4f1a, 0x81ea, 0x52a8, 0x643a, 0x5e26, 0x5f53, 0x524d, 0x98ce, 0x9669, 0x6807, 0x7b7e, 0x4e0e, 0x4fdd, 0x62a4, 0x533a, 0x7ea6, 0x675f, 0x3002)}</div>}
           </div>
-          <div className="space-y-2 xl:col-span-2">
+          <div className="flex flex-col gap-2 xl:col-span-2">
             <div className="font-semibold">{T.reviewFeedback}</div>
-            <textarea
+            <Textarea
               value={feedback}
               onChange={(event) => setFeedback(event.target.value)}
               placeholder={T.feedbackPlaceholder}
-                    className="min-h-20 w-full resize-none rounded-xl border border-amber-200 bg-white/90 px-3 py-2 text-xs text-foreground outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-200"
+              className="min-h-20 resize-none text-xs"
             />
             {chunk.rerunUserFeedback ? <div className="line-clamp-2 text-[11px] opacity-75">{T.lastFeedback}：{chunk.rerunUserFeedback}</div> : null}
           </div>

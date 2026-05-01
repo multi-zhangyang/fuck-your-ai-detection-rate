@@ -4,6 +4,7 @@ import { FileText, FolderUp, Layers3, Play, ShieldCheck, Workflow } from "lucide
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import type { DocumentStatus } from "@/types/app";
 
 const T = {
@@ -12,7 +13,7 @@ const T = {
   document: "文档",
   locked: "保护区锁定",
   title: "文档处理",
-  current: "当前文档",
+  current: "当前文件",
   completed: "已完成",
   round: "轮",
   nextRound: "下一轮",
@@ -56,10 +57,10 @@ export function DocumentCard({ value, busy, onPickFile, onRunRound, pickerLabel 
   const isDocx = value?.sourceKind === ".docx";
 
   return (
-    <Card className="surface-card overflow-hidden">
+    <Card className="overflow-hidden">
       <CardHeader className="pb-4">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="secondary">{T.document}</Badge>
               <Badge variant="outline">{describeSourceKind(value)}</Badge>
@@ -68,59 +69,61 @@ export function DocumentCard({ value, busy, onPickFile, onRunRound, pickerLabel 
             <CardTitle className="text-xl">{T.title}</CardTitle>
           </div>
           <Button size="lg" onClick={onPickFile} disabled={busy} className="min-w-[140px]">
-            <FolderUp className="h-4 w-4" />
+            <FolderUp data-icon="inline-start" />
             {pickerLabel}
           </Button>
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-4">
+      <CardContent className="flex flex-col gap-4">
         {value ? (
           <>
-            <div className="rounded-3xl border border-border/70 bg-slate-950 p-5 text-slate-50 shadow-glow">
+            <div className="rounded-md border bg-muted/60 p-5 text-foreground">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="text-xs font-medium uppercase tracking-[0.2em] text-slate-400">{T.current}</div>
+                  <div className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">{T.current}</div>
                   <h3 className="mt-2 truncate text-xl font-semibold">{displayDocId(value)}</h3>
-                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-300">
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
                     <span>{T.completed} {value.completedRounds.length} {T.round}</span>
-                    <span>?</span>
+                    <span>·</span>
                     <span>{value.hasNextRound && value.nextRound ? `${T.nextRound} ${value.nextRound}` : T.allDone}</span>
-                    <span>?</span>
+                    <span>·</span>
                     <span>{isDocx ? T.bodyOnly : T.textFlow}</span>
                   </div>
                 </div>
-                <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10">
-                  <FileText className="h-6 w-6" />
+                <div className="rounded-md bg-background p-3 text-muted-foreground">
+                  <FileText />
                 </div>
               </div>
             </div>
 
             <div className="grid gap-3 md:grid-cols-3">
-              <InfoPanel icon={<Layers3 className="h-4 w-4" />} label={T.rounds} value={value.completedRounds.length ? value.completedRounds.join(" / ") : T.none} />
-              <InfoPanel icon={<Workflow className="h-4 w-4" />} label={T.input} value={shortPath(value.currentInputPath)} />
-              <InfoPanel icon={<ShieldCheck className="h-4 w-4" />} label={T.export} value={isDocx ? T.docxExport : T.standardExport} />
+              <InfoPanel icon={<Layers3 />} label={T.rounds} value={value.completedRounds.length ? value.completedRounds.join(" / ") : T.none} />
+              <InfoPanel icon={<Workflow />} label={T.input} value={shortPath(value.currentInputPath)} />
+              <InfoPanel icon={<ShieldCheck />} label={T.export} value={isDocx ? T.docxExport : T.standardExport} />
             </div>
 
-            <div className="flex flex-col gap-3 rounded-3xl border border-border/70 bg-background/75 p-4 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-3 rounded-md border bg-background/75 p-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-semibold text-foreground">{value.hasNextRound ? `${T.readyPrefix} ${value.nextRound} ${T.round}` : T.allDone}</div>
                 <div className="mt-1 text-xs text-muted-foreground">{T.docxGuard}</div>
               </div>
               <Button size="lg" onClick={onRunRound} disabled={!canRunNextRound}>
-                <Play className="h-4 w-4" />
+                <Play data-icon="inline-start" />
                 {value.hasNextRound ? T.runNext : T.allDone}
               </Button>
             </div>
           </>
         ) : (
-          <div className="rounded-3xl border border-dashed border-border bg-background/70 p-8 text-center">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <FolderUp className="h-7 w-7" />
-            </div>
-            <h3 className="mt-4 text-lg font-semibold text-foreground">{T.uploadedTitle}</h3>
-            <p className="mt-2 text-sm text-muted-foreground">{T.uploadedHint}</p>
-          </div>
+          <Empty className="min-h-[16rem] border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <FolderUp />
+              </EmptyMedia>
+              <EmptyTitle>{T.uploadedTitle}</EmptyTitle>
+              <EmptyDescription>{T.uploadedHint}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         )}
       </CardContent>
     </Card>
@@ -135,9 +138,9 @@ function shortPath(path: string): string {
 
 function InfoPanel({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-background/80 p-4">
+    <div className="rounded-md border bg-background/80 p-4">
       <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-        <span className="text-primary">{icon}</span>
+        <span className="text-primary [&_svg]:size-4">{icon}</span>
         {label}
       </div>
       <div className="mt-3 truncate text-sm font-semibold text-foreground">{value}</div>

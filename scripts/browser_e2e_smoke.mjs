@@ -411,23 +411,23 @@ async function runSmoke() {
         await waitForText(browserClient, "已取消选择文档", 12_000);
         await clickByText(browserClient, "模型配置");
         await waitForText(browserClient, "默认连接", 12_000);
-        await clickByText(browserClient, "主页 / 实时 Diff");
-        await waitForText(browserClient, "文档入口", 12_000);
+        await clickByText(browserClient, "工作台");
+        await waitForText(browserClient, "改写对照", 12_000);
         checks.push("document picker cancel releases UI and navigation remains clickable");
       } else {
         warnings.push("file chooser cancel smoke skipped because an existing document is already restored in the local backend state");
         await clickByText(browserClient, "模型配置");
         await waitForText(browserClient, "默认连接", 12_000);
-        await clickByText(browserClient, "主页 / 实时 Diff");
-        await waitForText(browserClient, "文档入口", 12_000);
+        await clickByText(browserClient, "工作台");
+        await waitForText(browserClient, "改写对照", 12_000);
         checks.push("existing document state still allows sidebar navigation");
       }
     } else if (fileChooserIntercepted) {
       warnings.push("file chooser cancel smoke skipped because an already-running local backend may carry user document state");
       await clickByText(browserClient, "模型配置");
       await waitForText(browserClient, "默认连接", 12_000);
-      await clickByText(browserClient, "主页 / 实时 Diff");
-      await waitForText(browserClient, "文档入口", 12_000);
+      await clickByText(browserClient, "工作台");
+      await waitForText(browserClient, "改写对照", 12_000);
       checks.push("existing local backend state still allows sidebar navigation");
     }
 
@@ -435,8 +435,8 @@ async function runSmoke() {
     await waitForText(browserClient, "文档入口", 10_000);
     checks.push("inline Diff workbench is visible inside the home canvas");
 
-    await clickByText(browserClient, "主页 / 实时 Diff");
-    await waitForText(browserClient, "文档入口", 10_000);
+    await clickByText(browserClient, "工作台");
+    await waitForText(browserClient, "改写对照", 10_000);
     checks.push("home controls remain visible beside inline Diff workbench");
 
     await clickByText(browserClient, "学校规范");
@@ -447,22 +447,22 @@ async function runSmoke() {
     await waitForText(browserClient, "重新自检", 12_000);
     await clickByText(browserClient, "提示词预览");
     await waitForText(browserClient, "文件位置：", 12_000);
-    const promptPageUsesFixedBoundary = await evaluate(browserClient, "Boolean(document.querySelector('.fy-page-fixed') && document.querySelector('pre code'))", 3000);
+    const promptPageUsesFixedBoundary = await evaluate(browserClient, "Boolean(document.querySelector('pre code') && getComputedStyle(document.documentElement).overflow === 'hidden' && getComputedStyle(document.body).overflow === 'hidden')", 3000);
     if (!promptPageUsesFixedBoundary) {
       throw new Error("Prompt preview page did not render inside the fixed page boundary.");
     }
     checks.push("primary sidebar navigation remains responsive");
 
-    await clickByText(browserClient, "主页 / 实时 Diff");
-    await waitForText(browserClient, "文档入口", 12_000);
-    await clickByText(browserClient, "通知与任务");
-    await waitForText(browserClient, "运行任务 / 历史通知", 12_000);
-    const notificationCenterIsDialog = await evaluate(browserClient, "Boolean(document.querySelector('[role=\"dialog\"][aria-modal=\"true\"][aria-labelledby=\"notification-center-title\"]'))", 3000);
+    await clickByText(browserClient, "工作台");
+    await waitForText(browserClient, "改写对照", 12_000);
+    await clickByText(browserClient, "打开通知与任务中心");
+    await waitForText(browserClient, "通知与任务中心", 12_000);
+    const notificationCenterIsDialog = await evaluate(browserClient, "Boolean(document.querySelector('[role=\"dialog\"][aria-modal=\"true\"]'))", 3000);
     if (!notificationCenterIsDialog) {
       throw new Error("Notification center drawer is missing dialog accessibility attributes.");
     }
     await pressKey(browserClient, "Escape");
-    await waitForTextGone(browserClient, "运行任务 / 历史通知", 12_000);
+    await waitForTextGone(browserClient, "通知与任务中心", 12_000);
     checks.push("prompt preview renders and notification center opens/closes with Escape");
 
     return {

@@ -231,12 +231,12 @@ function ArtifactStats({ stats }: { stats?: HistoryArtifactStats }) {
 function ArtifactGovernanceMap({ stats, sourcePath, compact = false }: { stats?: HistoryArtifactStats; sourcePath?: string; compact?: boolean }) {
   const safeStats = getSafeArtifactStats(stats);
   const toneClasses: Record<string, string> = {
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-800",
-    indigo: "border-indigo-200 bg-indigo-50 text-indigo-800",
-    amber: "border-amber-200 bg-amber-50 text-amber-800",
-    orange: "border-orange-200 bg-orange-50 text-orange-800",
-    sky: "border-sky-200 bg-sky-50 text-sky-800",
-    slate: "border-slate-200 bg-slate-50 text-slate-700",
+    emerald: "border-border bg-muted/50 text-foreground",
+    indigo: "border-border bg-muted/50 text-foreground",
+    amber: "border-border bg-muted/50 text-foreground",
+    orange: "border-border bg-muted/50 text-foreground",
+    sky: "border-border bg-muted/50 text-foreground",
+    slate: "border-border bg-muted/50 text-foreground",
   };
   const items = [
     {
@@ -275,7 +275,7 @@ function ArtifactGovernanceMap({ stats, sourcePath, compact = false }: { stats?:
       {items.map((item) => (
         <div
           key={item.label}
-          className={`rounded-2xl border px-3 py-2 ${toneClasses[item.tone] ?? toneClasses.slate}`}
+          className={`rounded-lg border px-3 py-2 ${toneClasses[item.tone] ?? toneClasses.slate}`}
         >
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] font-black opacity-70">{item.label}</span>
@@ -310,7 +310,7 @@ function OrphanGovernancePanel({
   const stats = scan?.orphanStats ?? getSafeArtifactStats();
   const previewFiles = scan?.orphanFiles.slice(0, 6) ?? [];
   return (
-    <div className="fy-section p-4">
+    <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -323,16 +323,15 @@ function OrphanGovernancePanel({
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={onScan} disabled={busy}>
-            <Search className="h-4 w-4" />
+            <Search data-icon="inline-start" />
             扫描
           </Button>
           <Button
             variant="outline"
             onClick={onDelete}
             disabled={busy || !scan || !stats.existing}
-            className="border-amber-200 text-amber-800 hover:bg-amber-50"
           >
-            <Trash2 className="h-4 w-4" />
+            <Trash2 data-icon="inline-start" />
             清理未归属文件
           </Button>
         </div>
@@ -348,25 +347,25 @@ function OrphanGovernancePanel({
 
       {scan ? (
         previewFiles.length ? (
-          <div className="mt-4 space-y-2">
+          <div className="mt-4 flex flex-col gap-2">
             {previewFiles.map((file) => (
-              <div key={file.relativePath} className="flex min-w-0 items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2 text-xs">
+              <div key={file.relativePath} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2 text-xs">
                 <div className="min-w-0">
-                  <div className="truncate font-semibold text-slate-800">{file.relativePath}</div>
-                  <div className="mt-0.5 text-slate-500">{getOrphanKindLabel(file.kind)} · {formatBytes(file.bytes)}</div>
+                  <div className="truncate font-semibold text-foreground">{file.relativePath}</div>
+                  <div className="mt-0.5 text-muted-foreground">{getOrphanKindLabel(file.kind)} · {formatBytes(file.bytes)}</div>
                 </div>
-                <ShieldCheck className="h-4 w-4 shrink-0 text-slate-400" />
+                <ShieldCheck className="shrink-0 text-muted-foreground" />
               </div>
             ))}
-            {scan.hasMore ? <div className="text-xs font-semibold text-slate-500">仅预览前 200 个，清理时会按后端安全规则处理全部未归属文件。</div> : null}
+            {scan.hasMore ? <div className="text-xs font-semibold text-muted-foreground">仅预览前 200 个，清理时会按后端安全规则处理全部未归属文件。</div> : null}
           </div>
         ) : (
-          <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
+          <div className="mt-4 rounded-lg border border-border bg-muted/40 p-3 text-sm font-semibold text-foreground">
             当前没有发现未归属生成文件。
           </div>
         )
       ) : (
-        <div className="mt-4 rounded-2xl border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+        <div className="mt-4 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
           点击扫描后再决定是否清理，清理动作会二次确认。
         </div>
       )}
@@ -400,9 +399,9 @@ function mergeArtifactStats(items: Array<HistoryArtifactStats | undefined>): His
 
 function StatPill({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl bg-slate-50 px-3 py-2">
-      <div className="text-[10px] font-black text-slate-400">{label}</div>
-      <div className="mt-0.5 truncate text-sm font-black text-slate-900">{value}</div>
+    <div className="rounded-lg border bg-muted/40 px-3 py-2">
+      <div className="text-[10px] font-semibold text-muted-foreground">{label}</div>
+      <div className="mt-0.5 truncate text-sm font-semibold text-foreground">{value}</div>
     </div>
   );
 }
@@ -431,7 +430,7 @@ function RoundAuditStrip({ round }: { round: HistoryRound }) {
   const model = String(round.runAudit?.model || "").trim();
   const provider = String(round.runAudit?.providerName || "").trim();
   return (
-    <div className="grid gap-2 rounded-2xl border border-white/70 bg-white/75 p-2 text-xs md:grid-cols-5">
+    <div className="grid gap-2 rounded-lg border border-border bg-muted/30 p-2 text-xs md:grid-cols-5">
       <StatPill label="候选策略" value={formatCandidateMode(candidateMode)} />
       <StatPill label="预计调用" value={formatAuditValue(estimatedApiCalls, " 次")} />
       <StatPill label="校验重试" value={formatAuditValue(validationRetryCount, " 块")} />
@@ -443,13 +442,13 @@ function RoundAuditStrip({ round }: { round: HistoryRound }) {
 
 function ImpactCard({ title, value, text, tone = "slate" }: { title: string; value: string; text: string; tone?: "slate" | "amber" | "red" | "emerald" }) {
   const toneClass = {
-    slate: "border-slate-200 bg-slate-50 text-slate-700",
-    amber: "border-amber-200 bg-amber-50 text-amber-800",
-    red: "border-red-200 bg-red-50 text-red-800",
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    slate: "border-border bg-muted/40 text-foreground",
+    amber: "border-border bg-muted/40 text-foreground",
+    red: "border-destructive/30 bg-destructive/5 text-destructive",
+    emerald: "border-border bg-muted/40 text-foreground",
   }[tone];
   return (
-    <div className={`rounded-2xl border p-3 ${toneClass}`}>
+    <div className={`rounded-lg border p-3 ${toneClass}`}>
       <div className="text-[10px] font-black opacity-70">{title}</div>
       <div className="mt-1 text-lg font-black">{value}</div>
       <div className="mt-1 text-xs leading-5 opacity-80">{text}</div>
@@ -461,9 +460,11 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
   const stats = impact.fileStats;
   const candidateStats = impact.candidateStats;
   const previewFiles = impact.files.filter((file) => file.exists).slice(0, 8);
-  const sourceTone = impact.willDeleteSource ? "fy-tone-danger" : "fy-tone-success";
+  const sourceTone = impact.willDeleteSource
+    ? "border-destructive/30 bg-destructive/5 text-destructive"
+    : "border-border bg-muted/40 text-foreground";
   return (
-    <div className="fy-section p-4">
+    <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -488,7 +489,7 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
         <StatPill label="候选文件" value={`${candidateStats.existing}`} />
       </div>
 
-      <div className={`fy-callout mt-4 ${sourceTone}`}>
+      <div className={`rounded-lg border px-3 py-2 text-xs leading-5 mt-4 ${sourceTone}`}>
         <span className="font-black">源文档策略：</span>
         {impact.willDeleteSource
           ? "会删除项目 origin 目录下的源文档副本；不会删除浏览器下载目录或外部路径文件。"
@@ -499,32 +500,32 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
       </div>
 
       {impact.affectedRounds.length ? (
-        <div className="fy-callout mt-3 border-violet-100 bg-violet-50 text-violet-800">
+        <div className="mt-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs leading-5 text-foreground">
           影响轮次：{impact.affectedRounds.join(", ")}
         </div>
       ) : null}
 
       {previewFiles.length ? (
-        <div className="mt-4 space-y-2">
+        <div className="mt-4 flex flex-col gap-2">
           {previewFiles.map((file) => (
-            <div key={`${file.relativePath}-${file.kind}`} className="flex min-w-0 items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2 text-xs">
+            <div key={`${file.relativePath}-${file.kind}`} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2 text-xs">
               <div className="min-w-0">
-                <div className="truncate font-semibold text-slate-800">{file.relativePath}</div>
-                <div className="mt-0.5 text-slate-500">{getOrphanKindLabel(file.kind)} · {formatBytes(file.bytes)}</div>
+                <div className="truncate font-semibold text-foreground">{file.relativePath}</div>
+                <div className="mt-0.5 text-muted-foreground">{getOrphanKindLabel(file.kind)} · {formatBytes(file.bytes)}</div>
               </div>
               <Badge variant="outline">将删除</Badge>
             </div>
           ))}
-          {impact.hasMoreFiles ? <div className="text-xs font-semibold text-slate-500">仅展示前 80 个候选文件中的一部分，执行时按同一安全规则处理。</div> : null}
+          {impact.hasMoreFiles ? <div className="text-xs font-semibold text-muted-foreground">仅展示前 80 个候选文件中的一部分，执行时按同一安全规则处理。</div> : null}
         </div>
       ) : (
-          <div className="fy-callout fy-tone-success mt-4 p-3 text-sm font-semibold">
+          <div className="mt-4 rounded-lg border border-border bg-muted/40 p-3 text-sm font-semibold">
           此操作不会删除项目文件，只会改变历史索引或没有匹配到文件。
         </div>
       )}
 
       {impact.warnings.length ? (
-        <div className="fy-callout fy-tone-warning mt-3">
+        <div className="mt-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs leading-5">
           {impact.warnings.map((warning) => <div key={warning}>提醒：{warning}</div>)}
         </div>
       ) : null}
@@ -552,16 +553,16 @@ function HistoryDeleteAction({
   onDelete: (docId: string, options: DeleteHistoryOptions) => void;
 }) {
   return (
-    <div className={`fy-callout p-3 ${destructive ? "fy-tone-danger" : "fy-tone-neutral"}`}>
-      <div className={`text-sm font-black ${destructive ? "text-red-800" : "text-slate-900"}`}>{title}</div>
-      <div className="mt-1 min-h-10 text-xs leading-5 text-slate-500">{getDeleteModeDescription(options.mode, options.fromRound)}</div>
+    <div className="rounded-lg border border-border bg-card p-3">
+      <div className={destructive ? "text-sm font-semibold text-destructive" : "text-sm font-semibold text-foreground"}>{title}</div>
+      <div className="mt-1 min-h-10 text-xs leading-5 text-muted-foreground">{getDeleteModeDescription(options.mode, options.fromRound)}</div>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <Button type="button" variant="outline" size="sm" onClick={() => onPreview(docId, options)} disabled={busy || loading}>
-          <Search className="h-4 w-4" />
+          <Search data-icon="inline-start" />
           {loading ? "预览中" : "先看影响"}
         </Button>
-        <Button type="button" variant={destructive ? "destructive" : "outline"} size="sm" onClick={() => onDelete(docId, options)} disabled={busy}>
-          {destructive ? <Trash2 className="h-4 w-4" /> : null}
+        <Button type="button" variant={destructive ? "outlineDanger" : "outline"} size="sm" onClick={() => onDelete(docId, options)} disabled={busy}>
+          {destructive ? <Trash2 data-icon="inline-start" /> : null}
           执行
         </Button>
       </div>
@@ -574,26 +575,25 @@ function HistoryGovernanceBoundary() {
     {
       title: "先预览再执行",
       text: "删除、回滚、清理前先生成影响预览；预览不会改动任何文件。",
-      tone: "border-blue-200 bg-blue-50 text-blue-800",
     },
     {
       title: "只治理项目内文件",
       text: "清理对象限定在项目记录、origin、finish、审计报告和运行中间产物。",
-      tone: "border-emerald-200 bg-emerald-50 text-emerald-800",
     },
     {
       title: "外部文件不碰",
       text: "浏览器下载目录、外部原始路径和用户自己保存的 Word/PDF 不会被删除。",
-      tone: "border-amber-200 bg-amber-50 text-amber-800",
     },
   ];
   return (
     <div data-ui-section="history-governance-boundary" className="grid gap-3 lg:grid-cols-3">
       {cards.map((card) => (
-        <div key={card.title} className={`rounded-2xl border p-3 ${card.tone}`}>
-          <div className="text-sm font-black">{card.title}</div>
-          <div className="mt-1 text-xs leading-5 opacity-85">{card.text}</div>
-        </div>
+        <Card key={card.title} className="bg-muted/40 shadow-none">
+          <CardContent className="p-3">
+            <div className="text-sm font-semibold text-foreground">{card.title}</div>
+            <div className="mt-1 text-xs leading-5 text-muted-foreground">{card.text}</div>
+          </CardContent>
+        </Card>
       ))}
     </div>
   );
@@ -638,9 +638,9 @@ export function HistoryCard({
 
   return (
     <Card className="min-h-full overflow-visible">
-      <CardHeader className="space-y-3 pb-4">
+      <CardHeader className="flex flex-col gap-3 pb-4">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2">
               <Badge variant="secondary">历史记录</Badge>
               <Badge variant="outline">{getProfileLabel(promptProfile)}</Badge>
@@ -649,13 +649,13 @@ export function HistoryCard({
             <CardDescription>历史索引、轮次链、项目导出副本和中间生成物分开处理；外部源文档默认不在清理范围内。</CardDescription>
           </div>
           <Button variant="outline" onClick={onToggle} disabled={busy}>
-            <FolderClock className="h-4 w-4" />
+            <FolderClock data-icon="inline-start" />
             {open ? "收起列表" : `展开列表（${items.length}）`}
           </Button>
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-5">
+      <CardContent className="flex flex-col gap-5">
         <div className="grid gap-3 lg:grid-cols-4">
           <ImpactCard
             title="项目生成物"
@@ -683,11 +683,11 @@ export function HistoryCard({
         <HistoryGovernanceBoundary />
 
         {!open ? (
-          <div className="rounded-2xl border border-border/70 bg-muted/30 p-6 text-sm leading-6 text-muted-foreground">
+          <div className="rounded-lg border border-border bg-muted/30 p-5 text-sm leading-6 text-muted-foreground">
             历史面板已收起。这里按当前提示词模式展示匹配轮次，不把不同模式的结果混在一起。
           </div>
         ) : items.length ? (
-          <div className="space-y-5 pb-4">
+          <div className="flex flex-col gap-5 pb-4">
               {items.map((item) => {
                 const isActive = currentDocId === item.docId;
                 const profileRounds = getRoundsForProfile(item.rounds, promptProfile, promptSequence);
@@ -708,23 +708,23 @@ export function HistoryCard({
                 return (
                   <div
                     key={`${item.docId}-${promptProfile}-${formatPromptSequence(promptSequence)}`}
-                    className={`relative rounded-[2rem] p-6 shadow-sm transition-colors ${
+                    className={`relative rounded-lg border p-5 shadow-sm transition-colors ${
                       isActive
-                        ? "rainbow-marquee-card"
-                        : "border border-border/70 bg-background/80 hover:border-slate-300 hover:bg-white"
+                        ? "border-primary/30 bg-card"
+                        : "border-border bg-card hover:bg-muted/20"
                     }`}
                   >
-                    <div className="space-y-4">
+                    <div className="flex flex-col gap-4">
                       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0 space-y-3">
+                        <div className="flex min-w-0 flex-col gap-3">
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className="min-w-0 truncate text-lg font-semibold">{formatDocName(item)}</h3>
-                            {isActive ? <Badge className="border-slate-900 bg-slate-950 text-white shadow-sm">当前选用</Badge> : null}
+                            {isActive ? <Badge variant="neutral">当前选用</Badge> : null}
                             <Badge variant="outline">{completedRounds.length}/{maxRounds} 轮</Badge>
                           </div>
                           <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
                             <span className="inline-flex items-center gap-1.5">
-                              <Clock3 className="h-4 w-4" />
+                              <Clock3 className="size-4" />
                               {item.lastTimestamp ? formatTimestamp(item.lastTimestamp) : "暂无时间记录"}
                             </span>
                             <span>下一轮：{getNextRoundText(completedRounds, promptProfile, promptSequence)}</span>
@@ -734,7 +734,7 @@ export function HistoryCard({
 
                         <div className="flex flex-wrap gap-2 lg:justify-end">
                           <Button variant={isActive ? "secondary" : "outline"} onClick={() => onSelect(item)} disabled={busy}>
-                            <RotateCcw className="h-4 w-4" />
+                            <RotateCcw data-icon="inline-start" />
                             {isActive ? "重新载入" : "切到这篇"}
                           </Button>
                         </div>
@@ -742,7 +742,7 @@ export function HistoryCard({
 
                       <ArtifactStats stats={item.artifactStats} />
                       <ArtifactGovernanceMap stats={item.artifactStats} sourcePath={item.originPath || item.sourcePath} />
-                      <div className="grid gap-3 rounded-3xl border border-border/70 bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="grid gap-3 rounded-lg border border-border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-4">
                         {documentDeleteActions.map((action) => {
                           const actionKey = makeDeleteActionKey(item.docId, action.options);
                           return (
@@ -767,7 +767,7 @@ export function HistoryCard({
                       <>
                         <Separator className="my-5" />
                         {!activeRounds.length ? (
-                          <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                          <div className="mb-3 rounded-lg border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
                             当前模式没有轮次，下面展示这篇文档在其他模式下的历史轮次。
                           </div>
                         ) : null}
@@ -784,9 +784,9 @@ export function HistoryCard({
                               ? impactPreview.impact
                               : null;
                             return (
-                              <div key={`${item.docId}-${roundItem.promptProfile}-${roundItem.round}-${formatPromptSequence(roundItem.promptSequence)}`} className="rounded-3xl border border-violet-200 bg-violet-50/60 p-5">
+                              <div key={`${item.docId}-${roundItem.promptProfile}-${roundItem.round}-${formatPromptSequence(roundItem.promptSequence)}`} className="rounded-lg border border-border bg-muted/20 p-4">
                                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                                  <div className="min-w-0 space-y-2">
+                                  <div className="flex min-w-0 flex-col gap-2">
                                     <div className="flex flex-wrap items-center gap-2">
                                       <Badge variant="secondary">第 {roundItem.round} 轮</Badge>
                                       <Badge variant="outline">{getProfileLabel(roundPromptProfile)}</Badge>
@@ -806,11 +806,11 @@ export function HistoryCard({
 
                                   <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
                                     <Button variant="outline" size="sm" onClick={() => onDownload(roundItem, "txt")} disabled={busy || !roundItem.outputPath}>
-                                      <Download className="h-4 w-4" />
+                                      <Download data-icon="inline-start" />
                                       TXT
                                     </Button>
                                     <Button size="sm" onClick={() => onDownload(roundItem, "docx")} disabled={busy || !roundItem.outputPath}>
-                                      <Download className="h-4 w-4" />
+                                      <Download data-icon="inline-start" />
                                       Word
                                     </Button>
                                   </div>
@@ -840,7 +840,7 @@ export function HistoryCard({
                         </div>
                       </>
                     ) : (
-                      <div className="mt-5 rounded-2xl border border-dashed border-border bg-muted/20 p-4 text-sm leading-6 text-muted-foreground">
+                      <div className="mt-5 rounded-lg border border-dashed border-border bg-muted/20 p-4 text-sm leading-6 text-muted-foreground">
                         这篇文档在当前模式下还没有轮次记录。可能是在别的提示词模式下处理过。
                       </div>
                     )}
@@ -849,28 +849,28 @@ export function HistoryCard({
               })}
           </div>
         ) : (
-          <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-6 text-center">
+          <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center">
             <h3 className="text-base font-semibold">还没有历史记录</h3>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">跑过的文档会自动出现在这里，之后可以直接回来继续处理或导出。</p>
           </div>
         )}
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
-          <div className="rounded-3xl border border-border/70 bg-muted/20 p-4">
+          <div className="rounded-lg border border-border bg-muted/20 p-4">
             <div className="grid gap-3 text-sm md:grid-cols-4">
-              <div className="rounded-2xl bg-white/80 p-3">
+              <div className="rounded-md border bg-card p-3">
                 <div className="font-black text-foreground">只移除记录</div>
                 <div className="mt-1 leading-6 text-muted-foreground">只隐藏索引，不删除生成文件。</div>
               </div>
-              <div className="rounded-2xl bg-white/80 p-3">
+              <div className="rounded-md border bg-card p-3">
                 <div className="font-black text-foreground">清理项目导出</div>
                 <div className="mt-1 leading-6 text-muted-foreground">只删项目内 Word/TXT 副本。</div>
               </div>
-              <div className="rounded-2xl bg-white/80 p-3">
+              <div className="rounded-md border bg-card p-3">
                 <div className="font-black text-foreground">删除生成链路</div>
                 <div className="mt-1 leading-6 text-muted-foreground">删除轮次和中间产物，源文档保留。</div>
               </div>
-              <div className="rounded-2xl bg-white/80 p-3">
+              <div className="rounded-md border bg-card p-3">
                 <div className="font-black text-foreground">清理源副本</div>
                 <div className="mt-1 leading-6 text-muted-foreground">只删除项目 origin 内源文件副本，外部路径不碰。</div>
               </div>

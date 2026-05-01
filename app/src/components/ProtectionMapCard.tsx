@@ -1,9 +1,12 @@
 import { AlertTriangle, FileText, Layers3, Lock, Map, ShieldCheck, Unlock } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Progress } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import type { DocumentProtectionMap, ProtectionMapSection, ProtectionReasonSummary } from "@/types/app";
 
@@ -31,18 +34,21 @@ export function ProtectionMapCard({ value }: Props) {
               <CardTitle className="text-xl">文档边界地图</CardTitle>
               <CardDescription className="mt-2">上传 DOCX 后，系统会解析哪些区域可改写，哪些区域必须锁死。</CardDescription>
             </div>
-            <div className="rounded-2xl bg-muted p-3 text-muted-foreground">
-              <ShieldCheck className="h-5 w-5" />
+            <div className="rounded-md bg-muted p-3 text-muted-foreground">
+              <ShieldCheck />
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <div className="rounded-3xl border border-dashed border-border bg-background/70 p-8">
-            <div className="flex flex-col gap-3 text-sm leading-6 text-muted-foreground">
-              <div className="font-semibold text-foreground">这个模块的作用不是展示好看，而是防止导出 Word 时“动错地方”。</div>
-              <div>它会把封面、目录、标题、图表、参考文献、公式等区域识别为保护区，只允许摘要到致谢之间的正文内容进入改写链路。</div>
-            </div>
-          </div>
+          <Empty className="min-h-[14rem] border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <ShieldCheck />
+              </EmptyMedia>
+              <EmptyTitle>保护区未建立</EmptyTitle>
+              <EmptyDescription>上传 DOCX 后会解析封面、目录、图表、参考文献和正文边界。</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         </CardContent>
       </Card>
     );
@@ -54,11 +60,12 @@ export function ProtectionMapCard({ value }: Props) {
   const risks = buildBoundaryRisks(value, editableRate);
 
   return (
-    <div className="space-y-5 pb-10">
-      <Card className="overflow-hidden">
-        <CardHeader className="pb-4">
-          <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-            <div className="min-w-0 space-y-2">
+    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-5 overflow-hidden">
+      <div className="grid gap-5">
+        <Card className="overflow-hidden">
+          <CardHeader className="pb-4">
+            <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+              <div className="flex min-w-0 flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="secondary">保护区</Badge>
                 <Badge variant="success">已建立</Badge>
@@ -75,67 +82,70 @@ export function ProtectionMapCard({ value }: Props) {
               <MiniStat label="正文" value={summary.editableUnits} />
               <MiniStat label="保护" value={summary.protectedUnits} />
             </div>
-          </div>
-        </CardHeader>
-
-        <CardContent className="space-y-5">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
-              <span>可改写正文占比</span>
-              <span>{editableRate}%</span>
             </div>
-            <Progress value={editableRate} className="h-3" />
-          </div>
-
-          <BoundaryStrip sections={value.sections} totalUnits={summary.totalUnits} />
-
-          <div className="grid gap-3 md:grid-cols-3">
-            <InfoCard icon={<FileText className="h-4 w-4" />} label="正文段落" value={`${summary.topLevelParagraphUnits}`} text="普通段落与正文结构主体。" />
-            <InfoCard icon={<Layers3 className="h-4 w-4" />} label="表格单元" value={`${summary.tableUnits}`} text="表格默认锁定，不进入改写。" />
-            <InfoCard icon={<Map className="h-4 w-4" />} label="连续区块" value={`${value.sections.length}`} text="按编辑权限和保护原因切分。" />
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">保护原因分布</CardTitle>
-            <CardDescription>这些区域会在改写和导出阶段被重点保护，避免目录、图表、引用和结构字段被模型误改。</CardDescription>
           </CardHeader>
-          <CardContent>
-            <ReasonGrid reasons={summary.protectionReasons} protectedUnits={summary.protectedUnits} />
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">边界审计提示</CardTitle>
-            <CardDescription>用于判断当前文档结构是否适合直接跑改写。</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {risks.map((risk) => (
-              <div key={risk.title} className={`rounded-2xl border p-3 ${risk.level === "warn" ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}>
-                <div className={`flex items-center gap-2 text-sm font-black ${risk.level === "warn" ? "text-amber-800" : "text-emerald-800"}`}>
-                  {risk.level === "warn" ? <AlertTriangle className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
-                  {risk.title}
-                </div>
-                <p className={`mt-1 text-xs leading-5 ${risk.level === "warn" ? "text-amber-700" : "text-emerald-700"}`}>{risk.text}</p>
+          <CardContent className="flex flex-col gap-5">
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
+                <span>可改写正文占比</span>
+                <span>{editableRate}%</span>
               </div>
-            ))}
+              <Progress value={editableRate} className="h-3" />
+            </div>
+
+            <BoundaryStrip sections={value.sections} totalUnits={summary.totalUnits} />
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <InfoCard icon={<FileText />} label="正文段落" value={`${summary.topLevelParagraphUnits}`} text="普通段落与正文结构主体。" />
+              <InfoCard icon={<Layers3 />} label="表格单元" value={`${summary.tableUnits}`} text="表格默认锁定，不进入改写。" />
+              <InfoCard icon={<Map />} label="连续区块" value={`${value.sections.length}`} text="按编辑权限和保护原因切分。" />
+            </div>
           </CardContent>
         </Card>
+
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">保护原因分布</CardTitle>
+              <CardDescription>改写和导出阶段会重点保护这些区域。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ReasonGrid reasons={summary.protectionReasons} protectedUnits={summary.protectedUnits} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">边界审计</CardTitle>
+              <CardDescription>判断当前文档结构是否适合直接改写。</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              {risks.map((risk) => (
+                <Alert key={risk.title} className={risk.level === "warn" ? "border-primary/25 bg-muted/60" : undefined}>
+                  {risk.level === "warn" ? <AlertTriangle /> : <ShieldCheck />}
+                  <AlertTitle>{risk.title}</AlertTitle>
+                  <AlertDescription>{risk.text}</AlertDescription>
+                </Alert>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
-      <Card>
+      <Card className="min-h-0 overflow-hidden">
         <CardHeader>
           <CardTitle className="text-lg">完整边界序列</CardTitle>
-          <CardDescription>按 Word 解析顺序展示全部连续区块。页面可以向下延伸，不再把内容挤进一个小滚动框。</CardDescription>
+          <CardDescription>按 Word 解析顺序展示全部连续区块，列表在当前区域内滚动。</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          {value.sections.map((section, index) => (
-            <SectionRow key={`${section.key}-${section.startUnit}-${index}`} section={section} totalUnits={summary.totalUnits} />
-          ))}
+        <CardContent className="h-[calc(100%-5.75rem)] min-h-0">
+          <ScrollArea className="h-full pr-1">
+            <div className="flex flex-col gap-3">
+              {value.sections.map((section, index) => (
+                <SectionRow key={`${section.key}-${section.startUnit}-${index}`} section={section} totalUnits={summary.totalUnits} />
+              ))}
+            </div>
+          </ScrollArea>
         </CardContent>
       </Card>
     </div>
@@ -144,25 +154,29 @@ export function ProtectionMapCard({ value }: Props) {
 
 function MiniStat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
+    <Card className="shadow-none">
+      <CardContent className="px-4 py-3">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="text-lg font-black text-foreground">{value}</div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
 function InfoCard({ icon, label, value, text }: { icon: ReactNode; label: string; value: string; text: string }) {
   return (
-    <div className="rounded-3xl border border-border/70 bg-background/80 p-4">
+    <Card className="shadow-none">
+      <CardContent className="p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-sm font-black text-foreground">
-          <span className="rounded-xl bg-primary/10 p-2 text-primary">{icon}</span>
+          <span className="rounded-md bg-primary/10 p-2 text-primary [&_svg]:size-4">{icon}</span>
           {label}
         </div>
         <div className="text-xl font-black text-foreground">{value}</div>
       </div>
       <p className="mt-2 text-xs leading-5 text-muted-foreground">{text}</p>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -171,34 +185,42 @@ function BoundaryStrip({ sections, totalUnits }: { sections: ProtectionMapSectio
     return null;
   }
   return (
-    <div className="rounded-3xl border border-border/70 bg-muted/25 p-4">
+    <Card className="bg-muted/25 shadow-none">
+      <CardContent className="p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="text-sm font-black text-foreground">文档结构条</div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-primary" />可改写</span>
-          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-slate-300" />保护区</span>
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-muted-foreground/30" />保护区</span>
         </div>
       </div>
-      <div className="flex h-5 overflow-hidden rounded-full bg-slate-100">
+      <div className="flex h-5 overflow-hidden rounded-full bg-muted">
         {sections.map((section, index) => (
           <div
             key={`${section.key}-${index}-strip`}
             title={`${section.label}：${section.count} 个单元`}
-            className={section.editable ? "bg-primary" : "bg-slate-300"}
+            className={section.editable ? "bg-primary" : "bg-muted-foreground/30"}
             style={{ width: `${Math.max(1, (section.count / totalUnits) * 100)}%` }}
           />
         ))}
       </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
 function ReasonGrid({ reasons, protectedUnits }: { reasons: ProtectionReasonSummary[]; protectedUnits: number }) {
   if (!reasons.length) {
     return (
-      <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-5 text-sm text-muted-foreground">
-        当前没有额外保护原因，文档可能只有普通正文结构。
-      </div>
+      <Empty className="min-h-[10rem] border">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <ShieldCheck />
+          </EmptyMedia>
+          <EmptyTitle>暂无额外保护原因</EmptyTitle>
+          <EmptyDescription>文档可能只有普通正文结构。</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   }
   return (
@@ -206,16 +228,16 @@ function ReasonGrid({ reasons, protectedUnits }: { reasons: ProtectionReasonSumm
       {reasons.map((item) => {
         const percent = protectedUnits ? Math.round((item.count / protectedUnits) * 100) : 0;
         return (
-          <div key={item.reason} className="rounded-2xl border border-border/70 bg-background/80 p-3">
+          <Card key={item.reason} className="shadow-none">
+            <CardContent className="p-3">
             <div className="flex items-center justify-between gap-3">
               <span className="truncate text-sm font-black text-foreground">{item.label}</span>
               <Badge variant="outline">{item.count}</Badge>
             </div>
-            <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
-              <div className="h-full rounded-full bg-slate-400" style={{ width: `${percent}%` }} />
-            </div>
+            <Progress value={percent} className="mt-3 h-2" />
             <div className="mt-1 text-xs text-muted-foreground">保护区占比 {percent}%</div>
-          </div>
+            </CardContent>
+          </Card>
         );
       })}
     </div>
@@ -226,12 +248,13 @@ function SectionRow({ section, totalUnits }: { section: ProtectionMapSection; to
   const Icon = section.editable ? Unlock : Lock;
   const percent = totalUnits ? Math.round((section.count / totalUnits) * 100) : 0;
   return (
-    <div className={`rounded-3xl border p-4 ${section.editable ? "border-primary/20 bg-primary/5" : "border-border/70 bg-white/80"}`}>
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+    <Card className={section.editable ? "border-primary/20 bg-primary/5 shadow-none" : "shadow-none"}>
+      <CardContent className="p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={section.editable ? "text-primary" : "text-slate-500"}>
-              <Icon className="h-4 w-4" />
+            <span className={section.editable ? "text-primary" : "text-muted-foreground"}>
+              <Icon />
             </span>
             <span className="font-black text-foreground">{section.label}</span>
             <Badge variant={section.editable ? "default" : "outline"}>{section.count} 单元</Badge>
@@ -241,9 +264,9 @@ function SectionRow({ section, totalUnits }: { section: ProtectionMapSection; to
           {section.samples.length ? (
             <>
               <Separator className="my-3" />
-              <div className="space-y-2">
+              <div className="flex flex-col gap-2">
                 {section.samples.map((sample, index) => (
-                  <p key={`${section.key}-sample-${index}`} className="rounded-2xl bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
+                  <p key={`${section.key}-sample-${index}`} className="rounded-md bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
                     {sample || "空文本单元"}
                   </p>
                 ))}
@@ -251,11 +274,12 @@ function SectionRow({ section, totalUnits }: { section: ProtectionMapSection; to
             </>
           ) : null}
         </div>
-        <div className={`shrink-0 rounded-2xl px-3 py-2 text-xs font-black ${section.editable ? "bg-primary/10 text-primary" : "bg-slate-100 text-slate-600"}`}>
+        <Badge className="shrink-0" variant={section.editable ? "brand" : "secondary"}>
           {section.editable ? "进入改写" : "锁定保留"}
-        </div>
+        </Badge>
       </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
