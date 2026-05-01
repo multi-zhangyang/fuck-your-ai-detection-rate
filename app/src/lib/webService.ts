@@ -23,6 +23,9 @@ import type {
   ModelCatalogResult,
   ModelConfig,
   OutputPreview,
+  PromptId,
+  PromptPreviewItem,
+  PromptPreviewResponse,
   ReviewDecision,
   RoundCompareData,
   RoundProgress,
@@ -39,6 +42,12 @@ const WEB_API_GLOBALS = globalThis as { __FYADR_WEB_API__?: string };
 const WEB_API_BASE = WEB_API_GLOBALS.__FYADR_WEB_API__ ?? import.meta.env.VITE_FYADR_API_BASE ?? "";
 const FORMAT_RULE_PARSE_DEFAULT_TIMEOUT_MS = 300_000;
 const FORMAT_RULE_PARSE_MAX_TIMEOUT_MS = 1_815_000;
+const PROMPT_PREVIEW_FALLBACKS: Array<{ id: PromptId; label: string; description: string; relativePath: string }> = [
+  { id: "prewrite", label: "预改写", description: "保守自然化", relativePath: "prompts/fyadr-cn-prewrite.md" },
+  { id: "classical", label: "经典改写", description: "解释性慢节奏", relativePath: "prompts/fyadr-cn-classical.md" },
+  { id: "round1", label: "一轮", description: "主体改写", relativePath: "prompts/fyadr-cn-round1.md" },
+  { id: "round2", label: "二轮", description: "最终降痕", relativePath: "prompts/fyadr-cn-round2.md" },
+];
 
 type RequestJsonInit = RequestInit & {
   timeoutMs?: number;
@@ -87,6 +96,35 @@ function mergeModelConfig(...configs: Array<Partial<ModelConfig> | undefined>): 
     ? merged.promptSequence
     : defaultModelConfig.promptSequence;
   return { ...defaultModelConfig, ...merged, promptSequence, roundModels };
+}
+
+function getUtf8Size(value: string): number {
+  try {
+    return new TextEncoder().encode(value).length;
+  } catch {
+    return value.length;
+  }
+}
+
+async function loadPromptPreviewsViaReadOutput(): Promise<PromptPreviewResponse> {
+  const items = await Promise.all(
+    PROMPT_PREVIEW_FALLBACKS.map(async (meta): Promise<PromptPreviewItem> => {
+      const output = await requestJson<OutputPreview>(
+        `/api/read-output?outputPath=${encodeURIComponent(meta.relativePath)}&maxChars=100000`,
+        { timeoutMs: 8_000 },
+      );
+      const content = output.text ?? "";
+      const fileName = meta.relativePath.split("/").pop() ?? meta.relativePath;
+      return {
+        ...meta,
+        fileName,
+        sizeBytes: getUtf8Size(content),
+        updatedAt: "",
+        content,
+      };
+    }),
+  );
+  return { ok: true, promptDir: "prompts", items };
 }
 
 type RunStream = {
@@ -202,9 +240,11 @@ function pickSingleFile(accept: string): Promise<File | null> {
     let settled = false;
     let opened = false;
     let sawDialogBlur = false;
+    let userReturnArmed = false;
     let cancelCheckTimer: number | undefined;
     let watchdogTimer: number | undefined;
     let focusPollTimer: number | undefined;
+    let armUserReturnTimer: number | undefined;
 
     const cleanup = () => {
       if (cancelCheckTimer !== undefined) {
@@ -216,9 +256,14 @@ function pickSingleFile(accept: string): Promise<File | null> {
       if (focusPollTimer !== undefined) {
         window.clearInterval(focusPollTimer);
       }
+      if (armUserReturnTimer !== undefined) {
+        window.clearTimeout(armUserReturnTimer);
+      }
       window.removeEventListener("blur", handleBlur);
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("pointerdown", handleUserReturnedToPage, true);
+      document.removeEventListener("keydown", handleUserReturnedToPage, true);
       input.remove();
     };
 
@@ -255,11 +300,24 @@ function pickSingleFile(accept: string): Promise<File | null> {
       }
     }
 
+    function handleUserReturnedToPage() {
+      if (!userReturnArmed || settled || input.files?.length || !document.hasFocus()) {
+        return;
+      }
+      window.setTimeout(() => {
+        if (!settled && !input.files?.length && document.hasFocus()) {
+          finish(null);
+        }
+      }, 0);
+    }
+
     input.addEventListener("change", () => finish(input.files?.[0] ?? null), { once: true });
     input.addEventListener("cancel", () => finish(null), { once: true });
     window.addEventListener("blur", handleBlur);
     window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("pointerdown", handleUserReturnedToPage, true);
+    document.addEventListener("keydown", handleUserReturnedToPage, true);
     focusPollTimer = window.setInterval(() => {
       if (sawDialogBlur && document.visibilityState === "visible" && document.hasFocus()) {
         scheduleCancelCheck();
@@ -269,6 +327,9 @@ function pickSingleFile(accept: string): Promise<File | null> {
 
     document.body.appendChild(input);
     opened = true;
+    armUserReturnTimer = window.setTimeout(() => {
+      userReturnArmed = true;
+    }, 0);
     input.click();
   });
 }
@@ -531,6 +592,14 @@ export const webService: AppService = {
     return requestJson<EnvironmentDiagnostics>("/api/health");
   },
 
+  async getPromptPreviews(): Promise<PromptPreviewResponse> {
+    try {
+      return await requestJson<PromptPreviewResponse>("/api/prompts", { timeoutMs: 8_000 });
+    } catch {
+      return loadPromptPreviewsViaReadOutput();
+    }
+  },
+
   async cleanupTaskStateSnapshots(mode = "expired", maxAgeHours = 168): Promise<TaskStateCleanupResult> {
     return requestJson<TaskStateCleanupResult>("/api/task-state-snapshots/cleanup", {
       method: "POST",
@@ -558,10 +627,11 @@ export const webService: AppService = {
     return merged;
   },
 
-  async listModels(config: ModelConfig): Promise<ModelCatalogResult> {
+  async listModels(config: ModelConfig, signal?: AbortSignal): Promise<ModelCatalogResult> {
     return requestJson<ModelCatalogResult>("/api/list-models", {
       method: "POST",
       body: JSON.stringify(config),
+      signal,
     });
   },
 

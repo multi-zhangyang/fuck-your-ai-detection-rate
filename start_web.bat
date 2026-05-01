@@ -79,7 +79,17 @@ if errorlevel 1 (
 echo [Fuck your AI detection rate] Web UI is ready at http://127.0.0.1:1420
 
 if not "%FYADR_NO_BROWSER%"=="1" (
-  start "" "http://127.0.0.1:1420"
+  echo [Fuck your AI detection rate] Opening Web UI in your default browser...
+  python scripts\open_web_ui.py --url "http://127.0.0.1:1420" --default-report
+  if errorlevel 1 (
+    echo [Fuck your AI detection rate] Browser did not open automatically. Please open this URL manually:
+    echo   http://127.0.0.1:1420
+  )
+)
+
+if "%FYADR_NO_BROWSER%"=="1" (
+  echo [Fuck your AI detection rate] Browser auto-open is disabled. Open manually:
+  echo   http://127.0.0.1:1420
 )
 
 exit /b 0

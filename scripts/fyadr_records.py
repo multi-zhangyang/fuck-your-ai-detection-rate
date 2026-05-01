@@ -435,13 +435,53 @@ def _collect_record_source_paths(records: Dict[str, Any]) -> set[Path]:
     return paths
 
 
+def _empty_history_artifact_stats() -> Dict[str, Any]:
+    return {
+        "total": 0,
+        "existing": 0,
+        "intermediate": 0,
+        "exports": 0,
+        "reports": 0,
+        "sources": 0,
+        "external": 0,
+        "missing": 0,
+        "bytes": 0,
+    }
+
+
+def _merge_history_artifact_stats(*items: Dict[str, Any]) -> Dict[str, Any]:
+    merged = _empty_history_artifact_stats()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in merged:
+            value = item.get(key, 0)
+            if isinstance(value, (int, float)):
+                merged[key] += int(value)
+    return merged
+
+
+def _safe_delete_file(path: Path) -> tuple[str | None, Dict[str, str] | None, Dict[str, Any] | None]:
+    entry = _history_delete_file_entry(path)
+    if not entry.get("exists"):
+        return None, None, None
+    relative_path = str(entry.get("relativePath", str(path)))
+    try:
+        path.unlink()
+    except OSError as exc:
+        return None, {"path": relative_path, "message": str(exc)}, None
+    return relative_path, None, entry
+
+
 def _delete_source_related_paths_for_removed_entry(
     doc_id: str,
     deleted_entry: Dict[str, Any],
     retained_records: Dict[str, Any],
-) -> List[str]:
+) -> tuple[List[str], List[Dict[str, str]], Dict[str, Any]]:
     retained_paths = _collect_record_source_paths(retained_records)
     removed_paths: List[str] = []
+    failed_files: List[Dict[str, str]] = []
+    removed_entries: List[Dict[str, Any]] = []
     for candidate in sorted(_source_related_paths_for_entry(doc_id, deleted_entry)):
         if candidate in retained_paths:
             continue
@@ -449,9 +489,14 @@ def _delete_source_related_paths_for_removed_entry(
             continue
         if not candidate.exists() or not candidate.is_file():
             continue
-        candidate.unlink()
-        removed_paths.append(str(candidate.relative_to(ROOT_DIR)).replace("\\", "/"))
-    return removed_paths
+        removed_path, failed_file, removed_entry = _safe_delete_file(candidate)
+        if removed_path:
+            removed_paths.append(removed_path)
+        if failed_file:
+            failed_files.append(failed_file)
+        if removed_entry:
+            removed_entries.append(removed_entry)
+    return removed_paths, failed_files, _history_delete_stats_for_entries(removed_entries)
 
 
 def _artifact_category(path: Path) -> str:
@@ -510,10 +555,12 @@ def _delete_artifacts_for_removed_rounds(
     retained_rounds: List[Dict[str, Any]],
     *,
     exports_only: bool = False,
-) -> List[str]:
+) -> tuple[List[str], List[Dict[str, str]], Dict[str, Any]]:
     retained_paths = _collect_round_export_paths(retained_rounds) if exports_only else _collect_round_file_paths(retained_rounds)
     deleted_paths = _collect_round_export_paths(deleted_rounds) if exports_only else _collect_round_file_paths(deleted_rounds)
     removed_paths: List[str] = []
+    failed_files: List[Dict[str, str]] = []
+    removed_entries: List[Dict[str, Any]] = []
 
     for candidate in sorted(deleted_paths):
         if candidate in retained_paths:
@@ -522,10 +569,15 @@ def _delete_artifacts_for_removed_rounds(
             continue
         if not candidate.exists() or not candidate.is_file():
             continue
-        candidate.unlink()
-        removed_paths.append(str(candidate.relative_to(ROOT_DIR)).replace("\\", "/"))
+        removed_path, failed_file, removed_entry = _safe_delete_file(candidate)
+        if removed_path:
+            removed_paths.append(removed_path)
+        if failed_file:
+            failed_files.append(failed_file)
+        if removed_entry:
+            removed_entries.append(removed_entry)
 
-    return removed_paths
+    return removed_paths, failed_files, _history_delete_stats_for_entries(removed_entries)
 
 
 def _deleted_file_stats(removed_paths: List[str]) -> Dict[str, Any]:
@@ -916,7 +968,11 @@ def delete_rounds(
             for item in rounds
             if isinstance(item, dict) and not round_matches(item)
         ]
-        removed_files = _delete_artifacts_for_removed_rounds(deleted_rounds, retained_export_rounds, exports_only=True)
+        removed_files, failed_files, deleted_file_stats = _delete_artifacts_for_removed_rounds(
+            deleted_rounds,
+            retained_export_rounds,
+            exports_only=True,
+        )
         remaining_rounds_for_response = [
             item
             for item in rounds
@@ -948,7 +1004,8 @@ def delete_rounds(
             }),
             "removedDocument": False,
             "deletedFiles": removed_files,
-            "deletedFileStats": impact["fileStats"],
+            "deletedFileStats": deleted_file_stats,
+            "failedFiles": failed_files,
         }
         if normalized_prompt_profile is not None:
             result["promptProfile"] = normalized_prompt_profile
@@ -972,9 +1029,21 @@ def delete_rounds(
         records.pop(normalized_doc_id, None)
 
     save_records(records)
-    removed_files = [] if normalized_mode == "records_only" else _delete_artifacts_for_removed_rounds(deleted_rounds, remaining_rounds)
+    failed_files: List[Dict[str, str]] = []
+    deleted_file_stats = _empty_history_artifact_stats()
+    if normalized_mode == "records_only":
+        removed_files: List[str] = []
+    else:
+        removed_files, failed_files, deleted_file_stats = _delete_artifacts_for_removed_rounds(deleted_rounds, remaining_rounds)
     if normalized_mode == "records_artifacts_and_source" and not remaining_rounds:
-        removed_files.extend(_delete_source_related_paths_for_removed_entry(normalized_doc_id, doc_entry, records))
+        source_removed_files, source_failed_files, source_deleted_file_stats = _delete_source_related_paths_for_removed_entry(
+            normalized_doc_id,
+            doc_entry,
+            records,
+        )
+        removed_files.extend(source_removed_files)
+        failed_files.extend(source_failed_files)
+        deleted_file_stats = _merge_history_artifact_stats(deleted_file_stats, source_deleted_file_stats)
     remaining_rounds_for_response = remaining_rounds
     if normalized_prompt_profile is not None:
         remaining_rounds_for_response = [
@@ -1008,7 +1077,8 @@ def delete_rounds(
         }),
         "removedDocument": not remaining_rounds,
         "deletedFiles": removed_files,
-        "deletedFileStats": impact["fileStats"],
+        "deletedFileStats": deleted_file_stats,
+        "failedFiles": failed_files,
     }
     if normalized_prompt_profile is not None:
         result["promptProfile"] = normalized_prompt_profile
@@ -1028,7 +1098,11 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
     rounds = doc_entry.get("rounds") if isinstance(doc_entry.get("rounds"), list) else []
     target_rounds = [item for item in rounds if isinstance(item, dict)]
     if normalized_mode == "exports_only":
-        removed_files = _delete_artifacts_for_removed_rounds(target_rounds, [], exports_only=True)
+        removed_files, failed_files, deleted_file_stats = _delete_artifacts_for_removed_rounds(
+            target_rounds,
+            [],
+            exports_only=True,
+        )
         return {
             "docId": normalized_doc_id,
             "mode": normalized_mode,
@@ -1041,13 +1115,26 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
             }),
             "removedDocument": False,
             "deletedFiles": removed_files,
-            "deletedFileStats": impact["fileStats"],
+            "deletedFileStats": deleted_file_stats,
+            "failedFiles": failed_files,
         }
     records.pop(normalized_doc_id, None)
     save_records(records)
-    removed_files = [] if normalized_mode == "records_only" else _delete_artifacts_for_removed_rounds(target_rounds, [])
+    failed_files: List[Dict[str, str]] = []
+    deleted_file_stats = _empty_history_artifact_stats()
+    if normalized_mode == "records_only":
+        removed_files = []
+    else:
+        removed_files, failed_files, deleted_file_stats = _delete_artifacts_for_removed_rounds(target_rounds, [])
     if normalized_mode == "records_artifacts_and_source":
-        removed_files.extend(_delete_source_related_paths_for_removed_entry(normalized_doc_id, doc_entry, records))
+        source_removed_files, source_failed_files, source_deleted_file_stats = _delete_source_related_paths_for_removed_entry(
+            normalized_doc_id,
+            doc_entry,
+            records,
+        )
+        removed_files.extend(source_removed_files)
+        failed_files.extend(source_failed_files)
+        deleted_file_stats = _merge_history_artifact_stats(deleted_file_stats, source_deleted_file_stats)
     return {
         "docId": normalized_doc_id,
         "mode": normalized_mode,
@@ -1060,7 +1147,8 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
         "remainingRounds": [],
         "removedDocument": True,
         "deletedFiles": removed_files,
-        "deletedFileStats": impact["fileStats"],
+        "deletedFileStats": deleted_file_stats,
+        "failedFiles": failed_files,
     }
 
 

@@ -24,6 +24,7 @@ import type {
   ModelCatalogResult,
   ModelConfig,
   OutputPreview,
+  PromptPreviewResponse,
   RoundCompareData,
   RoundProgress,
   RoundProgressStatus,
@@ -43,10 +44,11 @@ export type PickedDocument = {
 
 export interface AppService {
   getHealth(): Promise<EnvironmentDiagnostics>;
+  getPromptPreviews(): Promise<PromptPreviewResponse>;
   cleanupTaskStateSnapshots(mode?: "expired" | "completed" | "all", maxAgeHours?: number): Promise<TaskStateCleanupResult>;
   loadModelConfig(): Promise<ModelConfig>;
   saveModelConfig(config: ModelConfig): Promise<ModelConfig>;
-  listModels(config: ModelConfig): Promise<ModelCatalogResult>;
+  listModels(config: ModelConfig, signal?: AbortSignal): Promise<ModelCatalogResult>;
   testModelConnection(config: ModelConfig): Promise<TestConnectionResult>;
   pickInputFile(): Promise<PickedDocument | null>;
   pickDetectionReport(providerHint?: DetectionReportProvider): Promise<DetectionReport | null>;

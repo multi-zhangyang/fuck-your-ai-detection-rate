@@ -80,6 +80,9 @@ function runRegression() {
     assertIncludes(appSource, "轮次未完成", "Interrupted run-round snapshots need a clear user-facing label.", failures);
     assertIncludes(appSource, "任务快照治理", "Diagnostics must expose task snapshot governance.", failures);
     assertIncludes(appSource, "cleanupTaskStateSnapshots", "Frontend must call backend task snapshot cleanup.", failures);
+    assertIncludes(appSource, "beginTask(\"restoring-document\"", "Restoring the previous document must enter the shared task lifecycle.", failures);
+    assertIncludes(appSource, "taskTicket !== taskTicketRef.current", "Async restoration must ignore stale task tickets.", failures);
+    assertIncludes(appSource, "finishTask(taskTicket);", "Restoration and other task flows must release their task ticket.", failures);
 
     const handleRunRoundSource = extractFunctionSource(appSource, "handleRunRound");
     assertIncludes(handleRunRoundSource, "const checkpointProgress = createCheckpointProgress", "Starting a round must seed UI from checkpoint status.", failures);
@@ -102,10 +105,14 @@ function runRegression() {
 
   if (webServiceSource) {
     const ensureRunStreamSource = extractFunctionSource(webServiceSource, "ensureRunStream");
+    const pickSingleFileSource = extractFunctionSource(webServiceSource, "pickSingleFile");
     assertIncludes(webServiceSource, "sseDisconnected: boolean;", "Run streams must track SSE disconnection separately from run failure.", failures);
     assertIncludes(ensureRunStreamSource, "stream.sseDisconnected = true;", "SSE close should mark the stream degraded.", failures);
     assertNotIncludes(ensureRunStreamSource, "new Error(\"Progress channel disconnected.\")", "SSE close must not immediately fail an active run.", failures);
     assertIncludes(webServiceSource, "stream.statusFailureCount >= 12 && (stream.sseDisconnected || stream.eventSource.readyState === EventSource.CLOSED)", "Polling must remain the authoritative fallback after SSE loss.", failures);
+    assertIncludes(pickSingleFileSource, "document.addEventListener(\"pointerdown\", handleUserReturnedToPage, true);", "File picker must release if the user returns to the page after cancel.", failures);
+    assertIncludes(pickSingleFileSource, "document.removeEventListener(\"pointerdown\", handleUserReturnedToPage, true);", "File picker fallback listeners must be cleaned up.", failures);
+    assertIncludes(pickSingleFileSource, "userReturnArmed = true;", "File picker return-to-page fallback must arm after the initial click.", failures);
   }
 
   const report = {
@@ -123,6 +130,8 @@ function runRegression() {
       "SSE disconnect no longer equals run failure",
       "diagnostics exposes persisted run task summaries",
       "diagnostics exposes task snapshot governance",
+      "document restoration participates in the shared task lifecycle",
+      "file picker cancellation has a return-to-page fallback",
     ],
   };
   mkdirSync(dirname(REPORT_PATH), { recursive: true });

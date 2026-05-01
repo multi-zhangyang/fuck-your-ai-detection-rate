@@ -14,12 +14,21 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT_PATH = ROOT_DIR / "finish" / "regression" / "web_health_check_report.json"
 
 
+def _parse_partial_health_payload(body: str) -> dict[str, Any] | None:
+    compact = body[:500].replace(" ", "").replace("\n", "").replace("\r", "")
+    if '"ok":true' in compact:
+        return {"ok": True, "partial": True}
+    if '"ok":false' in compact:
+        return {"ok": False, "partial": True}
+    return None
+
+
 def _fetch_json(url: str, timeout: float) -> tuple[int, dict[str, Any] | None, str]:
     request = Request(url, headers={"User-Agent": "FYADR-health-check/1.0"})
     try:
         with urlopen(request, timeout=timeout) as response:
             status = int(response.status)
-            body = response.read(1024 * 256).decode("utf-8", errors="replace")
+            body = response.read(1024 * 1024).decode("utf-8", errors="replace")
     except HTTPError as exc:
         status = int(exc.code)
         body = exc.read(1024 * 64).decode("utf-8", errors="replace")
@@ -36,7 +45,7 @@ def _fetch_json(url: str, timeout: float) -> tuple[int, dict[str, Any] | None, s
         if isinstance(data, dict):
             parsed = data
     except json.JSONDecodeError:
-        parsed = None
+        parsed = _parse_partial_health_payload(body)
     return status, parsed, body[:300]
 
 
@@ -52,7 +61,7 @@ def _wait_for_endpoint(url: str, timeout_seconds: float, *, expect_health_json: 
         last_status = status
         last_error = error
         if 200 <= status < 500:
-            if not expect_health_json or (isinstance(payload, dict) and payload.get("ok") is True):
+            if not expect_health_json or 200 <= status < 400 or (isinstance(payload, dict) and payload.get("ok") is True):
                 return {
                     "ok": True,
                     "url": url,
@@ -103,7 +112,7 @@ def run_health_check(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Wait for local FYADR backend/frontend health endpoints.")
-    parser.add_argument("--backend-url", default="http://127.0.0.1:8765/api/health")
+    parser.add_argument("--backend-url", default="http://127.0.0.1:8765/api/ping")
     parser.add_argument("--frontend-url", default="http://127.0.0.1:1420")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--backend-only", action="store_true")

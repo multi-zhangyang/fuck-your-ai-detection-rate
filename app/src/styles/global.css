@@ -71,8 +71,127 @@
     @apply fixed inset-y-0 left-0 z-30 flex flex-col border-r border-slate-200/80 bg-white/90 px-3 py-5 shadow-[12px_0_40px_rgba(15,23,42,0.06)] backdrop-blur-xl transition-[width] duration-300;
   }
 
+  .fy-nav-list {
+    @apply mt-1 space-y-1.5;
+  }
+
+  .fy-nav-item {
+    @apply flex w-full items-center rounded-2xl px-3 py-3 text-sm font-semibold transition;
+  }
+
+  .fy-nav-item-active {
+    @apply text-white shadow-soft;
+  }
+
+  .fy-nav-item-idle {
+    @apply text-slate-600 hover:bg-slate-100 hover:text-slate-950;
+  }
+
+  .fy-nav-icon {
+    @apply flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition;
+  }
+
+  .fy-sidebar-footer {
+    @apply mt-auto rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-3 text-xs font-semibold text-slate-500;
+  }
+
+  .fy-page-scroll {
+    @apply h-full min-h-0 overflow-auto pr-2;
+    scrollbar-width: thin;
+  }
+
+  .fy-page-fixed {
+    @apply h-full min-h-0 overflow-hidden pr-2;
+  }
+
+  .fy-diff-page {
+    @apply pr-0;
+  }
+
+  .fy-home-page {
+    @apply h-full min-h-0 overflow-hidden pr-0;
+  }
+
+  .fy-home-control-grid {
+    @apply grid h-full min-h-0 items-stretch gap-5 overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.38fr)];
+  }
+
+  .fy-home-side-stack {
+    @apply flex h-full max-h-full min-h-0 min-w-0 flex-col gap-4 overflow-y-auto overscroll-contain pb-2 pr-2;
+    scrollbar-width: thin;
+    scrollbar-gutter: stable;
+  }
+
+  .fy-home-side-stack .fy-icon-cell {
+    @apply h-9 w-9 rounded-xl;
+  }
+
+  .fy-home-result-area {
+    @apply flex h-full max-h-full min-h-0 min-w-0 flex-col gap-4 overflow-hidden pr-2;
+  }
+
+  .fy-home-diff-panel {
+    @apply flex min-h-0 min-w-0 flex-1;
+  }
+
+  .fy-global-statusbar {
+    @apply shrink-0 rounded-[1.75rem] border border-slate-200 bg-white/95 p-3 shadow-[0_14px_34px_rgba(15,23,42,0.06)] backdrop-blur-xl;
+  }
+
+  .fy-global-statusgrid {
+    @apply grid min-w-0 items-stretch gap-3 xl:grid-cols-[minmax(0,1.8fr)_minmax(0,0.9fr)_minmax(0,0.95fr)_minmax(0,1fr)_minmax(0,1.1fr)];
+  }
+
+  .fy-global-status-card {
+    @apply flex min-w-0 items-center rounded-[1.35rem] border bg-slate-50/80 px-5 py-4 text-left leading-tight transition hover:-translate-y-0.5 hover:shadow-sm;
+  }
+
+  .fy-global-document-card {
+    @apply min-h-[6.25rem];
+  }
+
+  .fy-global-metric-grid {
+    @apply grid min-w-0 items-stretch gap-2 overflow-hidden xl:grid-cols-[minmax(210px,1.15fr)_minmax(150px,0.85fr)_minmax(140px,0.75fr)];
+  }
+
+  .fy-global-mini-card {
+    @apply flex min-h-[6.25rem] min-w-0 flex-col justify-center overflow-hidden rounded-[1.35rem] border px-5 py-4 text-left leading-tight transition disabled:cursor-not-allowed disabled:opacity-60 hover:-translate-y-0.5 hover:shadow-sm;
+  }
+
+  .fy-global-mini-head {
+    @apply flex items-center gap-2 text-[11px] font-black opacity-70;
+  }
+
+  .fy-global-mini-value {
+    @apply mt-1 truncate text-base font-black;
+  }
+
+  .fy-global-mini-detail {
+    @apply mt-0.5 truncate text-xs font-semibold opacity-70;
+  }
+
+  .fy-global-progress-card {
+    @apply min-w-0;
+  }
+
+  .fy-global-statusbar .fy-status-tile {
+    @apply h-auto min-h-[6.25rem] w-auto min-w-0 justify-start gap-4 rounded-[1.35rem] px-5 py-4;
+  }
+
+  .fy-global-statusbar .fy-notification-text {
+    @apply block;
+  }
+
+  .fy-global-statusbar .fy-status-tile .fy-icon-cell {
+    @apply h-11 w-11 rounded-2xl;
+  }
+
   .fy-panel {
     @apply rounded-[1.75rem] border border-slate-200 bg-white/90 shadow-soft backdrop-blur-xl;
+  }
+
+  .fy-panel-header {
+    @apply shrink-0 border-b border-slate-100 bg-white px-6 py-5;
   }
 
   .fy-section {
@@ -116,16 +235,40 @@
     @apply border-red-200 bg-red-50 text-red-950;
   }
 
-  .fy-action-primary {
-    @apply bg-slate-950 text-white shadow-soft hover:bg-slate-800;
-  }
-
   .fy-icon-cell {
     @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl;
   }
 
   .fy-status-tile {
     @apply rounded-[1.35rem] border p-3;
+  }
+
+  .fy-current-document-card-empty {
+    @apply border-dashed border-slate-200 bg-slate-50;
+  }
+
+  .fy-current-document-card-active {
+    @apply border-blue-200 bg-blue-50/70 shadow-[inset_4px_0_0_rgba(37,99,235,0.72)];
+  }
+
+  .fy-control-card {
+    @apply rounded-[1.5rem] border;
+  }
+
+  .fy-control-card-document {
+    @apply border-blue-100 bg-blue-50/70 p-3;
+  }
+
+  .fy-control-card-route {
+    @apply border-violet-100 bg-white/90 p-3;
+  }
+
+  .fy-control-card-run {
+    @apply border-slate-200 bg-white/90 p-4;
+  }
+
+  .fy-control-card-running {
+    @apply border-red-200 bg-red-50;
   }
 
   .fy-tone-neutral {
@@ -188,6 +331,22 @@
     @apply border-t border-slate-100 bg-white/95 p-5;
   }
 
+  .fy-modal {
+    @apply absolute left-1/2 top-1/2 flex max-h-[calc(100vh-48px)] w-[560px] max-w-[calc(100vw-40px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[1.75rem] border bg-white shadow-2xl;
+  }
+
+  .fy-modal-header {
+    @apply flex items-start gap-4 border-b border-slate-100 bg-white px-5 py-5;
+  }
+
+  .fy-modal-body {
+    @apply min-h-0 flex-1 overflow-auto bg-slate-50/70 px-5 py-4;
+  }
+
+  .fy-modal-footer {
+    @apply flex shrink-0 justify-end gap-3 border-t border-slate-100 bg-white/95 p-5;
+  }
+
   .fy-empty-state {
     @apply rounded-3xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-500;
   }
@@ -210,6 +369,103 @@
 
   .fy-stat-card {
     @apply rounded-2xl border border-slate-200 bg-slate-50 p-4;
+  }
+
+  .fy-kpi-chip {
+    @apply rounded-2xl border px-4 py-3 text-xs font-black;
+  }
+
+  .fy-disclosure {
+    @apply shrink-0 rounded-3xl border border-slate-200 bg-slate-50/75;
+  }
+
+  .fy-disclosure-summary {
+    @apply flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-slate-950;
+  }
+
+  .fy-disclosure-body {
+    @apply space-y-4 border-t border-slate-200 p-4;
+  }
+
+  .fy-result-workbench {
+    @apply flex h-full min-h-0 flex-col overflow-hidden rounded-[1.75rem];
+  }
+
+  .fy-home-result-card {
+    @apply h-auto shrink-0 overflow-hidden rounded-[1.75rem];
+  }
+
+  .fy-home-result-body {
+    @apply overflow-visible;
+  }
+
+  .fy-result-header {
+    @apply shrink-0 rounded-t-[1.75rem] border-b border-slate-100 bg-white/95 px-5 py-4;
+  }
+
+  .fy-result-action-grid {
+    @apply grid shrink-0 gap-2 sm:grid-cols-2 xl:grid-cols-5;
+  }
+
+  .fy-result-action {
+    @apply h-auto min-h-[3.1rem] justify-start rounded-2xl px-4 py-3;
+  }
+
+  .fy-result-action-primary {
+    @apply bg-slate-950 text-white hover:bg-slate-800;
+  }
+
+  .fy-diff-review-card {
+    @apply border-cyan-100;
+  }
+
+  .fy-diff-review-card .fy-result-header {
+    @apply px-4 py-3;
+  }
+
+  .fy-diff-workbench {
+    @apply flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm;
+  }
+
+  .fy-diff-header {
+    @apply sticky top-0 z-20 shrink-0 border-b border-slate-100 bg-white px-3 py-2;
+  }
+
+  .fy-diff-toolbar {
+    @apply flex items-center gap-2 overflow-x-auto overflow-y-hidden pb-1;
+    scrollbar-width: thin;
+  }
+
+  .fy-diff-toolbar > * {
+    @apply shrink-0;
+  }
+
+  .fy-diff-alert {
+    @apply mx-3 mt-3 flex shrink-0 flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-xs leading-5;
+  }
+
+  .fy-diff-scroll {
+    @apply min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-slate-50/55 p-4 pr-3;
+  }
+
+  .fy-diff-chunk {
+    @apply grid min-w-0 gap-4 overflow-hidden rounded-3xl border p-4 transition xl:grid-cols-2;
+  }
+
+  .fy-diff-text-pane {
+    @apply min-w-0 overflow-hidden rounded-2xl border border-slate-100 p-3;
+  }
+
+  .fy-diff-text-body {
+    @apply max-h-[min(58vh,42rem)] min-h-[8rem] overflow-auto whitespace-pre-wrap break-words pr-2 text-sm leading-7 text-foreground;
+  }
+
+  .fy-candidate-card {
+    @apply min-w-0 overflow-hidden rounded-2xl border border-sky-200 bg-white/95 p-3;
+  }
+
+  .fy-candidate-actionbar {
+    @apply flex flex-wrap items-center justify-end gap-2;
   }
 
   .fy-input {

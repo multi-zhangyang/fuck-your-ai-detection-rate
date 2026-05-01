@@ -9,6 +9,7 @@
 - 确认没有提交 `.env`、`app/.env`、API Key、私有 Base URL、个人路径。
 - 确认根目录 `.env.example` 和 `app/.env.example` 只包含空值或占位说明。
 - 确认 `prompts/` 中核心 prompt 的改动是有意的。
+- 运行 `git status --short` 和 `git ls-files -ci --exclude-standard`，确认没有被忽略规则覆盖但仍在跟踪的本地产物。
 
 ## 二、启动验证
 
@@ -22,7 +23,7 @@ cd ..
 
 启动后检查：
 
-- 后端健康检查：`http://127.0.0.1:8765/api/health`
+- 后端启动探针：`http://127.0.0.1:8765/api/ping`
 - 前端页面：`http://127.0.0.1:1420`
 - 模型配置保存后刷新页面仍能恢复。
 - 上传取消后按钮仍可点击。
@@ -99,6 +100,7 @@ npm --prefix app run build
 - `.gitignore` 覆盖本地运行产物和私密文件。
 - `.github/ISSUE_TEMPLATE/` 和 Pull Request 模板能引导用户提供复现步骤与诊断信息。
 - `python scripts/open_source_audit.py` 无 error；特别确认没有 API Key、私有 Base URL、模型厂商 endpoint、个人路径、旧项目名和乱码。
+- `git ls-files -ci --exclude-standard` 没有输出；如有输出，先确认是否应从索引移除。
 - 审计 warning 中的 PDF、DOCX、截图、`finish/`、`origin/`、`logs/`、`app/dist/`、`app/node_modules/` 已确认不会提交。
 - 没有乱码文案、个人路径、个人模型地址或临时调试按钮。
 - 没有把浏览器下载到用户本地的文件描述成会被项目清理。

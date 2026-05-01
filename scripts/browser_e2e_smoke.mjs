@@ -259,8 +259,8 @@ async function waitForTextGone(client, text, timeoutMs = 10_000) {
   throw new Error(`Timed out waiting for text to disappear: ${text}`);
 }
 
-async function clickByText(client, text) {
-  const point = await evaluate(client, `(() => {
+async function findClickablePointByText(client, text) {
+  return evaluate(client, `(() => {
     const needle = ${JSON.stringify(text)};
     const selector = 'button,a,[role="button"],summary,label,input,textarea,[tabindex]';
     const isVisible = (element) => {
@@ -268,6 +268,7 @@ async function clickByText(client, text) {
       const style = window.getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     };
+    const isEnabled = (element) => !element.disabled && element.getAttribute('aria-disabled') !== 'true';
     const labelOf = (element) => [
       element.innerText,
       element.value,
@@ -275,7 +276,7 @@ async function clickByText(client, text) {
       element.getAttribute('title'),
       element.textContent,
     ].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
-    const candidates = Array.from(document.querySelectorAll(selector)).filter(isVisible);
+    const candidates = Array.from(document.querySelectorAll(selector)).filter((element) => isVisible(element) && isEnabled(element));
     const exact = candidates.find((element) => labelOf(element) === needle);
     const partial = candidates.find((element) => labelOf(element).includes(needle));
     const element = exact || partial;
@@ -288,15 +289,32 @@ async function clickByText(client, text) {
       label: labelOf(element),
     };
   })()`);
+}
+
+async function clickByText(client, text, timeoutMs = 10_000) {
+  const started = Date.now();
+  let point = null;
+  while (Date.now() - started < timeoutMs) {
+    point = await findClickablePointByText(client, text);
+    if (point) break;
+    await wait(250);
+  }
   if (!point) {
     const body = await evaluate(client, "document.body?.innerText?.slice(0, 1200) ?? ''", 3000);
-    throw new Error(`Unable to find clickable text: ${text}\nCurrent page text:\n${body}`);
+    throw new Error(`Unable to find enabled clickable text: ${text}\nCurrent page text:\n${body}`);
   }
   await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
   await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
   await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
   await wait(150);
   return point;
+}
+
+async function pressKey(client, key) {
+  const keyCode = key === "Escape" ? 27 : 0;
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode });
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode });
+  await wait(150);
 }
 
 async function captureScreenshot(client, path) {
@@ -328,17 +346,19 @@ async function runSmoke() {
   let browserClient = null;
   let browserProcess = null;
   let userDataDir = "";
+  let backendStartedBySmoke = false;
   const browserExecutable = findBrowserExecutable();
   const frontendPort = Number(process.env.FYADR_E2E_FRONTEND_PORT || await getFreePort());
   const debugPort = Number(process.env.FYADR_E2E_DEBUG_PORT || await getFreePort());
   const frontendUrl = process.env.FYADR_E2E_URL || `http://127.0.0.1:${frontendPort}`;
-  const backendHealthUrl = `${BACKEND_URL}/api/health`;
+  const backendHealthUrl = `${BACKEND_URL}/api/ping`;
 
   try {
     if (!(await requestOk(backendHealthUrl, 2000))) {
       const backend = new ManagedProcess("backend", process.env.PYTHON || "python", ["scripts/web_app.py"], { cwd: ROOT_DIR });
       managedProcesses.push(backend);
       await waitForHttp(backendHealthUrl, DEFAULT_TIMEOUT_MS, "backend", backend);
+      backendStartedBySmoke = true;
       checks.push("backend started or became reachable");
     } else {
       checks.push("backend already reachable");
@@ -373,9 +393,9 @@ async function runSmoke() {
     await browserClient.send("Log.enable").catch(() => undefined);
     await browserClient.send("Page.navigate", { url: frontendUrl });
     await waitForText(browserClient, "当前文件", DEFAULT_TIMEOUT_MS);
-    await waitForText(browserClient, "操作面板", DEFAULT_TIMEOUT_MS);
+    await waitForText(browserClient, "文档入口", DEFAULT_TIMEOUT_MS);
     await waitForText(browserClient, "上传文档", DEFAULT_TIMEOUT_MS);
-    checks.push("home page renders with current document strip and tool panel");
+    checks.push("home page renders with global task dashboard and card controls");
 
     let fileChooserIntercepted = false;
     try {
@@ -384,27 +404,40 @@ async function runSmoke() {
     } catch (error) {
       warnings.push(`file chooser cancel smoke skipped: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (fileChooserIntercepted) {
-      await clickByText(browserClient, "上传文档");
-      await waitForText(browserClient, "已取消选择文档", 12_000);
+    if (fileChooserIntercepted && backendStartedBySmoke) {
+      const hasRestoredDocument = await evaluate(browserClient, `document.body?.innerText?.includes("源文档 ·") ?? false`, 3000);
+      if (!hasRestoredDocument && await findClickablePointByText(browserClient, "上传文档")) {
+        await clickByText(browserClient, "上传文档");
+        await waitForText(browserClient, "已取消选择文档", 12_000);
+        await clickByText(browserClient, "模型配置");
+        await waitForText(browserClient, "默认连接", 12_000);
+        await clickByText(browserClient, "主页 / 实时 Diff");
+        await waitForText(browserClient, "文档入口", 12_000);
+        checks.push("document picker cancel releases UI and navigation remains clickable");
+      } else {
+        warnings.push("file chooser cancel smoke skipped because an existing document is already restored in the local backend state");
+        await clickByText(browserClient, "模型配置");
+        await waitForText(browserClient, "默认连接", 12_000);
+        await clickByText(browserClient, "主页 / 实时 Diff");
+        await waitForText(browserClient, "文档入口", 12_000);
+        checks.push("existing document state still allows sidebar navigation");
+      }
+    } else if (fileChooserIntercepted) {
+      warnings.push("file chooser cancel smoke skipped because an already-running local backend may carry user document state");
       await clickByText(browserClient, "模型配置");
       await waitForText(browserClient, "默认连接", 12_000);
       await clickByText(browserClient, "主页 / 实时 Diff");
-      await waitForText(browserClient, "操作面板", 12_000);
-      checks.push("document picker cancel releases UI and navigation remains clickable");
+      await waitForText(browserClient, "文档入口", 12_000);
+      checks.push("existing local backend state still allows sidebar navigation");
     }
 
-    await clickByText(browserClient, "专注 Diff");
-    await waitForText(browserClient, "展开操作面板", 10_000);
-    await waitForTextGone(browserClient, "文档、轮次、检测报告入口集中在这里", 10_000);
-    await browserClient.send("Page.reload", { ignoreCache: true });
-    await waitForText(browserClient, "当前文件", DEFAULT_TIMEOUT_MS);
-    await waitForText(browserClient, "展开操作面板", 12_000);
-    checks.push("Diff focus mode collapses right panel and survives refresh");
+    await waitForText(browserClient, "改写对照", 10_000);
+    await waitForText(browserClient, "文档入口", 10_000);
+    checks.push("inline Diff workbench is visible inside the home canvas");
 
-    await clickByText(browserClient, "展开操作面板");
-    await waitForText(browserClient, "操作面板", 10_000);
-    checks.push("collapsed home tool panel can be restored");
+    await clickByText(browserClient, "主页 / 实时 Diff");
+    await waitForText(browserClient, "文档入口", 10_000);
+    checks.push("home controls remain visible beside inline Diff workbench");
 
     await clickByText(browserClient, "学校规范");
     await waitForText(browserClient, "学校模板说明文档", 12_000);
@@ -412,13 +445,25 @@ async function runSmoke() {
     await waitForText(browserClient, "文档与生成物管理", 12_000);
     await clickByText(browserClient, "启动诊断");
     await waitForText(browserClient, "重新自检", 12_000);
+    await clickByText(browserClient, "提示词预览");
+    await waitForText(browserClient, "文件位置：", 12_000);
+    const promptPageUsesFixedBoundary = await evaluate(browserClient, "Boolean(document.querySelector('.fy-page-fixed') && document.querySelector('pre code'))", 3000);
+    if (!promptPageUsesFixedBoundary) {
+      throw new Error("Prompt preview page did not render inside the fixed page boundary.");
+    }
     checks.push("primary sidebar navigation remains responsive");
 
-    await clickByText(browserClient, "通知中心");
-    await waitForText(browserClient, "消息列表", 12_000);
-    await clickByText(browserClient, "关闭通知中心");
-    await waitForTextGone(browserClient, "消息列表", 12_000);
-    checks.push("notification center opens and closes");
+    await clickByText(browserClient, "主页 / 实时 Diff");
+    await waitForText(browserClient, "文档入口", 12_000);
+    await clickByText(browserClient, "通知与任务");
+    await waitForText(browserClient, "运行任务 / 历史通知", 12_000);
+    const notificationCenterIsDialog = await evaluate(browserClient, "Boolean(document.querySelector('[role=\"dialog\"][aria-modal=\"true\"][aria-labelledby=\"notification-center-title\"]'))", 3000);
+    if (!notificationCenterIsDialog) {
+      throw new Error("Notification center drawer is missing dialog accessibility attributes.");
+    }
+    await pressKey(browserClient, "Escape");
+    await waitForTextGone(browserClient, "运行任务 / 历史通知", 12_000);
+    checks.push("prompt preview renders and notification center opens/closes with Escape");
 
     return {
       ok: true,

@@ -1,7 +1,7 @@
 import type { ChangeEvent } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
-import { CheckCircle2, DatabaseZap, Loader2, Plus, RefreshCw, Save, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CheckCircle2, DatabaseZap, Loader2, Plus, RefreshCw, Route, Save, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,8 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { FormatRules, ModelCatalogResult, ModelConfig, ModelProviderConfig, RoundModelConfig } from "@/types/app";
+import type { FormatRules, ModelCatalogResult, ModelConfig, ModelProviderConfig } from "@/types/app";
 
 type ModelConfigCardProps = {
   value: ModelConfig;
@@ -23,7 +22,8 @@ type ModelConfigCardProps = {
   onSave: (nextValue?: ModelConfig, testValue?: ModelConfig) => void;
   onTestConnection: () => void;
   onRefreshModels: () => void;
-  onListModelsForConfig: (config: ModelConfig) => Promise<ModelCatalogResult | null>;
+  onListModelsForConfig: (config: ModelConfig, signal?: AbortSignal) => Promise<ModelCatalogResult | null>;
+  onOpenRoutePlanner?: () => void;
 };
 
 type SchoolFormatCardProps = {
@@ -48,7 +48,6 @@ type SchoolFormatCardProps = {
 };
 
 const NUMBER_FIELDS = new Set<keyof ModelConfig>(["temperature", "requestTimeoutSeconds", "maxRetries"]);
-const ROUND_NUMBER_FIELDS = new Set<keyof RoundModelConfig>(["temperature", "requestTimeoutSeconds", "maxRetries", "rateLimitWindowMinutes", "rateLimitMaxRequests"]);
 const PROVIDER_NUMBER_FIELDS = new Set<keyof ModelProviderConfig>(["temperature", "requestTimeoutSeconds", "maxRetries", "rateLimitWindowMinutes", "rateLimitMaxRequests"]);
 
 const API_OPTIONS: Array<{ value: ModelConfig["apiType"]; label: string }> = [
@@ -57,66 +56,6 @@ const API_OPTIONS: Array<{ value: ModelConfig["apiType"]; label: string }> = [
 ];
 
 const FORMAT_PARSER_DEFAULT_PROVIDER_ID = "__default";
-
-type RoundModelKey = "cn_prewrite:1" | "cn_prewrite:2" | "cn_prewrite:3" | "cn:1" | "cn:2" | "cn_custom:1" | "cn_custom:2" | "cn_custom:3";
-
-const text = (...codes: number[]) => String.fromCharCode(...codes);
-
-const ROUND_MODEL_STEPS: Array<{ key: RoundModelKey; title: string; subtitle: string }> = [
-  { key: "cn_prewrite:1", title: `${text(0x4e09, 0x8f6e)} ${text(0x00b7)} ${text(0x7b2c)} 1 ${text(0x8f6e)}`, subtitle: `${text(0x4fdd, 0x5b88, 0x6da6, 0x8272)} / ${text(0x57fa, 0x7840, 0x81ea, 0x7136, 0x5316)}` },
-  { key: "cn_prewrite:2", title: `${text(0x4e09, 0x8f6e)} ${text(0x00b7)} ${text(0x7b2c)} 2 ${text(0x8f6e)}`, subtitle: `${text(0x98ce, 0x683c, 0x6a21, 0x4eff)} / ${text(0x89e3, 0x91ca, 0x6027, 0x91cd, 0x5851)}` },
-  { key: "cn_prewrite:3", title: `${text(0x4e09, 0x8f6e)} ${text(0x00b7)} ${text(0x7b2c)} 3 ${text(0x8f6e)}`, subtitle: `${text(0x964d)} AI ${text(0x7387)} / ${text(0x7ec8, 0x8f6e, 0x5e73, 0x8861)}` },
-  { key: "cn:1", title: `${text(0x53cc, 0x8f6e)} ${text(0x00b7)} ${text(0x7b2c)} 1 ${text(0x8f6e)}`, subtitle: text(0x4e2d, 0x6587, 0x666e, 0x901a, 0x6a21, 0x5f0f, 0x9996, 0x8f6e) },
-  { key: "cn:2", title: `${text(0x53cc, 0x8f6e)} ${text(0x00b7)} ${text(0x7b2c)} 2 ${text(0x8f6e)}`, subtitle: text(0x4e2d, 0x6587, 0x666e, 0x901a, 0x6a21, 0x5f0f, 0x672b, 0x8f6e) },
-  { key: "cn_custom:1", title: "自定义 · 第 1 轮", subtitle: "按首页 Prompt 编排执行" },
-  { key: "cn_custom:2", title: "自定义 · 第 2 轮", subtitle: "按首页 Prompt 编排执行" },
-  { key: "cn_custom:3", title: "自定义 · 第 3 轮", subtitle: "按首页 Prompt 编排执行" },
-];
-
-function cloneDefaultRoundModel(value: ModelConfig): RoundModelConfig {
-  return {
-    enabled: true,
-    providerName: "",
-    baseUrl: value.baseUrl,
-    apiKey: value.apiKey,
-    model: value.model,
-    apiType: value.apiType,
-    temperature: value.temperature,
-    requestTimeoutSeconds: value.requestTimeoutSeconds,
-    maxRetries: value.maxRetries,
-    rateLimitWindowMinutes: 0,
-    rateLimitMaxRequests: 0,
-  };
-}
-
-function getStoredRoundModel(value: ModelConfig, key: RoundModelKey): RoundModelConfig | undefined {
-  return value.roundModels?.[key];
-}
-
-function getEditableRoundModel(value: ModelConfig, key: RoundModelKey): RoundModelConfig {
-  const stored = getStoredRoundModel(value, key);
-  if (stored) return stored;
-  return { ...cloneDefaultRoundModel(value), enabled: false };
-}
-
-function getDisplayRoundModel(value: ModelConfig, key: RoundModelKey): RoundModelConfig {
-  const stored = getStoredRoundModel(value, key);
-  if (stored?.enabled) return stored;
-  return { ...cloneDefaultRoundModel(value), enabled: false };
-}
-
-function toEffectiveModelConfig(value: ModelConfig, round: RoundModelConfig): ModelConfig {
-  return {
-    ...value,
-    baseUrl: round.baseUrl.trim() || value.baseUrl,
-    apiKey: round.apiKey.trim() || value.apiKey,
-    model: round.model.trim() || value.model,
-    apiType: round.apiType || value.apiType,
-    temperature: typeof round.temperature === "number" ? round.temperature : value.temperature,
-    requestTimeoutSeconds: typeof round.requestTimeoutSeconds === "number" ? round.requestTimeoutSeconds : value.requestTimeoutSeconds,
-    maxRetries: typeof round.maxRetries === "number" ? round.maxRetries : value.maxRetries,
-  };
-}
 
 function createModelProvider(value: ModelConfig): ModelProviderConfig {
   const timestamp = Date.now().toString(36);
@@ -162,13 +101,12 @@ export function ModelConfigCard({
   onTestConnection,
   onRefreshModels,
   onListModelsForConfig,
+  onOpenRoutePlanner,
 }: ModelConfigCardProps) {
-  const [roundCatalogs, setRoundCatalogs] = useState<Partial<Record<RoundModelKey, ModelCatalogResult>>>({});
-  const [roundCatalogBusy, setRoundCatalogBusy] = useState<Partial<Record<RoundModelKey, boolean>>>({});
-  const [roundCatalogErrors, setRoundCatalogErrors] = useState<Partial<Record<RoundModelKey, string>>>({});
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
   const [providerCatalogBusy, setProviderCatalogBusy] = useState<Partial<Record<string, boolean>>>({});
   const [providerCatalogErrors, setProviderCatalogErrors] = useState<Partial<Record<string, string>>>({});
+  const providerCatalogAbortRef = useRef<AbortController | null>(null);
 
   function handleFieldChange<K extends keyof ModelConfig>(key: K) {
     return (event: ChangeEvent<HTMLInputElement>) => {
@@ -211,11 +149,29 @@ export function ModelConfigCard({
     };
   }
 
+  function beginProviderCatalogRequest(): AbortController {
+    providerCatalogAbortRef.current?.abort("fyadr-provider-catalog-replaced");
+    const controller = new AbortController();
+    providerCatalogAbortRef.current = controller;
+    return controller;
+  }
+
+  function clearProviderCatalogRequest(controller: AbortController) {
+    if (providerCatalogAbortRef.current === controller) {
+      providerCatalogAbortRef.current = null;
+    }
+  }
+
+  function stopProviderCatalogRequest() {
+    providerCatalogAbortRef.current?.abort("fyadr-user-cancel");
+  }
+
   async function refreshProviderCatalog(provider: ModelProviderConfig) {
+    const abortController = beginProviderCatalogRequest();
     setProviderCatalogBusy((current) => ({ ...current, [provider.id]: true }));
     setProviderCatalogErrors((current) => ({ ...current, [provider.id]: "" }));
     try {
-      const catalog = await onListModelsForConfig(providerToModelConfig(value, provider));
+      const catalog = await onListModelsForConfig(providerToModelConfig(value, provider), abortController.signal);
       if (catalog) {
         updateProvider(provider.id, {
           models: catalog.models.map((item) => item.id),
@@ -223,8 +179,12 @@ export function ModelConfigCard({
         });
       }
     } catch (error) {
-      setProviderCatalogErrors((current) => ({ ...current, [provider.id]: error instanceof Error ? error.message : String(error) }));
+      setProviderCatalogErrors((current) => ({
+        ...current,
+        [provider.id]: abortController.signal.aborted ? "已停止读取模型列表。" : error instanceof Error ? error.message : String(error),
+      }));
     } finally {
+      clearProviderCatalogRequest(abortController);
       setProviderCatalogBusy((current) => ({ ...current, [provider.id]: false }));
     }
   }
@@ -232,12 +192,16 @@ export function ModelConfigCard({
   async function refreshAllProviderCatalogs() {
     const enabledProviders = providers.filter((provider) => provider.enabled !== false);
     if (!enabledProviders.length) return;
+    const abortController = beginProviderCatalogRequest();
     let nextProviders = [...providers];
     for (const provider of enabledProviders) {
+      if (abortController.signal.aborted) {
+        break;
+      }
       setProviderCatalogBusy((current) => ({ ...current, [provider.id]: true }));
       setProviderCatalogErrors((current) => ({ ...current, [provider.id]: "" }));
       try {
-        const catalog = await onListModelsForConfig(providerToModelConfig(value, provider));
+        const catalog = await onListModelsForConfig(providerToModelConfig(value, provider), abortController.signal);
         if (catalog) {
           nextProviders = nextProviders.map((item) => (
             item.id === provider.id
@@ -251,11 +215,16 @@ export function ModelConfigCard({
           ));
         }
       } catch (error) {
+        if (abortController.signal.aborted) {
+          setProviderCatalogErrors((current) => ({ ...current, [provider.id]: "已停止读取模型列表。" }));
+          break;
+        }
         setProviderCatalogErrors((current) => ({ ...current, [provider.id]: error instanceof Error ? error.message : String(error) }));
       } finally {
         setProviderCatalogBusy((current) => ({ ...current, [provider.id]: false }));
       }
     }
+    clearProviderCatalogRequest(abortController);
     const nextConfig = { ...value, modelProviders: nextProviders };
     onChange(nextConfig);
     onSave(nextConfig);
@@ -266,80 +235,26 @@ export function ModelConfigCard({
     onSave(value, testValue);
   }
 
-
-  function buildConfigWithRound(key: RoundModelKey, patch: Partial<RoundModelConfig> = {}): ModelConfig {
-    const current = getEditableRoundModel(value, key);
-    return {
-      ...value,
-      roundModels: {
-        ...(value.roundModels ?? {}),
-        [key]: { ...current, ...patch },
-      },
-    };
-  }
-
-  function updateRoundModel(key: RoundModelKey, patch: Partial<RoundModelConfig>) {
-    onChange(buildConfigWithRound(key, patch));
-  }
-
-  function handleRoundToggle(key: RoundModelKey, enabled: boolean) {
-    const stored = getStoredRoundModel(value, key);
-    const nextRound = enabled
-      ? { ...cloneDefaultRoundModel(value), ...(stored ?? {}), enabled: true }
-      : { ...(stored ?? cloneDefaultRoundModel(value)), enabled: false };
-    onChange({
-      ...value,
-      roundModels: {
-        ...(value.roundModels ?? {}),
-        [key]: nextRound,
-      },
-    });
-  }
-
-  function handleRoundFieldChange<K extends keyof RoundModelConfig>(key: RoundModelKey, field: K) {
-    return (event: ChangeEvent<HTMLInputElement>) => {
-      const rawValue = event.target.value;
-      const nextValue = ROUND_NUMBER_FIELDS.has(field) ? Number(rawValue) : rawValue;
-      updateRoundModel(key, { [field]: nextValue } as Partial<RoundModelConfig>);
-    };
-  }
-
-
-  async function refreshRoundCatalog(key: RoundModelKey) {
-    const round = getEditableRoundModel(value, key);
-    const effectiveConfig = toEffectiveModelConfig(value, round);
-    setRoundCatalogBusy((current) => ({ ...current, [key]: true }));
-    setRoundCatalogErrors((current) => ({ ...current, [key]: "" }));
-    try {
-      const catalog = await onListModelsForConfig(effectiveConfig);
-      if (catalog) {
-        setRoundCatalogs((current) => ({ ...current, [key]: catalog }));
-        if (!round.model.trim() && catalog.models[0]) {
-          updateRoundModel(key, { model: catalog.models[0].id });
-        }
-      }
-    } catch (error) {
-      setRoundCatalogErrors((current) => ({ ...current, [key]: error instanceof Error ? error.message : String(error) }));
-    } finally {
-      setRoundCatalogBusy((current) => ({ ...current, [key]: false }));
-    }
-  }
-
   const hasModelOptions = (modelCatalog?.models.length ?? 0) > 0;
   const providers = value.modelProviders ?? [];
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0] ?? null;
   const enabledRoundCount = Object.values(value.roundModels ?? {}).filter((item) => item?.enabled).length;
-  const visibleRoundSteps = ROUND_MODEL_STEPS.filter((step) => {
-    if (value.promptProfile === "cn_prewrite") return step.key.startsWith("cn_prewrite:");
-    if (value.promptProfile === "cn") return step.key.startsWith("cn:");
-    if (!step.key.startsWith("cn_custom:")) return false;
-    const roundNumber = Number(step.key.split(":")[1] || 0);
-    return roundNumber >= 1 && roundNumber <= Math.max(1, Math.min(3, value.promptSequence?.length ?? 3));
-  });
+  const enabledProviderCount = providers.filter((provider) => provider.enabled !== false).length;
+  const providerCatalogRunning = Object.values(providerCatalogBusy).some(Boolean);
+  const activePromptCount = value.promptProfile === "cn"
+    ? 2
+    : value.promptProfile === "cn_custom"
+      ? Math.max(1, Math.min(3, value.promptSequence?.length ?? 3))
+      : 3;
+  const promptProfileLabel = value.promptProfile === "cn"
+    ? "中文二轮"
+    : value.promptProfile === "cn_custom"
+      ? "自定义组合"
+      : "中文三轮预改写";
 
   return (
     <Card className="fy-panel flex h-full min-h-0 flex-col overflow-hidden">
-      <CardHeader className="shrink-0 border-b border-slate-100 bg-white px-6 py-5">
+      <CardHeader className="fy-panel-header">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -347,29 +262,35 @@ export function ModelConfigCard({
               <Badge variant={value.offlineMode ? "warning" : "default"}>{value.offlineMode ? "离线模式" : "在线模式"}</Badge>
               {enabledRoundCount ? <Badge variant="outline">专属轮次 {enabledRoundCount}</Badge> : null}
             </div>
-            <CardTitle className="mt-3 text-2xl">模型与路线</CardTitle>
+            <CardTitle className="mt-3 text-2xl">模型配置中枢</CardTitle>
+            <CardDescription className="mt-1">默认连接兜底，服务商仓库存能力，首页负责每轮怎么用。</CardDescription>
           </div>
-          <div className="grid gap-2 text-xs font-black text-slate-600 sm:grid-cols-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">默认：{value.model || "未配置"}</div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">服务商：{providers.length}</div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">启用：{providers.filter((provider) => provider.enabled).length}</div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <div className="fy-kpi-chip fy-tone-info">默认：{value.model || "未配置"}</div>
+            <div className="fy-kpi-chip fy-tone-success">服务商：{enabledProviderCount}/{providers.length}</div>
+            <div className="fy-kpi-chip fy-tone-brand">路线：{promptProfileLabel}</div>
           </div>
         </div>
       </CardHeader>
 
       <CardContent className="min-h-0 flex-1 overflow-hidden p-5">
-        <Tabs defaultValue="default" className="flex h-full min-h-0 flex-col gap-5">
-          <TabsList className="inline-grid w-auto shrink-0 grid-cols-2 rounded-2xl bg-slate-100 p-1">
-            <TabsTrigger value="default">{text(0x9ed8, 0x8ba4, 0x8fde, 0x63a5)}</TabsTrigger>
-            <TabsTrigger value="providers">服务商仓库</TabsTrigger>
-          </TabsList>
+        <div className="grid h-full min-h-0 gap-5 2xl:grid-cols-[340px_minmax(0,1fr)_300px]">
+          <section data-ui-section="model-default-connection" className="fy-section flex min-h-0 flex-col overflow-hidden p-0">
+            <div className="shrink-0 border-b border-blue-100 bg-blue-950 px-4 py-4 text-white">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-base font-black">1 默认连接</div>
+                  <div className="mt-1 text-xs font-semibold text-white/60">{value.model || "未配置模型"}</div>
+                </div>
+                <Badge variant={value.offlineMode ? "warning" : "secondary"}>{value.offlineMode ? "离线" : "在线"}</Badge>
+              </div>
+            </div>
 
-          <TabsContent value="default" className="min-h-0 flex-1 overflow-auto pr-1">
-            <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-              <div className="space-y-4 rounded-3xl border border-border/70 bg-background/70 p-4">
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              <div className="space-y-4">
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="baseUrl">{text(0x63a5, 0x53e3, 0x5730, 0x5740)}</Label>
+                    <Label htmlFor="baseUrl">API 地址</Label>
                     <Input id="baseUrl" value={value.baseUrl} onChange={handleFieldChange("baseUrl")} placeholder="https://api.example.com/v1" />
                   </div>
                   <div className="space-y-2 md:col-span-2">
@@ -377,18 +298,18 @@ export function ModelConfigCard({
                     <Input id="apiKey" type="password" value={value.apiKey} onChange={handleFieldChange("apiKey")} placeholder="sk-..." />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="model">{text(0x9ed8, 0x8ba4, 0x6a21, 0x578b)}</Label>
+                    <Label htmlFor="model">默认模型</Label>
                     {hasModelOptions ? (
                       <Select value={value.model || undefined} onValueChange={(model) => onChange({ ...value, model })}>
-                        <SelectTrigger><SelectValue placeholder={text(0x9009, 0x62e9, 0x6a21, 0x578b)} /></SelectTrigger>
+                        <SelectTrigger><SelectValue placeholder="选择模型" /></SelectTrigger>
                         <SelectContent>{modelCatalog?.models.map((item) => <SelectItem key={item.id} value={item.id}>{item.id}</SelectItem>)}</SelectContent>
                       </Select>
                     ) : (
-                      <Input id="model" value={value.model} onChange={handleFieldChange("model")} placeholder={text(0x586b, 0x5199, 0x6a21, 0x578b, 0x540d, 0x79f0)} />
+                      <Input id="model" value={value.model} onChange={handleFieldChange("model")} placeholder="填写模型名称" />
                     )}
                   </div>
                   <div className="space-y-2">
-                    <Label>{text(0x63a5, 0x53e3, 0x7c7b, 0x578b)}</Label>
+                    <Label>接口类型</Label>
                     <Select value={value.apiType} onValueChange={(apiType) => onChange({ ...value, apiType: apiType as ModelConfig["apiType"] })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>{API_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
@@ -399,67 +320,70 @@ export function ModelConfigCard({
                     <Input id="temperature" type="number" step="0.1" min="0" max="2" value={value.temperature} onChange={handleFieldChange("temperature")} />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="requestTimeoutSeconds">{text(0x8d85, 0x65f6, 0x79d2, 0x6570)}</Label>
+                    <Label htmlFor="requestTimeoutSeconds">超时秒数</Label>
                     <Input id="requestTimeoutSeconds" type="number" min="30" value={value.requestTimeoutSeconds} onChange={handleFieldChange("requestTimeoutSeconds")} />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="maxRetries">{text(0x6700, 0x5927, 0x91cd, 0x8bd5)}</Label>
+                    <Label htmlFor="maxRetries">最大重试</Label>
                     <Input id="maxRetries" type="number" min="0" max="10" value={value.maxRetries} onChange={handleFieldChange("maxRetries")} />
                   </div>
                   <div className="flex items-center justify-between rounded-2xl border border-border/70 px-4 py-3 md:col-span-2">
                     <div>
-                      <div className="text-sm font-semibold">{text(0x79bb, 0x7ebf, 0x6a21, 0x5f0f)}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">{text(0x4ec5, 0x7528, 0x4e8e, 0x4e0d, 0x8c03, 0x7528, 0x8fdc, 0x7a0b, 0x6a21, 0x578b, 0x7684, 0x672c, 0x5730, 0x6d41, 0x7a0b, 0x6d4b, 0x8bd5, 0x3002)}</div>
+                      <div className="text-sm font-semibold">离线模式</div>
                     </div>
                     <Switch checked={value.offlineMode} onCheckedChange={(offlineMode) => onChange({ ...value, offlineMode })} />
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-3 pt-1">
-                  <Button variant="outline" onClick={onTestConnection} disabled={busy}><ShieldCheck className="h-4 w-4" />{text(0x6d4b, 0x8bd5, 0x8fde, 0x901a, 0x6027)}</Button>
-                  <Button variant="outline" onClick={onRefreshModels} disabled={busy || modelCatalogBusy || value.offlineMode}>{modelCatalogBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{text(0x8bfb, 0x53d6, 0x9ed8, 0x8ba4, 0x6a21, 0x578b, 0x5217, 0x8868)}</Button>
-                  <Button onClick={() => onSave(value, value)} disabled={busy}><Save className="h-4 w-4" />{text(0x4fdd, 0x5b58, 0x914d, 0x7f6e)}</Button>
+                  <Button variant="outline" onClick={onTestConnection} disabled={busy}><ShieldCheck className="h-4 w-4" />测试连接</Button>
+                  <Button variant="outline" onClick={onRefreshModels} disabled={busy || modelCatalogBusy || value.offlineMode}>{modelCatalogBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取默认模型列表</Button>
+                  <Button onClick={() => onSave(value, value)} disabled={busy}><Save className="h-4 w-4" />保存默认配置</Button>
                 </div>
-              </div>
-
-              <div className="rounded-3xl border border-border/70 bg-muted/30 p-4">
-                <div className="flex items-center gap-2 text-sm font-semibold"><DatabaseZap className="h-4 w-4 text-primary" />{text(0x6a21, 0x578b, 0x5217, 0x8868)}</div>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">{text(0x8fd9, 0x91cc, 0x53ea, 0x8bfb, 0x53d6, 0x9ed8, 0x8ba4, 0x63d0, 0x4f9b, 0x5546, 0x3002, 0x6bcf, 0x4e00, 0x8f6e, 0x53ef, 0x5728, 0x201c, 0x8f6e, 0x6b21, 0x7f16, 0x6392, 0x201d, 0x91cc, 0x5355, 0x72ec, 0x8bfb, 0x53d6, 0x3002)}</p>
-                {modelCatalogError ? <div className="mt-3 rounded-2xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{modelCatalogError}</div> : null}
-                {modelCatalog ? <div className="mt-3 text-sm text-muted-foreground">{text(0x5df2, 0x8bfb, 0x53d6)} {modelCatalog.total} {text(0x4e2a, 0x6a21, 0x578b)}</div> : null}
+                {modelCatalogError ? <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{modelCatalogError}</div> : null}
+                {modelCatalog ? <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm font-semibold text-blue-900">已读取 {modelCatalog.total} 个默认模型</div> : null}
               </div>
             </div>
-          </TabsContent>
+          </section>
 
-          <TabsContent value="providers" className="min-h-0 flex-1 overflow-hidden">
-            <div className="grid h-full min-h-0 gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
-              <div className="fy-section flex min-h-0 flex-col overflow-hidden p-0">
-                <div className="shrink-0 border-b border-slate-100 bg-slate-950 px-4 py-4 text-white">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-base font-black">服务商仓库</div>
-                      <div className="mt-1 text-xs font-semibold text-white/60">{providers.length} 个服务商 · {providers.filter((provider) => provider.enabled).length} 个启用</div>
-                    </div>
-                    <Button type="button" size="sm" className="bg-white text-slate-950 hover:bg-white/90" onClick={addProvider} disabled={busy}>
-                      <Plus className="h-4 w-4" />添加
+          <section data-ui-section="model-provider-repository" className="fy-section flex min-h-0 flex-col overflow-hidden p-0">
+            <div className="shrink-0 border-b border-emerald-100 bg-emerald-950 px-4 py-4 text-white">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="text-base font-black">2 服务商仓库</div>
+                  <div className="mt-1 text-xs font-semibold text-white/60">{providers.length} 个服务商 · {enabledProviderCount} 个启用</div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" size="sm" className="bg-white text-slate-950 hover:bg-white/90" onClick={addProvider} disabled={busy}>
+                    <Plus className="h-4 w-4" />添加
+                  </Button>
+                  {providerCatalogRunning ? (
+                    <Button type="button" size="sm" variant="outline" className="border-red-200 bg-red-500/20 text-white hover:bg-red-500/30" onClick={stopProviderCatalogRequest}>
+                      <X className="h-4 w-4" />停止读取
                     </Button>
-                  </div>
-                  <Button type="button" size="sm" variant="outline" className="mt-3 w-full border-white/20 bg-white/10 text-white hover:bg-white/15" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || value.offlineMode || providers.every((provider) => provider.enabled === false)}>
+                  ) : null}
+                  <Button type="button" size="sm" variant="outline" className="border-white/20 bg-white/10 text-white hover:bg-white/15" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || value.offlineMode || providers.every((provider) => provider.enabled === false)}>
                     <RefreshCw className="h-4 w-4" />读取全部模型列表
                   </Button>
                 </div>
+              </div>
+            </div>
 
+            <div className="grid min-h-0 flex-1 gap-4 p-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+              <div className="flex min-h-0 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-slate-50/70">
+                <div className="shrink-0 border-b border-slate-200 px-3 py-3 text-sm font-black text-slate-800">服务商列表</div>
                 <div className="min-h-0 flex-1 space-y-2 overflow-auto p-3">
                   {providers.length ? providers.map((provider) => {
                     const active = selectedProvider?.id === provider.id;
                     const modelLabel = provider.defaultModel || provider.models?.[0] || "未选择模型";
                     const modelCount = provider.models?.length ?? 0;
+                    const providerEnabled = provider.enabled !== false;
                     return (
                       <button
                         key={provider.id}
                         type="button"
                         onClick={() => setSelectedProviderId(provider.id)}
                         className={`group w-full rounded-2xl border p-3 text-left transition ${
-                          active ? "border-blue-300 bg-blue-50 shadow-sm" : "border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50"
+                          active ? "border-emerald-300 bg-white shadow-sm ring-2 ring-emerald-100" : "border-slate-200 bg-white hover:border-emerald-200 hover:bg-emerald-50/40"
                         }`}
                       >
                         <div className="flex items-start justify-between gap-3">
@@ -467,7 +391,7 @@ export function ModelConfigCard({
                             <span className="block truncate text-sm font-black text-slate-950">{provider.name || "未命名服务商"}</span>
                             <span className="mt-1 block truncate text-xs font-semibold text-slate-500">{modelLabel}</span>
                           </span>
-                          <Badge variant={provider.enabled ? "success" : "outline"}>{provider.enabled ? "启用" : "关闭"}</Badge>
+                          <Badge variant={providerEnabled ? "success" : "outline"}>{providerEnabled ? "启用" : "关闭"}</Badge>
                         </div>
                         <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-slate-500">
                           <span className="rounded-xl bg-slate-100 px-2 py-1 text-center">{modelCount} 模型</span>
@@ -488,12 +412,12 @@ export function ModelConfigCard({
               <div className="min-h-0 min-w-0 overflow-hidden">
                 {selectedProvider ? (
                   <div className="h-full space-y-4 overflow-auto pr-1">
-                    <div className="rounded-[2rem] border border-slate-200 bg-gradient-to-br from-slate-950 via-blue-950 to-indigo-950 p-5 text-white shadow-soft">
+                    <div className="rounded-[2rem] border border-slate-200 bg-gradient-to-br from-slate-950 via-emerald-950 to-blue-950 p-5 text-white shadow-soft">
                       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                         <div className="min-w-0">
                           <div className="truncate text-2xl font-black">{selectedProvider.name || "未命名服务商"}</div>
                           <div className="mt-3 flex flex-wrap gap-2">
-                            <Badge variant={selectedProvider.enabled ? "success" : "outline"}>{selectedProvider.enabled ? "已启用" : "已关闭"}</Badge>
+                            <Badge variant={selectedProvider.enabled !== false ? "success" : "outline"}>{selectedProvider.enabled !== false ? "已启用" : "已关闭"}</Badge>
                             <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-black">{selectedProvider.models?.length ?? 0} 个缓存模型</span>
                             <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-black">
                               {selectedProvider.rateLimitWindowMinutes && selectedProvider.rateLimitMaxRequests ? `${selectedProvider.rateLimitWindowMinutes} 分钟 ${selectedProvider.rateLimitMaxRequests} 次` : "不限速"}
@@ -501,10 +425,10 @@ export function ModelConfigCard({
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <Button type="button" size="sm" className="bg-white text-slate-950 hover:bg-white/90" disabled={busy || Boolean(providerCatalogBusy[selectedProvider.id]) || value.offlineMode} onClick={() => void refreshProviderCatalog(selectedProvider)}>
+                          <Button type="button" size="sm" className="bg-white text-slate-950 hover:bg-white/90" disabled={busy || providerCatalogRunning || value.offlineMode} onClick={() => void refreshProviderCatalog(selectedProvider)}>
                             {providerCatalogBusy[selectedProvider.id] ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}获取模型
                           </Button>
-                          <Button type="button" size="sm" className="bg-blue-500 text-white hover:bg-blue-400" onClick={() => saveProviderConfig(selectedProvider)} disabled={busy}>
+                          <Button type="button" size="sm" className="bg-emerald-500 text-white hover:bg-emerald-400" onClick={() => saveProviderConfig(selectedProvider)} disabled={busy}>
                             <Save className="h-4 w-4" />保存
                           </Button>
                           <Button type="button" variant="outline" size="sm" className="border-white/20 bg-white/10 text-white hover:bg-white/15" onClick={() => deleteProvider(selectedProvider.id)} disabled={busy}>
@@ -517,7 +441,7 @@ export function ModelConfigCard({
                     <div className="fy-section p-5">
                       <div className="mb-4 flex items-center justify-between gap-3">
                         <div className="text-sm font-black text-slate-950">连接</div>
-                        <Switch checked={selectedProvider.enabled} onCheckedChange={(enabled) => updateProvider(selectedProvider.id, { enabled })} />
+                        <Switch checked={selectedProvider.enabled !== false} onCheckedChange={(enabled) => updateProvider(selectedProvider.id, { enabled })} />
                       </div>
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
@@ -609,8 +533,52 @@ export function ModelConfigCard({
                 )}
               </div>
             </div>
-          </TabsContent>
-        </Tabs>
+          </section>
+
+          <section data-ui-section="model-home-route-planner" className="fy-section flex min-h-0 flex-col overflow-hidden p-0">
+            <div className="shrink-0 border-b border-violet-100 bg-violet-950 px-4 py-4 text-white">
+              <div className="flex items-center gap-3">
+                <Route className="h-5 w-5" />
+                <div>
+                  <div className="text-base font-black">3 首页编排</div>
+                  <div className="mt-1 text-xs font-semibold text-white/60">{promptProfileLabel} · {activePromptCount} 轮</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
+              <div className="rounded-3xl border border-violet-200 bg-violet-50 p-4">
+                <div className="text-sm font-black text-violet-950">当前路线</div>
+                <div className="mt-3 grid gap-2 text-sm font-semibold text-violet-900">
+                  <div className="rounded-2xl bg-white/80 px-3 py-2">Prompt：{promptProfileLabel}</div>
+                  <div className="rounded-2xl bg-white/80 px-3 py-2">轮次数：{activePromptCount}</div>
+                  <div className="rounded-2xl bg-white/80 px-3 py-2">专属模型：{enabledRoundCount || "未单独指定"}</div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="text-sm font-black text-slate-950">先建仓库</div>
+                  <div className="mt-1 text-xs font-semibold text-slate-500">这里保存服务商、模型列表和限速。</div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="text-sm font-black text-slate-950">再排轮次</div>
+                  <div className="mt-1 text-xs font-semibold text-slate-500">首页按 Prompt 顺序选择每轮用哪个服务商和模型。</div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="text-sm font-black text-slate-950">运行时继承</div>
+                  <div className="mt-1 text-xs font-semibold text-slate-500">未指定的轮次走默认连接；指定的轮次走服务商仓库。</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="shrink-0 border-t border-violet-100 bg-white/80 p-4">
+              <Button type="button" className="w-full bg-violet-600 text-white hover:bg-violet-500" onClick={onOpenRoutePlanner} disabled={!onOpenRoutePlanner}>
+                <Route className="h-4 w-4" />去首页编排轮次
+              </Button>
+            </div>
+          </section>
+        </div>
       </CardContent>
     </Card>
   );

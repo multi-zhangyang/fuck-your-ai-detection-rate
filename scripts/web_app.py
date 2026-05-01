@@ -59,6 +59,33 @@ RUN_STATE_TTL_SECONDS = 1800
 SSE_KEEPALIVE_INTERVAL_SECONDS = 15
 TASK_STATE_RETENTION_HOURS = 168
 TASK_STATE_SNAPSHOT_PREFIXES = ("run_round_", "batch_rerun_")
+PROMPT_DIR = ROOT_DIR / "prompts"
+PROMPT_PREVIEW_FILES: tuple[dict[str, str], ...] = (
+    {
+        "id": "prewrite",
+        "label": "预改写",
+        "description": "保守自然化",
+        "relativePath": "prompts/fyadr-cn-prewrite.md",
+    },
+    {
+        "id": "classical",
+        "label": "经典改写",
+        "description": "解释性慢节奏",
+        "relativePath": "prompts/fyadr-cn-classical.md",
+    },
+    {
+        "id": "round1",
+        "label": "一轮",
+        "description": "主体改写",
+        "relativePath": "prompts/fyadr-cn-round1.md",
+    },
+    {
+        "id": "round2",
+        "label": "二轮",
+        "description": "最终降痕",
+        "relativePath": "prompts/fyadr-cn-round2.md",
+    },
+)
 
 
 @dataclass
@@ -163,6 +190,26 @@ def write_uploaded_detection_report(filename: str, content_base64: str) -> Path:
     target_path = DETECTION_REPORT_DIR / safe_name
     target_path.write_bytes(base64.b64decode(content_base64))
     return target_path
+
+
+def build_prompt_preview_item(meta: dict[str, str]) -> dict[str, Any]:
+    relative_path = Path(meta["relativePath"])
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise ValueError("Invalid prompt preview path.")
+    prompt_path = (ROOT_DIR / relative_path).resolve()
+    if prompt_path.parent != PROMPT_DIR.resolve():
+        raise ValueError("Prompt preview path must stay inside prompts directory.")
+    stat = prompt_path.stat()
+    return {
+        "id": meta["id"],
+        "label": meta["label"],
+        "description": meta["description"],
+        "fileName": prompt_path.name,
+        "relativePath": str(relative_path).replace("\\", "/"),
+        "sizeBytes": stat.st_size,
+        "updatedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat().replace("+00:00", "Z"),
+        "content": prompt_path.read_text(encoding="utf-8"),
+    }
 
 
 def normalize_source_path(source_path: str) -> str:
@@ -1207,6 +1254,31 @@ def add_cors_headers(response: Response) -> Response:
 @app.route("/api/model-config", methods=["GET"])
 def get_model_config() -> Response:
     return jsonify(load_app_config())
+
+
+@app.route("/api/prompts", methods=["GET"])
+def get_prompts() -> tuple[Response, int] | Response:
+    try:
+        return jsonify(
+            {
+                "ok": True,
+                "promptDir": "prompts",
+                "items": [build_prompt_preview_item(item) for item in PROMPT_PREVIEW_FILES],
+            }
+        )
+    except Exception as exc:
+        return error_response(str(exc), 500)
+
+
+@app.route("/api/ping", methods=["GET"])
+def get_ping() -> Response:
+    return jsonify(
+        {
+            "ok": True,
+            "service": "fyadr-web",
+            "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+    )
 
 
 @app.route("/api/health", methods=["GET"])

@@ -38,6 +38,23 @@ export type FormatParserModelRoute = {
 export type PromptId = "prewrite" | "classical" | "round1" | "round2";
 export type PromptProfile = "cn" | "cn_prewrite" | "cn_custom";
 
+export type PromptPreviewItem = {
+  id: PromptId;
+  label: string;
+  description: string;
+  fileName: string;
+  relativePath: string;
+  sizeBytes: number;
+  updatedAt: string;
+  content: string;
+};
+
+export type PromptPreviewResponse = {
+  ok: boolean;
+  promptDir: string;
+  items: PromptPreviewItem[];
+};
+
 export type ModelConfig = {
   baseUrl: string;
   apiKey: string;
@@ -602,6 +619,7 @@ export type DeleteHistoryResult = {
   removedDocument: boolean;
   deletedFiles: string[];
   deletedFileStats?: HistoryArtifactStats;
+  failedFiles?: Array<{ path: string; message: string }>;
   promptProfile?: PromptProfile;
   promptSequence?: PromptId[];
 };
@@ -621,7 +639,7 @@ export type HistoryArtifactStats = {
 export type HistoryOrphanArtifactFile = {
   path: string;
   relativePath: string;
-  kind: "intermediate" | "exports" | "reports" | "external";
+  kind: "sources" | "intermediate" | "exports" | "reports" | "external";
   bytes: number;
   modifiedAt: string;
 };

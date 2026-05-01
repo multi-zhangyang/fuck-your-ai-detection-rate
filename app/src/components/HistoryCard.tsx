@@ -569,6 +569,36 @@ function HistoryDeleteAction({
   );
 }
 
+function HistoryGovernanceBoundary() {
+  const cards = [
+    {
+      title: "先预览再执行",
+      text: "删除、回滚、清理前先生成影响预览；预览不会改动任何文件。",
+      tone: "border-blue-200 bg-blue-50 text-blue-800",
+    },
+    {
+      title: "只治理项目内文件",
+      text: "清理对象限定在项目记录、origin、finish、审计报告和运行中间产物。",
+      tone: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    },
+    {
+      title: "外部文件不碰",
+      text: "浏览器下载目录、外部原始路径和用户自己保存的 Word/PDF 不会被删除。",
+      tone: "border-amber-200 bg-amber-50 text-amber-800",
+    },
+  ];
+  return (
+    <div data-ui-section="history-governance-boundary" className="grid gap-3 lg:grid-cols-3">
+      {cards.map((card) => (
+        <div key={card.title} className={`rounded-2xl border p-3 ${card.tone}`}>
+          <div className="text-sm font-black">{card.title}</div>
+          <div className="mt-1 text-xs leading-5 opacity-85">{card.text}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function HistoryCard({
   currentDocId,
   currentHistory,
@@ -616,7 +646,7 @@ export function HistoryCard({
               <Badge variant="outline">{getProfileLabel(promptProfile)}</Badge>
             </div>
             <CardTitle className="text-xl">文档与生成物管理</CardTitle>
-            <CardDescription>历史索引、轮次链、项目导出副本和中间生成物分开处理；源文档不在清理范围内。</CardDescription>
+            <CardDescription>历史索引、轮次链、项目导出副本和中间生成物分开处理；外部源文档默认不在清理范围内。</CardDescription>
           </div>
           <Button variant="outline" onClick={onToggle} disabled={busy}>
             <FolderClock className="h-4 w-4" />
@@ -650,6 +680,7 @@ export function HistoryCard({
             text="默认保留；源副本清理只作用于项目 origin。"
           />
         </div>
+        <HistoryGovernanceBoundary />
 
         {!open ? (
           <div className="rounded-2xl border border-border/70 bg-muted/30 p-6 text-sm leading-6 text-muted-foreground">

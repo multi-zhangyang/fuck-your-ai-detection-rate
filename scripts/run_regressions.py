@@ -81,6 +81,7 @@ def build_commands(
         {"name": "frontend home layout regression", "command": ["node", "scripts/frontend_home_layout_regression.mjs"]},
         {"name": "frontend UI consistency regression", "command": ["node", "scripts/frontend_ui_consistency_regression.mjs"]},
         {"name": "frontend history governance regression", "command": ["node", "scripts/frontend_history_governance_regression.mjs"]},
+        {"name": "prompt preview regression", "command": [sys.executable, "scripts/prompt_preview_regression.py"]},
         {"name": "model route regression", "command": [sys.executable, "scripts/model_route_regression.py"]},
         {"name": "factual guards regression", "command": [sys.executable, "scripts/factual_guards_regression.py"]},
         {"name": "validation fallback regression", "command": [sys.executable, "scripts/validation_fallback_regression.py"]},
@@ -94,6 +95,8 @@ def build_commands(
         {"name": "Python compile", "command": [sys.executable, "-m", "py_compile", *_all_python_files()]},
         {"name": "open-source audit regression", "command": [sys.executable, "scripts/open_source_audit_regression.py"]},
         {"name": "pre-release check regression", "command": [sys.executable, "scripts/pre_release_check_regression.py"]},
+        {"name": "start web regression", "command": [sys.executable, "scripts/start_web_regression.py"]},
+        {"name": "web health check regression", "command": [sys.executable, "scripts/web_health_check_regression.py"]},
         {"name": "open-source audit", "command": [sys.executable, "scripts/open_source_audit.py"]},
         {"name": "frontend text check", "command": ["npm", "run", "check:text"], "cwd": ROOT_DIR / "app"},
     ]

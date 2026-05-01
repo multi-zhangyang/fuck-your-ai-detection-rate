@@ -1,11 +1,10 @@
-import { type ReactNode, useDeferredValue, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { CheckCircle2, Download, FileOutput, Layers2, ScanText, ShieldCheck, SplitSquareHorizontal } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Download, FileOutput, SplitSquareHorizontal } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import type { DetectionReportMatch, ExportIssueSample, ExportResult, OutputPreview, ReviewDecision, RoundCompareData, RoundQualitySummary, RoundResult } from "@/types/app";
+import type { DetectionReportMatch, ExportResult, OutputPreview, ReviewDecision, RoundCompareData, RoundResult } from "@/types/app";
 
 const T = {
   result: "结果",
@@ -17,9 +16,6 @@ const T = {
   input: "输入",
   output: "输出",
   paragraph: "段落",
-  preview: "文本预览",
-  chars: "字",
-  noPreview: "暂无预览",
   noResult: "还没有结果",
   noResultHint: "执行一轮后可查看差异并导出。",
   liveRunning: "运行中",
@@ -54,8 +50,6 @@ const T = {
   rerunFailureSummary: "部分块没有通过硬校验，系统已保留旧内容，不会自动污染导出。",
   viewFailedChunks: "查看失败块",
   viewCandidateChunks: "查看候选块",
-  previousReview: "上一处",
-  nextReview: "下一处",
   source: "原文",
   rewrite: "改写",
   safety: "导出安全",
@@ -145,7 +139,12 @@ type CandidateDiffView = {
   removedTokenCount: number;
   changeRatio: number;
 };
-type DiffFilterMode = "all" | "review" | "failed" | "candidate" | "changed" | "number" | "citation";
+export type DiffFilterMode = "all" | "review" | "failed" | "candidate" | "changed" | "number" | "citation";
+export type DiffFocusRequest = {
+  filterMode: DiffFilterMode;
+  chunkId?: string;
+  nonce: number;
+};
 
 type RerunFailure = {
   chunkId: string;
@@ -165,6 +164,7 @@ type Props = {
   busy: boolean;
   rerunFailures?: RerunFailure[];
   detectionMatchesByChunk?: Record<string, DetectionReportMatch[]>;
+  diffFocusRequest?: DiffFocusRequest | null;
   reviewDecisions: Record<string, ReviewDecision>;
   onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void;
   onRerunChunk: (chunkId: string, userFeedback?: string) => void;
@@ -178,51 +178,18 @@ type Props = {
   onExportDocx: () => void;
 };
 
-export function ResultCard({ result, preview, compareData, exportResult, busy, rerunFailures = [], detectionMatchesByChunk = {}, reviewDecisions, onReviewDecisionChange, onRerunChunk, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportReviewedTxt, onExportReviewedDocx, onExportTxt, onExportDocx }: Props) {
-  const deferredPreviewText = useDeferredValue(preview?.text ?? "");
-  const qualitySummary = result?.qualitySummary ?? compareData?.qualitySummary ?? null;
-
+export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportReviewedTxt, onExportReviewedDocx, onExportTxt, onExportDocx }: Props) {
   return (
-    <Card className="flex h-full min-h-0 flex-col">
-      <CardHeader className="shrink-0 pb-3">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="secondary">{T.result}</Badge>
-              {result ? <Badge variant="success">{T.donePrefix} {result.round} {T.doneSuffix}</Badge> : <Badge variant="outline">{T.waiting}</Badge>}
-            </div>
-            <CardTitle className="text-xl">{T.title}</CardTitle>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {batchRerunRunning ? (
-              <Button variant="destructive" onClick={onCancelBatchRerun}>
-                停止重跑
-              </Button>
-            ) : null}
-            <Button variant="outline" onClick={onExportTxt} disabled={!result || busy}>
-              <Download className="h-4 w-4" />
-              TXT
-            </Button>
-            <Button variant="outline" onClick={onRerunRiskyChunks} disabled={!result || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview) || busy}>
-              {T.rerunRisky}
-            </Button>
-            <Button variant="outline" onClick={onExportReviewedTxt} disabled={!result || !compareData?.chunks.length || busy}>
-              <Download className="h-4 w-4" />
-              {T.reviewedExport}
-            </Button>
-            <Button onClick={onExportReviewedDocx} disabled={!result || !compareData?.chunks.length || busy}>
-              <Download className="h-4 w-4" />
-              {T.reviewedWord}
-            </Button>
-            <Button onClick={onExportDocx} disabled={!result || busy}>
-              <Download className="h-4 w-4" />
-              Word
-            </Button>
+    <Card className="fy-result-workbench fy-home-result-card">
+      <CardHeader className="fy-result-header">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
+            <CardTitle className="truncate text-base">导出</CardTitle>
           </div>
         </div>
       </CardHeader>
 
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+      <CardContent className="fy-home-result-body flex min-h-0 flex-1 flex-col gap-3 px-5 pb-5 pt-4">
         {batchRerunRunning ? (
           <div className="shrink-0 rounded-3xl border border-red-100 bg-red-50 p-4 text-sm leading-6 text-red-900">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -236,37 +203,29 @@ export function ResultCard({ result, preview, compareData, exportResult, busy, r
         ) : null}
         {result || compareData?.chunks.length ? (
           <>
-            <RewriteDiffPanel data={compareData} busy={busy} rerunFailures={rerunFailures} detectionMatchesByChunk={detectionMatchesByChunk} reviewDecisions={reviewDecisions} onReviewDecisionChange={onReviewDecisionChange} onRerunChunk={onRerunChunk} />
+            <div className="fy-result-action-grid">
+              <Button className="fy-result-action fy-result-action-primary" onClick={onExportDocx} disabled={!result || busy}>
+                <Download className="h-4 w-4" />
+                导出 Word
+              </Button>
+              <Button className="fy-result-action" variant="outlineSuccess" onClick={onExportReviewedDocx} disabled={!result || !compareData?.chunks.length || busy}>
+                <Download className="h-4 w-4" />
+                审阅 Word
+              </Button>
+              <Button className="fy-result-action" variant="outlineBrand" onClick={onExportReviewedTxt} disabled={!result || !compareData?.chunks.length || busy}>
+                <Download className="h-4 w-4" />
+                审阅 TXT
+              </Button>
+              <Button className="fy-result-action" variant="outline" onClick={onExportTxt} disabled={!result || busy}>
+                <Download className="h-4 w-4" />
+                TXT
+              </Button>
+              <Button className="fy-result-action" variant="outlineWarning" onClick={onRerunRiskyChunks} disabled={!result || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview) || busy}>
+                {T.rerunRisky}
+              </Button>
+            </div>
 
-            {result ? <details className="group shrink-0 rounded-3xl border border-border/70 bg-background/75">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-foreground">
-                <span>{"统计与导出安全"}</span>
-                <span className="text-xs text-muted-foreground group-open:hidden">{"展开"}</span>
-                <span className="hidden text-xs text-muted-foreground group-open:inline">{"收起"}</span>
-              </summary>
-              <div className="space-y-4 border-t border-border/70 p-4">
-                <div className="grid gap-3 md:grid-cols-4">
-                  <MetricCard icon={<Layers2 className="h-4 w-4" />} label={T.limit} value={String(result.chunkLimit)} />
-                  <MetricCard icon={<ScanText className="h-4 w-4" />} label={T.input} value={String(result.inputSegmentCount)} />
-                  <MetricCard icon={<ScanText className="h-4 w-4" />} label={T.output} value={String(result.outputSegmentCount)} />
-                  <MetricCard icon={<FileOutput className="h-4 w-4" />} label={T.paragraph} value={String(result.paragraphCount)} />
-                </div>
-                <QualityReport result={result} compareData={compareData} qualitySummary={qualitySummary} />
-                <ExportSafetyReport result={exportResult} />
-              </div>
-            </details> : <LiveHint />}
-
-            {result ? <details className="group shrink-0 rounded-3xl border border-border/70 bg-background/75">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-foreground">
-                <span>{T.preview}</span>
-                {preview ? <Badge variant="outline">{preview.previewChars}/{preview.totalChars} {T.chars}</Badge> : null}
-              </summary>
-              <div className="border-t border-border/70 p-4">
-                <ScrollArea className="h-72 rounded-2xl bg-muted/40 p-4">
-                  <pre className="whitespace-pre-wrap break-words text-sm leading-7 text-foreground">{deferredPreviewText || T.noPreview}</pre>
-                </ScrollArea>
-              </div>
-            </details> : null}
+            {!result ? <LiveHint /> : null}
           </>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-3xl border border-dashed border-border bg-background/70 p-8 text-center">
@@ -282,13 +241,35 @@ export function ResultCard({ result, preview, compareData, exportResult, busy, r
   );
 }
 
-function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, reviewDecisions, onReviewDecisionChange, onRerunChunk }: { data: RoundCompareData | null; busy: boolean; rerunFailures: RerunFailure[]; detectionMatchesByChunk: Record<string, DetectionReportMatch[]>; reviewDecisions: Record<string, ReviewDecision>; onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void; onRerunChunk: (chunkId: string, userFeedback?: string) => void }) {
+export function DiffReviewCard({ result, compareData, busy, rerunFailures = [], detectionMatchesByChunk = {}, diffFocusRequest = null, reviewDecisions, onReviewDecisionChange, onRerunChunk, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun }: Pick<Props, "result" | "compareData" | "busy" | "rerunFailures" | "detectionMatchesByChunk" | "diffFocusRequest" | "reviewDecisions" | "onReviewDecisionChange" | "onRerunChunk" | "onRerunRiskyChunks" | "batchRerunRunning" | "batchRerunStatusText" | "onCancelBatchRerun">) {
+  return (
+    <Card className="fy-result-workbench fy-diff-review-card">
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 pb-4 pt-3">
+        {batchRerunRunning ? (
+          <div className="shrink-0 rounded-3xl border border-red-100 bg-red-50 p-4 text-sm leading-6 text-red-900">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="font-black">批量重跑进行中</div>
+                <div className="mt-1 text-xs font-semibold opacity-85">{batchRerunStatusText || "正在处理需重跑块；已完成的块会实时保留。"}</div>
+              </div>
+              <Button size="sm" variant="destructive" onClick={onCancelBatchRerun}>停止重跑</Button>
+            </div>
+          </div>
+        ) : null}
+        <RewriteDiffPanel data={compareData} busy={busy} rerunFailures={rerunFailures} detectionMatchesByChunk={detectionMatchesByChunk} diffFocusRequest={diffFocusRequest} reviewDecisions={reviewDecisions} onReviewDecisionChange={onReviewDecisionChange} onRerunChunk={onRerunChunk} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, diffFocusRequest, reviewDecisions, onReviewDecisionChange, onRerunChunk }: { data: RoundCompareData | null; busy: boolean; rerunFailures: RerunFailure[]; detectionMatchesByChunk: Record<string, DetectionReportMatch[]>; diffFocusRequest: DiffFocusRequest | null; reviewDecisions: Record<string, ReviewDecision>; onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void; onRerunChunk: (chunkId: string, userFeedback?: string) => void }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chunkRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const restoredKeyRef = useRef("");
   const previousChunkCountRef = useRef(0);
   const previousFailedCountRef = useRef(0);
   const previousCandidateCountRef = useRef(0);
+  const handledDiffFocusNonceRef = useRef<number | null>(null);
   const [filterMode, setFilterMode] = useState<DiffFilterMode>("all");
   const [focusedReviewIndex, setFocusedReviewIndex] = useState(-1);
 
@@ -328,6 +309,15 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   const chunkCount = shownChunks.length;
   const shownLabel = getDiffFilterLabel(filterMode);
   const emptyState = getDiffFilterEmptyState(filterMode);
+  const getFirstChunkIdForMode = (mode: DiffFilterMode) => {
+    if (mode === "failed") return failedChunkIds[0] ?? "";
+    if (mode === "candidate") return candidateChunkIds[0] ?? "";
+    if (mode === "changed") return changedChunkIds[0] ?? "";
+    if (mode === "number") return numberRiskChunkIds[0] ?? "";
+    if (mode === "citation") return citationRiskChunkIds[0] ?? "";
+    if (mode === "review") return reviewChunkIds[0] ?? "";
+    return shownChunks[0]?.chunkId ?? allChunks[0]?.chunkId ?? "";
+  };
 
   useEffect(() => {
     if (focusedReviewIndex >= reviewChunkIds.length) {
@@ -359,6 +349,14 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
     previousCandidateCountRef.current = candidateChunkIds.length;
   }, [candidateChunkIds.length, changedChunkIds.length, citationRiskChunkIds.length, failedChunkIds.length, filterMode, numberRiskChunkIds.length]);
 
+  useEffect(() => {
+    if (!diffFocusRequest || !allChunks.length) {
+      return;
+    }
+    setFilterMode(diffFocusRequest.filterMode);
+    setFocusedReviewIndex(-1);
+  }, [allChunks.length, diffFocusRequest?.filterMode, diffFocusRequest?.nonce]);
+
   useLayoutEffect(() => {
     const node = scrollRef.current;
     if (!node || !shownChunks.length) {
@@ -387,6 +385,33 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
     previousChunkCountRef.current = chunkCount;
   }, [chunkCount, filterMode, scrollKey]);
 
+  useLayoutEffect(() => {
+    if (!diffFocusRequest || diffFocusRequest.filterMode !== filterMode) {
+      return;
+    }
+    if (handledDiffFocusNonceRef.current === diffFocusRequest.nonce) {
+      return;
+    }
+    const node = scrollRef.current;
+    if (!node) {
+      return;
+    }
+    handledDiffFocusNonceRef.current = diffFocusRequest.nonce;
+    const frame = window.requestAnimationFrame(() => {
+      const targetId = diffFocusRequest.chunkId || getFirstChunkIdForMode(diffFocusRequest.filterMode);
+      const targetNode = targetId ? chunkRefs.current[targetId] : null;
+      if (targetNode) {
+        targetNode.scrollIntoView({ behavior: "smooth", block: "start" });
+        const reviewIndex = reviewChunkIds.indexOf(targetId);
+        setFocusedReviewIndex(reviewIndex);
+        return;
+      }
+      node.scrollTo({ top: 0, behavior: "smooth" });
+      diffScrollPositions.set(scrollKey, 0);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [chunkCount, diffFocusRequest?.chunkId, diffFocusRequest?.filterMode, diffFocusRequest?.nonce, filterMode, reviewChunkIds, scrollKey]);
+
   useEffect(() => {
     return () => {
       const node = scrollRef.current;
@@ -395,34 +420,6 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
       }
     };
   }, [scrollKey]);
-
-  const jumpToReviewChunk = (direction: "previous" | "next") => {
-    const node = scrollRef.current;
-    if (!node || !reviewChunkIds.length) {
-      return;
-    }
-    const threshold = node.scrollTop + (direction === "next" ? 24 : -24);
-    let targetIndex = -1;
-    if (direction === "next") {
-      targetIndex = reviewChunkIds.findIndex((chunkId) => (chunkRefs.current[chunkId]?.offsetTop ?? Number.POSITIVE_INFINITY) > threshold);
-      if (targetIndex < 0) targetIndex = 0;
-    } else {
-      for (let index = reviewChunkIds.length - 1; index >= 0; index -= 1) {
-        const offsetTop = chunkRefs.current[reviewChunkIds[index]]?.offsetTop ?? Number.NEGATIVE_INFINITY;
-        if (offsetTop < threshold) {
-          targetIndex = index;
-          break;
-        }
-      }
-      if (targetIndex < 0) targetIndex = reviewChunkIds.length - 1;
-    }
-    const targetId = reviewChunkIds[targetIndex];
-    const targetNode = chunkRefs.current[targetId];
-    if (targetNode) {
-      targetNode.scrollIntoView({ behavior: "smooth", block: "start" });
-      setFocusedReviewIndex(targetIndex);
-    }
-  };
 
   if (!allChunks.length) {
     return (
@@ -437,70 +434,41 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   }
 
   return (
-    <div className="fy-panel flex min-h-[28rem] flex-[1_0_28rem] flex-col p-4">
-      <div className="mb-4 shrink-0 space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+    <div className="fy-diff-workbench">
+      <div className="fy-diff-header">
+        <div className="fy-diff-toolbar">
+          <span className="flex items-center gap-2 text-sm font-black text-foreground">
             <SplitSquareHorizontal className="h-4 w-4 text-primary" />
             {T.diff}
-          </div>
-          <Badge variant="secondary">{shownLabel} {shownChunks.length}</Badge>
-        </div>
-        <div className="fy-inline-toolbar">
-          <Badge variant="outline">{data?.chunkCount ?? allChunks.length} {T.chunks}</Badge>
-          <Badge variant={reviewChunkIds.length ? "warning" : "success"}>{T.reviewChunks} {reviewChunkIds.length}</Badge>
-          <Badge variant={failedChunkIds.length ? "warning" : "outline"}>{T.failedChunks} {failedChunkIds.length}</Badge>
-          <Badge variant={candidateChunkIds.length ? "outline" : "secondary"}>{T.candidateChunks} {candidateChunkIds.length}</Badge>
-          <Badge variant={numberRiskChunkIds.length ? "warning" : "outline"}>{T.numberRisk} {numberRiskChunkIds.length}</Badge>
-          <Badge variant={citationRiskChunkIds.length ? "warning" : "outline"}>{T.citationRisk} {citationRiskChunkIds.length}</Badge>
-          <Button size="sm" variant={filterMode === "review" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "review" ? "all" : "review")} disabled={!reviewChunkIds.length && filterMode !== "review"}>
-            {filterMode === "review" ? T.showAll : T.reviewOnly}
+          </span>
+          <Badge variant="outline">{shownChunks.length}/{data?.chunkCount ?? allChunks.length}</Badge>
+          {numberRiskChunkIds.length ? <Badge variant="warning">{T.numberRisk} {numberRiskChunkIds.length}</Badge> : null}
+          {citationRiskChunkIds.length ? <Badge variant="warning">{T.citationRisk} {citationRiskChunkIds.length}</Badge> : null}
+          <Button size="sm" variant={filterMode === "all" ? "default" : "outline"} onClick={() => setFilterMode("all")}>
+            全部
           </Button>
-          <Button size="sm" variant={filterMode === "failed" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "failed" ? "all" : "failed")} disabled={!failedChunkIds.length && filterMode !== "failed"}>
-            {filterMode === "failed" ? T.showAll : T.failedOnly}
+          <Button size="sm" variant={filterMode === "review" ? "default" : "outline"} onClick={() => setFilterMode("review")} disabled={!reviewChunkIds.length}>
+            需处理 {reviewChunkIds.length}
           </Button>
-          <Button size="sm" variant={filterMode === "candidate" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "candidate" ? "all" : "candidate")} disabled={!candidateChunkIds.length && filterMode !== "candidate"}>
-            {filterMode === "candidate" ? T.showAll : T.candidateOnly}
+          <Button size="sm" variant={filterMode === "failed" ? "default" : "outline"} onClick={() => setFilterMode("failed")} disabled={!failedChunkIds.length}>
+            失败 {failedChunkIds.length}
           </Button>
-          <Button size="sm" variant={filterMode === "changed" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "changed" ? "all" : "changed")} disabled={!changedChunkIds.length && filterMode !== "changed"}>
-            {filterMode === "changed" ? T.showAll : T.changedChunks}
+          <Button size="sm" variant={filterMode === "candidate" ? "default" : "outline"} onClick={() => setFilterMode("candidate")} disabled={!candidateChunkIds.length}>
+            候选 {candidateChunkIds.length}
           </Button>
-          <Button size="sm" variant={filterMode === "number" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "number" ? "all" : "number")} disabled={!numberRiskChunkIds.length && filterMode !== "number"}>
-            {filterMode === "number" ? T.showAll : T.numberRisk}
-          </Button>
-          <Button size="sm" variant={filterMode === "citation" ? "default" : "outline"} onClick={() => setFilterMode((value) => value === "citation" ? "all" : "citation")} disabled={!citationRiskChunkIds.length && filterMode !== "citation"}>
-            {filterMode === "citation" ? T.showAll : T.citationRisk}
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => jumpToReviewChunk("previous")} disabled={!reviewChunkIds.length}>{T.previousReview}</Button>
-          <Button size="sm" variant="outline" onClick={() => jumpToReviewChunk("next")} disabled={!reviewChunkIds.length}>{T.nextReview}</Button>
+          <Badge variant="secondary" className="ml-auto">{shownLabel}</Badge>
         </div>
       </div>
       {failedChunkIds.length ? (
-        <div className="fy-callout fy-tone-danger mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <span className="font-semibold">{T.failedChunks} {failedChunkIds.length}：</span>
-            <span>{T.rerunFailureSummary}</span>
-          </div>
-          <Button size="sm" variant={filterMode === "failed" ? "destructive" : "outline"} onClick={() => setFilterMode(filterMode === "failed" ? "all" : "failed")}>
-            {filterMode === "failed" ? T.showAll : T.viewFailedChunks}
-          </Button>
-        </div>
-      ) : null}
-      {candidateChunkIds.length ? (
-        <div className="fy-callout mb-4 flex flex-wrap items-center justify-between gap-3 border-sky-200 bg-sky-50 text-sky-800">
-          <div className="min-w-0 flex-1">
-            <span className="font-semibold">{T.candidateChunks} {candidateChunkIds.length}：</span>
-            <span>{T.rejectedCandidateHint}</span>
-          </div>
-          <Button size="sm" variant={filterMode === "candidate" ? "default" : "outline"} onClick={() => setFilterMode(filterMode === "candidate" ? "all" : "candidate")}>
-            {filterMode === "candidate" ? T.showAll : T.viewCandidateChunks}
-          </Button>
+        <div className="fy-diff-alert fy-tone-danger">
+          <span className="font-semibold">{T.failedChunks} {failedChunkIds.length}</span>
+          <span>{T.rerunFailureSummary}</span>
         </div>
       ) : null}
       <div
         ref={scrollRef}
         onScroll={(event) => diffScrollPositions.set(scrollKey, event.currentTarget.scrollTop)}
-        className="min-h-0 flex-1 overflow-y-auto pr-3"
+        className="fy-diff-scroll"
       >
         <div className="grid gap-4">
           {shownChunks.length ? shownChunks.map((chunk) => {
@@ -524,13 +492,15 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
               : matchTone === "review"
                 ? "border-amber-200 bg-amber-50 text-amber-800"
                 : "border-slate-200 bg-slate-50 text-slate-600";
+            const decision = reviewDecisions[chunk.chunkId] ?? "rewrite";
+            const displayOutput = getDecisionDisplayOutput(chunk, decision);
             return (
               <div
                 key={chunk.chunkId}
                 ref={(node) => {
                   chunkRefs.current[chunk.chunkId] = node;
                 }}
-                className={`grid gap-4 rounded-3xl border p-4 transition xl:grid-cols-2 ${rerunFailure ? "border-red-200 bg-red-50/40" : hasRejectedCandidate ? "border-sky-200 bg-sky-50/35" : needsReview ? "border-amber-200 bg-amber-50/35" : "border-border/70 bg-muted/30"} ${focusedChunkId === chunk.chunkId ? "ring-2 ring-amber-300 ring-offset-2" : ""}`}
+                className={`fy-diff-chunk ${rerunFailure ? "border-red-200 bg-red-50/40" : hasRejectedCandidate ? "border-sky-200 bg-sky-50/35" : needsReview ? "border-amber-200 bg-amber-50/35" : "border-border/70 bg-muted/30"} ${focusedChunkId === chunk.chunkId ? "ring-2 ring-amber-300 ring-offset-2" : ""}`}
               >
                 {rerunFailure ? (
                   <div className="xl:col-span-2 rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-800">
@@ -541,7 +511,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                   </div>
                 ) : null}
                 {detectionMatches.length ? (
-                  <div className={`xl:col-span-2 flex flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${matchClassName}`}>
+                  <div className={`xl:col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${matchClassName}`}>
                     <span className="font-semibold">{matchTitle}</span>
                     {detectionMatches.slice(0, 3).map((match) => (
                       <Badge key={`${match.segment.index}-${match.confidence}`} variant={match.confidence === "strong" ? "success" : match.confidence === "review" ? "warning" : "outline"}>
@@ -564,9 +534,9 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                   </div>
                 ) : null}
                 <TextPane title={T.source} text={chunk.inputText} />
-                <TextPane title={T.rewrite} text={chunk.outputText} tone="rewrite" />
-                <div className="xl:col-span-2">
-                  <ChunkQualityBar chunk={displayChunk} busy={busy} decision={reviewDecisions[chunk.chunkId] ?? "rewrite"} onDecisionChange={(decision) => onReviewDecisionChange(chunk.chunkId, decision)} onRerun={(userFeedback) => onRerunChunk(chunk.chunkId, userFeedback)} />
+                <TextPane title={displayOutput.title} text={displayOutput.text} tone="rewrite" />
+                <div className="xl:col-span-2 min-w-0">
+                  <ChunkQualityBar chunk={displayChunk} busy={busy} decision={decision} onDecisionChange={(decision) => onReviewDecisionChange(chunk.chunkId, decision)} onRerun={(userFeedback) => onRerunChunk(chunk.chunkId, userFeedback)} />
                 </div>
               </div>
             );
@@ -646,118 +616,11 @@ function hasChunkCitationRisk(chunk: RoundCompareData["chunks"][number], candida
 
 function TextPane({ title, text, tone = "source" }: { title: string; text: string; tone?: "source" | "rewrite" }) {
   return (
-    <div className={tone === "rewrite" ? "rounded-2xl bg-emerald-50 p-3" : "rounded-2xl bg-white p-3"}>
+    <div className={tone === "rewrite" ? "fy-diff-text-pane bg-emerald-50" : "fy-diff-text-pane bg-white"}>
       <div className={tone === "rewrite" ? "mb-2 text-xs font-semibold text-emerald-700" : "mb-2 text-xs font-semibold text-slate-500"}>{title}</div>
-      <div className="max-h-[42vh] overflow-auto whitespace-pre-wrap pr-2 text-sm leading-7 text-foreground">{text}</div>
+      <div className="fy-diff-text-body">{text}</div>
     </div>
   );
-}
-
-function ExportSafetyReport({ result }: { result: ExportResult | null }) {
-  const isDocx = result?.format === "docx";
-  const guardPassed = isDocx && Boolean(result.guardPath) && (result.guardIssueCount ?? 0) === 0;
-  const auditPassed = isDocx && Boolean(result.auditPath) && (result.auditIssueCount ?? 0) === 0;
-  const preflightPassed = isDocx && (result.preflightIssueCount ?? 0) === 0;
-  const allPassed = guardPassed && auditPassed && preflightPassed;
-  return (
-    <div className="rounded-3xl border border-border/70 bg-background/75 p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <ShieldCheck className="h-4 w-4 text-primary" />
-          {T.safety}
-        </div>
-        {allPassed ? <Badge variant="success">Word 导出检查通过</Badge> : <Badge variant={isDocx ? "warning" : "outline"}>{isDocx ? "需要查看检查结果" : T.waitDocx}</Badge>}
-      </div>
-      {!isDocx ? (
-        <div className="mb-3 rounded-2xl border border-dashed border-border bg-muted/30 px-3 py-2 text-xs leading-5 text-muted-foreground">
-          导出 Word 后，这里会显示硬审计、保护区审计和排版预检。TXT 导出不触发 Word 排版检查。
-        </div>
-      ) : null}
-      <div className="grid gap-3 md:grid-cols-5">
-        <SafetyItem label={T.fingerprint} value={isDocx ? T.checked : T.pending} ok={isDocx} />
-        <SafetyItem label={T.exportGuard} value={isDocx ? `${result?.guardIssueCount ?? 0} 问题` : T.pending} ok={guardPassed} />
-        <SafetyItem label={T.protectedArea} value={isDocx ? `${result?.auditIssueCount ?? 0} 问题` : T.waitAudit} ok={auditPassed} />
-        <SafetyItem label={T.scope} value={formatScopeLabel(result?.formatScope, isDocx)} ok={isDocx} />
-        <SafetyItem label={T.formatPreflight} value={isDocx ? `${result?.preflightIssueCount ?? 0} 问题` : T.pending} ok={preflightPassed} />
-      </div>
-      {isDocx ? (
-        <div className="mt-3 grid gap-2 lg:grid-cols-3">
-          <AuditStep
-            title="硬审计"
-            ok={guardPassed}
-            count={result?.guardIssueCount ?? 0}
-            path={result?.guardPath}
-            text="阻止目录、表格、参考文献、保护区内容被误改。"
-            samples={result?.guardIssueSamples}
-          />
-          <AuditStep
-            title="保护区审计"
-            ok={auditPassed}
-            count={result?.auditIssueCount ?? 0}
-            path={result?.auditPath}
-            text="核对保护区文本、表格结构和导出回填边界。"
-            samples={result?.auditIssueSamples}
-          />
-          <AuditStep
-            title="排版预检"
-            ok={preflightPassed}
-            count={result?.preflightIssueCount ?? 0}
-            path={result?.preflightPath}
-            text="检查学校规范样式、段落行距和导出前风险。"
-            samples={result?.preflightIssueSamples}
-          />
-        </div>
-      ) : null}
-      {isDocx && ((result?.contentLockedStyleCount ?? 0) > 0 || (result?.tableStyleCount ?? 0) > 0) ? (
-        <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          保护区样式 {result?.contentLockedStyleCount ?? 0} 段；表格样式 {result?.tableStyleCount ?? 0} 段；三线表 {result?.tableBorderCount ?? 0} 个。
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function AuditStep({ title, ok, count, path, text, samples = [] }: { title: string; ok: boolean; count: number; path?: string; text: string; samples?: ExportIssueSample[] }) {
-  return (
-    <div className={`rounded-2xl border p-3 ${ok ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-sm font-semibold">{title}</div>
-        <Badge variant={ok ? "success" : "warning"}>{count} 问题</Badge>
-      </div>
-      <div className="mt-1 text-xs leading-5 opacity-80">{text}</div>
-      {samples.length ? (
-        <div className="mt-2 space-y-1">
-          {samples.slice(0, 3).map((sample, index) => (
-            <div key={`${sample.code ?? "issue"}-${index}`} className="rounded-xl bg-white/70 px-2 py-1 text-[11px] leading-5">
-              <div className="flex flex-wrap items-center gap-1 font-semibold">
-                {sample.code ? <span>{sample.code}</span> : null}
-                {sample.location ? <span className="opacity-70">{sample.location}</span> : null}
-              </div>
-              <div>{sample.message}</div>
-              {sample.sample ? <div className="line-clamp-2 opacity-70">{sample.sample}</div> : null}
-            </div>
-          ))}
-        </div>
-      ) : count > 0 ? (
-        <div className="mt-2 rounded-xl bg-white/70 px-2 py-1 text-[11px] leading-5 opacity-75">打开报告文件可查看详细问题。</div>
-      ) : null}
-      {path ? <div className="mt-2 truncate text-[11px] opacity-75">{formatArtifactLabel("报告", path)}</div> : null}
-    </div>
-  );
-}
-
-function formatArtifactLabel(label: string, path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const parts = normalized.split("/").filter(Boolean);
-  const filename = parts[parts.length - 1] || path;
-  return `${label} · ${filename}`;
-}
-
-function formatScopeLabel(scope: string | undefined, isDocx: boolean): string {
-  if (!isDocx) return T.pending;
-  if (scope === "editable_body_only") return T.bodyOnly;
-  if (scope === "content_locked_style_allowed") return T.contentLockedStyle;
-  return T.newDoc;
 }
 
 function LiveHint() {
@@ -772,6 +635,35 @@ function LiveHint() {
 function getReviewDecisionMode(decision: ReviewDecision): "rewrite" | "source" | "custom" {
   if (typeof decision === "object" && decision?.mode === "custom") return "custom";
   return decision === "source" || decision === "source_confirmed" ? "source" : "rewrite";
+}
+
+function getDecisionDisplayOutput(chunk: RoundCompareData["chunks"][number], decision: ReviewDecision): { title: string; text: string } {
+  const mode = getReviewDecisionMode(decision);
+  if (mode === "custom" && typeof decision === "object") {
+    return { title: `${T.rewrite}（${T.customChoice}）`, text: decision.text || chunk.outputText };
+  }
+  if (mode === "source") {
+    return { title: `${T.rewrite}（${T.useSource}）`, text: chunk.inputText };
+  }
+  return { title: T.rewrite, text: chunk.outputText };
+}
+
+function isDecisionForRejectedCandidate(decision: ReviewDecision, candidate: RejectedCandidate): boolean {
+  if (typeof decision !== "object" || decision?.mode !== "custom") {
+    return false;
+  }
+  const hasSameCandidateMeta = (
+    decision.attempt !== undefined
+    && candidate.attempt !== undefined
+    && decision.candidate !== undefined
+    && candidate.candidate !== undefined
+    && decision.attempt === candidate.attempt
+    && decision.candidate === candidate.candidate
+  );
+  if (hasSameCandidateMeta) {
+    return true;
+  }
+  return normalizeDiffText(decision.text || "") === normalizeDiffText(candidate.outputText ?? "");
 }
 
 function isReviewDecisionConfirmed(decision: ReviewDecision): boolean {
@@ -1065,7 +957,7 @@ function CandidateDiffPanel({ sourceText, candidateText }: { sourceText: string;
   const diff = buildCandidateDiffView(sourceText, candidateText);
   const changedTokenCount = diff.addedTokenCount + diff.removedTokenCount;
   return (
-    <details className="mb-3 rounded-xl border border-slate-200 bg-slate-50/90 p-3 text-slate-900" open={!diff.tooLarge && changedTokenCount > 0}>
+    <details className="mb-3 min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/90 p-3 text-slate-900" open={!diff.tooLarge && changedTokenCount > 0}>
       <summary className="cursor-pointer select-none">
         <span className="inline-flex flex-wrap items-center gap-2 text-[11px]">
           <Badge variant="outline">差异审稿</Badge>
@@ -1080,7 +972,7 @@ function CandidateDiffPanel({ sourceText, candidateText }: { sourceText: string;
           )}
         </span>
       </summary>
-      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+      <div className="mt-3 grid min-w-0 gap-3 xl:grid-cols-2">
         <CandidateDiffPane title="原文删减视图" segments={diff.sourceSegments} focusKind="removed" />
         <CandidateDiffPane title="候选新增视图" segments={diff.candidateSegments} focusKind="added" />
       </div>
@@ -1090,7 +982,7 @@ function CandidateDiffPanel({ sourceText, candidateText }: { sourceText: string;
 
 function CandidateDiffPane({ title, segments, focusKind }: { title: string; segments: CandidateDiffSegment[]; focusKind: CandidateDiffKind }) {
   return (
-    <div className="fy-section rounded-xl p-3">
+    <div className="fy-section min-w-0 overflow-hidden rounded-xl p-3">
       <div className="mb-2 text-[11px] font-semibold text-slate-600">{title}</div>
       <div className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-800">
         {segments.length ? segments.map((segment, index) => (
@@ -1149,7 +1041,7 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
     });
   }
   return (
-    <div className="space-y-2 rounded-2xl border border-border/60 bg-white/75 px-3 py-2 text-xs text-muted-foreground">
+    <div className="min-w-0 space-y-3 rounded-2xl border border-border/60 bg-white/75 px-3 py-3 text-xs text-muted-foreground">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant={needsReview ? "warning" : "success"}>{needsReview ? T.needsReview : T.stable}</Badge>
         {isSourceFallback ? <Badge variant="warning">{T.sourceFallback}</Badge> : null}
@@ -1161,14 +1053,14 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
         {flags.slice(0, 3).map((flag) => <Badge key={flag} variant="outline">{formatChunkFlag(flag)}</Badge>)}
         {!needsReview && advisoryFlags.length ? <Badge variant="outline">{T.risk} {advisoryFlags.slice(0, 2).map(formatChunkFlag).join(" / ")}</Badge> : null}
         <Badge variant={isConfirmed ? "success" : "secondary"}>{isConfirmed ? T.confirmedChoice : T.defaultChoice}：{decisionLabel}</Badge>
-        <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant={selectedBaseDecision === "rewrite" && isConfirmed ? "default" : "outline"} onClick={() => onDecisionChange("rewrite_confirmed")}>{isConfirmed && selectedBaseDecision === "rewrite" ? `${T.confirmedChoice}${T.useRewrite}` : T.useRewrite}</Button>
-          <Button size="sm" variant={selectedBaseDecision === "source" && isConfirmed ? "default" : "outline"} onClick={() => onDecisionChange("source_confirmed")}>{isConfirmed && selectedBaseDecision === "source" ? `${T.confirmedChoice}${T.useSource}` : T.useSource}</Button>
-          <Button size="sm" variant="outline" onClick={() => onRerun(feedback)} disabled={busy}>{zh(0x5b9a, 0x5411, 0x91cd, 0x8dd1)}</Button>
-        </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-2">
+        <Button size="sm" variant={selectedBaseDecision === "rewrite" && isConfirmed ? "default" : "outline"} onClick={() => onDecisionChange("rewrite_confirmed")}>{isConfirmed && selectedBaseDecision === "rewrite" ? `${T.confirmedChoice}${T.useRewrite}` : T.useRewrite}</Button>
+        <Button size="sm" variant={selectedBaseDecision === "source" && isConfirmed ? "default" : "outline"} onClick={() => onDecisionChange("source_confirmed")}>{isConfirmed && selectedBaseDecision === "source" ? `${T.confirmedChoice}${T.useSource}` : T.useSource}</Button>
+        <Button size="sm" variant="outline" onClick={() => onRerun(feedback)} disabled={busy}>{zh(0x5b9a, 0x5411, 0x91cd, 0x8dd1)}</Button>
       </div>
       {rejectedCandidates.length ? (
-        <details className="rounded-xl border border-sky-200 bg-sky-50/85 p-3 text-sky-950" open={isSourceFallback || !needsReview}>
+        <details className="rounded-xl border border-sky-200 bg-sky-50/85 p-3 text-sky-950">
           <summary className="cursor-pointer select-none font-semibold">
             {T.rejectedCandidate}（{rejectedCandidates.length}）
           </summary>
@@ -1180,63 +1072,84 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
               const canAdopt = Boolean(candidate.outputText?.trim()) && !candidate.truncated;
               const needsAdoptConfirm = inspection.level !== "safe";
               const isPendingAdopt = pendingAdoptCandidateKey === candidateKey;
+              const isSelectedCandidate = isDecisionForRejectedCandidate(decision, candidate);
               const candidateFeedback = buildCandidateRerunFeedback(inspection, candidate);
+              const adoptButtonLabel = isSelectedCandidate
+                ? "已采用候选"
+                : needsAdoptConfirm && !isPendingAdopt
+                  ? "先确认风险"
+                  : isPendingAdopt
+                    ? "确认采用候选"
+                    : T.adoptCandidate;
               return (
-                <div key={candidateKey} className="rounded-2xl border border-sky-200 bg-white/90 p-3">
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <Badge variant="outline">尝试 {candidate.attempt ?? "-"} / 候选 {candidate.candidate ?? index + 1}</Badge>
-                    <Badge variant={inspection.level === "safe" ? "success" : inspection.level === "review" ? "warning" : "outline"}>{inspection.label}</Badge>
-                    {candidate.truncated ? <Badge variant="warning">内容过长已截断</Badge> : null}
-                    {candidate.error ? <span className="min-w-0 flex-1 truncate text-[11px] opacity-75">{candidate.error}</span> : null}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        void navigator.clipboard?.writeText(candidate.outputText ?? "");
-                        setCopiedCandidateKey(candidateKey);
-                      }}
-                    >
-                      {copiedCandidateKey === candidateKey ? T.copied : T.copyCandidate}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        setFeedback(candidateFeedback);
-                        setPendingAdoptCandidateKey(candidateKey);
-                      }}
-                    >
-                      生成重跑意见
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={selectedBaseDecision === "custom" && typeof decision === "object" && decision.text === candidate.outputText ? "default" : isPendingAdopt ? "destructive" : "outline"}
-                      disabled={!canAdopt}
-                      onClick={() => adoptRejectedCandidate(candidate, inspection, candidateKey)}
-                    >
-                      {needsAdoptConfirm && !isPendingAdopt ? "先确认风险" : isPendingAdopt ? "确认采用候选" : T.adoptCandidate}
-                    </Button>
+                <div key={candidateKey} className="fy-candidate-card">
+                  <div className="mb-3 grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
+                    <div className="min-w-0 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline">候选 {index + 1}</Badge>
+                        <Badge variant="secondary">尝试 {candidate.attempt ?? "-"}</Badge>
+                        <Badge variant={inspection.level === "safe" ? "success" : inspection.level === "review" ? "warning" : "outline"}>{inspection.label}</Badge>
+                        {isSelectedCandidate ? <Badge variant="success">已采用</Badge> : null}
+                        {candidate.truncated ? <Badge variant="warning">内容过长已截断</Badge> : null}
+                      </div>
+                      {candidate.error ? <div className="break-words rounded-xl bg-slate-50 px-3 py-2 text-[11px] leading-5 opacity-75">{candidate.error}</div> : null}
+                    </div>
+                    <div className="fy-candidate-actionbar">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(candidate.outputText ?? "");
+                          setCopiedCandidateKey(candidateKey);
+                        }}
+                      >
+                        {copiedCandidateKey === candidateKey ? T.copied : T.copyCandidate}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setFeedback(candidateFeedback);
+                          setPendingAdoptCandidateKey(candidateKey);
+                        }}
+                      >
+                        生成重跑意见
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={isSelectedCandidate ? "default" : isPendingAdopt ? "destructive" : "outline"}
+                        disabled={!canAdopt || isSelectedCandidate}
+                        onClick={() => adoptRejectedCandidate(candidate, inspection, candidateKey)}
+                      >
+                        {adoptButtonLabel}
+                      </Button>
+                    </div>
                   </div>
                   {isPendingAdopt ? (
                     <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] leading-5 text-red-900">
                       已把候选体检问题写入下方反馈框。若要继续使用该候选，请再次点击“确认采用候选”；否则建议直接定向重跑。
                     </div>
                   ) : null}
-                  <CandidateInspectionPanel inspection={inspection} />
-                  <CandidateDiffPanel sourceText={chunk.inputText} candidateText={candidate.outputText ?? ""} />
-                  <div className="max-h-56 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950/95 p-3 text-xs leading-6 text-slate-50">
-                    {candidate.outputText}
-                  </div>
-                </div>
-              );
-            })}
+                   <div className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950/95 p-3 text-xs leading-6 text-slate-50">
+                     {candidate.outputText}
+                   </div>
+                   <details className="mt-3 rounded-xl border border-slate-200 bg-white/85 p-3">
+                     <summary className="cursor-pointer select-none text-xs font-black text-slate-600">查看体检和差异</summary>
+                     <div className="mt-3 space-y-3">
+                       <CandidateInspectionPanel inspection={inspection} />
+                       <CandidateDiffPanel sourceText={chunk.inputText} candidateText={candidate.outputText ?? ""} />
+                     </div>
+                   </details>
+                 </div>
+               );
+             })}
           </div>
         </details>
       ) : null}
       {reviewToolsVisible ? (
-        <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50/80 p-3 text-amber-950 lg:grid-cols-[1fr_1fr_1.2fr]">
+        <div className="grid min-w-0 gap-3 rounded-xl border border-amber-200 bg-amber-50/80 p-3 text-amber-950 xl:grid-cols-2">
           {isSourceFallback ? (
-            <div className="rounded-xl border border-amber-300 bg-white/70 p-2 leading-5 lg:col-span-3">
+            <div className="rounded-xl border border-amber-300 bg-white/70 p-2 leading-5 xl:col-span-2">
               <span className="font-semibold">{T.sourceFallback}：</span>
               {T.sourceFallbackHint}
               {chunk.fallbackError ? <span className="ml-1 opacity-80">{chunk.fallbackError}</span> : null}
@@ -1252,7 +1165,7 @@ function ChunkQualityBar({ chunk, busy, decision, onDecisionChange, onRerun }: {
             <div className="mb-1 font-semibold">{T.systemFeedback}</div>
             {advice.length ? advice.slice(0, 3).map((item, index) => <div key={index} className="leading-5">- {item}</div>) : <div>{zh(0x91cd, 0x8dd1, 0x4f1a, 0x81ea, 0x52a8, 0x643a, 0x5e26, 0x5f53, 0x524d, 0x98ce, 0x9669, 0x6807, 0x7b7e, 0x4e0e, 0x4fdd, 0x62a4, 0x533a, 0x7ea6, 0x675f, 0x3002)}</div>}
           </div>
-          <div className="space-y-2">
+          <div className="space-y-2 xl:col-span-2">
             <div className="font-semibold">{T.reviewFeedback}</div>
             <textarea
               value={feedback}
@@ -1296,89 +1209,4 @@ function formatProtectedTypes(types?: Record<string, number>): string {
     .filter(([, count]) => count > 0)
     .map(([key, count]) => `${labels[key] ?? key}${count}`)
     .join(" / ");
-}
-
-function QualityReport({ result, compareData, qualitySummary }: { result: RoundResult | null; compareData: RoundCompareData | null; qualitySummary: RoundQualitySummary | null }) {
-  const splitSummary = qualitySummary?.paragraphSplitSummary ?? compareData?.paragraphSplitSummary;
-  const citationInput = qualitySummary?.citationInputCount ?? 0;
-  const citationOutput = qualitySummary?.citationOutputCount ?? 0;
-  const citationOk = citationOutput >= citationInput;
-  const risks = qualitySummary?.machineLikeRisks ?? [];
-  const sentenceStats = qualitySummary?.sentenceStats;
-  const styleProfile = qualitySummary?.globalStyleProfile;
-  const topStyleItems = [
-    ...(styleProfile?.topConnectors ?? []),
-    ...(styleProfile?.topTemplatePhrases ?? []),
-    ...(styleProfile?.repeatedOpenings ?? []),
-  ].slice(0, 5);
-
-  return (
-    <div className="rounded-3xl border border-border/70 bg-background/75 p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <ScanText className="h-4 w-4 text-primary" />
-          {T.quality}
-        </div>
-        <Badge variant="outline">{T.notDetector}</Badge>
-      </div>
-      <div className="grid gap-3 md:grid-cols-6">
-        <SafetyItem label={T.splitParagraph} value={`${splitSummary?.splitParagraphCount ?? 0}/${splitSummary?.paragraphCount ?? result?.paragraphCount ?? 0}`} ok />
-        <SafetyItem label={T.retry} value={`${qualitySummary?.validationRetryCount ?? 0} 块`} ok={(qualitySummary?.validationRetryCount ?? 0) === 0} />
-        <SafetyItem label={T.fallback} value={`${qualitySummary?.sourceFallbackCount ?? 0} 块`} ok={(qualitySummary?.sourceFallbackCount ?? 0) === 0} />
-        <SafetyItem label={T.citation} value={`${citationOutput}/${citationInput}`} ok={citationOk} />
-        <SafetyItem label={T.rhythm} value={sentenceStats?.count ? `均长 ${sentenceStats.avg ?? 0}` : "待生成"} ok />
-        <SafetyItem label={T.styleCard} value={`${qualitySummary?.styleCardChunkCount ?? 0} 块`} ok />
-      </div>
-      {topStyleItems.length ? (
-        <div className="mt-3 rounded-2xl border border-blue-100 bg-blue-50/80 p-3 text-xs leading-5 text-blue-900">
-          <div className="mb-1 font-semibold">{T.globalStyle}</div>
-          <div className="flex flex-wrap gap-2">
-            {topStyleItems.map((item) => (
-              <Badge key={`${item.text}-${item.count}`} variant="outline">{item.text} × {item.count}</Badge>
-            ))}
-          </div>
-        </div>
-      ) : null}
-      <div className="mt-3 rounded-2xl border border-border/70 bg-white/80 p-3">
-        <div className="mb-2 text-xs font-semibold text-muted-foreground">{T.risk}</div>
-        {risks.length ? (
-          <div className="grid gap-2">
-            {risks.slice(0, 3).map((risk) => (
-              <div key={risk.code} className="flex items-start justify-between gap-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                <span>{risk.message}</span>
-                <Badge variant={risk.level === "high" ? "warning" : "outline"}>{risk.level}</Badge>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-sm text-muted-foreground">{T.noRisk}</div>
-        )}
-      </div>
-      {result?.qualityPath ? <div className="mt-3 truncate text-xs text-muted-foreground">{formatArtifactLabel("改写检查", result.qualityPath)}</div> : null}
-    </div>
-  );
-}
-
-function SafetyItem({ label, value, ok }: { label: string; value: string; ok: boolean }) {
-  return (
-    <div className="rounded-2xl border border-border/70 bg-white/80 p-3">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <CheckCircle2 className={ok ? "h-4 w-4 text-emerald-600" : "h-4 w-4 text-slate-400"} />
-        {label}
-      </div>
-      <div className="mt-2 text-sm font-semibold text-foreground">{value}</div>
-    </div>
-  );
-}
-
-function MetricCard({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-border/70 bg-background/80 p-4">
-      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-        <span className="text-primary">{icon}</span>
-        {label}
-      </div>
-      <div className="mt-3 text-2xl font-semibold text-foreground">{value}</div>
-    </div>
-  );
 }

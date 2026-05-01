@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -172,6 +173,8 @@ ISSUE_ACTIONS = {
     "text.mojibake_replacement": "用 UTF-8 重新保存并修正文案，避免开源后出现乱码。",
     "text.mojibake_question_marks": "检查该段是否是编码损坏；确认后用正确文本替换。",
     "file.unreadable": "确认文件是否应该作为文本提交；如果不是源码说明文件，应加入忽略或移出仓库。",
+    "git.tracked_ignored_file": "该文件已被 git 跟踪，即使写进 .gitignore 也不会自动消失；如是本地产物，请用 git rm --cached 移出索引。",
+    "git.tracked_local_artifact": "不要跟踪本地论文、检测报告、截图、导出文件或运行产物；如确需样例，请提交脱敏后的最小样例。",
     "local.config_artifact": "确认该配置文件没有被 git 跟踪；如包含接口或 Key，只能留在本机。",
     "local.artifact": "确认该样例、截图或报告未被 git 跟踪；公开仓库只保留脱敏后的最小样例。",
     "local.runtime_dir": "运行目录可以留在本机，但发布前必须确认它们被 .gitignore 忽略且没有被 git 跟踪。",
@@ -193,6 +196,8 @@ RELEASE_ACTION_ORDER = [
     "text.mojibake_question_marks",
     "gitignore.missing_pattern",
     "release.missing_file",
+    "git.tracked_ignored_file",
+    "git.tracked_local_artifact",
     "local.config_artifact",
     "local.artifact",
     "local.runtime_dir",
@@ -233,6 +238,24 @@ def _read_text(path: Path) -> str | None:
         return None
 
 
+def _git_lines(args: list[str]) -> list[str]:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return []
+    if completed.returncode != 0:
+        return []
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+
 def _redact(value: str) -> str:
     value = value.strip()
     if len(value) <= 10:
@@ -248,6 +271,14 @@ def _looks_like_placeholder(value: str) -> bool:
 def _is_safe_public_url(value: str) -> bool:
     normalized = value.strip().strip("'\"`<>.,;")
     return not normalized or bool(LOCAL_OR_PLACEHOLDER_URL_RE.match(normalized))
+
+
+def _is_allowed_text_rule(path: Path, rule: PatternRule, line: str) -> bool:
+    relative = _relative(path)
+    if rule.code == "brand.old_project_name" and relative == "README.md":
+        reference_url = "https://github.com/poleHansen/baibai" + "AIGC"
+        return reference_url in line and "参考" in line
+    return False
 
 
 def _issue(severity: str, code: str, message: str, *, path: Path | None = None, line: int | None = None, preview: str = "") -> dict[str, Any]:
@@ -292,6 +323,8 @@ def _scan_text_file(path: Path) -> list[dict[str, Any]]:
                 )
         for rule in TEXT_RULES:
             if rule.regex.search(line):
+                if _is_allowed_text_rule(path, rule, line):
+                    continue
                 issues.append(_issue("error", rule.code, rule.message, path=path, line=line_number, preview=line.strip()))
         if path.suffix.lower() in {".md", ".txt"} and DOC_MOJIBAKE_RE.search(line):
             issues.append(_issue("error", "text.mojibake_question_marks", "疑似问号型乱码。", path=path, line=line_number, preview=line.strip()))
@@ -320,6 +353,48 @@ def _check_required_release_files() -> list[dict[str, Any]]:
         for relative_path in sorted(REQUIRED_RELEASE_FILES)
         if not (ROOT_DIR / relative_path).exists()
     ]
+
+
+def _is_allowed_local_artifact(relative_path: str) -> bool:
+    return relative_path in {"app/public/brand-logo.png"}
+
+
+def _is_local_artifact_relative(relative_path: str) -> bool:
+    path = PurePosixPath(relative_path)
+    suffix = path.suffix.lower()
+    return suffix in LOCAL_ARTIFACT_SUFFIXES or any(path.match(pattern) for pattern in LOCAL_ARTIFACT_GLOBS)
+
+
+def _check_tracked_release_hygiene() -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    tracked_ignored = set(_git_lines(["ls-files", "-ci", "--exclude-standard"]))
+    tracked_files = set(_git_lines(["ls-files"]))
+
+    for relative_path in sorted(tracked_ignored):
+        if _is_allowed_local_artifact(relative_path):
+            continue
+        issues.append(
+            _issue(
+                "error",
+                "git.tracked_ignored_file",
+                f"被 .gitignore 覆盖的文件仍在 git 跟踪中：{relative_path}",
+                path=ROOT_DIR / relative_path,
+            )
+        )
+
+    for relative_path in sorted(tracked_files):
+        if relative_path in tracked_ignored or _is_allowed_local_artifact(relative_path):
+            continue
+        if _is_local_artifact_relative(relative_path):
+            issues.append(
+                _issue(
+                    "error",
+                    "git.tracked_local_artifact",
+                    f"疑似本地产物或个人文件被 git 跟踪：{relative_path}",
+                    path=ROOT_DIR / relative_path,
+                )
+            )
+    return issues
 
 
 def _scan_local_artifacts() -> list[dict[str, Any]]:
@@ -449,6 +524,7 @@ def run_audit(report_path: Path) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     issues.extend(_check_gitignore())
     issues.extend(_check_required_release_files())
+    issues.extend(_check_tracked_release_hygiene())
     for path in text_files:
         issues.extend(_scan_text_file(path))
     issues.extend(_scan_local_artifacts())

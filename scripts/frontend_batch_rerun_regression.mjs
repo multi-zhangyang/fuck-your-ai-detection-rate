@@ -155,7 +155,7 @@ function checkRequestErrorPayloadContract(webServiceSource, failures) {
   assertIncludes(webServiceSource, "requestError.status = response.status;", "Web request errors must retain HTTP status.", failures);
 }
 
-function checkExportIssueSampleContract(resultCardSource, webServiceSource, failures) {
+function checkExportIssueSampleContract(webServiceSource, failures) {
   assertIncludes(webServiceSource, "function parseExportIssueSamples", "Export response parser must decode issue samples from response headers.", failures);
   assertIncludes(webServiceSource, "X-Export-Guard-Issue-Samples", "Export response parser must read guard issue samples.", failures);
   assertIncludes(webServiceSource, "X-Export-Audit-Issue-Samples", "Export response parser must read audit issue samples.", failures);
@@ -163,13 +163,6 @@ function checkExportIssueSampleContract(resultCardSource, webServiceSource, fail
   assertIncludes(webServiceSource, "guardIssueSamples,", "Export result must carry guard issue samples.", failures);
   assertIncludes(webServiceSource, "auditIssueSamples,", "Export result must carry audit issue samples.", failures);
   assertIncludes(webServiceSource, "preflightIssueSamples,", "Export result must carry preflight issue samples.", failures);
-  assertIncludes(resultCardSource, "samples?: ExportIssueSample[]", "Export audit step must accept visible issue samples.", failures);
-  assertIncludes(resultCardSource, "samples={result?.guardIssueSamples}", "Export safety report must show guard issue samples.", failures);
-  assertIncludes(resultCardSource, "samples={result?.auditIssueSamples}", "Export safety report must show audit issue samples.", failures);
-  assertIncludes(resultCardSource, "samples={result?.preflightIssueSamples}", "Export safety report must show preflight issue samples.", failures);
-  assertIncludes(resultCardSource, "samples.slice(0, 3).map", "Export safety report must limit samples to compact visible examples.", failures);
-  assertIncludes(resultCardSource, "sample.location", "Export safety report must show issue location when available.", failures);
-  assertIncludes(resultCardSource, "sample.sample", "Export safety report must show a short issue text sample when available.", failures);
 }
 
 function runRegression() {
@@ -193,7 +186,7 @@ function runRegression() {
     checkTargetedRerunFeedbackContract(source, resultCardSource, failures);
     checkRerunFailureVisibilityContract(source, resultCardSource, failures);
     checkRequestErrorPayloadContract(webServiceSource, failures);
-    checkExportIssueSampleContract(resultCardSource, webServiceSource, failures);
+    checkExportIssueSampleContract(webServiceSource, failures);
     checkPartialFailureContract(source, "handleRerunRiskyChunks", failures);
     checkPartialFailureContract(source, "handleRerunDetectionMatchedChunks", failures);
   }
@@ -222,7 +215,7 @@ function runRegression() {
       "new failures auto-focus the failed-only view",
       "diff panel supports risk-specific filters",
       "batch rerun status stays visible in result area",
-      "export audit samples are visible in result area",
+      "export audit samples stay available in service payload",
     ],
   };
   mkdirSync(dirname(REPORT_PATH), { recursive: true });
