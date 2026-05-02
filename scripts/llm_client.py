@@ -17,6 +17,7 @@ DEFAULT_HEADERS = {
 TRANSIENT_HTTP_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_BACKOFF_SECONDS = 1.5
+_RESPONSES_TO_CHAT_FALLBACK_BASE_URLS: set[str] = set()
 THINKING_PART_TYPES = {
     "analysis",
     "reasoning",
@@ -87,6 +88,60 @@ def build_payload(prompt: str, *, model: str, temperature: float, api_type: str)
     }
 
 
+def _should_fallback_responses_to_chat(base_url: str, error_message: str) -> bool:
+    normalized_base_url = base_url.rstrip("/").lower()
+    if normalized_base_url.endswith("/responses"):
+        return False
+
+    normalized_message = error_message.lower()
+    hard_endpoint_markers = (
+        "status 404",
+        "status 405",
+        "not found",
+        "method not allowed",
+        "unsupported",
+        "unknown endpoint",
+        "unknown path",
+        "invalid endpoint",
+        "no route",
+        "cannot post",
+        "post /v1/responses",
+    )
+    chat_payload_markers = (
+        "missing required parameter: messages",
+        "messages is required",
+        "'messages' is required",
+        "unknown parameter: input",
+        "unrecognized request argument supplied: input",
+        "unsupported parameter: input",
+        "input is not supported",
+    )
+    provider_config_markers = (
+        "open /app/config.json",
+        "config.json: permission denied",
+    )
+    return any(marker in normalized_message for marker in hard_endpoint_markers + chat_payload_markers + provider_config_markers)
+
+
+def _fallback_cache_key(base_url: str) -> str:
+    return base_url.rstrip("/").lower()
+
+
+def _get_effective_api_type(resolved_api_type: str, base_url: str) -> str:
+    if (
+        resolved_api_type == "responses"
+        and not base_url.rstrip("/").lower().endswith("/responses")
+        and _fallback_cache_key(base_url) in _RESPONSES_TO_CHAT_FALLBACK_BASE_URLS
+    ):
+        return "chat_completions"
+    return resolved_api_type
+
+
+def _remember_responses_fallback(base_url: str) -> None:
+    if not base_url.rstrip("/").lower().endswith("/responses"):
+        _RESPONSES_TO_CHAT_FALLBACK_BASE_URLS.add(_fallback_cache_key(base_url))
+
+
 def build_headers(api_key: str | None) -> dict[str, str]:
     headers = dict(DEFAULT_HEADERS)
     if api_key:
@@ -111,6 +166,73 @@ def build_models_endpoint(base_url: str) -> str:
         return normalized_base_url
 
     return f"{normalized_base_url}/models"
+
+
+def _send_completion_once(
+    prompt: str,
+    *,
+    model: str,
+    api_key: str,
+    base_url: str,
+    api_type: str,
+    temperature: float,
+    timeout: int,
+    max_retries: int,
+    retry_backoff_seconds: float,
+) -> tuple[str, str]:
+    endpoint = build_endpoint(base_url, api_type)
+    payload = build_payload(prompt, model=model, temperature=temperature, api_type=api_type)
+    body = json.dumps(payload).encode("utf-8")
+
+    http_request = request.Request(
+        endpoint,
+        data=body,
+        headers=build_headers(api_key),
+        method="POST",
+    )
+    data, _, response_body = _send_json_request(
+        http_request,
+        timeout=timeout,
+        max_retries=max_retries,
+        retry_backoff_seconds=retry_backoff_seconds,
+    )
+    return extract_response_text(data, response_body, api_type), endpoint
+
+
+def _send_test_connection_once(
+    *,
+    model: str,
+    api_key: str,
+    base_url: str,
+    api_type: str,
+    timeout: int,
+    max_retries: int,
+    retry_backoff_seconds: float,
+) -> dict[str, object]:
+    endpoint = build_endpoint(base_url, api_type)
+    payload = build_payload("ping", model=model, temperature=0, api_type=api_type)
+    body = json.dumps(payload).encode("utf-8")
+    http_request = request.Request(
+        endpoint,
+        data=body,
+        headers=build_headers(api_key),
+        method="POST",
+    )
+    data, status_code, response_body = _send_json_request(
+        http_request,
+        timeout=timeout,
+        max_retries=max_retries,
+        retry_backoff_seconds=retry_backoff_seconds,
+    )
+    extract_response_text(data, response_body, api_type)
+
+    return {
+        "ok": True,
+        "endpoint": endpoint,
+        "model": model,
+        "apiType": api_type,
+        "status": int(status_code),
+    }
 
 
 def _is_transient_http_status(status_code: int) -> bool:
@@ -308,23 +430,36 @@ def llm_completion(
     retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
 ) -> str:
     resolved_api_type = normalize_api_type(api_type, base_url)
-    endpoint = build_endpoint(base_url, resolved_api_type)
-    payload = build_payload(prompt, model=model, temperature=temperature, api_type=resolved_api_type)
-    body = json.dumps(payload).encode("utf-8")
-
-    http_request = request.Request(
-        endpoint,
-        data=body,
-        headers=build_headers(api_key),
-        method="POST",
-    )
-    data, _, response_body = _send_json_request(
-        http_request,
-        timeout=timeout,
-        max_retries=max_retries,
-        retry_backoff_seconds=retry_backoff_seconds,
-    )
-    return extract_response_text(data, response_body, resolved_api_type)
+    effective_api_type = _get_effective_api_type(resolved_api_type, base_url)
+    try:
+        text, _ = _send_completion_once(
+            prompt,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            api_type=effective_api_type,
+            temperature=temperature,
+            timeout=timeout,
+            max_retries=max_retries,
+            retry_backoff_seconds=retry_backoff_seconds,
+        )
+        return text
+    except RuntimeError as exc:
+        if effective_api_type != "responses" or not _should_fallback_responses_to_chat(base_url, str(exc)):
+            raise
+        text, _ = _send_completion_once(
+            prompt,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            api_type="chat_completions",
+            temperature=temperature,
+            timeout=timeout,
+            max_retries=max_retries,
+            retry_backoff_seconds=retry_backoff_seconds,
+        )
+        _remember_responses_fallback(base_url)
+        return text
 
 
 def test_llm_connection(
@@ -338,30 +473,31 @@ def test_llm_connection(
     retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
 ) -> dict[str, object]:
     resolved_api_type = normalize_api_type(api_type, base_url)
-    endpoint = build_endpoint(base_url, resolved_api_type)
-    payload = build_payload("ping", model=model, temperature=0, api_type=resolved_api_type)
-    body = json.dumps(payload).encode("utf-8")
-    http_request = request.Request(
-        endpoint,
-        data=body,
-        headers=build_headers(api_key),
-        method="POST",
-    )
-    data, status_code, response_body = _send_json_request(
-        http_request,
-        timeout=timeout,
-        max_retries=max_retries,
-        retry_backoff_seconds=retry_backoff_seconds,
-    )
-    extract_response_text(data, response_body, resolved_api_type)
-
-    return {
-        "ok": True,
-        "endpoint": endpoint,
-        "model": model,
-        "apiType": resolved_api_type,
-        "status": int(status_code),
-    }
+    effective_api_type = _get_effective_api_type(resolved_api_type, base_url)
+    try:
+        return _send_test_connection_once(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            api_type=effective_api_type,
+            timeout=timeout,
+            max_retries=max_retries,
+            retry_backoff_seconds=retry_backoff_seconds,
+        )
+    except RuntimeError as exc:
+        if effective_api_type != "responses" or not _should_fallback_responses_to_chat(base_url, str(exc)):
+            raise
+        result = _send_test_connection_once(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            api_type="chat_completions",
+            timeout=timeout,
+            max_retries=max_retries,
+            retry_backoff_seconds=retry_backoff_seconds,
+        )
+        _remember_responses_fallback(base_url)
+        return result
 
 
 def list_llm_models(
