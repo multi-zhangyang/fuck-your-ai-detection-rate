@@ -138,7 +138,7 @@ def _normalize_model_providers(value: Any) -> list[dict[str, Any]]:
         return []
     normalized: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    for index, raw_config in enumerate(value[:50]):
+    for index, raw_config in enumerate(value):
         if not isinstance(raw_config, dict):
             continue
         provider_id = str(raw_config.get("id", "")).strip() or f"provider-{index + 1}"

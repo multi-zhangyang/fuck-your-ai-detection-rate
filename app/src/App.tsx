@@ -3231,7 +3231,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       if (mergedSaved.baseUrl && mergedSaved.apiKey && !mergedSaved.offlineMode) {
         await refreshModelCatalog(mergedSaved, { silent: true });
       }
-      setNotice(`模型配置已保存，当前模式为 ${describePromptProfile(saved.promptProfile)}。`);
+      setNotice(`模型配置已保存，当前模式为 ${describePromptProfile(mergedSaved.promptProfile)}。`);
       setRuntimeStep("模型配置已保存");
     } catch (appError) {
       setError(stringifyError(appError));
@@ -4489,7 +4489,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
           <section className="min-h-0 flex-1 overflow-hidden bg-muted/30 p-4">
             {activeView === "home" ? (
               <div className="h-full min-h-0 overflow-hidden">
-                <div className="grid h-full min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="grid h-full min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_440px] 2xl:grid-cols-[minmax(0,1fr)_480px]">
                   <div className="flex min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
                     <ResultCard
                       result={roundResult}
@@ -4531,10 +4531,10 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                     </div>
                   </div>
                   <ScrollArea
-                    className="h-full min-h-0 min-w-0 pr-1"
+                    className="h-full min-h-0 min-w-0 max-w-full overflow-hidden pr-1"
                     data-ui-section="home-operation-scroll"
                   >
-                    <div className="flex min-h-0 min-w-0 flex-col gap-4 pb-2">
+                    <div className="flex w-full min-h-0 min-w-0 max-w-full flex-col gap-4 pb-2">
                       <HomeRunPanel
                         value={documentStatus}
                         busy={uiBusy}
@@ -5008,6 +5008,10 @@ function HomeRunPanel({
   running: boolean;
 }) {
   const [setupEditor, setSetupEditor] = useState<null | "prompt" | "model">(null);
+  const modelConfigRef = useRef(modelConfig);
+  useEffect(() => {
+    modelConfigRef.current = modelConfig;
+  }, [modelConfig]);
   useEffect(() => {
     if (!setupEditor) {
       return;
@@ -5071,12 +5075,18 @@ function HomeRunPanel({
     : customizedRouteCount
       ? `混用 ${customizedRouteCount}/${activeFlowSequence.length}`
       : "全部继承默认";
-  const defaultRouteReady = modelConfig.offlineMode || Boolean(modelConfig.baseUrl?.trim() && modelConfig.apiKey?.trim() && modelConfig.model?.trim());
+  const activeModelRouteReady = modelConfig.offlineMode || unavailableRouteCount === 0;
   const modelRouteHealthLabel = unavailableRouteCount
     ? "路线不可启动"
-    : defaultRouteReady
+    : activeModelRouteReady
       ? "路线可启动"
       : "默认连接待补全";
+  const modelRouteTitle = customizedRouteCount
+    ? customizedRouteCount === activeFlowSequence.length
+      ? `专属路线 ${customizedRouteCount}/${activeFlowSequence.length}`
+      : `混用路线 ${customizedRouteCount}/${activeFlowSequence.length}`
+    : `默认 ${modelConfig.model || "未选"} · ${activeFlowSequence.length} 轮`;
+  const modelRouteLines = modelRouteSummary.map((item) => `${item.index + 1}. ${item.providerLabel} · ${item.modelLabel}`);
   const rewriteCandidateMode = modelConfig.rewriteCandidateMode === "quality" ? "quality" : "economy";
   const candidateMaxPerChunk = rewriteCandidateMode === "quality" ? 2 : 1;
   const activeRunStatus = roundProgressStatus?.activeRun && !roundProgressStatus.activeRun.completed ? roundProgressStatus.activeRun : null;
@@ -5099,7 +5109,10 @@ function HomeRunPanel({
       : "继续本轮"
     : "";
   const setRewriteCandidateMode = (mode: "economy" | "quality") => {
-    onModelConfigChange({ ...modelConfig, rewriteCandidateMode: mode });
+    const currentConfig = modelConfigRef.current;
+    const nextConfig = { ...currentConfig, rewriteCandidateMode: mode };
+    modelConfigRef.current = nextConfig;
+    onModelConfigChange(nextConfig);
   };
   const canRunNextRound = hasPendingRound && !busy && !running && !activeRunStatus && unavailableRouteCount === 0;
   const runButtonText = running
@@ -5141,91 +5154,107 @@ function HomeRunPanel({
     onPromptSequenceChange(nextSequence);
   };
   const updateRoundProvider = (roundIndex: number, providerId: string) => {
+    const currentConfig = modelConfigRef.current;
     const roundKey = getRoundModelKey(promptProfile, roundIndex + 1);
     if (!roundKey) return;
-    const nextRoundModels = { ...(modelConfig.roundModels ?? {}) };
+    const currentProviders = currentConfig.modelProviders ?? [];
+    const nextRoundModels = { ...(currentConfig.roundModels ?? {}) };
     if (providerId === "__default") {
       nextRoundModels[roundKey] = {
         ...(nextRoundModels[roundKey] ?? buildRoundModelFromProvider({
           id: "__default",
           name: "默认连接",
           enabled: true,
-          baseUrl: modelConfig.baseUrl,
-          apiKey: modelConfig.apiKey,
-          apiType: modelConfig.apiType,
-          defaultModel: modelConfig.model,
-        }, modelConfig.model, modelConfig)),
+          baseUrl: currentConfig.baseUrl,
+          apiKey: currentConfig.apiKey,
+          apiType: currentConfig.apiType,
+          defaultModel: currentConfig.model,
+        }, currentConfig.model, currentConfig)),
         enabled: false,
       };
-      onModelConfigChange({ ...modelConfig, roundModels: nextRoundModels });
+      const nextConfig = { ...currentConfig, roundModels: nextRoundModels };
+      modelConfigRef.current = nextConfig;
+      onModelConfigChange(nextConfig);
       return;
     }
-    const provider = providers.find((item) => item.id === providerId);
+    const provider = currentProviders.find((item) => item.id === providerId);
     if (!provider) return;
-    nextRoundModels[roundKey] = buildRoundModelFromProvider(provider, provider.defaultModel || provider.models?.[0] || "", modelConfig);
-    onModelConfigChange({ ...modelConfig, roundModels: nextRoundModels });
+    nextRoundModels[roundKey] = buildRoundModelFromProvider(provider, provider.defaultModel || provider.models?.[0] || "", currentConfig);
+    const nextConfig = { ...currentConfig, roundModels: nextRoundModels };
+    modelConfigRef.current = nextConfig;
+    onModelConfigChange(nextConfig);
   };
   const updateRoundModel = (roundIndex: number, model: string) => {
+    const currentConfig = modelConfigRef.current;
     const roundKey = getRoundModelKey(promptProfile, roundIndex + 1);
     if (!roundKey) return;
-    const currentRound = modelConfig.roundModels?.[roundKey];
-    const provider = currentRound?.enabled ? findProviderForRoundModel(modelConfig, currentRound) : null;
+    const currentRound = currentConfig.roundModels?.[roundKey];
+    const provider = currentRound?.enabled ? findProviderForRoundModel(currentConfig, currentRound) : null;
     const usableProvider = provider?.enabled === false ? null : provider;
-    const nextRoundModels = { ...(modelConfig.roundModels ?? {}) };
+    const nextRoundModels = { ...(currentConfig.roundModels ?? {}) };
     if (usableProvider) {
-      nextRoundModels[roundKey] = buildRoundModelFromProvider(usableProvider, model, modelConfig);
+      nextRoundModels[roundKey] = buildRoundModelFromProvider(usableProvider, model, currentConfig);
     } else {
       nextRoundModels[roundKey] = {
         enabled: false,
         providerName: "默认连接",
-        baseUrl: modelConfig.baseUrl,
-        apiKey: modelConfig.apiKey,
+        baseUrl: currentConfig.baseUrl,
+        apiKey: currentConfig.apiKey,
         model,
-        apiType: modelConfig.apiType,
-        temperature: modelConfig.temperature,
-        requestTimeoutSeconds: modelConfig.requestTimeoutSeconds,
-        maxRetries: modelConfig.maxRetries,
+        apiType: currentConfig.apiType,
+        temperature: currentConfig.temperature,
+        requestTimeoutSeconds: currentConfig.requestTimeoutSeconds,
+        maxRetries: currentConfig.maxRetries,
       };
     }
-    onModelConfigChange({ ...modelConfig, roundModels: nextRoundModels, model: usableProvider ? modelConfig.model : model });
+    const nextConfig = { ...currentConfig, roundModels: nextRoundModels, model: usableProvider ? currentConfig.model : model };
+    modelConfigRef.current = nextConfig;
+    onModelConfigChange(nextConfig);
   };
   const rotateModelRoute = () => {
-    if (!providerOptions.length) return;
-    const nextRoundModels = { ...(modelConfig.roundModels ?? {}) };
+    const currentConfig = modelConfigRef.current;
+    const currentProviderOptions = (currentConfig.modelProviders ?? []).filter((provider) => provider.enabled !== false);
+    if (!currentProviderOptions.length) return;
+    const nextRoundModels = { ...(currentConfig.roundModels ?? {}) };
     activeFlowSequence.forEach((_, index) => {
       const roundKey = getRoundModelKey(promptProfile, index + 1);
-      const provider = providerOptions[index % providerOptions.length];
+      const provider = currentProviderOptions[index % currentProviderOptions.length];
       if (!roundKey || !provider) return;
-      const models = provider.models?.length ? provider.models : [provider.defaultModel || modelConfig.model].filter(Boolean);
-      const model = models.length ? models[index % models.length] : modelConfig.model;
-      nextRoundModels[roundKey] = buildRoundModelFromProvider(provider, model, modelConfig);
+      const models = provider.models?.length ? provider.models : [provider.defaultModel || currentConfig.model].filter(Boolean);
+      const model = models.length ? models[index % models.length] : currentConfig.model;
+      nextRoundModels[roundKey] = buildRoundModelFromProvider(provider, model, currentConfig);
     });
-    onModelConfigChange({ ...modelConfig, roundModels: nextRoundModels });
+    const nextConfig = { ...currentConfig, roundModels: nextRoundModels };
+    modelConfigRef.current = nextConfig;
+    onModelConfigChange(nextConfig);
   };
   const resetModelRouteToDefault = () => {
-    const nextRoundModels = { ...(modelConfig.roundModels ?? {}) };
+    const currentConfig = modelConfigRef.current;
+    const nextRoundModels = { ...(currentConfig.roundModels ?? {}) };
     activeFlowSequence.forEach((_, index) => {
       const roundKey = getRoundModelKey(promptProfile, index + 1);
       if (!roundKey) return;
       nextRoundModels[roundKey] = {
         ...(nextRoundModels[roundKey] ?? {
           providerName: "默认连接",
-          baseUrl: modelConfig.baseUrl,
-          apiKey: modelConfig.apiKey,
-          model: modelConfig.model,
-          apiType: modelConfig.apiType,
-          temperature: modelConfig.temperature,
-          requestTimeoutSeconds: modelConfig.requestTimeoutSeconds,
-          maxRetries: modelConfig.maxRetries,
+          baseUrl: currentConfig.baseUrl,
+          apiKey: currentConfig.apiKey,
+          model: currentConfig.model,
+          apiType: currentConfig.apiType,
+          temperature: currentConfig.temperature,
+          requestTimeoutSeconds: currentConfig.requestTimeoutSeconds,
+          maxRetries: currentConfig.maxRetries,
         }),
         enabled: false,
       };
     });
-    onModelConfigChange({ ...modelConfig, roundModels: nextRoundModels });
+    const nextConfig = { ...currentConfig, roundModels: nextRoundModels };
+    modelConfigRef.current = nextConfig;
+    onModelConfigChange(nextConfig);
   };
   return (
     <>
-    <Card className="shadcn-control-panel min-w-0 shrink-0 overflow-hidden">
+    <Card className="shadcn-control-panel w-full min-w-0 max-w-full shrink-0 overflow-hidden">
       <CardHeader className="p-4 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -5236,8 +5265,8 @@ function HomeRunPanel({
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-4 p-4 pt-0">
-        <div className="rounded-lg border bg-background p-3">
-          <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 overflow-hidden rounded-lg border bg-background p-3">
+          <div className="flex min-w-0 flex-col gap-3">
             <div className="min-w-0">
               <div className="text-sm font-semibold">文档入口</div>
               <div className="mt-1 text-xs leading-5 text-muted-foreground">{hasDocument ? "源文件操作" : "Word / TXT"}</div>
@@ -5247,7 +5276,7 @@ function HomeRunPanel({
               variant={hasDocument ? "outlineWarning" : "default"}
               onClick={onPickFile}
               disabled={busy || running}
-              className="shrink-0"
+              className="w-full min-w-0"
             >
               <FileText data-icon="inline-start" />
               {hasDocument ? "更换文档" : "上传文档"}
@@ -5260,7 +5289,7 @@ function HomeRunPanel({
           </label>
         </div>
 
-        <div className="rounded-lg border bg-background p-3">
+        <div className="min-w-0 overflow-hidden rounded-lg border bg-background p-3">
           <div className="grid gap-2">
             <Button
               type="button"
@@ -5270,12 +5299,12 @@ function HomeRunPanel({
               aria-expanded={setupEditor === "prompt"}
               className={cn("shadcn-choice-card", setupEditor === "prompt" && "shadcn-choice-card-active")}
             >
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-xs font-semibold text-muted-foreground">改写流程</div>
-                <Badge variant={setupEditor === "prompt" ? "default" : "outline"}>{setupEditor === "prompt" ? "已打开" : "编辑"}</Badge>
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <div className="min-w-0 truncate text-xs font-semibold text-muted-foreground">改写流程</div>
+                <Badge variant={setupEditor === "prompt" ? "default" : "outline"} className="shrink-0">{setupEditor === "prompt" ? "已打开" : "编辑"}</Badge>
               </div>
               <div className="mt-2 truncate text-sm font-semibold">{promptSummary}</div>
-              <div className="mt-2 flex min-h-6 flex-wrap gap-1">
+              <div className="mt-2 flex min-h-6 min-w-0 flex-wrap gap-1">
                 {activeFlowSequence.map((promptId, index) => (
                   <span key={`${promptId}-${index}-flow`} className="rounded-full border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
                     {index + 1}. {PROMPT_OPTIONS.find((option) => option.id === promptId)?.label ?? promptId}
@@ -5295,17 +5324,19 @@ function HomeRunPanel({
                 unavailableRouteCount ? "border-destructive/40 bg-destructive/5" : setupEditor === "model" && "shadcn-choice-card-active",
               )}
             >
-              <div className="flex items-center justify-between gap-2">
-                <div className={`text-xs font-semibold ${unavailableRouteCount ? "text-destructive" : "text-muted-foreground"}`}>模型路线</div>
-                <Badge variant={unavailableRouteCount ? "warning" : setupEditor === "model" ? "default" : "outline"}>
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <div className={`min-w-0 truncate text-xs font-semibold ${unavailableRouteCount ? "text-destructive" : "text-muted-foreground"}`}>模型路线</div>
+                <Badge variant={unavailableRouteCount ? "warning" : setupEditor === "model" ? "default" : "outline"} className="shrink-0">
                   {setupEditor === "model" ? "已打开" : modelRouteStatus}
                 </Badge>
               </div>
-              <div className="mt-2 truncate text-sm font-semibold">
-                默认 {modelConfig.model || "未选"} · {activeFlowSequence.length} 轮
+              <div className="mt-2 truncate text-sm font-semibold" data-ui-section="home-active-model-route">
+                {modelRouteTitle}
               </div>
-              <div className="mt-1 truncate text-[11px] font-medium text-muted-foreground">
-                服务商 {providerOptions.length}/{providers.length}{customizedRouteCount ? ` · 专属 ${customizedRouteCount}` : ""}
+              <div className="mt-1 flex min-w-0 flex-col gap-1 text-[11px] font-medium text-muted-foreground">
+                {modelRouteLines.slice(0, 3).map((line) => (
+                  <span key={line} className="truncate">{line}</span>
+                ))}
               </div>
             </Button>
           </div>
@@ -5493,8 +5524,8 @@ function HomeRunPanel({
                   <CardContent className="flex flex-col gap-3 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
-                        <Badge variant={unavailableRouteCount ? "warning" : defaultRouteReady ? "success" : "outline"}>{modelRouteHealthLabel}</Badge>
-                        <span className="truncate font-medium">默认：{modelConfig.model || "未选"}</span>
+                        <Badge variant={unavailableRouteCount ? "warning" : activeModelRouteReady ? "success" : "outline"}>{modelRouteHealthLabel}</Badge>
+                        <span className="truncate font-medium">{modelRouteTitle}</span>
                         <Separator orientation="vertical" className="h-4" />
                         <span className="text-muted-foreground">服务商 {providerOptions.length}/{providers.length}</span>
                         <span className="text-muted-foreground">轮次 {activeFlowSequence.length}</span>
@@ -5510,7 +5541,7 @@ function HomeRunPanel({
                       <Button type="button" variant="outline" size="sm" onClick={onRefreshDefaultModels} disabled={busy || modelCatalogBusy || modelConfig.offlineMode}>
                         {modelCatalogBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读默认
                       </Button>
-                      <Button type="button" variant="neutral" size="sm" onClick={() => onSaveModelConfig(modelConfig)} disabled={busy || unavailableRouteCount > 0}>
+                      <Button type="button" variant="neutral" size="sm" onClick={() => onSaveModelConfig(modelConfigRef.current)} disabled={busy || unavailableRouteCount > 0}>
                         <Save data-icon="inline-start" />保存
                       </Button>
                     </div>

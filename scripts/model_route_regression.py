@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from copy import deepcopy
 
+from app_config import load_app_config, save_app_config
 from app_service import _resolve_round_model_config
 
 
@@ -148,12 +151,42 @@ def test_legacy_snapshot_still_works_without_provider_repository() -> None:
     assert resolved["rateLimitMaxRequests"] == 6
 
 
+def test_provider_repository_is_not_capped_at_fifty() -> None:
+    original_appdata = os.environ.get("APPDATA")
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["APPDATA"] = temp_dir
+            providers = []
+            for index in range(75):
+                providers.append({
+                    "id": f"provider-{index + 1}",
+                    "name": f"Provider {index + 1}",
+                    "enabled": True,
+                    "baseUrl": f"https://provider-{index + 1}.example/v1",
+                    "apiKey": f"provider-{index + 1}-key",
+                    "apiType": "chat_completions",
+                    "models": [f"model-{index + 1}"],
+                    "defaultModel": f"model-{index + 1}",
+                })
+            saved = save_app_config({**_base_config(), "modelProviders": providers})
+            loaded = load_app_config()
+            assert len(saved["modelProviders"]) == 75
+            assert len(loaded["modelProviders"]) == 75
+            assert loaded["modelProviders"][74]["id"] == "provider-75"
+    finally:
+        if original_appdata is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = original_appdata
+
+
 def main() -> int:
     test_provider_repository_is_authoritative()
     test_disabled_round_inherits_default()
     test_missing_provider_does_not_silently_fallback()
     test_disabled_provider_does_not_run()
     test_legacy_snapshot_still_works_without_provider_repository()
+    test_provider_repository_is_not_capped_at_fifty()
     print("model route regression passed")
     return 0
 

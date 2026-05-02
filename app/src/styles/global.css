@@ -59,7 +59,7 @@
   }
 
   .shadcn-choice-card {
-    @apply flex h-auto min-h-[7rem] w-full min-w-0 flex-col items-stretch justify-start gap-2 whitespace-normal rounded-md border bg-background p-3 text-left text-foreground transition hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-60;
+    @apply flex h-auto min-h-[7rem] w-full min-w-0 max-w-full flex-col items-stretch justify-start gap-2 overflow-hidden whitespace-normal rounded-md border bg-background p-3 text-left text-foreground transition hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-60;
   }
 
   .shadcn-choice-card-active {

@@ -95,6 +95,10 @@ function runRegression() {
     assertIncludes(appSource, "function openDiffTaskTarget", "Task center must support direct navigation into focused Diff filters.", failures);
     assertIncludes(appSource, "diffFocusRequest={diffFocusRequest}", "Focused Diff requests must flow into the Diff review card.", failures);
     assertIncludes(appSource, "data-ui-section=\"model-route-compact\"", "Model route Sheet must use a compact shadcn summary bar before per-round controls.", failures);
+    assertIncludes(appSource, "data-ui-section=\"home-active-model-route\"", "Home model route card must show the active per-round route, not only the default model.", failures);
+    assertIncludes(appSource, "modelConfigRef.current", "Model route edits must save the latest selected provider/model without waiting for a React rerender.", failures);
+    assertIncludes(appSource, "modelRouteLines", "Model route summary must list effective providers and models per round.", failures);
+    assertNotIncludes(appSource, "默认 {modelConfig.model || \"未选\"} · {activeFlowSequence.length} 轮", "Home model route summary must not keep showing the default model after custom per-round routes are selected.", failures);
     assertIncludes(appSource, "rotateModelRoute", "Model route batch assignment must support any enabled provider count with deterministic rotation.", failures);
     assertNotIncludes(appSource, "RouteOverviewCard", "Model route Sheet must not reintroduce verbose overview cards.", failures);
     assertIncludes(appSource, "provider.enabled !== false", "Provider selection must treat legacy providers without an enabled flag as enabled.", failures);
