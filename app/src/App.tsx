@@ -46,7 +46,7 @@ import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
   Sidebar,
   SidebarContent,
@@ -4391,6 +4391,16 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         ? `${activeRuntimeTaskCount} 个运行中`
         : "无未读";
   const NotificationStatusIcon = currentNotification?.kind === "error" ? AlertCircle : currentNotification ? CheckCircle2 : Bell;
+  const hasStatusFeedback = Boolean(currentNotification);
+  const notificationStatusLabel = currentNotification
+    ? currentNotification.kind === "error"
+      ? "错误反馈"
+      : "操作反馈"
+    : unreadNotificationCount
+      ? "未读通知"
+      : activeRuntimeTaskCount
+        ? "运行通知"
+        : "通知";
 
   return (
     <SidebarProvider defaultOpen className="h-svh min-h-0 overflow-hidden">
@@ -4435,7 +4445,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                 </Badge>
               </div>
             </div>
-            <div className="flex h-9 items-center gap-2 overflow-x-auto border-t bg-muted/35 px-4 text-xs">
+            <div className="flex h-10 items-center gap-2 overflow-x-auto border-t bg-muted/35 px-4 text-xs">
               <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" onClick={() => setActiveView("home")}>
                 <FileText data-icon="inline-start" />
                 <span className="text-muted-foreground">当前文件</span>
@@ -4454,10 +4464,24 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                 <span className="text-foreground">{diffDashboardStats.chunkCount ? `${diffDashboardStats.chunkCount} 块 · ${diffDashboardStats.reviewCount} 待处理` : "未生成"}</span>
               </Button>
               <Separator orientation="vertical" className="h-4" />
-              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" aria-label="打开通知与任务中心" onClick={openNotificationCenter}>
+              <Button
+                type="button"
+                variant={currentNotification?.kind === "error" ? "outlineDanger" : hasStatusFeedback ? "outlineSuccess" : unreadNotificationCount || activeRuntimeTaskCount ? "outline" : "ghost"}
+                size="sm"
+                className={cn(
+                  "h-8 min-w-[220px] max-w-[min(48vw,560px)] shrink-0 justify-start px-3 text-xs",
+                  hasStatusFeedback && "border-primary/35 bg-primary/10 shadow-sm",
+                  currentNotification?.kind === "error" && "border-destructive/40 bg-destructive/10",
+                )}
+                aria-label="打开通知与任务中心"
+                aria-live="polite"
+                onClick={openNotificationCenter}
+              >
                 <NotificationStatusIcon data-icon="inline-start" />
-                <span className="text-muted-foreground">通知</span>
-                <span className="max-w-[260px] truncate text-foreground">{notificationStatusText}</span>
+                <Badge variant={currentNotification?.kind === "error" ? "danger" : hasStatusFeedback ? "secondary" : "outline"} className="shrink-0">
+                  {notificationStatusLabel}
+                </Badge>
+                <span className={cn("min-w-0 flex-1 truncate text-left text-foreground", hasStatusFeedback && "font-semibold")}>{notificationStatusText}</span>
               </Button>
             </div>
           </header>
@@ -4506,41 +4530,46 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                       />
                     </div>
                   </div>
-                  <div className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
-                    <HomeRunPanel
-                      value={documentStatus}
-                      busy={uiBusy}
-                      pickerLabel={pickerLabel}
-                      modelConfig={modelConfig}
-                      modelCatalog={modelCatalog}
-                      modelCatalogBusy={modelCatalogBusy}
-                      progress={progress}
-                      roundProgressStatus={roundProgressStatus}
-                      promptProfile={modelConfig.promptProfile}
-                      promptSequence={modelConfig.promptSequence}
-                      onPromptProfileChange={(promptProfile) => void handlePromptProfileChange(promptProfile)}
-                      onPromptSequenceChange={(promptSequence) => void handlePromptSequenceChange(promptSequence)}
-                      onModelConfigChange={setModelConfig}
-                      onSaveModelConfig={(nextConfig) => void handleSaveModelConfig(nextConfig)}
-                      onRefreshDefaultModels={() => void refreshModelCatalog()}
-                      onRefreshAllProviderModels={() => void handleRefreshAllProviderModels()}
-                      onRefreshProviderModels={(providerId) => void handleRefreshProviderModels(providerId)}
-                      onPickFile={handlePickFile}
-                      onRunRound={handleRunRound}
-                      onCancelRun={handleCancelRunRound}
-                      onResetRound={handleResetCurrentRound}
-                      running={running}
-                    />
-                    <DetectionReportPanel
-                      report={detectionReport}
-                      matches={detectionMatches}
-                      documentLabel={documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : ""}
-                      busy={uiBusy}
-                      onPickReport={handlePickDetectionReport}
-                      onClearReport={handleClearDetectionReport}
-                      onRerunMatchedChunks={() => void handleRerunDetectionMatchedChunks()}
-                    />
-                  </div>
+                  <ScrollArea
+                    className="h-full min-h-0 min-w-0 pr-1"
+                    data-ui-section="home-operation-scroll"
+                  >
+                    <div className="flex min-h-0 min-w-0 flex-col gap-4 pb-2">
+                      <HomeRunPanel
+                        value={documentStatus}
+                        busy={uiBusy}
+                        pickerLabel={pickerLabel}
+                        modelConfig={modelConfig}
+                        modelCatalog={modelCatalog}
+                        modelCatalogBusy={modelCatalogBusy}
+                        progress={progress}
+                        roundProgressStatus={roundProgressStatus}
+                        promptProfile={modelConfig.promptProfile}
+                        promptSequence={modelConfig.promptSequence}
+                        onPromptProfileChange={(promptProfile) => void handlePromptProfileChange(promptProfile)}
+                        onPromptSequenceChange={(promptSequence) => void handlePromptSequenceChange(promptSequence)}
+                        onModelConfigChange={setModelConfig}
+                        onSaveModelConfig={(nextConfig) => void handleSaveModelConfig(nextConfig)}
+                        onRefreshDefaultModels={() => void refreshModelCatalog()}
+                        onRefreshAllProviderModels={() => void handleRefreshAllProviderModels()}
+                        onRefreshProviderModels={(providerId) => void handleRefreshProviderModels(providerId)}
+                        onPickFile={handlePickFile}
+                        onRunRound={handleRunRound}
+                        onCancelRun={handleCancelRunRound}
+                        onResetRound={handleResetCurrentRound}
+                        running={running}
+                      />
+                      <DetectionReportPanel
+                        report={detectionReport}
+                        matches={detectionMatches}
+                        documentLabel={documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : ""}
+                        busy={uiBusy}
+                        onPickReport={handlePickDetectionReport}
+                        onClearReport={handleClearDetectionReport}
+                        onRerunMatchedChunks={() => void handleRerunDetectionMatchedChunks()}
+                      />
+                    </div>
+                  </ScrollArea>
                 </div>
               </div>
             ) : activeView === "quality" ? (
@@ -5048,11 +5077,6 @@ function HomeRunPanel({
     : defaultRouteReady
       ? "路线可启动"
       : "默认连接待补全";
-  const modelRouteHealthDetail = unavailableRouteCount
-    ? "有轮次缺配置。"
-    : defaultRouteReady
-      ? `${activeFlowSequence.length} 轮就绪。`
-      : "专属轮次外继承默认。";
   const rewriteCandidateMode = modelConfig.rewriteCandidateMode === "quality" ? "quality" : "economy";
   const candidateMaxPerChunk = rewriteCandidateMode === "quality" ? 2 : 1;
   const activeRunStatus = roundProgressStatus?.activeRun && !roundProgressStatus.activeRun.completed ? roundProgressStatus.activeRun : null;
@@ -5165,15 +5189,15 @@ function HomeRunPanel({
     }
     onModelConfigChange({ ...modelConfig, roundModels: nextRoundModels, model: usableProvider ? modelConfig.model : model });
   };
-  const randomizeModelRoute = () => {
+  const rotateModelRoute = () => {
     if (!providerOptions.length) return;
     const nextRoundModels = { ...(modelConfig.roundModels ?? {}) };
     activeFlowSequence.forEach((_, index) => {
       const roundKey = getRoundModelKey(promptProfile, index + 1);
-      const provider = providerOptions[(Math.floor(Math.random() * providerOptions.length) + index) % providerOptions.length];
+      const provider = providerOptions[index % providerOptions.length];
       if (!roundKey || !provider) return;
       const models = provider.models?.length ? provider.models : [provider.defaultModel || modelConfig.model].filter(Boolean);
-      const model = models.length ? models[Math.floor(Math.random() * models.length)] : modelConfig.model;
+      const model = models.length ? models[index % models.length] : modelConfig.model;
       nextRoundModels[roundKey] = buildRoundModelFromProvider(provider, model, modelConfig);
     });
     onModelConfigChange({ ...modelConfig, roundModels: nextRoundModels });
@@ -5278,14 +5302,10 @@ function HomeRunPanel({
                 </Badge>
               </div>
               <div className="mt-2 truncate text-sm font-semibold">
-                {customizedRouteCount ? `${customizedRouteCount} 轮使用专属服务商` : "每轮继承默认连接"}
+                默认 {modelConfig.model || "未选"} · {activeFlowSequence.length} 轮
               </div>
-              <div className="mt-2 grid gap-1">
-                {modelRouteSummary.slice(0, 3).map((item) => (
-                  <div key={`${item.index}-${item.providerLabel}-${item.modelLabel}`} className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">
-                    {item.index + 1}. {item.providerLabel} · {item.modelLabel}
-                  </div>
-                ))}
+              <div className="mt-1 truncate text-[11px] font-medium text-muted-foreground">
+                服务商 {providerOptions.length}/{providers.length}{customizedRouteCount ? ` · 专属 ${customizedRouteCount}` : ""}
               </div>
             </Button>
           </div>
@@ -5380,14 +5400,14 @@ function HomeRunPanel({
       <Sheet open={Boolean(setupEditor)} onOpenChange={(open) => {
         if (!open) setSetupEditor(null);
       }}>
-        <SheetContent side="right" className={`shadcn-config-sheet ${setupEditor === "model" ? "sm:max-w-[760px]" : "sm:max-w-[520px]"}`}>
+        <SheetContent side="right" className={`shadcn-config-sheet ${setupEditor === "model" ? "sm:max-w-[680px]" : "sm:max-w-[520px]"}`}>
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2">
               {setupEditor === "prompt" ? <Wand2 /> : <Settings />}
               {setupEditor === "prompt" ? "改写流程" : "模型路线"}
             </SheetTitle>
             <SheetDescription>
-              {setupEditor === "prompt" ? "只调整本次任务的轮次顺序，不改变核心 prompt 文件。" : "按当前流程为每一轮选择服务商和模型。"}
+              {setupEditor === "prompt" ? "只调整本次任务的轮次顺序。" : "默认连接，可按轮覆盖。"}
             </SheetDescription>
           </SheetHeader>
           <Separator />
@@ -5469,70 +5489,49 @@ function HomeRunPanel({
               </div>
             ) : (
               <div className="flex flex-col gap-4">
-                <div data-ui-section="model-route-overview" className="rounded-lg border bg-background p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-semibold text-foreground">路线总览</div>
-                      <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                        先确认默认兜底，再为每轮指定服务商；每轮没有单独指定时会继承默认连接。
+                <Card data-ui-section="model-route-compact" className="shadow-none">
+                  <CardContent className="flex flex-col gap-3 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+                        <Badge variant={unavailableRouteCount ? "warning" : defaultRouteReady ? "success" : "outline"}>{modelRouteHealthLabel}</Badge>
+                        <span className="truncate font-medium">默认：{modelConfig.model || "未选"}</span>
+                        <Separator orientation="vertical" className="h-4" />
+                        <span className="text-muted-foreground">服务商 {providerOptions.length}/{providers.length}</span>
+                        <span className="text-muted-foreground">轮次 {activeFlowSequence.length}</span>
                       </div>
+                      <Badge variant={customizedRouteCount ? "secondary" : "outline"}>{modelRouteStatus}</Badge>
                     </div>
-                    <Badge variant={unavailableRouteCount ? "warning" : defaultRouteReady ? "success" : "outline"}>{modelRouteHealthLabel}</Badge>
-                  </div>
-                  <div className="mt-4 grid gap-3 lg:grid-cols-3">
-                    <RouteOverviewCard
-                      label="默认兜底"
-                      value={modelConfig.model || "未选模型"}
-                      detail={modelConfig.offlineMode ? "离线模式：不请求远程模型" : defaultRouteReady ? "未指定专属服务商的轮次会走这里" : "需补全接口地址、Key 和模型"}
-                      tone={defaultRouteReady ? "success" : "warning"}
-                    />
-                    <RouteOverviewCard
-                      label="服务商仓库"
-                      value={`${providerOptions.length}/${providers.length} 启用`}
-                      detail={providerOptions.length ? "可在每轮路线中选择这些服务商" : "没有启用服务商时只能使用默认连接"}
-                      tone={providerOptions.length ? "info" : "slate"}
-                    />
-                    <RouteOverviewCard
-                      label="本次路线"
-                      value={modelRouteStatus}
-                      detail={modelRouteHealthDetail}
-                      tone={unavailableRouteCount ? "danger" : customizedRouteCount ? "brand" : "slate"}
-                    />
-                  </div>
-                  <div className="mt-4 rounded-md border bg-muted/30 p-3">
-                    <div className="mb-2 flex items-center justify-between gap-3">
-                      <div className="text-xs font-semibold text-muted-foreground">批量动作</div>
-                      <Badge variant="outline">{formatPromptSequence(activeFlowSequence)}</Badge>
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                      <Button type="button" variant="outline" size="sm" onClick={resetModelRouteToDefault} disabled={busy}>全部继承默认</Button>
-                      <Button type="button" variant="outline" size="sm" onClick={randomizeModelRoute} disabled={busy || providerOptions.length === 0}>轮换服务商</Button>
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                      <Button type="button" variant="outline" size="sm" onClick={resetModelRouteToDefault} disabled={busy}>继承默认</Button>
+                      <Button type="button" variant="outline" size="sm" onClick={rotateModelRoute} disabled={busy || providerOptions.length === 0}>轮换服务商</Button>
                       <Button type="button" variant="outline" size="sm" onClick={onRefreshAllProviderModels} disabled={busy || modelConfig.offlineMode || providerOptions.length === 0}>
-                        <RefreshCw data-icon="inline-start" />读取服务商模型
+                        <RefreshCw data-icon="inline-start" />读服务商
                       </Button>
                       <Button type="button" variant="outline" size="sm" onClick={onRefreshDefaultModels} disabled={busy || modelCatalogBusy || modelConfig.offlineMode}>
-                        {modelCatalogBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读取默认模型
+                        {modelCatalogBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读默认
+                      </Button>
+                      <Button type="button" variant="neutral" size="sm" onClick={() => onSaveModelConfig(modelConfig)} disabled={busy || unavailableRouteCount > 0}>
+                        <Save data-icon="inline-start" />保存
                       </Button>
                     </div>
-                  </div>
-                  {unavailableRouteCount ? (
-                    <Alert variant="destructive" className="mt-3">
-                      <AlertCircle />
-                      <AlertTitle>模型路线不可启动</AlertTitle>
-                      <AlertDescription>有轮次绑定的服务商已删除或关闭，请重新选择，或点击“全部继承默认”。</AlertDescription>
-                    </Alert>
-                  ) : null}
-                </div>
-                <div className="flex flex-col gap-3">
+                    {unavailableRouteCount ? (
+                      <Alert variant="destructive">
+                        <AlertCircle />
+                        <AlertTitle>有轮次不可用</AlertTitle>
+                        <AlertDescription>切换服务商或改为继承默认。</AlertDescription>
+                      </Alert>
+                    ) : null}
+                  </CardContent>
+                </Card>
+                <div className="grid gap-3">
                   {activeFlowSequence.map((promptId, index) => {
+                    const promptOption = PROMPT_OPTIONS.find((option) => option.id === promptId);
                     const roundKey = getRoundModelKey(promptProfile, index + 1);
                     const roundModel = roundKey ? modelConfig.roundModels?.[roundKey] : undefined;
                     const provider = findProviderForRoundModel(modelConfig, roundModel);
                     const selectedProviderId = roundModel?.enabled && provider && provider.enabled !== false ? provider.id : "__default";
-                    const selectedModels = selectedProviderId === "__default" ? defaultModels : provider?.models?.length ? provider.models : [];
-                    const selectedModelValue = selectedProviderId === "__default"
-                      ? selectedModels.includes(modelConfig.model) ? modelConfig.model : selectedModels[0]
-                      : roundModel?.model || provider?.defaultModel || selectedModels[0];
+                    const selectedModels = selectedProviderId === "__default" ? [] : provider?.models?.length ? provider.models : [];
+                    const selectedModelValue = selectedProviderId === "__default" ? "" : roundModel?.model || provider?.defaultModel || selectedModels[0];
                     const routeIssues = modelConfig.offlineMode ? [] : selectedProviderId === "__default"
                       ? [
                         !modelConfig.baseUrl?.trim() ? "默认 API 地址未填" : "",
@@ -5545,61 +5544,62 @@ function HomeRunPanel({
                         !String(selectedModelValue ?? "").trim() ? "本轮模型未选" : "",
                       ].filter(Boolean);
                     return (
-                      <div key={`${promptId}-${index}-model`} className={cn("rounded-lg border bg-background p-4", routeIssues.length && "border-destructive/40 bg-destructive/5")}>
-                        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                          <div>
-                            <div className="text-sm font-semibold text-foreground">第 {index + 1} 轮 · {getPromptOptionLabel(promptId)}</div>
-                            <div className="mt-0.5 text-xs text-muted-foreground">{selectedProviderId === "__default" ? "继承默认连接" : "使用专属服务商"}</div>
-                          </div>
-                          <Badge variant={selectedProviderId === "__default" ? "outline" : "default"}>{selectedProviderId === "__default" ? "默认" : "混用"}</Badge>
-                        </div>
-                        <div className="grid gap-3">
-                          <Select value={selectedProviderId || "__default"} onValueChange={(providerId) => updateRoundProvider(index, providerId)} disabled={busy}>
-                            <SelectTrigger><SelectValue placeholder="选择服务商" /></SelectTrigger>
-                            <SelectContent>
-                              <SelectGroup>
-                                <SelectItem value="__default">默认连接 · {modelConfig.model || "未选模型"}</SelectItem>
-                                {providerOptions.map((item) => <SelectItem key={item.id} value={item.id}>{item.name || "未命名服务商"} · {item.defaultModel || item.models?.[0] || "未选模型"}</SelectItem>)}
-                              </SelectGroup>
-                            </SelectContent>
-                          </Select>
-                          {selectedModels.length > 0 ? (
-                            <Select value={selectedModelValue} onValueChange={(model) => updateRoundModel(index, model)} disabled={busy}>
-                              <SelectTrigger><SelectValue placeholder="选择模型" /></SelectTrigger>
+                      <Card key={`${promptId}-${index}-model`} className={cn("shadow-none", routeIssues.length && "border-destructive/40 bg-destructive/5")}>
+                        <CardHeader className="flex flex-row items-center justify-between gap-3 p-3 pb-2">
+                          <CardTitle className="truncate text-sm">第 {index + 1} 轮 · {promptOption?.label ?? promptId}</CardTitle>
+                          <Badge variant={selectedProviderId === "__default" ? "outline" : "secondary"}>{selectedProviderId === "__default" ? "默认" : "专属"}</Badge>
+                        </CardHeader>
+                        <CardContent className="grid gap-3 p-3 pt-0">
+                          <FieldGroup className="grid gap-2 md:grid-cols-2">
+                            <Field>
+                              <FieldLabel className="sr-only">第 {index + 1} 轮服务商</FieldLabel>
+                            <Select value={selectedProviderId || "__default"} onValueChange={(providerId) => updateRoundProvider(index, providerId)} disabled={busy}>
+                              <SelectTrigger><SelectValue placeholder="选择服务商" /></SelectTrigger>
                               <SelectContent>
                                 <SelectGroup>
-                                  {selectedModels.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}
+                                  <SelectItem value="__default">默认连接 · {modelConfig.model || "未选模型"}</SelectItem>
+                                  {providerOptions.map((item) => <SelectItem key={item.id} value={item.id}>{item.name || "未命名服务商"}</SelectItem>)}
                                 </SelectGroup>
                               </SelectContent>
                             </Select>
-                          ) : (
-                            <Input
-                              value={selectedProviderId === "__default" ? modelConfig.model : roundModel?.model ?? ""}
-                              onChange={(event) => updateRoundModel(index, event.target.value)}
-                              disabled={busy}
-                              placeholder="填写模型名称"
-                            />
-                          )}
+                            </Field>
+                            <Field>
+                              <FieldLabel className="sr-only">第 {index + 1} 轮模型</FieldLabel>
+                            {selectedProviderId === "__default" ? (
+                              <Input value={modelConfig.model || "未选模型"} readOnly disabled />
+                            ) : selectedModels.length > 0 ? (
+                              <Select value={selectedModelValue} onValueChange={(model) => updateRoundModel(index, model)} disabled={busy}>
+                                <SelectTrigger><SelectValue placeholder="选择模型" /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectGroup>
+                                    {selectedModels.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}
+                                  </SelectGroup>
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <Input
+                                value={roundModel?.model ?? ""}
+                                onChange={(event) => updateRoundModel(index, event.target.value)}
+                                disabled={busy}
+                                placeholder="填写模型名称"
+                              />
+                            )}
+                            </Field>
+                          </FieldGroup>
                           {selectedProviderId !== "__default" && provider && selectedModels.length === 0 ? (
-                            <Button type="button" variant="outline" size="sm" onClick={() => onRefreshProviderModels(provider.id)} disabled={busy || modelConfig.offlineMode}>
-                              <RefreshCw data-icon="inline-start" />读取模型列表
+                            <Button type="button" variant="outline" size="sm" className="w-fit" onClick={() => onRefreshProviderModels(provider.id)} disabled={busy || modelConfig.offlineMode}>
+                              <RefreshCw data-icon="inline-start" />读取模型
                             </Button>
-                          ) : null}
-                          {selectedProviderId !== "__default" && provider ? (
-                            <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold text-muted-foreground">
-                              <span>缓存模型：{provider.models?.length ?? 0}</span>
-                              <span>限速：{provider.rateLimitWindowMinutes && provider.rateLimitMaxRequests ? `${provider.rateLimitWindowMinutes} 分钟 ${provider.rateLimitMaxRequests} 次` : "不限"}</span>
-                            </div>
                           ) : null}
                           {routeIssues.length ? (
                             <Alert variant="destructive">
                               <AlertCircle />
-                              <AlertTitle>本轮配置不完整</AlertTitle>
-                              <AlertDescription>{routeIssues.join("，")}；修复后才能启动，避免跑错模型。</AlertDescription>
+                              <AlertTitle>本轮不可用</AlertTitle>
+                              <AlertDescription>{routeIssues.join("，")}</AlertDescription>
                             </Alert>
                           ) : null}
-                        </div>
-                      </div>
+                        </CardContent>
+                      </Card>
                     );
                   })}
                 </div>
@@ -5607,13 +5607,6 @@ function HomeRunPanel({
             )}
             </div>
           </ScrollArea>
-          {setupEditor === "model" ? (
-            <SheetFooter className="border-t pt-4">
-              <Button type="button" variant="neutral" className="w-full" onClick={() => onSaveModelConfig(modelConfig)} disabled={busy || unavailableRouteCount > 0}>
-                <Save data-icon="inline-start" />{unavailableRouteCount ? "先修复模型路线" : "保存本次路线"}
-              </Button>
-            </SheetFooter>
-          ) : null}
         </SheetContent>
       </Sheet>
     ) : null}
@@ -6392,27 +6385,6 @@ function DetectionReportPanel({
         )}
       </CardContent>
     </Card>
-  );
-}
-
-
-function RouteOverviewCard({
-  label,
-  value,
-  detail,
-  tone,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone: "success" | "warning" | "danger" | "info" | "brand" | "slate";
-}) {
-  return (
-    <div className={cn("rounded-md border bg-muted/30 p-3", tone === "danger" && "border-destructive/40 bg-destructive/5")}>
-      <Badge variant={tone === "slate" ? "outline" : "secondary"}>{label}</Badge>
-      <div className={cn("mt-2 truncate text-sm font-semibold", tone === "danger" ? "text-destructive" : "text-foreground")}>{value}</div>
-      <div className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">{detail}</div>
-    </div>
   );
 }
 

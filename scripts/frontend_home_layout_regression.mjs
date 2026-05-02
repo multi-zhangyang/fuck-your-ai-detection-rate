@@ -35,7 +35,9 @@ function runRegression() {
     assertIncludes(appSource, "activeView === \"home\"", "Home route must remain the first-class workbench view.", failures);
     assertIncludes(appSource, "grid h-full min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]", "Home layout must keep a wide left work area and a right operation column.", failures);
     assertIncludes(appSource, "flex min-h-0 min-w-0 flex-col gap-4 overflow-hidden", "Primary home work column must own its height without pushing page scroll.", failures);
-    assertIncludes(appSource, "flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto overscroll-contain pr-1", "Right operation stack must scroll internally.", failures);
+    assertIncludes(appSource, "data-ui-section=\"home-operation-scroll\"", "Right operation stack must use a shadcn ScrollArea marker.", failures);
+    assertIncludes(appSource, "<ScrollArea\n                    className=\"h-full min-h-0 min-w-0 pr-1\"\n                    data-ui-section=\"home-operation-scroll\"", "Right operation stack must scroll internally through shadcn ScrollArea.", failures);
+    assertIncludes(appSource, "flex min-h-0 min-w-0 flex-col gap-4 pb-2", "Right operation stack content must keep compact shadcn gap spacing.", failures);
     assertIncludes(appSource, "<ResultCard", "Home result/report summary must sit in the primary left work area.", failures);
     assertIncludes(appSource, "<DiffReviewCard", "Home page must embed the full Diff workbench in the primary work area.", failures);
     assertIncludes(appSource, "<HomeRunPanel", "Home run controls must stay in the right operation stack.", failures);

@@ -73,9 +73,13 @@ function runRegression() {
     assertIncludes(appSource, "isActive={activeView === item.view}", "Sidebar active state must be delegated to the shadcn Sidebar item.", failures);
     assertIncludes(appSource, "<Breadcrumb", "Top status area must use shadcn Breadcrumb composition.", failures);
     assertIncludes(appSource, "aria-label=\"打开通知与任务中心\"", "Notification status action must remain accessible.", failures);
+    assertIncludes(appSource, "notificationStatusLabel", "Notification status must label operation feedback clearly.", failures);
+    assertIncludes(appSource, "操作反馈", "Successful operation notices must be visually distinguishable from passive notifications.", failures);
+    assertIncludes(appSource, "aria-live=\"polite\"", "Status feedback must be announced as live feedback.", failures);
     assertIncludes(appSource, "openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)", "Top status area must route directly into focused Diff review.", failures);
     assertIncludes(appSource, "<ResultCard", "Home must keep output/export summary in the main work area.", failures);
     assertIncludes(appSource, "<DiffReviewCard", "Home must embed the full Diff review surface.", failures);
+    assertIncludes(appSource, "data-ui-section=\"home-operation-scroll\"", "Home right operation stack must use shadcn ScrollArea scrolling.", failures);
     assertIncludes(appSource, "<HomeRunPanel", "Run controls must stay in the right operation stack.", failures);
     assertIncludes(appSource, "<DetectionReportPanel", "External report controls must stay in the right operation stack.", failures);
     assertIncludes(appSource, "<Sheet open={Boolean(setupEditor)}", "Setup editors must use shadcn Sheet.", failures);
@@ -90,8 +94,9 @@ function runRegression() {
     assertIncludes(appSource, "function openTaskTargetView", "Task-center navigation must be centralized.", failures);
     assertIncludes(appSource, "function openDiffTaskTarget", "Task center must support direct navigation into focused Diff filters.", failures);
     assertIncludes(appSource, "diffFocusRequest={diffFocusRequest}", "Focused Diff requests must flow into the Diff review card.", failures);
-    assertIncludes(appSource, "data-ui-section=\"model-route-overview\"", "Model route Sheet must keep a structured overview before per-round controls.", failures);
-    assertIncludes(appSource, "RouteOverviewCard", "Model route Sheet must use structured route overview cards.", failures);
+    assertIncludes(appSource, "data-ui-section=\"model-route-compact\"", "Model route Sheet must use a compact shadcn summary bar before per-round controls.", failures);
+    assertIncludes(appSource, "rotateModelRoute", "Model route batch assignment must support any enabled provider count with deterministic rotation.", failures);
+    assertNotIncludes(appSource, "RouteOverviewCard", "Model route Sheet must not reintroduce verbose overview cards.", failures);
     assertIncludes(appSource, "provider.enabled !== false", "Provider selection must treat legacy providers without an enabled flag as enabled.", failures);
     assertIncludes(appSource, "beginTask(\"loading-models\"", "Model catalog refresh must enter the shared task state flow.", failures);
     assertNotIncludes(appSource, "window.confirm", "App must not use native browser confirmation popups.", failures);
