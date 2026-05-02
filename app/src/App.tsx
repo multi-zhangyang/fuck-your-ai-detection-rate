@@ -4448,7 +4448,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       onTestConnection={handleTestConnection}
       onRefreshModels={() => void refreshModelCatalog()}
       onListModelsForConfig={listModelsForConfig}
-      onOpenRoutePlanner={() => setActiveView("home")}
     />
   );
 

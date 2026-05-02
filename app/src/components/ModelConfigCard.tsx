@@ -1,7 +1,7 @@
 import type { ChangeEvent } from "react";
 import { useRef, useState } from "react";
 
-import { CheckCircle2, DatabaseZap, Loader2, Plus, RefreshCw, Route, Save, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CheckCircle2, DatabaseZap, Loader2, Plus, RefreshCw, Save, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -31,7 +31,6 @@ type ModelConfigCardProps = {
   onTestConnection: () => void;
   onRefreshModels: () => void;
   onListModelsForConfig: (config: ModelConfig, signal?: AbortSignal) => Promise<ModelCatalogResult | null>;
-  onOpenRoutePlanner?: () => void;
 };
 
 type SchoolFormatCardProps = {
@@ -109,7 +108,6 @@ export function ModelConfigCard({
   onTestConnection,
   onRefreshModels,
   onListModelsForConfig,
-  onOpenRoutePlanner,
 }: ModelConfigCardProps) {
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
   const [providerCatalogBusy, setProviderCatalogBusy] = useState<Partial<Record<string, boolean>>>({});
@@ -246,49 +244,21 @@ export function ModelConfigCard({
   const hasModelOptions = (modelCatalog?.models.length ?? 0) > 0;
   const providers = value.modelProviders ?? [];
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0] ?? null;
-  const enabledRoundCount = Object.values(value.roundModels ?? {}).filter((item) => item?.enabled).length;
-  const enabledProviderCount = providers.filter((provider) => provider.enabled !== false).length;
   const providerCatalogRunning = Object.values(providerCatalogBusy).some(Boolean);
-  const activePromptCount = value.promptProfile === "cn"
-    ? 2
-    : value.promptProfile === "cn_custom"
-      ? Math.max(1, Math.min(3, value.promptSequence?.length ?? 3))
-      : 3;
-  const promptProfileLabel = value.promptProfile === "cn"
-    ? "中文二轮"
-    : value.promptProfile === "cn_custom"
-      ? "自定义组合"
-      : "中文三轮预改写";
 
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden border-border bg-card shadow-sm">
       <CardHeader className="shrink-0 border-b px-5 py-4">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div className="min-w-0">
-            <CardTitle className="text-xl">模型配置</CardTitle>
-            <CardDescription className="mt-1">管理默认连接、服务商仓库和首页运行路线。</CardDescription>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3 xl:w-[520px]">
-            <ModelConfigMetric label="默认模型" value={value.model || "未配置"} />
-            <ModelConfigMetric label="服务商" value={`${enabledProviderCount}/${providers.length} 启用`} />
-            <ModelConfigMetric label="运行路线" value={`${promptProfileLabel} · ${activePromptCount} 轮`} />
-          </div>
-        </div>
+        <CardTitle className="text-xl">模型配置</CardTitle>
+        <CardDescription className="mt-1">管理默认连接和服务商仓库。</CardDescription>
       </CardHeader>
 
       <CardContent className="min-h-0 flex-1 overflow-hidden p-5">
         <Tabs defaultValue="default" className="flex h-full min-h-0 flex-col gap-4">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <TabsList className="grid h-auto w-full grid-cols-3 xl:w-[560px]">
-              <TabsTrigger value="default">默认连接</TabsTrigger>
-              <TabsTrigger value="providers">服务商仓库</TabsTrigger>
-              <TabsTrigger value="route">运行路线</TabsTrigger>
-            </TabsList>
-            <div className="flex flex-wrap gap-2">
-              <Badge variant={value.offlineMode ? "warning" : "secondary"}>{value.offlineMode ? "离线模式" : "在线模式"}</Badge>
-              {enabledRoundCount ? <Badge variant="outline">专属轮次 {enabledRoundCount}</Badge> : <Badge variant="outline">轮次继承默认</Badge>}
-            </div>
-          </div>
+          <TabsList className="grid h-auto w-full grid-cols-2 xl:w-[360px]">
+            <TabsTrigger value="default">默认连接</TabsTrigger>
+            <TabsTrigger value="providers">服务商仓库</TabsTrigger>
+          </TabsList>
 
           <TabsContent value="default" className="min-h-0 flex-1 overflow-hidden">
             <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
@@ -400,7 +370,7 @@ export function ModelConfigCard({
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <CardTitle className="text-base">服务商</CardTitle>
-                      <CardDescription>{providers.length} 个，{enabledProviderCount} 个启用</CardDescription>
+                      <CardDescription>连接、模型与限速策略</CardDescription>
                     </div>
                     <Button type="button" size="sm" onClick={addProvider} disabled={busy}>
                       <Plus data-icon="inline-start" />添加
@@ -485,7 +455,7 @@ export function ModelConfigCard({
                       <Field orientation="horizontal" className="rounded-lg border bg-muted/40 px-4 py-3">
                         <FieldContent>
                           <FieldTitle>启用服务商</FieldTitle>
-                          <FieldDescription>关闭后不会被运行路线选用。</FieldDescription>
+                          <FieldDescription>关闭后不会被任务使用。</FieldDescription>
                         </FieldContent>
                         <Switch checked={selectedProvider.enabled !== false} onCheckedChange={(enabled) => updateProvider(selectedProvider.id, { enabled })} />
                       </Field>
@@ -590,44 +560,9 @@ export function ModelConfigCard({
             </div>
           </TabsContent>
 
-          <TabsContent value="route" className="min-h-0 flex-1 overflow-hidden">
-            <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-              <Card className="shadow-none">
-                <CardHeader className="border-b p-4">
-                  <CardTitle className="text-base">运行路线</CardTitle>
-                  <CardDescription>首页执行时按这套流程读取轮次和专属模型。</CardDescription>
-                </CardHeader>
-                <CardContent className="grid gap-4 p-4 md:grid-cols-3">
-                  <ModelConfigMetric label="Prompt 流程" value={promptProfileLabel} />
-                  <ModelConfigMetric label="轮次数" value={`${activePromptCount} 轮`} />
-                  <ModelConfigMetric label="专属轮次" value={enabledRoundCount ? `${enabledRoundCount} 轮` : "未指定"} />
-                </CardContent>
-              </Card>
-
-              <div className="flex flex-col gap-4">
-                <Alert>
-                  <Route />
-                  <AlertTitle>路线在首页编排</AlertTitle>
-                  <AlertDescription>服务商仓库只负责保存连接能力，具体每轮使用哪个模型在首页任务控制台里设置。</AlertDescription>
-                </Alert>
-                <Button type="button" className="w-full" onClick={onOpenRoutePlanner} disabled={!onOpenRoutePlanner}>
-                  <Route data-icon="inline-start" />去首页编排轮次
-                </Button>
-              </div>
-            </div>
-          </TabsContent>
         </Tabs>
       </CardContent>
     </Card>
-  );
-}
-
-function ModelConfigMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 rounded-lg border bg-muted/40 px-3 py-2">
-      <div className="text-xs font-medium text-muted-foreground">{label}</div>
-      <div className="mt-1 truncate text-sm font-semibold text-foreground">{value}</div>
-    </div>
   );
 }
 
