@@ -130,21 +130,21 @@ def run_regression(report_path: Path) -> dict[str, Any]:
             "ping",
             model="deepseek-v4-pro",
             api_key="redacted",
-            base_url="http://provider.example/v1",
+            base_url="https://example.com/v1",
             api_type="responses",
             max_retries=0,
         )
         checks.append({"name": "responses_config_error_falls_back_to_chat", "calls": calls, "actual": fallback_text})
         _assert_equal("responses_config_error_falls_back_to_chat_text", fallback_text, "fallback ok", failures)
-        _assert_equal("responses_config_error_first_endpoint", calls[0], "http://provider.example/v1/responses", failures)
-        _assert_equal("responses_config_error_second_endpoint", calls[1], "http://provider.example/v1/chat/completions", failures)
+        _assert_equal("responses_config_error_first_endpoint", calls[0], "https://example.com/v1/responses", failures)
+        _assert_equal("responses_config_error_second_endpoint", calls[1], "https://example.com/v1/chat/completions", failures)
 
         cached_calls_start = len(calls)
         cached_text = llm_completion(
             "ping again",
             model="deepseek-v4-pro",
             api_key="redacted",
-            base_url="http://provider.example/v1",
+            base_url="https://example.com/v1",
             api_type="responses",
             max_retries=0,
         )
@@ -152,7 +152,7 @@ def run_regression(report_path: Path) -> dict[str, Any]:
         checks.append({"name": "responses_fallback_cache_uses_chat_first", "calls": cached_calls, "actual": cached_text})
         _assert_equal("responses_fallback_cache_text", cached_text, "fallback ok", failures)
         _assert_equal("responses_fallback_cache_endpoint_count", str(len(cached_calls)), "1", failures)
-        _assert_equal("responses_fallback_cache_endpoint", cached_calls[0], "http://provider.example/v1/chat/completions", failures)
+        _assert_equal("responses_fallback_cache_endpoint", cached_calls[0], "https://example.com/v1/chat/completions", failures)
     finally:
         llm_client.request.urlopen = original_urlopen
         llm_client._RESPONSES_TO_CHAT_FALLBACK_BASE_URLS.clear()
@@ -177,13 +177,13 @@ def run_regression(report_path: Path) -> dict[str, Any]:
         connection = test_llm_connection(
             model="deepseek-v4-pro",
             api_key="redacted",
-            base_url="http://provider.example/v1",
+            base_url="https://example.com/v1",
             api_type="responses",
             max_retries=0,
         )
         checks.append({"name": "test_connection_reports_fallback_endpoint", "calls": calls, "connection": connection})
         _assert_equal("test_connection_fallback_api_type", str(connection.get("apiType")), "chat_completions", failures)
-        _assert_equal("test_connection_fallback_endpoint", str(connection.get("endpoint")), "http://provider.example/v1/chat/completions", failures)
+        _assert_equal("test_connection_fallback_endpoint", str(connection.get("endpoint")), "https://example.com/v1/chat/completions", failures)
     finally:
         llm_client.request.urlopen = original_urlopen
         llm_client._RESPONSES_TO_CHAT_FALLBACK_BASE_URLS.clear()
