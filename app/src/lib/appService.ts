@@ -78,7 +78,6 @@ export interface AppService {
   getBatchRerunStatus(runToken: string): Promise<BatchRerunStatus>;
   cancelBatchRerun(runToken: string): Promise<void>;
   exportRound(outputPath: string, targetFormat: "txt" | "docx"): Promise<ExportResult>;
-  exportReviewedRound(outputPath: string, targetFormat: "txt" | "docx", decisions: Record<string, ReviewDecision>): Promise<ExportResult>;
   loadFormatRules(): Promise<FormatRules>;
   parseFormatRules(text: string, modelConfig: ModelConfig, signal?: AbortSignal): Promise<FormatRulesResult>;
   activateFormatRules(rules: FormatRules): Promise<FormatRulesResult>;

@@ -65,6 +65,14 @@ function runRegression() {
     assertIncludes(appSource, "function beginRunSession(", "Run start/attach must create a session.", failures);
     assertIncludes(appSource, "function isActiveRunSession(", "Async run callbacks must be able to reject stale sessions.", failures);
     assertIncludes(appSource, "function clearRunSession(", "Run finalization must clear only the matching active session.", failures);
+    assertIncludes(appSource, "type PendingAutoAction", "Frontend must model pending auto retry/next-round actions explicitly.", failures);
+    assertIncludes(appSource, "AUTO_RUN_RETRY_DELAY_SECONDS = 10", "Interrupted runs must use the requested 10 second retry countdown.", failures);
+    assertIncludes(appSource, "AUTO_RUN_RETRY_MAX_ATTEMPTS = 3", "Interrupted runs must stop after three automatic retry attempts.", failures);
+    assertIncludes(appSource, "AUTO_NEXT_ROUND_DELAY_SECONDS = 60", "Multi-round continuation must use the requested 60 second countdown.", failures);
+    assertIncludes(appSource, "function scheduleAutoRetry(", "Interrupted resumable runs must schedule automatic retry.", failures);
+    assertIncludes(appSource, "function scheduleAutoNextRound(", "Completed rounds must schedule automatic next-round continuation.", failures);
+    assertIncludes(appSource, "function rejectPendingAutoAction(", "Users must be able to reject pending automatic actions.", failures);
+    assertIncludes(appSource, "function AutoRunSignal(", "Home run panel must render a visible countdown signal.", failures);
     assertIncludes(appSource, "function createCheckpointProgress(", "Resumable checkpoints must seed visible progress.", failures);
     assertIncludes(appSource, "function buildRunRecoveryPanelState(", "Run recovery state must be derived by one helper.", failures);
     assertIncludes(appSource, "function RunRecoveryPanel(", "Home page must expose a visible run recovery panel.", failures);
@@ -86,6 +94,9 @@ function runRegression() {
 
     const handleRunRoundSource = extractFunctionSource(appSource, "handleRunRound");
     assertIncludes(handleRunRoundSource, "const checkpointProgress = createCheckpointProgress", "Starting a round must seed UI from checkpoint status.", failures);
+    assertIncludes(handleRunRoundSource, "scheduleAutoRetry({", "Resumable forced interruption must enqueue auto retry.", failures);
+    assertIncludes(handleRunRoundSource, "scheduleAutoNextRound(status, nextResult.round, runConfig);", "Successful rounds must enqueue auto next-round countdown.", failures);
+    assertIncludes(handleRunRoundSource, "userCanceled", "Manual cancel must not be treated as a forced interruption auto-retry.", failures);
     assertIncludes(handleRunRoundSource, "checkpointProgress.resumeExplanation", "Resume notices must prefer backend checkpoint explanations.", failures);
     assertIncludes(handleRunRoundSource, "runSession = beginRunSession", "Started runs must be bound to a run session.", failures);
     assertRegex(handleRunRoundSource, /if \(!isActiveRunSession\(runSession\)\)\s*\{\s*return;\s*\}/, "Run result handling must ignore stale sessions.", failures);

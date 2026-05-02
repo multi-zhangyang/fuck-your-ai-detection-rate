@@ -16,6 +16,7 @@ import {
   Save,
   Settings,
   ShieldCheck,
+  Signal,
   SlidersHorizontal,
   Trash2,
   Wand2,
@@ -96,6 +97,9 @@ const AUTO_SNAPSHOT_SUPPRESSION_KEY = "fyadr.autoSnapshotSuppression";
 const DETECTION_REPORT_KEY = "fyadr.detectionReport";
 const NOTIFICATION_HISTORY_KEY = "fyadr.notificationHistory";
 const BATCH_RERUN_POLL_INTERVAL_MS = 1200;
+const AUTO_RUN_RETRY_DELAY_SECONDS = 10;
+const AUTO_RUN_RETRY_MAX_ATTEMPTS = 3;
+const AUTO_NEXT_ROUND_DELAY_SECONDS = 60;
 
 type Props = {
   service: AppService;
@@ -151,6 +155,34 @@ type AutoSnapshotSuppression = {
   round: number | null;
   createdAt: string;
 };
+type PendingAutoActionBase = {
+  id: string;
+  sourcePath: string;
+  scopeKey: string;
+  round: number;
+  createdAt: string;
+};
+type PendingAutoRetryAction = PendingAutoActionBase & {
+  kind: "retry";
+  secondsRemaining: number;
+  delaySeconds: number;
+  attempt: number;
+  maxAttempts: number;
+  reason: string;
+};
+type PendingAutoNextRoundAction = PendingAutoActionBase & {
+  kind: "next-round";
+  secondsRemaining: number;
+  delaySeconds: number;
+  completedRound: number;
+};
+type ManualInterventionAction = PendingAutoActionBase & {
+  kind: "manual-intervention";
+  attempts: number;
+  maxAttempts: number;
+  reason: string;
+};
+type PendingAutoAction = PendingAutoRetryAction | PendingAutoNextRoundAction | ManualInterventionAction;
 type RunRecoveryPanelState = {
   title: string;
   message: string;
@@ -431,6 +463,73 @@ function saveStoredFormatParserRoute(route: FormatParserModelRoute) {
 
 function normalizeDetectionDocumentKey(value: string | null | undefined): string {
   return String(value ?? "").trim().replace(/\\/g, "/").toLowerCase();
+}
+
+function getAutoRunScopeKey(sourcePath: string, config: Pick<ModelConfig, "promptProfile" | "promptSequence">, round: number): string {
+  const promptSequence = (config.promptSequence ?? []).join(">");
+  return [normalizeDetectionDocumentKey(sourcePath), config.promptProfile, promptSequence, round].join("::");
+}
+
+function isCountdownAutoAction(action: PendingAutoAction | null): action is PendingAutoRetryAction | PendingAutoNextRoundAction {
+  return Boolean(action && (action.kind === "retry" || action.kind === "next-round"));
+}
+
+function getPendingAutoActionPercent(action: PendingAutoAction): number | undefined {
+  if (!isCountdownAutoAction(action) || action.delaySeconds <= 0) {
+    return undefined;
+  }
+  return clampPercent(Math.round(((action.delaySeconds - action.secondsRemaining) / action.delaySeconds) * 100));
+}
+
+function getPendingAutoActionTitle(action: PendingAutoAction): string {
+  if (action.kind === "retry") {
+    return `第 ${action.round} 轮中断恢复`;
+  }
+  if (action.kind === "next-round") {
+    return `第 ${action.completedRound} 轮已完成`;
+  }
+  return `第 ${action.round} 轮等待人工介入`;
+}
+
+function formatPendingAutoActionStatus(action: PendingAutoAction): string {
+  if (action.kind === "retry") {
+    return `将在 ${action.secondsRemaining} 秒后自动重跑，第 ${action.attempt}/${action.maxAttempts} 次`;
+  }
+  if (action.kind === "next-round") {
+    return `将在 ${action.secondsRemaining} 秒后自动进入第 ${action.round} 轮`;
+  }
+  return `自动重跑 ${action.attempts}/${action.maxAttempts} 次仍中断，等待人工处理`;
+}
+
+function formatPendingAutoActionDetail(action: PendingAutoAction): string {
+  if (action.kind === "retry") {
+    return `${formatFileScopeLabel(action.sourcePath)} · ${action.reason || "运行通道被迫中断，已保留断点"}`;
+  }
+  if (action.kind === "next-round") {
+    return `${formatFileScopeLabel(action.sourcePath)} · 第 ${action.completedRound} 轮完成后自动续跑`;
+  }
+  return `${formatFileScopeLabel(action.sourcePath)} · ${action.reason || "连续中断，需要检查模型、网络或断点状态"}`;
+}
+
+function isInterruptedRunMessage(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return lowered.includes("interrupted")
+    || lowered.includes("progress channel disconnected")
+    || lowered.includes("backend restarted")
+    || message.includes("已中断")
+    || message.includes("中断")
+    || message.includes("断开");
+}
+
+function isResumableRunMessage(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return isInterruptedRunMessage(message)
+    || lowered.includes("completed chunks are kept")
+    || lowered.includes("checkpoint")
+    || message.includes("断点")
+    || message.includes("已完成的分块")
+    || message.includes("已完成的块")
+    || message.includes("续跑");
 }
 
 function readStoredDetectionReport(): StoredDetectionReport | null {
@@ -1950,6 +2049,11 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const runSessionRef = useRef<RunSession | null>(null);
   const batchRerunSessionRef = useRef<BatchRerunSession | null>(null);
   const runSessionSequenceRef = useRef(0);
+  const autoRetryCountsRef = useRef<Record<string, number>>({});
+  const latestDocumentStatusRef = useRef<DocumentStatus | null>(null);
+  const latestModelConfigRef = useRef<ModelConfig | null>(null);
+  const runningRef = useRef(false);
+  const pendingAutoActionRef = useRef<PendingAutoAction | null>(null);
   const notificationMessageKeyRef = useRef("");
   const taskTicketRef = useRef(0);
   const formatParseAbortRef = useRef<AbortController | null>(null);
@@ -1982,6 +2086,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [diffFocusRequest, setDiffFocusRequest] = useState<DiffFocusRequest | null>(null);
   const [rerunFailures, setRerunFailures] = useState<BatchRerunFailure[]>([]);
+  const [pendingAutoAction, setPendingAutoAction] = useState<PendingAutoAction | null>(null);
 
   const {
     modelConfig,
@@ -2141,12 +2246,43 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     () => buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk),
     [activeCompareData, activeRerunFailures, detectionMatchesByChunk],
   );
-  const currentNotification = error
-    ? createNotification("error", error)
-    : notice
-      ? createNotification("success", notice)
-      : null;
   const unreadNotificationCount = notifications.filter((item) => !item.read).length;
+
+  useEffect(() => {
+    latestDocumentStatusRef.current = documentStatus;
+  }, [documentStatus]);
+
+  useEffect(() => {
+    latestModelConfigRef.current = modelConfig;
+  }, [modelConfig]);
+
+  useEffect(() => {
+    runningRef.current = running;
+  }, [running]);
+
+  useEffect(() => {
+    pendingAutoActionRef.current = pendingAutoAction;
+  }, [pendingAutoAction]);
+
+  useEffect(() => {
+    const action = pendingAutoAction;
+    if (!isCountdownAutoAction(action)) {
+      return undefined;
+    }
+    if (action.secondsRemaining <= 0) {
+      void performPendingAutoAction(action);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setPendingAutoAction((current) => {
+        if (!isCountdownAutoAction(current) || current.id !== action.id) {
+          return current;
+        }
+        return { ...current, secondsRemaining: Math.max(0, current.secondsRemaining - 1) };
+      });
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [pendingAutoAction]);
 
   useEffect(() => {
     const text = error || notice;
@@ -2193,6 +2329,169 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       chunkId,
       nonce: (current?.nonce ?? 0) + 1,
     }));
+  }
+
+  function clearAutoRetryScope(scopeKey: string | null | undefined) {
+    if (!scopeKey) {
+      return;
+    }
+    const nextCounts = { ...autoRetryCountsRef.current };
+    delete nextCounts[scopeKey];
+    autoRetryCountsRef.current = nextCounts;
+  }
+
+  function clearPendingAutoActionForSource(sourcePath: string | null | undefined) {
+    if (!sourcePath) {
+      return;
+    }
+    setPendingAutoAction((current) => {
+      if (!current || !sameWorkspacePath(current.sourcePath, sourcePath)) {
+        return current;
+      }
+      return null;
+    });
+  }
+
+  function scheduleManualIntervention(input: {
+    sourcePath: string;
+    round: number;
+    scopeKey: string;
+    attempts: number;
+    reason: string;
+  }) {
+    setPendingAutoAction({
+      id: `manual:${input.scopeKey}:${Date.now()}`,
+      kind: "manual-intervention",
+      sourcePath: input.sourcePath,
+      scopeKey: input.scopeKey,
+      round: input.round,
+      attempts: input.attempts,
+      maxAttempts: AUTO_RUN_RETRY_MAX_ATTEMPTS,
+      reason: input.reason,
+      createdAt: new Date().toISOString(),
+    });
+    setNotice(input.attempts >= AUTO_RUN_RETRY_MAX_ATTEMPTS
+      ? `第 ${input.round} 轮连续 ${AUTO_RUN_RETRY_MAX_ATTEMPTS} 次自动重跑仍中断，已停止自动重跑，等待人工处理。`
+      : `第 ${input.round} 轮自动执行已暂停，等待人工处理。`);
+  }
+
+  function scheduleAutoRetry(input: {
+    sourcePath: string;
+    round: number;
+    config: Pick<ModelConfig, "promptProfile" | "promptSequence">;
+    reason: string;
+  }) {
+    const scopeKey = getAutoRunScopeKey(input.sourcePath, input.config, input.round);
+    const nextAttempt = (autoRetryCountsRef.current[scopeKey] ?? 0) + 1;
+    if (nextAttempt > AUTO_RUN_RETRY_MAX_ATTEMPTS) {
+      scheduleManualIntervention({
+        sourcePath: input.sourcePath,
+        round: input.round,
+        scopeKey,
+        attempts: AUTO_RUN_RETRY_MAX_ATTEMPTS,
+        reason: input.reason,
+      });
+      return;
+    }
+    autoRetryCountsRef.current = { ...autoRetryCountsRef.current, [scopeKey]: nextAttempt };
+    setPendingAutoAction({
+      id: `retry:${scopeKey}:${nextAttempt}:${Date.now()}`,
+      kind: "retry",
+      sourcePath: input.sourcePath,
+      scopeKey,
+      round: input.round,
+      secondsRemaining: AUTO_RUN_RETRY_DELAY_SECONDS,
+      delaySeconds: AUTO_RUN_RETRY_DELAY_SECONDS,
+      attempt: nextAttempt,
+      maxAttempts: AUTO_RUN_RETRY_MAX_ATTEMPTS,
+      reason: input.reason,
+      createdAt: new Date().toISOString(),
+    });
+    setNotice(`第 ${input.round} 轮被迫中断，将在 ${AUTO_RUN_RETRY_DELAY_SECONDS} 秒后自动重跑（第 ${nextAttempt}/${AUTO_RUN_RETRY_MAX_ATTEMPTS} 次）。`);
+  }
+
+  function scheduleAutoNextRound(status: DocumentStatus, completedRound: number, config: Pick<ModelConfig, "promptProfile" | "promptSequence">) {
+    if (!status.hasNextRound || !status.nextRound) {
+      return;
+    }
+    const scopeKey = getAutoRunScopeKey(status.sourcePath, config, status.nextRound);
+    setPendingAutoAction({
+      id: `next-round:${scopeKey}:${Date.now()}`,
+      kind: "next-round",
+      sourcePath: status.sourcePath,
+      scopeKey,
+      round: status.nextRound,
+      secondsRemaining: AUTO_NEXT_ROUND_DELAY_SECONDS,
+      delaySeconds: AUTO_NEXT_ROUND_DELAY_SECONDS,
+      completedRound,
+      createdAt: new Date().toISOString(),
+    });
+    setNotice(`第 ${completedRound} 轮已完成，将在 ${AUTO_NEXT_ROUND_DELAY_SECONDS} 秒后自动进入第 ${status.nextRound} 轮。`);
+  }
+
+  function rejectPendingAutoAction(actionId?: string) {
+    const rejected = pendingAutoActionRef.current;
+    if (!rejected || (actionId && rejected.id !== actionId)) {
+      return;
+    }
+    setPendingAutoAction((current) => {
+      if (!current || (actionId && current.id !== actionId)) {
+        return current;
+      }
+      return null;
+    });
+    clearAutoRetryScope(rejected.scopeKey);
+    setNotice("已拒绝自动执行，当前任务等待你手动处理。");
+  }
+
+  async function performPendingAutoAction(action: PendingAutoRetryAction | PendingAutoNextRoundAction) {
+    if (pendingAutoActionRef.current?.id !== action.id) {
+      return;
+    }
+    if (runningRef.current) {
+      setPendingAutoAction((current) => {
+        if (!isCountdownAutoAction(current) || current.id !== action.id) {
+          return current;
+        }
+        return { ...current, secondsRemaining: 1 };
+      });
+      return;
+    }
+
+    let status = latestDocumentStatusRef.current;
+    if (!status || !sameWorkspacePath(status.sourcePath, action.sourcePath)) {
+      if (action.kind === "retry") {
+        scheduleManualIntervention({
+          sourcePath: action.sourcePath,
+          round: action.round,
+          scopeKey: action.scopeKey,
+          attempts: action.attempt,
+          reason: "当前页面已切换文档，自动执行已暂停。",
+        });
+      } else {
+        setPendingAutoAction((current) => (current?.id === action.id ? null : current));
+        setNotice("当前页面已切换文档，已取消自动进入下一轮。");
+      }
+      return;
+    }
+
+    try {
+      status = await refreshDocumentState(action.sourcePath, latestModelConfigRef.current ?? modelConfig);
+    } catch {
+      // Keep the countdown decision visible; the manual run button can retry the refresh path.
+    }
+
+    if (!status?.hasNextRound || status.nextRound !== action.round) {
+      setPendingAutoAction((current) => (current?.id === action.id ? null : current));
+      setNotice("文档轮次状态已经变化，已取消本次自动执行。");
+      return;
+    }
+
+    setPendingAutoAction((current) => (current?.id === action.id ? null : current));
+    setNotice(action.kind === "retry"
+      ? `正在自动重跑第 ${action.round} 轮（第 ${action.attempt}/${action.maxAttempts} 次）。`
+      : `第 ${action.completedRound} 轮已完成，正在自动进入第 ${action.round} 轮。`);
+    await handleRunRound();
   }
 
   function requestConfirm(options: ConfirmDialogOptions): Promise<boolean> {
@@ -3628,6 +3927,8 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setHistoryPanelOpen(true);
       setRuntimeStep(nextStatus.hasNextRound ? `第 ${nextResult.round} 轮已完成，可继续执行第 ${nextStatus.nextRound} 轮。` : `第 ${nextResult.round} 轮已完成，全部轮次已结束。`);
       setNotice(nextStatus.hasNextRound ? `第 ${nextResult.round} 轮已完成。你现在可以继续下一轮。` : `第 ${nextResult.round} 轮已完成，可以直接导出。`);
+      clearAutoRetryScope(getAutoRunScopeKey(activeRun.sourcePath, modelConfig, nextResult.round));
+      scheduleAutoNextRound(nextStatus, nextResult.round, modelConfig);
     } catch (appError) {
       if (isActiveRunSession(runSession)) {
         await releaseProgressListener();
@@ -3635,15 +3936,26 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         setProgress(null);
       }
       const runMessage = stringifyError(appError);
-      setError(runMessage);
-      setRuntimeStep(runMessage.includes("Unknown run id") ? "后台任务已结束，请刷新文档状态" : "后台轮次监听失败");
+      const userCanceled = Boolean(runSession && runSessionRef.current?.sessionId === runSession.sessionId && runSessionRef.current.cancelRequested);
+      const resumable = isResumableRunMessage(runMessage);
+      setError(resumable ? "" : runMessage);
+      setRuntimeStep(runMessage.includes("Unknown run id") ? "后台任务已结束，请刷新文档状态" : resumable ? "后台轮次中断，准备恢复" : "后台轮次监听失败");
+      let refreshedStatus: DocumentStatus | null = null;
       if (activeRun.sourcePath) {
         try {
-          await refreshDocumentState(activeRun.sourcePath);
+          refreshedStatus = await refreshDocumentState(activeRun.sourcePath);
           await refreshHistoryList();
         } catch {
           // Keep the original run error visible.
         }
+      }
+      if (!userCanceled && resumable && activeRun.sourcePath) {
+        scheduleAutoRetry({
+          sourcePath: activeRun.sourcePath,
+          round: refreshedStatus?.nextRound || runSession?.round || activeRun.lastEvent?.round || 1,
+          config: modelConfig,
+          reason: runMessage,
+        });
       }
     } finally {
       attachedRunTokenRef.current = null;
@@ -3666,6 +3978,8 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       return;
     }
 
+    const runConfig = modelConfig;
+    clearPendingAutoActionForSource(documentStatus.sourcePath);
     const taskTicket = beginTask("running-round", {
       runtimeStep: `准备执行第 ${documentStatus.nextRound} 轮。`,
     });
@@ -3691,7 +4005,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setReviewDecisions({});
       setRoundResult(null);
       setPreview(null);
-      const runConfig = modelConfig;
       const runToken = await service.startRunRound(documentStatus.sourcePath, runConfig);
       if (!runToken) {
         throw new Error("无法创建运行任务。");
@@ -3761,6 +4074,8 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setHistoryPanelOpen(true);
       setRuntimeStep(status.hasNextRound ? `第 ${nextResult.round} 轮已完成，可继续执行第 ${status.nextRound} 轮。` : `第 ${nextResult.round} 轮已完成，全部轮次已结束。`);
       setNotice(status.hasNextRound ? `第 ${nextResult.round} 轮已完成。你现在可以继续下一轮，或先导出查看结果。` : `第 ${nextResult.round} 轮已完成，可以直接导出。`);
+      clearAutoRetryScope(getAutoRunScopeKey(documentStatus.sourcePath, runConfig, nextResult.round));
+      scheduleAutoNextRound(status, nextResult.round, runConfig);
     } catch (appError) {
       if (isActiveRunSession(runSession)) {
         await releaseProgressListener();
@@ -3768,8 +4083,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         setProgress(null);
       }
       const runMessage = stringifyError(appError);
-      const interrupted = runMessage.includes("当前轮次已中断") || runMessage.includes("interrupted by user");
-      const resumable = interrupted || runMessage.includes("断点续跑") || runMessage.includes("已完成的分块会保留") || runMessage.includes("Completed chunks are kept");
+      const interrupted = isInterruptedRunMessage(runMessage);
+      const resumable = isResumableRunMessage(runMessage);
+      const userCanceled = Boolean(runSession && runSessionRef.current?.sessionId === runSession.sessionId && runSessionRef.current.cancelRequested);
       if (interrupted) {
         setError("");
         setNotice(runMessage);
@@ -3778,13 +4094,22 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         setError(runMessage);
         setRuntimeStep(resumable ? "执行中断，可尝试续跑" : "执行轮次失败");
       }
+      let refreshedStatus: DocumentStatus | null = null;
       if (documentStatus?.sourcePath) {
         try {
-          await refreshDocumentState(documentStatus.sourcePath);
+          refreshedStatus = await refreshDocumentState(documentStatus.sourcePath);
           await refreshHistoryList();
         } catch {
           // Keep the original run error visible; refresh can be retried by the next action.
         }
+      }
+      if (!userCanceled && resumable && documentStatus?.sourcePath && documentStatus.nextRound) {
+        scheduleAutoRetry({
+          sourcePath: documentStatus.sourcePath,
+          round: refreshedStatus?.nextRound || runSession?.round || documentStatus.nextRound,
+          config: runConfig,
+          reason: runMessage,
+        });
       }
     } finally {
       clearRunSession(runSession);
@@ -3900,34 +4225,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     } catch (appError) {
       setError(stringifyError(appError));
       setRuntimeStep("清理当前轮次断点失败");
-    } finally {
-      finishTask(taskTicket);
-    }
-  }
-
-
-  async function handleExportReviewed(format: "txt" | "docx") {
-    if (!roundResult?.outputPath || !activeCompareData?.chunks.length) {
-      setNotice("当前没有可合成的 Diff 数据。");
-      return;
-    }
-    if (format === "docx") {
-      const confirmOptions = buildExportRiskConfirmOptions("导出审阅 Word", activeCompareData, lastExportResult);
-      if (confirmOptions && !(await requestConfirm(confirmOptions))) {
-        setNotice("已取消审阅 Word 导出。");
-        return;
-      }
-    }
-    const taskTicket = beginTask("exporting");
-    try {
-      setRuntimeStep(`正在导出审阅版 ${format.toUpperCase()}。`);
-      const result = await service.exportReviewedRound(roundResult.outputPath, format, normalizeReviewDecisionsForExport(reviewDecisions));
-      setLastExportResult(result);
-      setNotice(formatExportNotice(result, "审阅版"));
-      setRuntimeStep(`审阅版 ${format.toUpperCase()} 已导出`);
-    } catch (appError) {
-      setError(formatExportError(appError));
-      setRuntimeStep("审阅版导出失败");
     } finally {
       finishTask(taskTicket);
     }
@@ -4147,6 +4444,24 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       : null;
     const activeProgress = progress ?? activeRunStatus?.lastEvent ?? null;
 
+    if (pendingAutoAction) {
+      items.push({
+        id: `auto:${pendingAutoAction.id}`,
+        title: getPendingAutoActionTitle(pendingAutoAction),
+        status: pendingAutoAction.kind === "manual-intervention" ? "等待人工" : "倒计时",
+        detail: formatPendingAutoActionStatus(pendingAutoAction),
+        recoveryHint: formatPendingAutoActionDetail(pendingAutoAction),
+        tone: pendingAutoAction.kind === "manual-intervention" ? "red" : pendingAutoAction.kind === "retry" ? "amber" : "blue",
+        running: false,
+        percent: getPendingAutoActionPercent(pendingAutoAction),
+        meta: formatFileScopeLabel(pendingAutoAction.sourcePath),
+        actionLabel: "查看主页",
+        onAction: () => openTaskTargetView("home"),
+        cancelLabel: pendingAutoAction.kind === "manual-intervention" ? "我来处理" : "拒绝自动执行",
+        onCancel: () => rejectPendingAutoAction(pendingAutoAction.id),
+      });
+    }
+
     if (currentRunToken) {
       const session = runSessionRef.current;
       const cancelRequested = Boolean(session?.cancelRequested || activeProgress?.phase === "cancel-requested" || activeRunStatus?.cancelRequested);
@@ -4339,8 +4654,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
 
     return items;
-  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.sourcePath, error, progress, progressPercent, roundProgressStatus, runtimeLabel, taskPhase]);
+  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, roundProgressStatus, runtimeLabel, taskPhase]);
   const activeRuntimeTaskCount = runtimeTaskItems.filter((item) => item.running).length;
+  const statusAutoAction = !error && pendingAutoAction ? pendingAutoAction : null;
 
   const modelPanel = (
     <ModelConfigCard
@@ -4383,24 +4699,33 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     />
   );
   const activeViewMeta = WORKBENCH_NAV_ITEMS.find((item) => item.view === activeView) ?? WORKBENCH_NAV_ITEMS[0];
-  const notificationStatusText = currentNotification
-    ? currentNotification.text
-    : unreadNotificationCount
-      ? `${unreadNotificationCount} 未读`
-      : activeRuntimeTaskCount
-        ? `${activeRuntimeTaskCount} 个运行中`
-        : "无未读";
-  const NotificationStatusIcon = currentNotification?.kind === "error" ? AlertCircle : currentNotification ? CheckCircle2 : Bell;
-  const hasStatusFeedback = Boolean(currentNotification);
-  const notificationStatusLabel = currentNotification
-    ? currentNotification.kind === "error"
-      ? "错误反馈"
-      : "操作反馈"
-    : unreadNotificationCount
-      ? "未读通知"
-      : activeRuntimeTaskCount
-        ? "运行通知"
-        : "通知";
+  const notificationStatusText = error
+    ? error
+    : statusAutoAction
+      ? formatPendingAutoActionStatus(statusAutoAction)
+      : notice
+        ? notice
+        : unreadNotificationCount
+          ? `${unreadNotificationCount} 未读`
+          : activeRuntimeTaskCount
+            ? `${activeRuntimeTaskCount} 个运行中`
+            : "无未读";
+  const NotificationStatusIcon = error ? AlertCircle : statusAutoAction ? Signal : notice ? CheckCircle2 : Bell;
+  const hasStatusFeedback = Boolean(error || notice || statusAutoAction);
+  const notificationStatusLabel = error
+    ? "错误反馈"
+    : statusAutoAction
+      ? statusAutoAction.kind === "manual-intervention"
+        ? "等待人工"
+        : "自动执行"
+      : notice
+        ? "操作反馈"
+        : unreadNotificationCount
+          ? "未读通知"
+          : activeRuntimeTaskCount
+            ? "运行通知"
+            : "通知";
+  const notificationStatusKind: NotificationKind | null = error ? "error" : notice ? "success" : null;
 
   return (
     <SidebarProvider defaultOpen className="h-svh min-h-0 overflow-hidden">
@@ -4466,19 +4791,19 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
               <Separator orientation="vertical" className="h-4" />
               <Button
                 type="button"
-                variant={currentNotification?.kind === "error" ? "outlineDanger" : hasStatusFeedback ? "outlineSuccess" : unreadNotificationCount || activeRuntimeTaskCount ? "outline" : "ghost"}
+                variant={notificationStatusKind === "error" ? "outlineDanger" : hasStatusFeedback ? "outlineSuccess" : unreadNotificationCount || activeRuntimeTaskCount ? "outline" : "ghost"}
                 size="sm"
                 className={cn(
                   "h-8 min-w-[220px] max-w-[min(48vw,560px)] shrink-0 justify-start px-3 text-xs",
                   hasStatusFeedback && "border-primary/35 bg-primary/10 shadow-sm",
-                  currentNotification?.kind === "error" && "border-destructive/40 bg-destructive/10",
+                  notificationStatusKind === "error" && "border-destructive/40 bg-destructive/10",
                 )}
                 aria-label="打开通知与任务中心"
                 aria-live="polite"
                 onClick={openNotificationCenter}
               >
                 <NotificationStatusIcon data-icon="inline-start" />
-                <Badge variant={currentNotification?.kind === "error" ? "danger" : hasStatusFeedback ? "secondary" : "outline"} className="shrink-0">
+                <Badge variant={notificationStatusKind === "error" ? "danger" : hasStatusFeedback ? "secondary" : "outline"} className="shrink-0">
                   {notificationStatusLabel}
                 </Badge>
                 <span className={cn("min-w-0 flex-1 truncate text-left text-foreground", hasStatusFeedback && "font-semibold")}>{notificationStatusText}</span>
@@ -4507,8 +4832,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                       batchRerunRunning={Boolean(currentBatchRerunToken)}
                       batchRerunStatusText={runtimeLabel}
                       onCancelBatchRerun={() => void handleCancelBatchRerun()}
-                      onExportReviewedTxt={() => void handleExportReviewed("txt")}
-                      onExportReviewedDocx={() => void handleExportReviewed("docx")}
                       onExportTxt={() => void handleExportCurrent("txt")}
                       onExportDocx={() => void handleExportCurrent("docx")}
                     />
@@ -4544,6 +4867,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                         modelCatalogBusy={modelCatalogBusy}
                         progress={progress}
                         roundProgressStatus={roundProgressStatus}
+                        pendingAutoAction={pendingAutoAction}
                         promptProfile={modelConfig.promptProfile}
                         promptSequence={modelConfig.promptSequence}
                         onPromptProfileChange={(promptProfile) => void handlePromptProfileChange(promptProfile)}
@@ -4556,6 +4880,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                         onPickFile={handlePickFile}
                         onRunRound={handleRunRound}
                         onCancelRun={handleCancelRunRound}
+                        onRejectAutoAction={() => rejectPendingAutoAction()}
                         onResetRound={handleResetCurrentRound}
                         running={running}
                       />
@@ -4969,6 +5294,7 @@ function HomeRunPanel({
   modelCatalogBusy,
   progress,
   roundProgressStatus,
+  pendingAutoAction,
   promptProfile,
   promptSequence,
   onPromptProfileChange,
@@ -4981,6 +5307,7 @@ function HomeRunPanel({
   onPickFile,
   onRunRound,
   onCancelRun,
+  onRejectAutoAction,
   onResetRound,
   running,
 }: {
@@ -4992,6 +5319,7 @@ function HomeRunPanel({
   modelCatalogBusy: boolean;
   progress: RoundProgress | null;
   roundProgressStatus: RoundProgressStatus | null;
+  pendingAutoAction: PendingAutoAction | null;
   promptProfile: ModelConfig["promptProfile"];
   promptSequence: PromptId[];
   onPromptProfileChange: (promptProfile: ModelConfig["promptProfile"]) => void;
@@ -5004,6 +5332,7 @@ function HomeRunPanel({
   onPickFile: () => void;
   onRunRound: () => void;
   onCancelRun: () => void;
+  onRejectAutoAction: () => void;
   onResetRound: () => void;
   running: boolean;
 }) {
@@ -5390,6 +5719,7 @@ function HomeRunPanel({
                 </ToggleGroup>
               </div>
               <RunRecoveryPanel state={runRecoveryState} />
+              <AutoRunSignal action={pendingAutoAction} onReject={onRejectAutoAction} />
               {progress?.totalChunks && !runRecoveryState && currentRunProgressPercent != null ? (
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
@@ -5642,6 +5972,38 @@ function HomeRunPanel({
       </Sheet>
     ) : null}
     </>
+  );
+}
+
+function AutoRunSignal({ action, onReject }: { action: PendingAutoAction | null; onReject: () => void }) {
+  if (!action) {
+    return null;
+  }
+  const percent = getPendingAutoActionPercent(action);
+  const countdown = isCountdownAutoAction(action);
+  return (
+    <Alert variant={action.kind === "manual-intervention" ? "destructive" : "default"} className="bg-background">
+      <Signal />
+      <AlertTitle className="flex items-center justify-between gap-2">
+        <span>{getPendingAutoActionTitle(action)}</span>
+        <Badge variant={action.kind === "manual-intervention" ? "danger" : action.kind === "retry" ? "warning" : "secondary"}>
+          {countdown ? `${action.secondsRemaining}s` : "人工处理"}
+        </Badge>
+      </AlertTitle>
+      <AlertDescription>
+        <div className="flex flex-col gap-3">
+          <p>{formatPendingAutoActionStatus(action)}</p>
+          <p className="text-xs text-muted-foreground">{formatPendingAutoActionDetail(action)}</p>
+          {typeof percent === "number" ? (
+            <Progress value={percent} className="h-2" />
+          ) : null}
+          <Button type="button" variant={action.kind === "manual-intervention" ? "outline" : "outlineWarning"} size="sm" onClick={onReject}>
+            <X data-icon="inline-start" />
+            {action.kind === "manual-intervention" ? "我来处理" : "拒绝自动执行"}
+          </Button>
+        </div>
+      </AlertDescription>
+    </Alert>
   );
 }
 

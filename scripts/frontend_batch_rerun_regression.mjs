@@ -36,6 +36,12 @@ function assertIncludes(source, pattern, message, failures) {
   }
 }
 
+function assertNotIncludes(source, pattern, message, failures) {
+  if (source.includes(pattern)) {
+    failures.push(message);
+  }
+}
+
 function assertRegex(source, pattern, message, failures) {
   if (!pattern.test(source)) {
     failures.push(message);
@@ -127,26 +133,29 @@ function checkRerunFailureVisibilityContract(appSource, resultCardSource, failur
   assertIncludes(resultCardSource, "filterMode === \"citation\"", "Diff panel must render citation-risk-only state.", failures);
   assertIncludes(resultCardSource, "T.rerunFailureSummary", "Failed chunks must have a visible summary banner.", failures);
   assertIncludes(resultCardSource, "T.rerunFailureHint", "Failed chunks must explain the next action.", failures);
-  assertIncludes(resultCardSource, "T.rejectedCandidateHint", "Rejected model candidates must explain safe manual adoption.", failures);
   assertIncludes(resultCardSource, "批量重跑进行中", "ResultCard must keep batch rerun status visible in the main result area.", failures);
-  assertIncludes(resultCardSource, "function inspectRejectedCandidate", "Rejected candidates must be inspected before manual adoption.", failures);
-  assertIncludes(resultCardSource, "function CandidateInspectionPanel", "Rejected candidates must render a compact inspection panel.", failures);
-  assertIncludes(resultCardSource, "const inspection = inspectRejectedCandidate(chunk.inputText, candidate);", "Each rejected candidate card must compute inspection details.", failures);
-  assertIncludes(resultCardSource, "function buildCandidateDiffView", "Rejected candidates must compute local source/candidate diffs.", failures);
-  assertIncludes(resultCardSource, "function CandidateDiffPanel", "Rejected candidates must render a local diff review panel.", failures);
-  assertIncludes(resultCardSource, "<CandidateDiffPanel sourceText={chunk.inputText} candidateText={candidate.outputText ?? \"\"} />", "Rejected candidate cards must show source/candidate diff highlights.", failures);
-  assertIncludes(resultCardSource, "function buildCandidateRerunFeedback", "Rejected candidates must generate reusable rerun feedback.", failures);
-  assertIncludes(resultCardSource, "const [pendingAdoptCandidateKey, setPendingAdoptCandidateKey] = useState(\"\");", "Risky candidate adoption must require a pending confirmation state.", failures);
-  assertIncludes(resultCardSource, "inspection.level !== \"safe\" && pendingAdoptCandidateKey !== candidateKey", "Risky candidate adoption must be blocked on first click.", failures);
-  assertIncludes(resultCardSource, "setFeedback(buildCandidateRerunFeedback(inspection, candidate));", "First risky adoption click must populate rerun feedback.", failures);
-  assertIncludes(resultCardSource, "生成重跑意见", "Candidate cards must expose one-click feedback generation.", failures);
-  assertIncludes(resultCardSource, "确认采用候选", "Candidate cards must require a second explicit confirmation for risky candidates.", failures);
-  assertIncludes(resultCardSource, "reviewToolsVisible", "Candidate feedback tools must stay visible for candidate-only chunks.", failures);
-  assertIncludes(resultCardSource, "原文删减视图", "Candidate diff panel must show removed source text.", failures);
-  assertIncludes(resultCardSource, "候选新增视图", "Candidate diff panel must show added candidate text.", failures);
+  assertIncludes(resultCardSource, "function inspectRejectedCandidate", "Rejected candidates must be inspected for rerun feedback.", failures);
+  assertIncludes(resultCardSource, "function getRejectedCandidateReasons", "Rejected candidates must expose concise visible interception reasons.", failures);
+  assertIncludes(resultCardSource, "function buildRejectedCandidatesRerunFeedback", "Rejected candidates must generate reusable rerun feedback without rendering their content.", failures);
+  assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must expose visible quality reasons.", failures);
+  assertIncludes(resultCardSource, "读取本块原因与当前轮配置", "Targeted rerun help must explain the exact rerun scope and inputs.", failures);
+  assertIncludes(resultCardSource, "const candidateFeedback = rejectedCandidates.length ? buildRejectedCandidatesRerunFeedback", "Candidate rerun feedback must be prepared at chunk level.", failures);
+  assertIncludes(resultCardSource, "const candidateReasons = rejectedCandidates.length ? getRejectedCandidateReasons", "Candidate reason labels must be prepared at chunk level.", failures);
+  assertIncludes(resultCardSource, "onRerun(candidateFeedback)", "Candidate cards must expose one-click rerun using generated feedback.", failures);
+  assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must be passed into the chunk quality bar.", failures);
+  assertIncludes(resultCardSource, "const reviewToolsVisible = qualityNeedsReview || isSourceFallback;", "Candidate-only chunks should not open the manual feedback panel.", failures);
+  assertNotIncludes(resultCardSource, "needsReview || rejectedCandidates.length", "Candidate-only chunks must stay as a compact interception notice.", failures);
+  assertIncludes(resultCardSource, "原因：", "Rejected candidate UI must show the interception reason.", failures);
+  assertNotIncludes(resultCardSource, "候选不展示、不导出", "Rejected candidate UI must not show generic filler copy.", failures);
+  assertNotIncludes(resultCardSource, "重跑本块", "Rejected candidate action label must stay concise.", failures);
+  assertNotIncludes(resultCardSource, "function CandidateInspectionPanel", "Rejected candidate detail inspection panel must stay removed.", failures);
+  assertNotIncludes(resultCardSource, "function CandidateDiffPanel", "Rejected candidate local diff panel must stay removed.", failures);
+  assertNotIncludes(resultCardSource, "function buildCandidateDiffView", "Rejected candidate local diff computation must stay removed from the UI layer.", failures);
+  assertNotIncludes(resultCardSource, "pendingAdoptCandidateKey", "Rejected candidates must not expose risky manual adoption flow.", failures);
+  assertNotIncludes(resultCardSource, "确认采用候选", "Rejected candidates must not expose manual adoption copy.", failures);
+  assertNotIncludes(resultCardSource, "<Accordion type=\"single\" collapsible>", "Rejected candidates must not render expandable detail blocks.", failures);
   assertIncludes(resultCardSource, "extractNumberTokens(sourceText)", "Candidate inspection must compare numeric tokens.", failures);
   assertIncludes(resultCardSource, "英文段落被改成中文", "Candidate inspection must flag language inversion.", failures);
-  assertIncludes(resultCardSource, "候选体检", "Candidate inspection panel must be visible to users.", failures);
   assertIncludes(resultCardSource, "已保留 {failureRejectedCandidates.length} 个模型候选", "Failed chunk banner must point users to preserved model candidates.", failures);
 }
 
@@ -208,9 +217,9 @@ function runRegression() {
       "manual targeted-rerun feedback reaches the backend",
       "batch rerun failures are visible and filterable in Diff",
       "single rerun failure payload preserves model candidates",
-      "rejected candidate cards expose inspection summaries",
-      "rejected candidate cards expose source/candidate diff highlights",
-      "risky candidate adoption requires explicit confirmation",
+      "rejected candidates stay as compact interception notices",
+      "rejected candidate detail panels stay removed",
+      "rejected candidate rerun feedback is generated without rendering content",
       "rerun failure markers are scoped per active Diff",
       "new failures auto-focus the failed-only view",
       "diff panel supports risk-specific filters",

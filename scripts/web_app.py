@@ -22,7 +22,6 @@ from app_service import (
     delete_document_history,
     delete_history_orphan_artifacts,
     export_round_output,
-    export_reviewed_round_output,
     get_document_history,
     get_document_protection_map,
     get_document_status,
@@ -127,6 +126,9 @@ ACTIVE_RUNS_BY_SOURCE: dict[str, str] = {}
 BATCH_RERUN_STATES: dict[str, BatchRerunState] = {}
 ACTIVE_BATCH_RERUNS_BY_OUTPUT: dict[str, str] = {}
 RUN_REGISTRY_LOCK = threading.Lock()
+RUN_AUTO_RETRY_DELAY_SECONDS = 10
+RUN_AUTO_RETRY_MAX_ATTEMPTS = 3
+RUN_AUTO_NEXT_ROUND_DELAY_SECONDS = 60
 app = Flask(__name__)
 
 
@@ -482,6 +484,68 @@ def release_active_run(run_id: str) -> None:
             ACTIVE_RUNS_BY_SOURCE.pop(state.source_path, None)
 
 
+def infer_progress_round(state: ProgressState, result: dict[str, Any] | None = None) -> int:
+    if isinstance(result, dict):
+        try:
+            return int(result.get("round") or 0)
+        except (TypeError, ValueError):
+            pass
+    for event in reversed(state.events):
+        try:
+            round_number = int(event.get("round") or 0)
+        except (TypeError, ValueError, AttributeError):
+            round_number = 0
+        if round_number > 0:
+            return round_number
+    return 0
+
+
+def is_run_interruption_error(error: str | None) -> bool:
+    lowered = str(error or "").lower()
+    return "interrupted" in lowered or "progress channel disconnected" in lowered or "backend restarted" in lowered
+
+
+def build_terminal_run_event(state: ProgressState, *, result: dict[str, Any] | None = None, error: str | None = None) -> dict[str, Any] | None:
+    round_number = infer_progress_round(state, result)
+    if error:
+        interrupted = state.cancel_requested or is_run_interruption_error(error)
+        return {
+            "phase": "run-interrupted" if interrupted else "run-failed",
+            "round": round_number,
+            "error": error,
+            "autoRetryEligible": bool(interrupted and not state.cancel_requested),
+            "retryDelaySeconds": RUN_AUTO_RETRY_DELAY_SECONDS,
+            "maxAutoRetries": RUN_AUTO_RETRY_MAX_ATTEMPTS,
+        }
+    if isinstance(result, dict) and round_number > 0:
+        return {
+            "phase": "round-complete",
+            "round": round_number,
+            "nextRoundDelaySeconds": RUN_AUTO_NEXT_ROUND_DELAY_SECONDS,
+        }
+    return None
+
+
+def build_run_automation_hint(state: ProgressState) -> dict[str, Any] | None:
+    if not state.completed:
+        return None
+    if state.error:
+        interrupted = state.status in {"canceled", "interrupted"} or is_run_interruption_error(state.error)
+        return {
+            "kind": "retry",
+            "eligible": bool(interrupted and not state.cancel_requested),
+            "delaySeconds": RUN_AUTO_RETRY_DELAY_SECONDS,
+            "maxAttempts": RUN_AUTO_RETRY_MAX_ATTEMPTS,
+        }
+    if state.result:
+        return {
+            "kind": "next-round",
+            "eligible": True,
+            "delaySeconds": RUN_AUTO_NEXT_ROUND_DELAY_SECONDS,
+        }
+    return None
+
+
 def serialize_run_state(run_id: str, state: ProgressState) -> dict[str, Any]:
     return {
         "ok": True,
@@ -494,6 +558,7 @@ def serialize_run_state(run_id: str, state: ProgressState) -> dict[str, Any]:
         "lastEvent": state.events[-1] if state.events else None,
         "result": state.result,
         "error": state.error,
+        "automation": build_run_automation_hint(state),
         "createdAt": datetime.fromtimestamp(state.created_at, timezone.utc).isoformat().replace("+00:00", "Z"),
         "updatedAt": datetime.fromtimestamp(state.updated_at, timezone.utc).isoformat().replace("+00:00", "Z"),
     }
@@ -649,6 +714,9 @@ def finalize_progress(run_id: str, *, result: dict[str, Any] | None = None, erro
     if not state:
         return
     with state.condition:
+        terminal_event = build_terminal_run_event(state, result=result, error=error)
+        if terminal_event:
+            state.events.append(terminal_event)
         state.result = result
         state.error = error
         if error:
@@ -1781,51 +1849,6 @@ def get_export_round() -> tuple[Response, int] | Response:
         stem = Path(output_path).stem or "current-round"
         export_path = EXPORT_DIR / f"{stem}.{target_format}"
         result = export_round_output(output_path, str(export_path), target_format)
-        file_path = Path(result["path"])
-        mimetype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        if target_format == "txt":
-            mimetype = "text/plain; charset=utf-8"
-        response = send_file(file_path, mimetype=mimetype, as_attachment=True, download_name=file_path.name)
-        response.headers["X-Export-Format"] = str(result.get("format", target_format))
-        response.headers["X-Export-Layout-Mode"] = str(result.get("layoutMode", ""))
-        response.headers["X-Export-Paragraph-Source"] = str(result.get("paragraphSource", ""))
-        response.headers["X-Export-Format-Mode"] = str(result.get("formatMode", ""))
-        response.headers["X-Export-Format-Scope"] = str(result.get("formatScope", ""))
-        response.headers["X-Export-Content-Locked-Style-Count"] = str(result.get("contentLockedStyleCount", ""))
-        response.headers["X-Export-Table-Style-Count"] = str(result.get("tableStyleCount", ""))
-        response.headers["X-Export-Table-Border-Count"] = str(result.get("tableBorderCount", ""))
-        response.headers["X-Export-Validation-Path"] = make_ascii_header_value(result.get("validationPath", ""))
-        response.headers["X-Export-Audit-Path"] = make_ascii_header_value(result.get("auditPath", ""))
-        response.headers["X-Export-Audit-Issue-Count"] = str(result.get("auditIssueCount", ""))
-        response.headers["X-Export-Preflight-Path"] = make_ascii_header_value(result.get("preflightPath", ""))
-        response.headers["X-Export-Preflight-Issue-Count"] = str(result.get("preflightIssueCount", ""))
-        response.headers["X-Export-Guard-Path"] = make_ascii_header_value(result.get("guardPath", ""))
-        response.headers["X-Export-Guard-Issue-Count"] = str(result.get("guardIssueCount", ""))
-        response.headers["X-Export-Guard-Issue-Samples"] = make_ascii_header_json(result.get("guardIssueSamples", []))
-        response.headers["X-Export-Audit-Issue-Samples"] = make_ascii_header_json(result.get("auditIssueSamples", []))
-        response.headers["X-Export-Preflight-Issue-Samples"] = make_ascii_header_json(result.get("preflightIssueSamples", []))
-        return response
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/export-reviewed-round", methods=["POST"])
-def post_export_reviewed_round() -> tuple[Response, int] | Response:
-    try:
-        payload = request.get_json(silent=True) or {}
-        output_path = str(payload.get("outputPath", "")).strip()
-        target_format = str(payload.get("targetFormat", "")).strip().lower()
-        decisions = payload.get("decisions")
-        if not output_path:
-            raise ValueError("outputPath is required.")
-        if target_format not in {"txt", "docx"}:
-            raise ValueError("targetFormat must be txt or docx.")
-        if not isinstance(decisions, dict):
-            raise ValueError("decisions must be an object keyed by chunk id.")
-        normalized_decisions = {str(chunk_id): decision for chunk_id, decision in decisions.items()}
-        stem = Path(output_path).stem or "current-round"
-        export_path = EXPORT_DIR / f"{stem}_reviewed.{target_format}"
-        result = export_reviewed_round_output(output_path, str(export_path), target_format, normalized_decisions)
         file_path = Path(result["path"])
         mimetype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         if target_format == "txt":

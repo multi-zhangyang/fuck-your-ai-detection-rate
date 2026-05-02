@@ -197,6 +197,17 @@ export type RoundProgress = {
   compareInputText?: string;
   compareOutputText?: string;
   error?: string;
+  autoRetryEligible?: boolean;
+  retryDelaySeconds?: number;
+  maxAutoRetries?: number;
+  nextRoundDelaySeconds?: number;
+};
+
+export type RunAutomationHint = {
+  kind: "retry" | "next-round" | string;
+  eligible: boolean;
+  delaySeconds?: number;
+  maxAttempts?: number;
 };
 
 export type RoundCompareChunk = {
@@ -224,6 +235,9 @@ export type RoundCompareChunk = {
   }>;
   rerunAt?: string;
   rerunMode?: string;
+  rerunStatus?: string;
+  rerunFallbackMode?: string;
+  rerunFallbackError?: string;
   rerunStrategy?: string[];
   rerunAdvice?: string[];
   rerunPromptNote?: string;
@@ -299,6 +313,7 @@ export type RunRoundStatus = {
   lastEvent?: RoundProgress | null;
   result?: RoundResult | null;
   error?: string | null;
+  automation?: RunAutomationHint | null;
   restoredFromDisk?: boolean;
   persistedAt?: string | null;
   createdAt: string;

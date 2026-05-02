@@ -852,14 +852,6 @@ export const webService: AppService = {
     return exportResponseToResult(response, targetFormat);
   },
 
-  async exportReviewedRound(outputPath: string, targetFormat: "txt" | "docx", decisions: Record<string, ReviewDecision>): Promise<ExportResult> {
-    const response = await fetchWithFriendlyError("/api/export-reviewed-round", {
-      method: "POST",
-      body: JSON.stringify({ outputPath, targetFormat, decisions }),
-    });
-    return exportResponseToResult(response, targetFormat);
-  },
-
   async loadFormatRules(): Promise<FormatRules> {
     return requestJson<FormatRules>("/api/format-rules");
   },

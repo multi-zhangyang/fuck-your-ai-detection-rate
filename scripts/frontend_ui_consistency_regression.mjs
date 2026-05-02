@@ -7,6 +7,8 @@ const APP_PATH = resolve(ROOT_DIR, "app", "src", "App.tsx");
 const MODEL_CONFIG_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "ModelConfigCard.tsx");
 const RESULT_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "ResultCard.tsx");
 const HISTORY_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "HistoryCard.tsx");
+const APP_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appService.ts");
+const WEB_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webService.ts");
 const GLOBAL_CSS_PATH = resolve(ROOT_DIR, "app", "src", "styles", "global.css");
 const BUTTON_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "button.tsx");
 const BADGE_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "badge.tsx");
@@ -52,10 +54,12 @@ function runRegression() {
   const modelConfigCardSource = loadSource(MODEL_CONFIG_CARD_PATH, failures);
   const resultCardSource = loadSource(RESULT_CARD_PATH, failures);
   const historyCardSource = loadSource(HISTORY_CARD_PATH, failures);
+  const appServiceSource = loadSource(APP_SERVICE_PATH, failures);
+  const webServiceSource = loadSource(WEB_SERVICE_PATH, failures);
   const cssSource = loadSource(GLOBAL_CSS_PATH, failures);
   const buttonSource = loadSource(BUTTON_PATH, failures);
   const badgeSource = loadSource(BADGE_PATH, failures);
-  const combinedSource = [appSource, modelConfigCardSource, resultCardSource, historyCardSource, cssSource, buttonSource, badgeSource].join("\n");
+  const combinedSource = [appSource, modelConfigCardSource, resultCardSource, historyCardSource, appServiceSource, webServiceSource, cssSource, buttonSource, badgeSource].join("\n");
 
   if (cssSource) {
     assertIncludes(cssSource, "html {\n    @apply h-svh overflow-hidden", "Document root must keep the app viewport-bound.", failures);
@@ -110,15 +114,32 @@ function runRegression() {
 
   if (resultCardSource) {
     assertIncludes(resultCardSource, "export function DiffReviewCard", "ResultCard module must export the full-height Diff review surface.", failures);
+    assertIncludes(resultCardSource, "sm:grid-cols-3", "Output export actions should be compressed to three buttons above Diff.", failures);
+    assertNotIncludes(resultCardSource, "onExportReviewed", "Reviewed export props must be removed from the output card.", failures);
+    assertNotIncludes(resultCardSource, "审阅 Word", "Reviewed Word export button must not return.", failures);
+    assertNotIncludes(resultCardSource, "审阅 TXT", "Reviewed TXT export button must not return.", failures);
     assertCountEquals(resultCardSource, "<RewriteDiffPanel", 1, "Full Diff panel must only be mounted by DiffReviewCard.", failures);
     assertIncludes(resultCardSource, "Card className=\"flex h-full min-h-0", "Diff review card must use a fixed-height shadcn Card shell.", failures);
     assertIncludes(resultCardSource, "sticky top-0 z-20", "Inline Diff toolbar must stay pinned while chunks scroll.", failures);
     assertIncludes(resultCardSource, "ToggleGroup", "Diff filters must use shadcn ToggleGroup.", failures);
     assertIncludes(resultCardSource, "Empty className=\"min-h-0 flex-1 border bg-background/70\"", "Diff empty state must use shadcn Empty.", failures);
     assertIncludes(resultCardSource, "overflow-auto whitespace-pre-wrap break-words", "Diff text panes must constrain and wrap long paragraph content.", failures);
-    assertIncludes(resultCardSource, "function CandidateInspectionPanel", "Rejected candidates must render a compact inspection panel.", failures);
-    assertIncludes(resultCardSource, "function CandidateDiffPanel", "Rejected candidates must render local diff review.", failures);
-    assertIncludes(resultCardSource, "isDecisionForRejectedCandidate", "Adopted candidate cards must use robust candidate matching.", failures);
+    assertIncludes(resultCardSource, "function getRejectedCandidateReasons", "Rejected candidates must render concise interception reasons.", failures);
+    assertIncludes(resultCardSource, "function buildRejectedCandidatesRerunFeedback", "Rejected candidates must generate rerun feedback without rendering their content.", failures);
+    assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must render concise visible reasons.", failures);
+    assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must drive the visible quality badge.", failures);
+    assertIncludes(resultCardSource, "读取本块原因与当前轮配置", "Targeted rerun UI must explain scope and inputs.", failures);
+    assertIncludes(resultCardSource, "onRerun(candidateFeedback)", "Rejected candidate cards must expose a direct rerun action.", failures);
+    assertIncludes(resultCardSource, "原因：", "Rejected candidate UI must show the reason instead of generic helper copy.", failures);
+    assertNotIncludes(resultCardSource, "候选不展示、不导出", "Rejected candidate UI must not show generic filler copy.", failures);
+    assertNotIncludes(resultCardSource, "重跑本块", "Rejected candidate action label must stay concise.", failures);
+    assertNotIncludes(resultCardSource, "function CandidateInspectionPanel", "Rejected candidate inspection panel must stay removed.", failures);
+    assertNotIncludes(resultCardSource, "function CandidateDiffPanel", "Rejected candidate diff panel must stay removed.", failures);
+    assertNotIncludes(resultCardSource, "<Accordion type=\"single\" collapsible>", "Rejected candidate details must not return as expandable blocks.", failures);
+    assertNotIncludes(resultCardSource, "生成重跑意见", "Rejected candidate cards must not return to a vague feedback-generation button.", failures);
+    assertNotIncludes(resultCardSource, "候选输出需要人工判断", "Rejected candidate helper copy must stay concise.", failures);
+    assertNotIncludes(resultCardSource, "isDecisionForRejectedCandidate", "Rejected candidates must not expose manual adoption matching in the UI layer.", failures);
+    assertNotIncludes(resultCardSource, "确认采用候选", "Rejected candidates must not expose manual adoption copy.", failures);
     assertIncludes(resultCardSource, "getDecisionDisplayOutput", "Main rewrite pane must render the selected review decision.", failures);
     assertIncludes(resultCardSource, "handledDiffFocusNonceRef", "Focused Diff navigation must consume each request once.", failures);
     assertIncludes(resultCardSource, "scrollIntoView({ behavior: \"smooth\", block: \"start\" })", "Focused Diff navigation must scroll to the target chunk.", failures);
@@ -143,6 +164,7 @@ function runRegression() {
   }
 
   assertNoLegacyFyClassTokens(combinedSource, "Component sources must not reintroduce old fy-* UI class tokens.", failures);
+  assertNotIncludes(combinedSource, "exportReviewedRound", "Reviewed export service API must stay removed.", failures);
 
   if (buttonSource) {
     [

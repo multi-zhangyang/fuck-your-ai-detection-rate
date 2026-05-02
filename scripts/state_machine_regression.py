@@ -92,6 +92,37 @@ class WebRunStateRegressionTest(unittest.TestCase):
         self.assertEqual(completed["status"], "canceled")
         self.assertTrue(completed["completed"])
         self.assertEqual(completed["error"], "Run interrupted by user.")
+        self.assertEqual(completed["lastEvent"]["phase"], "run-interrupted")
+        self.assertFalse(completed["lastEvent"]["autoRetryEligible"])
+
+    def test_forced_interruption_reports_auto_retry_hint(self) -> None:
+        run_id, _ = web_app.register_run(str(self.sample_path))
+        web_app.append_progress_event(run_id, {"phase": "chunk-start", "round": 2, "chunkId": "p2_c0"})
+
+        web_app.finalize_progress(run_id, error="Worker interrupted by process signal.")
+
+        completed = self.client.get(f"/api/run-round-status/{run_id}").get_json()
+        self.assertEqual(completed["status"], "canceled")
+        self.assertEqual(completed["lastEvent"]["phase"], "run-interrupted")
+        self.assertEqual(completed["lastEvent"]["round"], 2)
+        self.assertTrue(completed["lastEvent"]["autoRetryEligible"])
+        self.assertEqual(completed["lastEvent"]["retryDelaySeconds"], 10)
+        self.assertEqual(completed["lastEvent"]["maxAutoRetries"], 3)
+        self.assertEqual(completed["automation"]["kind"], "retry")
+        self.assertTrue(completed["automation"]["eligible"])
+
+    def test_completed_round_reports_next_round_delay_hint(self) -> None:
+        run_id, _ = web_app.register_run(str(self.sample_path))
+
+        web_app.finalize_progress(run_id, result={"round": 1, "outputPath": str(self.sample_path)})
+
+        completed = self.client.get(f"/api/run-round-status/{run_id}").get_json()
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["lastEvent"]["phase"], "round-complete")
+        self.assertEqual(completed["lastEvent"]["round"], 1)
+        self.assertEqual(completed["lastEvent"]["nextRoundDelaySeconds"], 60)
+        self.assertEqual(completed["automation"]["kind"], "next-round")
+        self.assertTrue(completed["automation"]["eligible"])
 
     def test_run_task_snapshot_is_persisted_without_model_secrets(self) -> None:
         run_id, _ = web_app.register_run(str(self.sample_path))
@@ -138,8 +169,8 @@ class WebRunStateRegressionTest(unittest.TestCase):
         self.assertNotIn("sk-private", serialized)
         self.assertNotIn("private-provider", serialized)
         self.assertNotIn("private-model", serialized)
-        self.assertEqual(payload["state"]["lastEvent"]["roundModel"]["baseUrl"], "")
-        self.assertEqual(payload["state"]["lastEvent"]["roundModel"]["model"], "<configured>")
+        self.assertEqual(payload["state"]["lastEvent"]["phase"], "round-complete")
+        self.assertNotIn("roundModel", payload["state"]["lastEvent"])
         self.assertEqual(payload["state"]["result"]["roundModel"]["model"], "<configured>")
 
     def test_health_reports_interrupted_persisted_run_after_memory_loss(self) -> None:
@@ -223,6 +254,16 @@ class WebRunStateRegressionTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertIn("Unknown run id", response.get_data(as_text=True))
+
+    def test_reviewed_export_route_is_removed(self) -> None:
+        routes = {str(rule) for rule in web_app.app.url_map.iter_rules()}
+        response = self.client.post(
+            "/api/export-reviewed-round",
+            json={"outputPath": str(self.sample_path), "targetFormat": "txt", "decisions": {}},
+        )
+
+        self.assertNotIn("/api/export-reviewed-round", routes)
+        self.assertIn(response.status_code, {404, 405})
 
     def test_post_run_round_reuses_active_document_run(self) -> None:
         active_run_id, _ = web_app.register_run(str(self.sample_path))
