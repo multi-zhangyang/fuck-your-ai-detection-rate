@@ -60,7 +60,7 @@ export function ProtectionMapCard({ value }: Props) {
   const risks = buildBoundaryRisks(value, editableRate);
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-5 overflow-hidden">
+    <div className="flex min-h-full flex-col gap-5">
       <div className="grid gap-5">
         <Card className="overflow-hidden">
           <CardHeader className="pb-4">
@@ -133,13 +133,13 @@ export function ProtectionMapCard({ value }: Props) {
         </div>
       </div>
 
-      <Card className="min-h-0 overflow-hidden">
+      <Card className="overflow-hidden">
         <CardHeader>
           <CardTitle className="text-lg">完整边界序列</CardTitle>
           <CardDescription>按 Word 解析顺序展示全部连续区块，列表在当前区域内滚动。</CardDescription>
         </CardHeader>
-        <CardContent className="h-[calc(100%-5.75rem)] min-h-0">
-          <ScrollArea className="h-full pr-1">
+        <CardContent className="pb-5">
+          <ScrollArea className="h-[min(38rem,58svh)] pr-1">
             <div className="flex flex-col gap-3">
               {value.sections.map((section, index) => (
                 <SectionRow key={`${section.key}-${section.startUnit}-${index}`} section={section} totalUnits={summary.totalUnits} />
