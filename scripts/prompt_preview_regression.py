@@ -47,13 +47,14 @@ def run_regression() -> dict[str, object]:
     _assert('"prompts"' in app_source, "WorkbenchView should include the prompt preview view")
     _assert("提示词预览" in app_source, "Sidebar should expose the prompt preview page")
     _assert("function PromptPreviewPage" in app_source, "PromptPreviewPage component is missing")
-    _assert('activeView === "prompts" ? (\n              <div className="fy-page-fixed">' in app_source, "Prompt preview page must use fixed page bounds instead of page-level scrolling")
-    component_source = app_source.split("function PromptPreviewPage", 1)[1].split("function GlobalTaskStatusBar", 1)[0]
+    _assert('activeView === "prompts" ? (\n              <div className="h-full min-h-0 overflow-hidden">' in app_source, "Prompt preview page must use fixed page bounds instead of page-level scrolling")
+    component_source = app_source.split("function PromptPreviewPage", 1)[1].split("function HomeRunPanel", 1)[0]
     _assert("grid h-full min-h-0 gap-5 overflow-hidden" in component_source, "Prompt preview layout must keep scrolling inside panels")
-    _assert("fy-panel h-full min-h-0 overflow-hidden" in component_source, "Prompt preview panels must not grow with long prompt content")
+    _assert('Card className="h-full min-h-0 overflow-hidden"' in component_source, "Prompt preview panels must not grow with long prompt content")
+    _assert('ScrollArea className="min-h-0 flex-1' in component_source, "Prompt preview panels must use internal shadcn ScrollArea scrolling")
     _assert("<textarea" not in component_source.lower(), "Prompt preview page must not expose a textarea editor")
     _assert("<input" not in component_source.lower(), "Prompt preview page must not expose an input editor")
-    _assert("不在界面编辑" in component_source, "Prompt preview page should clearly communicate read-only behavior")
+    _assert("页面只读展示" in component_source, "Prompt preview page should clearly communicate read-only behavior")
     _assert('timeoutMs: 8_000' in web_service_source, "Prompt preview request should have a timeout instead of spinning forever")
     _assert("loadPromptPreviewsViaReadOutput" in web_service_source, "Prompt preview should fall back to existing read-output route for old running backends")
     checks.append("frontend prompt page is read-only and discoverable")

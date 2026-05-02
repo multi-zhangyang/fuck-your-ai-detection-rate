@@ -28,37 +28,35 @@ function runRegression() {
   const appSource = failures.length ? "" : readFileSync(APP_PATH, "utf-8");
   const cssSource = existsSync(GLOBAL_CSS_PATH) ? readFileSync(GLOBAL_CSS_PATH, "utf-8") : "";
   if (appSource) {
-    assertIncludes(appSource, "label=\"主页 / 实时 Diff\"", "Home navigation should expose running controls and inline Diff review together.", failures);
-    assertIncludes(appSource, "GlobalTaskStatusBar", "A global task dashboard must keep status visible across Home and Diff.", failures);
-    assertNotIncludes(appSource, "activeView === \"home\" ? null : (", "Global top status bar must stay available; display bugs should be fixed in layout, not by removing it.", failures);
-    assertIncludes(appSource, "<GlobalTaskStatusBar", "Home page must keep the global top status bar visible after layout repair.", failures);
-    assertIncludes(appSource, "fy-home-page", "Home page must use a single scrollable canvas instead of a cramped side panel.", failures);
-    assertIncludes(appSource, "fy-home-control-grid", "Home controls must be card-arranged inside the main home area.", failures);
-    assertIncludes(appSource, "fy-home-side-stack", "Home run controls must stay in the right operation stack.", failures);
-    assertIncludes(appSource, "fy-home-result-area", "Home result/report summary must sit in the primary left work area.", failures);
+    assertIncludes(appSource, "SidebarProvider defaultOpen className=\"h-svh min-h-0 overflow-hidden\"", "Workbench shell must stay viewport-bound through shadcn SidebarProvider.", failures);
+    assertIncludes(appSource, "<SidebarInset className=\"h-svh overflow-hidden md:h-[calc(100svh-1rem)]\">", "Main workbench inset must keep its own height and overflow.", failures);
+    assertIncludes(appSource, "<header className=\"shrink-0 border-b bg-background/95\">", "Global top status area must stay visible above every view.", failures);
+    assertIncludes(appSource, "openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)", "Top status area must jump directly into focused inline Diff review.", failures);
+    assertIncludes(appSource, "activeView === \"home\"", "Home route must remain the first-class workbench view.", failures);
+    assertIncludes(appSource, "grid h-full min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]", "Home layout must keep a wide left work area and a right operation column.", failures);
+    assertIncludes(appSource, "flex min-h-0 min-w-0 flex-col gap-4 overflow-hidden", "Primary home work column must own its height without pushing page scroll.", failures);
+    assertIncludes(appSource, "flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto overscroll-contain pr-1", "Right operation stack must scroll internally.", failures);
+    assertIncludes(appSource, "<ResultCard", "Home result/report summary must sit in the primary left work area.", failures);
+    assertIncludes(appSource, "<DiffReviewCard", "Home page must embed the full Diff workbench in the primary work area.", failures);
+    assertIncludes(appSource, "<HomeRunPanel", "Home run controls must stay in the right operation stack.", failures);
+    assertIncludes(appSource, "<DetectionReportPanel", "External report controls must stay in the right operation stack.", failures);
     assertNotIncludes(appSource, "onOpenDiffWorkbench", "Home must not keep a redundant open-Diff entry now that Diff is embedded.", failures);
-    assertIncludes(appSource, "fy-home-diff-panel", "Home page must embed the full Diff workbench in the primary work area.", failures);
-    assertIncludes(appSource, "onOpenDiff={() => openDiffTaskTarget", "Global status dashboard must bridge directly into focused inline Diff review.", failures);
     assertNotIncludes(appSource, "HOME_TOOLS_COLLAPSED_KEY", "Home page must not persist a separate right-side panel state.", failures);
     assertNotIncludes(appSource, "homeToolsCollapsed", "Home page must not keep the old right-side tool panel model.", failures);
-    assertNotIncludes(appSource, "<PanelRightOpen", "Home page must not use right-panel open affordances after card-grid migration.", failures);
-    assertNotIncludes(appSource, "<PanelRightClose", "Home page must not use right-panel close affordances after card-grid migration.", failures);
+    assertNotIncludes(appSource, "<PanelRightOpen", "Home page must not use right-panel open affordances after shadcn layout migration.", failures);
+    assertNotIncludes(appSource, "<PanelRightClose", "Home page must not use right-panel close affordances after shadcn layout migration.", failures);
+    assertNotIncludes(appSource, "fy-home-", "Home page must not reintroduce the old fy-* layout classes.", failures);
+    assertNotIncludes(appSource, "fy-global-", "Global status must not reintroduce the old fy-* layout classes.", failures);
   }
   if (cssSource) {
-    assertIncludes(cssSource, ".fy-global-statusbar", "Global status dashboard must use a dedicated compact status shell.", failures);
-    assertIncludes(cssSource, ".fy-global-statusgrid", "Global status dashboard must align file, metrics, and notifications in one row.", failures);
-    assertIncludes(cssSource, ".fy-global-metric-grid", "Global status dashboard must use readable metric cards instead of a cramped chip rail.", failures);
-    assertIncludes(cssSource, ".fy-global-mini-card", "Global status detail cards must stay readable in the top status area.", failures);
-    assertIncludes(cssSource, ".fy-home-side-stack", "Home side cards must use a dedicated stack utility.", failures);
-    assertIncludes(cssSource, "xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.38fr)]", "Home layout must restore the wide left result area and right operation column.", failures);
-    assertIncludes(cssSource, ".fy-home-result-area", "Home result area must be explicitly controlled by shared layout CSS.", failures);
-    assertIncludes(cssSource, ".fy-home-diff-panel", "Home result area must reserve a readable inline Diff workbench region.", failures);
-    assertIncludes(cssSource, "flex min-h-0 min-w-0 flex-1", "Inline Diff panel must fill remaining left-column height instead of pushing the whole column scroll.", failures);
-    assertIncludes(cssSource, "sticky top-0 z-20", "Inline Diff toolbar must stay pinned while the Diff list scrolls.", failures);
-    assertIncludes(cssSource, "overflow-hidden pr-0", "Home page must not make the whole page scroll when panels can scroll internally.", failures);
-    assertIncludes(cssSource, "overflow-y-auto overscroll-contain", "Home columns must own overflow internally instead of pushing the whole page downward.", failures);
-    assertIncludes(cssSource, "h-full max-h-full min-h-0", "Home columns must be height-constrained before enabling internal scroll.", failures);
-    assertIncludes(cssSource, "min-h-0", "Home result area must not force a large blank panel height.", failures);
+    assertIncludes(cssSource, "html {\n    @apply h-svh overflow-hidden", "Document root must prevent whole-page scrolling.", failures);
+    assertIncludes(cssSource, "body {\n    @apply h-svh overflow-hidden bg-background", "Body must stay viewport-bound and use semantic shadcn background tokens.", failures);
+    assertIncludes(cssSource, "#root {\n    @apply h-svh overflow-hidden;", "React root must keep the workbench height constrained.", failures);
+    assertIncludes(cssSource, ".shadcn-control-panel", "Shared custom utilities must be shadcn-scoped, not legacy fy-scoped.", failures);
+    assertIncludes(cssSource, ".shadcn-choice-card", "Option cards must use the shadcn utility namespace.", failures);
+    assertIncludes(cssSource, ".shadcn-config-sheet", "Configuration overlays must use the shadcn utility namespace.", failures);
+    assertNotIncludes(cssSource, ".fy-home-", "CSS must not reintroduce old fy-home layout utilities.", failures);
+    assertNotIncludes(cssSource, ".fy-global-", "CSS must not reintroduce old fy-global status utilities.", failures);
     assertNotIncludes(cssSource, "grid-template-rows: auto minmax(0, 1fr);", "Home side stack must not force the detection report to stretch into a blank card.", failures);
     assertNotIncludes(cssSource, "2xl:grid-cols-2", "Home side stack must not split status/report horizontally and leave a large blank column.", failures);
   }
@@ -71,10 +69,10 @@ function runRegression() {
     reportPath: REPORT_PATH,
     failures,
     checks: [
-      "home controls use card grid",
-      "home page links to dedicated Diff workbench",
-      "global task bar remains visible without clipping",
-      "home result/report stack sits beside operation controls",
+      "home uses shadcn viewport shell",
+      "top status row links into inline Diff",
+      "home result and Diff stay in the left work area",
+      "run/report controls stay in the right operation stack",
       "old right-side panel state is removed",
     ],
   };

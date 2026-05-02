@@ -92,6 +92,7 @@ const FORMAT_PARSER_DEFAULT_PROVIDER_ID = "__default";
 const ACTIVE_DOCUMENT_KEY = "fyadr.activeDocument";
 const ACTIVE_PROMPT_PROFILE_KEY = "fyadr.activePromptProfile";
 const ACTIVE_PROMPT_SEQUENCE_KEY = "fyadr.activePromptSequence";
+const AUTO_SNAPSHOT_SUPPRESSION_KEY = "fyadr.autoSnapshotSuppression";
 const DETECTION_REPORT_KEY = "fyadr.detectionReport";
 const NOTIFICATION_HISTORY_KEY = "fyadr.notificationHistory";
 const BATCH_RERUN_POLL_INTERVAL_MS = 1200;
@@ -141,6 +142,14 @@ type BatchRerunSession = {
   taskTicket: number;
   label: string;
   cancelRequested: boolean;
+};
+type AutoSnapshotSuppression = {
+  sourcePath: string;
+  docId: string;
+  promptProfile: ModelConfig["promptProfile"];
+  promptSequence: PromptId[];
+  round: number | null;
+  createdAt: string;
 };
 type RunRecoveryPanelState = {
   title: string;
@@ -496,6 +505,62 @@ function persistActiveDocument(sourcePath: string, promptProfile: ModelConfig["p
   localStorage.setItem(ACTIVE_DOCUMENT_KEY, sourcePath);
   localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, promptProfile);
   localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(normalizePromptSequence(promptSequence)));
+}
+
+function readAutoSnapshotSuppression(): AutoSnapshotSuppression | null {
+  try {
+    const raw = localStorage.getItem(AUTO_SNAPSHOT_SUPPRESSION_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<AutoSnapshotSuppression>;
+    if (!parsed.sourcePath || !isPromptProfile(parsed.promptProfile)) {
+      localStorage.removeItem(AUTO_SNAPSHOT_SUPPRESSION_KEY);
+      return null;
+    }
+    return {
+      sourcePath: parsed.sourcePath,
+      docId: parsed.docId ?? "",
+      promptProfile: parsed.promptProfile,
+      promptSequence: normalizePromptSequence(parsed.promptSequence),
+      round: typeof parsed.round === "number" ? parsed.round : null,
+      createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : "",
+    };
+  } catch {
+    localStorage.removeItem(AUTO_SNAPSHOT_SUPPRESSION_KEY);
+    return null;
+  }
+}
+
+function suppressAutoSnapshotRestore(status: DocumentStatus, config: ModelConfig, round: number | null) {
+  const payload: AutoSnapshotSuppression = {
+    sourcePath: status.sourcePath,
+    docId: status.docId,
+    promptProfile: config.promptProfile,
+    promptSequence: normalizePromptSequence(config.promptSequence),
+    round,
+    createdAt: new Date().toISOString(),
+  };
+  localStorage.setItem(AUTO_SNAPSHOT_SUPPRESSION_KEY, JSON.stringify(payload));
+}
+
+function clearAutoSnapshotSuppression() {
+  localStorage.removeItem(AUTO_SNAPSHOT_SUPPRESSION_KEY);
+}
+
+function shouldSuppressAutoSnapshotRestore(status: DocumentStatus, config: ModelConfig): boolean {
+  const suppression = readAutoSnapshotSuppression();
+  if (!suppression) {
+    return false;
+  }
+  return (
+    suppression.promptProfile === config.promptProfile
+    && promptSequencesEqual(suppression.promptSequence, config.promptSequence)
+    && (
+      documentRefsMatch(suppression.sourcePath, status.sourcePath)
+      || documentRefsMatch(suppression.docId, status.docId)
+    )
+  );
 }
 
 type DetectionMatchCandidate = {
@@ -2602,6 +2667,11 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         if (taskTicket !== taskTicketRef.current) {
           return;
         }
+        if (shouldSuppressAutoSnapshotRestore(status, nextConfig)) {
+          clearLoadedRoundSnapshot();
+          setRuntimeStep("已恢复文档；上次放弃本轮后不会自动载入旧 Diff。");
+          return;
+        }
         const loadedSnapshot = await loadLatestRoundSnapshot(status, nextConfig, {
           historyItems: nextHistoryItems,
           allowProfileFallback: true,
@@ -2831,6 +2901,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   }
 
   async function loadRoundSnapshotByOutputPath(outputPath: string) {
+    clearAutoSnapshotSuppression();
     const [outputPreview, nextCompareData, savedReview] = await Promise.all([
       service.readOutput(outputPath, PREVIEW_MAX_CHARS),
       service.readCompare(outputPath),
@@ -2848,6 +2919,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   async function handlePromptProfileChange(promptProfile: ModelConfig["promptProfile"]) {
     const nextConfig = { ...modelConfig, promptProfile, promptSequence: normalizePromptSequence(modelConfig.promptSequence) };
     setModelConfig(nextConfig);
+    clearAutoSnapshotSuppression();
     localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, promptProfile);
     localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(nextConfig.promptSequence));
     if (!documentStatus?.sourcePath) {
@@ -2872,6 +2944,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   async function handlePromptSequenceChange(promptSequence: PromptId[]) {
     const nextConfig = { ...modelConfig, promptProfile: "cn_custom" as const, promptSequence: normalizePromptSequence(promptSequence) };
     setModelConfig(nextConfig);
+    clearAutoSnapshotSuppression();
     localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, nextConfig.promptProfile);
     localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(nextConfig.promptSequence));
     if (!documentStatus?.sourcePath) {
@@ -2897,6 +2970,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     const taskTicket = beginTask("loading-history");
     try {
       setRuntimeStep("正在载入历史文档。");
+      clearAutoSnapshotSuppression();
       clearDocumentDerivedState({ includeDetectionReport: true });
       const status = await refreshDocumentState(item.sourcePath, configOverride);
       const loadedSnapshot = await loadLatestRoundSnapshot(status, configOverride, {
@@ -3417,6 +3491,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         globalBusy: true,
         runtimeStep: "正在载入文档状态。",
       });
+      clearAutoSnapshotSuppression();
       clearDocumentDerivedState({ includeDetectionReport: true });
       const status = await refreshDocumentState(picked.sourcePath);
       await refreshHistoryList();
@@ -3531,6 +3606,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       if (!isActiveRunSession(runSession)) {
         return;
       }
+      clearAutoSnapshotSuppression();
       await releaseProgressListener();
       visibleProgressRef.current = null;
       setProgress(null);
@@ -3659,6 +3735,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setRuntimeStep(checkpointProgress ? formatRuntimeStep(checkpointProgress, `准备续跑第 ${documentStatus.nextRound} 轮。`) : `准备执行第 ${documentStatus.nextRound} 轮。`);
       setNotice(checkpointProgress ? checkpointProgress.resumeExplanation || "已识别断点，本次会从已完成分块后继续，不会重头跑。" : `本次运行将使用 ${describePromptProfile(modelConfig.promptProfile)}，中途失败时会优先尝试断点续跑。`);
 
+      clearAutoSnapshotSuppression();
       const nextResult = await service.awaitRunRound(documentStatus.sourcePath, runConfig, runToken);
       if (!isActiveRunSession(runSession)) {
         return;
@@ -3800,7 +3877,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     const confirmed = await requestConfirm({
       title: `放弃第 ${documentStatus.nextRound} 轮断点进度`,
       description: "只会清理当前轮已完成的分块缓存；源文档、已完成轮次和历史记录都会保留。",
-      details: ["后续再次运行该轮时，会从该轮开头重新生成。"],
+      details: ["后续再次运行该轮时，会从该轮开头重新生成。", "刷新页面后不会自动载入旧 Diff；需要查看时可从历史记录手动打开。"],
       confirmLabel: "确认放弃",
       cancelLabel: "保留断点",
       tone: "warning",
@@ -3809,15 +3886,17 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       return;
     }
     const taskTicket = beginTask("resetting-round");
+    const resetRoundNumber = documentStatus.nextRound;
     try {
       await releaseProgressListener();
-      await service.resetRoundProgress(documentStatus.sourcePath, modelConfig.promptProfile, documentStatus.nextRound, modelConfig.promptSequence);
+      await service.resetRoundProgress(documentStatus.sourcePath, modelConfig.promptProfile, resetRoundNumber, modelConfig.promptSequence);
+      suppressAutoSnapshotRestore(documentStatus, modelConfig, resetRoundNumber);
       setProgress(null);
       clearLoadedRoundSnapshot();
       await refreshDocumentState(documentStatus.sourcePath);
       await refreshHistoryList();
-      setNotice(`第 ${documentStatus.nextRound} 轮断点进度已放弃，文档任务仍保留。`);
-      setRuntimeStep("当前轮次断点已清理");
+      setNotice(`第 ${resetRoundNumber} 轮进度已放弃；刷新后不会自动恢复旧 Diff，历史记录仍可手动打开。`);
+      setRuntimeStep("当前轮次进度已清理");
     } catch (appError) {
       setError(stringifyError(appError));
       setRuntimeStep("清理当前轮次断点失败");
@@ -5920,7 +5999,7 @@ function DiagnosticsPage({
                 <CardHeader className="pb-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <CardTitle className="text-lg">任务快照</CardTitle>
+                      <CardTitle className="text-lg">任务快照治理</CardTitle>
                       <CardDescription className="mt-1">用于断点恢复，清理不会删除运行中的快照。</CardDescription>
                     </div>
                     <Button variant="outline" onClick={onCleanupTaskSnapshots} disabled={busy || taskStateStore.staleCount <= 0}>
@@ -5961,7 +6040,7 @@ function DiagnosticsPage({
               <Card>
                 <CardHeader className="pb-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <CardTitle className="text-lg">近期任务</CardTitle>
+                    <CardTitle className="text-lg">近期任务摘要</CardTitle>
                     <Badge variant="outline">轮次 {recentRunCount} · 重跑 {recentBatchRerunCount}</Badge>
                   </div>
                 </CardHeader>
@@ -6017,7 +6096,11 @@ function DiagnosticCheckCard({ item }: { item: EnvironmentDiagnostics["checks"][
 }
 
 function DiagnosticRunAlert({ item, recent = false }: { item: EnvironmentDiagnostics["activeRuns"][number]; recent?: boolean }) {
-  const status = item.cancelRequested ? "中断中" : item.status || (recent ? "已记录" : "运行中");
+  const status = item.cancelRequested
+    ? "中断中"
+    : recent && !item.completed
+      ? "轮次未完成"
+      : item.status || (recent ? "已记录" : "运行中");
   return (
     <Alert className={cn(item.status === "interrupted" && "border-primary/25 bg-muted/60")}>
       {recent ? <Clock3 /> : <Activity />}
@@ -6040,7 +6123,11 @@ function DiagnosticRunAlert({ item, recent = false }: { item: EnvironmentDiagnos
 }
 
 function DiagnosticBatchAlert({ item, recent = false }: { item: NonNullable<EnvironmentDiagnostics["activeBatchReruns"]>[number]; recent?: boolean }) {
-  const status = item.cancelRequested ? "停止中" : item.status || (recent ? "已记录" : "运行中");
+  const status = item.cancelRequested
+    ? "停止中"
+    : recent && !item.completed
+      ? "重跑未完成"
+      : item.status || (recent ? "已记录" : "运行中");
   return (
     <Alert className={cn(item.status === "interrupted" && "border-primary/25 bg-muted/60")}>
       <RefreshCw />

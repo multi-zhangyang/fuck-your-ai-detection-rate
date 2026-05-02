@@ -27,6 +27,10 @@ SKIP_DIRS = {
     "origin",
 }
 
+SKIP_DIR_PREFIXES = (
+    ".codex-chrome-ui-refactor",
+)
+
 TEXT_SUFFIXES = {
     ".bat",
     ".cfg",
@@ -213,7 +217,7 @@ def _is_under_skipped_dir(path: Path) -> bool:
         relative = path.relative_to(ROOT_DIR)
     except ValueError:
         return True
-    return any(part in SKIP_DIRS for part in relative.parts[:-1])
+    return any(part in SKIP_DIRS or part.startswith(SKIP_DIR_PREFIXES) for part in relative.parts[:-1])
 
 
 def _iter_files() -> Iterable[Path]:

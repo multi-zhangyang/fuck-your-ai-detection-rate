@@ -245,6 +245,7 @@ export function ModelConfigCard({
   const providers = value.modelProviders ?? [];
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0] ?? null;
   const providerCatalogRunning = Object.values(providerCatalogBusy).some(Boolean);
+  const enabledProviderCount = providers.filter((provider) => provider.enabled !== false).length;
 
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden border-border bg-card shadow-sm">
@@ -372,9 +373,14 @@ export function ModelConfigCard({
                       <CardTitle className="text-base">服务商</CardTitle>
                       <CardDescription>连接、模型与限速策略</CardDescription>
                     </div>
-                    <Button type="button" size="sm" onClick={addProvider} disabled={busy}>
-                      <Plus data-icon="inline-start" />添加
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" size="sm" variant="outline" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || value.offlineMode || enabledProviderCount === 0}>
+                        {providerCatalogRunning ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取全部
+                      </Button>
+                      <Button type="button" size="sm" onClick={addProvider} disabled={busy}>
+                        <Plus data-icon="inline-start" />添加
+                      </Button>
+                    </div>
                   </div>
                 </CardHeader>
                 <ScrollArea className="min-h-0 flex-1">
