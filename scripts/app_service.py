@@ -1142,31 +1142,6 @@ def _normalize_protected_paths(protected_paths: object | None) -> set[Path]:
     return normalized_paths
 
 
-def _collect_experiment_referenced_history_paths() -> set[Path]:
-    records_path = ROOT_DIR / "finish" / "experiments" / "records.json"
-    if not records_path.exists():
-        return set()
-    try:
-        data = json.loads(records_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    if not isinstance(data, list):
-        return set()
-    referenced_paths: set[Path] = set()
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        for field in ("sourcePath", "outputPath", "reportPath"):
-            value = item.get(field)
-            if not isinstance(value, str) or not value.strip():
-                continue
-            try:
-                referenced_paths.add(normalize_path(Path(value)))
-            except Exception:
-                continue
-    return referenced_paths
-
-
 def _collect_referenced_history_artifacts(protected_paths: object | None = None) -> set[Path]:
     referenced_paths = _normalize_protected_paths(protected_paths)
     records = list_records()
@@ -1192,7 +1167,6 @@ def _collect_referenced_history_artifacts(protected_paths: object | None = None)
                     referenced_paths.add(normalized_compare_path.with_name(f"{normalized_compare_path.stem}_review_decisions.json"))
                 except Exception:
                     continue
-    referenced_paths.update(_collect_experiment_referenced_history_paths())
     return referenced_paths
 
 

@@ -167,8 +167,6 @@ export type EnvironmentDiagnostics = {
     pythonVersion: string;
     pythonExecutable: string;
     platform: string;
-    nodeExecutable: string;
-    npmExecutable: string;
   };
 };
 
@@ -838,64 +836,4 @@ export type DetectionReportMatch = {
     matchedAnchors: string[];
     matchedFragments: string[];
   };
-};
-
-export type ExperimentRecordInput = {
-  id?: string;
-  docId?: string;
-  sourcePath?: string;
-  outputPath?: string;
-  round?: number | null;
-  promptProfile?: string;
-  promptSequence?: string[];
-  strategy?: string;
-  model?: string;
-  providerName?: string;
-  roundModel?: RoundResult["roundModel"] | null;
-  speedaiBefore?: number | null;
-  speedaiAfter?: number | null;
-  paperpassBefore?: number | null;
-  paperpassAfter?: number | null;
-  reportProvider?: string;
-  reportOverall?: number | null;
-  reportPath?: string;
-  chunkCount?: number | null;
-  reviewChunkCount?: number | null;
-  machineLikeRiskCount?: number | null;
-  rewriteCandidateMode?: "economy" | "quality" | string;
-  estimatedApiCalls?: number | null;
-  validationRetryCount?: number | null;
-  sourceFallbackCount?: number | null;
-  guardIssueCount?: number | null;
-  preflightIssueCount?: number | null;
-  auditIssueCount?: number | null;
-  notes?: string;
-};
-
-export type ExperimentRecord = ExperimentRecordInput & {
-  id: string;
-  createdAt: string;
-  updatedAt: string;
-  speedaiDelta?: number | null;
-  paperpassDelta?: number | null;
-};
-
-export type ExperimentListResponse = {
-  items: ExperimentRecord[];
-  total: number;
-  path: string;
-};
-
-export type ExperimentSaveResult = {
-  ok: boolean;
-  record: ExperimentRecord;
-  path: string;
-};
-
-export type ExperimentDeleteResult = {
-  ok: boolean;
-  deleted: boolean;
-  id: string;
-  total: number;
-  path: string;
 };

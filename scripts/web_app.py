@@ -4,7 +4,6 @@ import base64
 import json
 import os
 import platform
-import shutil
 import sys
 import threading
 import time
@@ -19,7 +18,6 @@ from flask import Flask, Response, jsonify, request, send_file, stream_with_cont
 
 from app_config import get_app_config_path, load_app_config, save_app_config
 from detection_report_parser import parse_detection_report_pdf
-from experiment_records import delete_experiment_record, list_experiment_records, save_experiment_record
 from app_service import (
     delete_document_history,
     delete_history_orphan_artifacts,
@@ -1065,8 +1063,6 @@ def build_environment_diagnostics() -> dict[str, Any]:
             "pythonVersion": sys.version.split()[0],
             "pythonExecutable": sys.executable,
             "platform": platform.platform(),
-            "nodeExecutable": shutil.which("node") or "",
-            "npmExecutable": shutil.which("npm") or "",
         },
     }
 
@@ -1396,34 +1392,6 @@ def post_detection_report() -> tuple[Response, int] | Response:
         provider_hint = str(payload.get("providerHint", "")).strip().lower()
         target_path = write_uploaded_detection_report(filename, content_base64)
         return jsonify(parse_detection_report_pdf(target_path, provider_hint=provider_hint)), 201
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/experiments", methods=["GET"])
-def get_experiments() -> tuple[Response, int] | Response:
-    try:
-        doc_id = request.args.get("docId", "").strip() or None
-        return jsonify(list_experiment_records(doc_id))
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/experiments", methods=["POST"])
-def post_experiment() -> tuple[Response, int] | Response:
-    try:
-        payload = request.get_json(silent=True) or {}
-        if not isinstance(payload, dict):
-            raise ValueError("Experiment payload must be an object.")
-        return jsonify(save_experiment_record(payload)), 201
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/experiments/<record_id>", methods=["DELETE"])
-def delete_experiment(record_id: str) -> tuple[Response, int] | Response:
-    try:
-        return jsonify(delete_experiment_record(record_id))
     except Exception as exc:
         return error_response(str(exc))
 

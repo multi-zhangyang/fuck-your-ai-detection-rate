@@ -10,10 +10,6 @@ import type {
   EnvironmentDiagnostics,
   ExportIssueSample,
   ExportResult,
-  ExperimentDeleteResult,
-  ExperimentListResponse,
-  ExperimentRecordInput,
-  ExperimentSaveResult,
   FormatRules,
   FormatRulesResult,
   HistoryDeleteImpact,
@@ -862,26 +858,6 @@ export const webService: AppService = {
       body: JSON.stringify({ outputPath, targetFormat, decisions }),
     });
     return exportResponseToResult(response, targetFormat);
-  },
-
-  async listExperimentRecords(docId?: string): Promise<ExperimentListResponse> {
-    const query = new URLSearchParams();
-    if (docId) query.set("docId", docId);
-    const suffix = query.toString() ? `?${query.toString()}` : "";
-    return requestJson<ExperimentListResponse>(`/api/experiments${suffix}`);
-  },
-
-  async saveExperimentRecord(record: ExperimentRecordInput): Promise<ExperimentSaveResult> {
-    return requestJson<ExperimentSaveResult>("/api/experiments", {
-      method: "POST",
-      body: JSON.stringify(record),
-    });
-  },
-
-  async deleteExperimentRecord(id: string): Promise<ExperimentDeleteResult> {
-    return requestJson<ExperimentDeleteResult>(`/api/experiments/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
   },
 
   async loadFormatRules(): Promise<FormatRules> {

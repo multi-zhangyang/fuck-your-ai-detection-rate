@@ -11,10 +11,6 @@ import type {
   BatchRerunResult,
   BatchRerunStatus,
   BatchRerunTarget,
-  ExperimentDeleteResult,
-  ExperimentListResponse,
-  ExperimentRecordInput,
-  ExperimentSaveResult,
   FormatRules,
   FormatRulesResult,
   HistoryDeleteImpact,
@@ -83,9 +79,6 @@ export interface AppService {
   cancelBatchRerun(runToken: string): Promise<void>;
   exportRound(outputPath: string, targetFormat: "txt" | "docx"): Promise<ExportResult>;
   exportReviewedRound(outputPath: string, targetFormat: "txt" | "docx", decisions: Record<string, ReviewDecision>): Promise<ExportResult>;
-  listExperimentRecords(docId?: string): Promise<ExperimentListResponse>;
-  saveExperimentRecord(record: ExperimentRecordInput): Promise<ExperimentSaveResult>;
-  deleteExperimentRecord(id: string): Promise<ExperimentDeleteResult>;
   loadFormatRules(): Promise<FormatRules>;
   parseFormatRules(text: string, modelConfig: ModelConfig, signal?: AbortSignal): Promise<FormatRulesResult>;
   activateFormatRules(rules: FormatRules): Promise<FormatRulesResult>;

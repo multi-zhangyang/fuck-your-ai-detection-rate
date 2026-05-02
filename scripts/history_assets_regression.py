@@ -23,7 +23,6 @@ from fyadr_records import (  # noqa: E402
 
 
 TEST_STEM = "__fyadr_history_assets_regression__"
-EXPERIMENT_RECORDS_PATH = ROOT_DIR / "finish" / "experiments" / "records.json"
 
 
 def _backup(path: Path) -> bytes | None:
@@ -105,7 +104,6 @@ def _path_in_files(files: list[dict[str, Any]], path: Path) -> bool:
 
 def run_regression() -> dict[str, Any]:
     records_backup = _backup(RECORDS_PATH)
-    experiments_backup = _backup(EXPERIMENT_RECORDS_PATH)
     created_paths: list[Path] = []
     checks: list[str] = []
 
@@ -149,31 +147,8 @@ def run_regression() -> dict[str, Any]:
         _assert(not active_source.exists(), "orphan cleanup must delete only the unprotected source copy")
         checks.append("orphan cleanup respects active-path protection")
 
-        report_path = _write_bytes(ROOT_DIR / "finish" / "detection_reports" / f"{TEST_STEM}_report.pdf", b"%PDF-test")
-        created_paths.append(report_path)
-        experiment_records = []
-        if EXPERIMENT_RECORDS_PATH.exists():
-            try:
-                loaded = json.loads(EXPERIMENT_RECORDS_PATH.read_text(encoding="utf-8"))
-                experiment_records = loaded if isinstance(loaded, list) else []
-            except json.JSONDecodeError:
-                experiment_records = []
-        experiment_records.append({
-            "id": TEST_STEM,
-            "docId": "origin/example.txt",
-            "sourcePath": "origin/example.txt",
-            "outputPath": "",
-            "reportPath": str(report_path),
-        })
-        EXPERIMENT_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        EXPERIMENT_RECORDS_PATH.write_text(json.dumps(experiment_records, ensure_ascii=False, indent=2), encoding="utf-8")
-        report_scan = scan_history_orphan_artifacts([])
-        _assert(not _path_in_files(report_scan["orphanFiles"], report_path), "experiment report path must be protected")
-        checks.append("experiment records protect attached detection reports")
-
     finally:
         _restore(RECORDS_PATH, records_backup)
-        _restore(EXPERIMENT_RECORDS_PATH, experiments_backup)
         for path in sorted(set(created_paths), key=lambda item: len(str(item)), reverse=True):
             try:
                 if path.exists() and path.is_file():

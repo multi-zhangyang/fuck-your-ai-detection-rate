@@ -71,7 +71,7 @@ import { useAppState } from "@/hooks/useAppState";
 import type { AppService } from "@/lib/appService";
 import { getTaskPhaseLabel, isTaskBlocking, isTaskRunningPhase, type TaskPhase } from "@/lib/taskState";
 import { cn } from "@/lib/utils";
-import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExperimentRecord, ExperimentRecordInput, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, PromptPreviewResponse, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
+import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, PromptPreviewResponse, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -101,7 +101,7 @@ type Props = {
   pickerLabel?: string;
 };
 
-type WorkbenchView = "home" | "quality" | "experiment" | "model" | "prompts" | "format" | "protection" | "history" | "diagnostics";
+type WorkbenchView = "home" | "quality" | "model" | "prompts" | "format" | "protection" | "history" | "diagnostics";
 
 const WORKBENCH_NAV_ITEMS = [
   { view: "home", label: "工作台", description: "文档、导出、任务控制", icon: Home },
@@ -112,7 +112,6 @@ const WORKBENCH_NAV_ITEMS = [
   { view: "protection", label: "保护区地图", description: "结构锁定", icon: ShieldCheck },
   { view: "history", label: "历史记录", description: "文档与轮次归档", icon: History },
   { view: "diagnostics", label: "启动诊断", description: "运行环境状态", icon: Activity },
-  { view: "experiment", label: "策略复盘", description: "策略对比实验", icon: Clock3 },
 ] satisfies Array<{
   view: WorkbenchView;
   label: string;
@@ -1907,8 +1906,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const [modelConfigReady, setModelConfigReady] = useState(false);
   const [historyListReady, setHistoryListReady] = useState(false);
   const [detectionReport, setDetectionReport] = useState<DetectionReport | null>(() => loadStoredDetectionReportForDocument(localStorage.getItem(ACTIVE_DOCUMENT_KEY)));
-  const [experimentRecords, setExperimentRecords] = useState<ExperimentRecord[]>([]);
-  const [experimentRecordsPath, setExperimentRecordsPath] = useState("");
   const [diagnostics, setDiagnostics] = useState<EnvironmentDiagnostics | null>(null);
   const [promptPreviews, setPromptPreviews] = useState<PromptPreviewResponse | null>(null);
   const [promptPreviewBusy, setPromptPreviewBusy] = useState(false);
@@ -2433,35 +2430,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   }, [service, setError, setModelConfig]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function bootstrapExperiments() {
-      try {
-        const result = await service.listExperimentRecords();
-        if (!cancelled) {
-          setExperimentRecords(result.items);
-          setExperimentRecordsPath(result.path);
-        }
-      } catch {
-        // Experiment records are auxiliary; keep the main app usable.
-      }
-    }
-
-    void bootstrapExperiments();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [service]);
-
-  useEffect(() => {
-    if (!documentStatus?.docId) {
-      return;
-    }
-    void refreshExperimentRecords();
-  }, [documentStatus?.docId]);
-
-  useEffect(() => {
     if (activeView !== "diagnostics" || diagnostics) {
       return;
     }
@@ -2732,13 +2700,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     const result = await service.scanHistoryOrphans(getProtectedHistoryArtifactPaths());
     setHistoryOrphanScan(result);
     return result;
-  }
-
-  async function refreshExperimentRecords(docId?: string) {
-    const result = await service.listExperimentRecords(docId);
-    setExperimentRecords(result.items);
-    setExperimentRecordsPath(result.path);
-    return result.items;
   }
 
   async function refreshDiagnostics(options: { silent?: boolean } = {}) {
@@ -3058,7 +3019,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
     const confirmed = await requestConfirm({
       title: `清理 ${currentScan.totalOrphanFiles} 个未归属项目文件`,
-      description: "只会删除项目目录中未被历史记录、当前文档或复盘记录引用的源文档副本和生成产物。",
+      description: "只会删除项目目录中未被历史记录或当前文档引用的源文档副本和生成产物。",
       details: [
         `预计释放：${formatBytes(currentScan.orphanStats.bytes)}`,
         "浏览器已经下载到本地的文件不会受影响。",
@@ -4098,140 +4059,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
   }
 
-  async function handleSaveExperimentRecord(input: ExperimentRecordInput) {
-    const stats = buildQualityStats(activeCompareData, lastExportResult);
-    const runAudit = buildCurrentRunAudit(roundResult, activeCompareData, modelConfig);
-    const reportOverall = detectionReport?.summary.weightedOverallRiskProbability ?? detectionReport?.summary.overallRiskProbability ?? null;
-    const roundModel = roundResult?.roundModel ?? null;
-    const payload: ExperimentRecordInput = {
-      ...input,
-      docId: documentStatus?.docId ?? input.docId ?? "",
-      sourcePath: documentStatus?.sourcePath ?? input.sourcePath ?? "",
-      outputPath: roundResult?.outputPath ?? activeCompareData?.outputPath ?? input.outputPath ?? "",
-      round: roundResult?.round ?? activeCompareData?.round ?? input.round ?? null,
-      promptProfile: modelConfig.promptProfile,
-      promptSequence: normalizePromptSequence(modelConfig.promptSequence),
-      model: roundModel?.model || modelConfig.model,
-      providerName: roundModel?.providerName || input.providerName || "",
-      roundModel,
-      reportProvider: detectionReport?.providerLabel || detectionReport?.provider || input.reportProvider || "",
-      reportOverall,
-      reportPath: detectionReport?.sourcePath || input.reportPath || "",
-      chunkCount: activeCompareData?.chunkCount ?? stats.chunkCount,
-      reviewChunkCount: stats.reviewChunkCount,
-      machineLikeRiskCount: stats.machineLikeRiskCount,
-      rewriteCandidateMode: runAudit.rewriteCandidateMode,
-      estimatedApiCalls: runAudit.estimatedApiCalls,
-      validationRetryCount: runAudit.validationRetryCount,
-      sourceFallbackCount: runAudit.sourceFallbackCount,
-      guardIssueCount: stats.guardIssueCount,
-      preflightIssueCount: stats.preflightIssueCount,
-      auditIssueCount: stats.auditIssueCount,
-    };
-
-    const taskTicket = beginTask("saving-experiment");
-    try {
-      setRuntimeStep("正在保存复盘记录。");
-      await service.saveExperimentRecord(payload);
-      await refreshExperimentRecords();
-      setNotice("复盘记录已保存。后续可以用它对比模型、轮次和外部平台结果。");
-      setRuntimeStep("复盘记录已保存");
-    } catch (appError) {
-      setError(stringifyError(appError));
-      setRuntimeStep("保存复盘记录失败");
-    } finally {
-      finishTask(taskTicket);
-    }
-  }
-
-  async function handleDeleteExperimentRecord(id: string) {
-    const confirmed = await requestConfirm({
-      title: "删除复盘记录",
-      description: "只删除这条策略复盘记录，不会删除文档、Diff、导出文件或检测报告。",
-      confirmLabel: "确认删除",
-      cancelLabel: "取消",
-      tone: "danger",
-    });
-    if (!confirmed) {
-      return;
-    }
-    const taskTicket = beginTask("saving-experiment");
-    try {
-      await service.deleteExperimentRecord(id);
-      await refreshExperimentRecords();
-      setNotice("复盘记录已删除。");
-    } catch (appError) {
-      setError(stringifyError(appError));
-    } finally {
-      finishTask(taskTicket);
-    }
-  }
-
-  async function handleReplayExperimentRecord(record: ExperimentRecord) {
-    if (!record.sourcePath && !record.outputPath) {
-      setNotice("这条复盘记录缺少文档或输出路径，无法复现。");
-      return;
-    }
-
-    const replay = buildExperimentReplayConfig(record, modelConfig);
-    const promptProfile = replay.config.promptProfile;
-    const promptSequence = normalizePromptSequence(replay.config.promptSequence);
-    const modelText = replay.modelHint
-      ? replay.modelApplied
-        ? `模型配置已回填：${replay.modelHint}。`
-        : `模型仅作为提示：${replay.modelHint}；未找到可安全复用的 API Key，所以没有强行覆盖。`
-      : "";
-    let exactSnapshotFailed = "";
-
-    const taskTicket = beginTask("replaying-experiment");
-    try {
-      setRuntimeStep("正在复现复盘记录。");
-      setModelConfig(replay.config);
-      localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, promptProfile);
-      localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(promptSequence));
-
-      let status: DocumentStatus | null = null;
-      let loadedHistoryItems: HistoryDocumentSummary[] | undefined;
-      if (record.sourcePath) {
-        status = await refreshDocumentState(record.sourcePath, replay.config);
-        loadedHistoryItems = await refreshHistoryList();
-        if (!record.outputPath) {
-          await loadLatestRoundSnapshot(status, replay.config, {
-            historyItems: loadedHistoryItems,
-            allowProfileFallback: true,
-          });
-        }
-      }
-
-      if (record.outputPath) {
-        try {
-          await loadRoundSnapshotByOutputPath(record.outputPath);
-        } catch (snapshotError) {
-          exactSnapshotFailed = stringifyError(snapshotError);
-          if (status) {
-            await loadLatestRoundSnapshot(status, replay.config, {
-              historyItems: loadedHistoryItems,
-              allowProfileFallback: true,
-            });
-          } else {
-            throw snapshotError;
-          }
-        }
-      }
-
-      setHistoryPanelOpen(true);
-      setActiveView("home");
-      const fallbackText = exactSnapshotFailed ? "原记录输出读取失败，已回退到该文档最新 Diff。" : "已载入该记录对应 Diff。";
-      setNotice(`已复现复盘记录：${record.strategy || "未标记策略"}。${fallbackText}${modelText}`);
-      setRuntimeStep("复盘记录复现完成");
-    } catch (appError) {
-      setError(stringifyError(appError));
-      setRuntimeStep("复现复盘记录失败");
-    } finally {
-      finishTask(taskTicket);
-    }
-  }
-
   const runtimeLabel = formatRuntimeStep(progress, runtimeStep);
   const progressPercent = getProgressPercent(progress, documentStatus?.completedRounds.length ?? 0, documentStatus?.maxRounds ?? 0);
   const runtimeTaskItems = useMemo<RuntimeTaskCenterItem[]>(() => {
@@ -4639,24 +4466,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
               </div>
             ) : activeView === "quality" ? (
               <div className="h-full min-h-0 overflow-auto"><QualityReportPage compareData={activeCompareData} exportResult={lastExportResult} /></div>
-            ) : activeView === "experiment" ? (
-              <div className="h-full min-h-0 overflow-auto">
-                <ExperimentLabPage
-                  records={experimentRecords}
-                  recordsPath={experimentRecordsPath}
-                  documentStatus={documentStatus}
-                  roundResult={roundResult}
-                  compareData={activeCompareData}
-                  detectionReport={detectionReport}
-                  exportResult={lastExportResult}
-                  modelConfig={modelConfig}
-                  busy={uiBusy}
-                  onSave={(record) => void handleSaveExperimentRecord(record)}
-                  onDelete={(id) => void handleDeleteExperimentRecord(id)}
-                  onReplay={(record) => void handleReplayExperimentRecord(record)}
-                  onRefresh={() => void refreshExperimentRecords()}
-                />
-              </div>
             ) : activeView === "model" ? (
               <div className="h-full min-h-0 overflow-hidden">{modelPanel}</div>
             ) : activeView === "prompts" ? (
@@ -4723,7 +4532,7 @@ function AppSidebar({
 }) {
   const primaryItems = WORKBENCH_NAV_ITEMS.filter((item) => ["home", "quality", "model"].includes(item.view));
   const documentItems = WORKBENCH_NAV_ITEMS.filter((item) => ["prompts", "format", "protection", "history"].includes(item.view));
-  const systemItems = WORKBENCH_NAV_ITEMS.filter((item) => ["diagnostics", "experiment"].includes(item.view));
+  const systemItems = WORKBENCH_NAV_ITEMS.filter((item) => ["diagnostics"].includes(item.view));
   const renderNavItems = (items: typeof WORKBENCH_NAV_ITEMS) => items.map((item) => {
     const Icon = item.icon;
     return (
@@ -4782,7 +4591,7 @@ function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="px-3 py-1.5">
-          <SidebarGroupLabel className="px-1">运行与复盘</SidebarGroupLabel>
+          <SidebarGroupLabel className="px-1">运行状态</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu className="gap-1.5">
               {renderNavItems(systemItems)}
@@ -5766,757 +5575,6 @@ function RunRecoveryPanel({ state }: { state: RunRecoveryPanelState | null }) {
     </Alert>
   );
 }
-function ExperimentLabPage({
-  records,
-  recordsPath,
-  documentStatus,
-  roundResult,
-  compareData,
-  detectionReport,
-  exportResult,
-  modelConfig,
-  busy,
-  onSave,
-  onDelete,
-  onReplay,
-  onRefresh,
-}: {
-  records: ExperimentRecord[];
-  recordsPath: string;
-  documentStatus: DocumentStatus | null;
-  roundResult: RoundResult | null;
-  compareData: RoundCompareData | null;
-  detectionReport: DetectionReport | null;
-  exportResult: ExportResult | null;
-  modelConfig: ModelConfig;
-  busy: boolean;
-  onSave: (record: ExperimentRecordInput) => void;
-  onDelete: (id: string) => void;
-  onReplay: (record: ExperimentRecord) => void;
-  onRefresh: () => void;
-}) {
-  const stats = buildQualityStats(compareData, exportResult);
-  const [strategy, setStrategy] = useState("两轮主流程");
-  const [speedaiBefore, setSpeedaiBefore] = useState("");
-  const [speedaiAfter, setSpeedaiAfter] = useState("");
-  const [paperpassBefore, setPaperpassBefore] = useState("");
-  const [paperpassAfter, setPaperpassAfter] = useState("");
-  const [notes, setNotes] = useState("");
-  const providerLabel = detectionReport?.providerLabel || detectionReport?.provider || "";
-  const reportOverall = detectionReport?.summary.weightedOverallRiskProbability ?? detectionReport?.summary.overallRiskProbability ?? null;
-  const currentRunAudit = buildCurrentRunAudit(roundResult, compareData, modelConfig);
-  const auditCandidateLabel = currentRunAudit.rewriteCandidateMode === "quality" ? "质量模式" : "省钱模式";
-  const auditModelLabel = [currentRunAudit.providerName, currentRunAudit.model].filter(Boolean).join(" · ") || "未记录";
-  const currentDocRecords = documentStatus?.docId
-    ? records.filter((record) => record.docId === documentStatus.docId)
-    : records;
-  const bestSpeedAI = minScore(currentDocRecords.map((record) => record.speedaiAfter));
-  const bestPaperPass = minScore(currentDocRecords.map((record) => record.paperpassAfter));
-  const scoredRecordCount = currentDocRecords.filter(
-    (record) => record.speedaiAfter != null || record.paperpassAfter != null || record.reportOverall != null,
-  ).length;
-  const analysis = useMemo(() => buildExperimentAnalysis(currentDocRecords, records), [currentDocRecords, records]);
-
-  function fillFromCurrentReport() {
-    if (reportOverall == null) return;
-    const provider = `${detectionReport?.provider || ""} ${detectionReport?.providerLabel || ""}`.toLowerCase();
-    if (provider.includes("paperpass")) {
-      setPaperpassAfter(String(reportOverall));
-      return;
-    }
-    if (provider.includes("speedai")) {
-      setSpeedaiAfter(String(reportOverall));
-      return;
-    }
-  }
-
-  function submitRecord() {
-    onSave({
-      strategy,
-      speedaiBefore: parseScoreInput(speedaiBefore),
-      speedaiAfter: parseScoreInput(speedaiAfter),
-      paperpassBefore: parseScoreInput(paperpassBefore),
-      paperpassAfter: parseScoreInput(paperpassAfter),
-      notes,
-    });
-  }
-
-  return (
-    <div className="grid h-full min-h-0 gap-5 overflow-hidden xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]">
-      <div className="flex min-h-0 flex-col gap-5 overflow-hidden">
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div>
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Badge variant={analysis.scopeCount >= 3 ? "success" : "warning"}>
-                    {analysis.scopeCount >= 3 ? "可参考" : "样本偏少"}
-                  </Badge>
-                  <Badge variant="outline">策略复盘</Badge>
-                </div>
-                <CardTitle>策略复盘</CardTitle>
-                <CardDescription className="mt-1">记录模型、轮次、Prompt 组合和外部检测分数。</CardDescription>
-              </div>
-              <Button variant="outline" onClick={onRefresh} disabled={busy}>
-                <RefreshCw data-icon="inline-start" />
-                刷新记录
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-3 md:grid-cols-4">
-              <ReportStat label="当前文档记录" value={String(currentDocRecords.length)} />
-              <ReportStat label="有分数记录" value={String(scoredRecordCount)} />
-              <ReportStat label="SpeedAI 最低" value={bestSpeedAI == null ? "-" : `${bestSpeedAI}%`} />
-              <ReportStat label="PaperPass 最低" value={bestPaperPass == null ? "-" : `${bestPaperPass}%`} />
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="min-h-0 flex-1 overflow-hidden">
-          <CardHeader className="pb-3">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <CardTitle className="text-lg">策略面板</CardTitle>
-                <CardDescription className="mt-1">按分数下降、反噬风险、平台一致性和样本数排序。</CardDescription>
-              </div>
-              <div className="rounded-md border bg-muted/50 px-3 py-2 text-sm">
-                <div className="text-xs font-medium text-muted-foreground">当前建议</div>
-                <div className="mt-1 font-semibold text-foreground">{analysis.primaryAction}</div>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="grid h-[calc(100%-6.75rem)] min-h-0 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
-            <ScrollArea className="min-h-0 pr-1">
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-                {analysis.recommendations.map((item) => (
-                  <ExperimentRecommendationCard key={item.title} item={item} />
-                ))}
-              </div>
-            </ScrollArea>
-
-            <Card className="min-h-0 overflow-hidden shadow-none">
-              <CardHeader className="px-4 py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <CardTitle className="text-sm">策略排行榜</CardTitle>
-                    <CardDescription className="mt-1 text-xs">综合越高越值得复测。</CardDescription>
-                  </div>
-                  <Badge variant="outline">{analysis.rankings.length} 类</Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="h-[calc(100%-5.25rem)] min-h-0 px-4 pb-4">
-                {analysis.rankings.length ? (
-                  <ScrollArea className="h-full pr-1">
-                    <div className="flex flex-col gap-3">
-                      {analysis.rankings.slice(0, 4).map((item, index) => (
-                        <ExperimentStrategyRankItem key={item.strategy} item={item} index={index} />
-                      ))}
-                    </div>
-                  </ScrollArea>
-                ) : (
-                  <Empty className="h-full min-h-[16rem] border">
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon">
-                        <BarChart3 />
-                      </EmptyMedia>
-                      <EmptyTitle>暂无排行</EmptyTitle>
-                      <EmptyDescription>保存一次外部平台分数后再对比策略。</EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
-                )}
-              </CardContent>
-            </Card>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-5 overflow-hidden">
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg">记录本次结果</CardTitle>
-            <CardDescription>拿到外部平台分数后，把前后结果填进来。</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <Alert>
-              <FileText />
-              <AlertTitle>当前运行</AlertTitle>
-              <AlertDescription className="mt-2 grid gap-1 text-xs">
-                <span>文档：{formatDocLabel(documentStatus?.docId)}</span>
-                <span>轮次：{roundResult?.round ?? compareData?.round ?? "-"} / Prompt：{describePromptProfile(modelConfig.promptProfile)} · {formatPromptSequence(modelConfig.promptSequence)}</span>
-                <span>分块：{stats.chunkCount} 块，需处理 {stats.reviewChunkCount}，表达提示 {stats.machineLikeRiskCount}</span>
-                <span>审计：{auditCandidateLabel}，预计 {currentRunAudit.estimatedApiCalls ?? "-"} 次调用，校验重试 {currentRunAudit.validationRetryCount ?? 0}，安全回退 {currentRunAudit.sourceFallbackCount ?? 0}</span>
-                <span>模型：{auditModelLabel}</span>
-                <span>报告：{providerLabel || "未上传"}{reportOverall != null ? ` · ${reportOverall}%` : ""}</span>
-              </AlertDescription>
-            </Alert>
-
-            <FieldGroup className="gap-4">
-              <Field>
-                <FieldLabel>策略标签</FieldLabel>
-                <Select value={strategy} onValueChange={setStrategy}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="选择策略标签" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="两轮主流程">两轮主流程</SelectItem>
-                      <SelectItem value="三轮主流程">三轮主流程</SelectItem>
-                      <SelectItem value="强命中重跑后">强命中重跑后</SelectItem>
-                      <SelectItem value="局部重跑后">局部重跑后</SelectItem>
-                      <SelectItem value="更换模型后">更换模型后</SelectItem>
-                      <SelectItem value="手动精修后">手动精修后</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <ScoreInput label="SpeedAI 前" value={speedaiBefore} onChange={setSpeedaiBefore} />
-                <ScoreInput label="SpeedAI 后" value={speedaiAfter} onChange={setSpeedaiAfter} />
-                <ScoreInput label="PaperPass 前" value={paperpassBefore} onChange={setPaperpassBefore} />
-                <ScoreInput label="PaperPass 后" value={paperpassAfter} onChange={setPaperpassAfter} />
-              </div>
-
-              <Field>
-                <FieldLabel>备注</FieldLabel>
-                <Textarea
-                  value={notes}
-                  onChange={(event) => setNotes(event.target.value)}
-                  placeholder="例如第一轮用 A 模型，第二轮用 B 模型；PaperPass 没降，SpeedAI 降到 5%。"
-                  className="min-h-24 resize-none"
-                />
-                <FieldDescription>记录会保存到本地工作区，便于后续复现。</FieldDescription>
-              </Field>
-            </FieldGroup>
-
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Button variant="outline" onClick={fillFromCurrentReport} disabled={busy || reportOverall == null}>
-                <Wand2 data-icon="inline-start" />
-                填入当前报告
-              </Button>
-              <Button onClick={submitRecord} disabled={busy || !documentStatus}>
-                <Save data-icon="inline-start" />
-                保存记录
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="min-h-0 overflow-hidden">
-          <CardHeader className="pb-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <CardTitle className="text-lg">复盘记录</CardTitle>
-                <CardDescription className="mt-1">当前文档优先显示。</CardDescription>
-              </div>
-              <Badge variant="outline">{records.length} 条</Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="h-[calc(100%-5.75rem)] min-h-0 px-5 pb-5">
-            {currentDocRecords.length ? (
-              <ScrollArea className="h-full pr-1">
-                <div className="flex flex-col gap-3">
-                  {currentDocRecords.map((record) => (
-                    <ExperimentRecordItem key={record.id} record={record} busy={busy} onReplay={onReplay} onDelete={onDelete} />
-                  ))}
-                  {recordsPath ? <div className="text-xs text-muted-foreground">复盘记录保存在本地工作区。</div> : null}
-                </div>
-              </ScrollArea>
-            ) : (
-              <Empty className="h-full min-h-[16rem] border">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <History />
-                  </EmptyMedia>
-                  <EmptyTitle>暂无复盘记录</EmptyTitle>
-                  <EmptyDescription>拿到一次外部平台分数后，把结果存下来。</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-
-type ExperimentRecommendation = {
-  title: string;
-  text: string;
-  metric: string;
-  tone: "success" | "warning" | "info";
-};
-
-type ExperimentStrategyRanking = {
-  strategy: string;
-  count: number;
-  score: number | null;
-  confidence: string;
-  summary: string;
-  speedaiAverageDelta: number | null;
-  paperpassAverageDelta: number | null;
-  bestSpeedaiAfter: number | null;
-  bestPaperpassAfter: number | null;
-  warningCount: number;
-};
-
-type ExperimentAnalysis = {
-  scopeCount: number;
-  primaryAction: string;
-  recommendations: ExperimentRecommendation[];
-  rankings: ExperimentStrategyRanking[];
-};
-
-function ExperimentRecommendationCard({ item }: { item: ExperimentRecommendation }) {
-  return (
-    <Alert className={cn(item.tone === "warning" && "border-primary/25 bg-muted/60")}>
-      {item.tone === "warning" ? <AlertTriangle /> : <CheckCircle2 />}
-      <AlertTitle className="flex items-center gap-2">
-        {item.title}
-        <Badge variant={item.tone === "warning" ? "warning" : "outline"}>{item.metric}</Badge>
-      </AlertTitle>
-      <AlertDescription>{item.text}</AlertDescription>
-    </Alert>
-  );
-}
-
-
-function ExperimentStrategyRankItem({ item, index }: { item: ExperimentStrategyRanking; index: number }) {
-  const scoreLabel = item.score == null ? "-" : item.score > 0 ? `+${item.score}` : String(item.score);
-  return (
-    <Card className="shadow-none">
-      <CardContent className="p-3">
-        <div className="flex items-start gap-3">
-        <Badge variant={index === 0 ? "neutral" : "secondary"}>#{index + 1}</Badge>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="font-semibold text-foreground">{item.strategy}</div>
-            <Badge variant={item.warningCount ? "warning" : "outline"}>{item.confidence}</Badge>
-            <Badge variant="secondary">综合 {scoreLabel}</Badge>
-          </div>
-          <div className="mt-1 text-xs leading-5 text-muted-foreground">{item.summary}</div>
-          <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
-            <div className="rounded-md bg-muted px-3 py-2 text-muted-foreground">
-              SpeedAI：{formatDeltaLabel(item.speedaiAverageDelta)} · 最低 {formatScore(item.bestSpeedaiAfter)}
-            </div>
-            <div className="rounded-md bg-muted px-3 py-2 text-muted-foreground">
-              PaperPass：{formatDeltaLabel(item.paperpassAverageDelta)} · 最低 {formatScore(item.bestPaperpassAfter)}
-            </div>
-          </div>
-        </div>
-      </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-
-function ScoreInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return (
-    <Field className="gap-2">
-      <FieldLabel>{label}</FieldLabel>
-      <Input
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        inputMode="decimal"
-        placeholder="例如 5 或 35.2"
-      />
-    </Field>
-  );
-}
-
-
-function ExperimentRecordItem({
-  record,
-  busy,
-  onReplay,
-  onDelete,
-}: {
-  record: ExperimentRecord;
-  busy: boolean;
-  onReplay: (record: ExperimentRecord) => void;
-  onDelete: (id: string) => void;
-}) {
-  const replayDisabled = busy || (!record.sourcePath && !record.outputPath);
-  const modelHint = [record.providerName || record.roundModel?.providerName, record.model || record.roundModel?.model].filter(Boolean).join(" · ");
-  return (
-    <Card className="shadow-none">
-      <CardContent className="p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">{record.strategy || "未标记策略"}</Badge>
-            {record.round ? <Badge variant="outline">第 {record.round} 轮</Badge> : null}
-            {record.reportProvider ? <Badge variant="outline">{record.reportProvider}</Badge> : null}
-          </div>
-          <div className="mt-2 truncate text-sm font-semibold text-foreground">{record.model || "未记录模型"}</div>
-          <div className="mt-1 text-xs text-muted-foreground">{formatDateTime(record.createdAt)} · {record.promptSequence?.join(" → ") || record.promptProfile || "-"}</div>
-          {modelHint ? <div className="mt-1 text-xs text-muted-foreground">模型提示：{modelHint}</div> : null}
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button size="sm" variant="outline" disabled={replayDisabled} onClick={() => onReplay(record)}>
-            <RefreshCw data-icon="inline-start" />
-            复现
-          </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDelete(record.id)}>
-            <Trash2 data-icon="inline-start" />
-            删除
-          </Button>
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <ExperimentScoreBox provider="SpeedAI" before={record.speedaiBefore} after={record.speedaiAfter} delta={record.speedaiDelta} />
-        <ExperimentScoreBox provider="PaperPass" before={record.paperpassBefore} after={record.paperpassAfter} delta={record.paperpassDelta} />
-        <ReportStat label="需处理块" value={String(record.reviewChunkCount ?? "-")} />
-        <ReportStat label="表达提示" value={String(record.machineLikeRiskCount ?? "-")} />
-        <ReportStat label="候选策略" value={record.rewriteCandidateMode === "quality" ? "质量" : record.rewriteCandidateMode === "economy" ? "省钱" : "-"} />
-        <ReportStat label="预计调用" value={record.estimatedApiCalls == null ? "-" : `${record.estimatedApiCalls}`} />
-        <ReportStat label="校验重试" value={record.validationRetryCount == null ? "-" : `${record.validationRetryCount}`} />
-        <ReportStat label="安全回退" value={record.sourceFallbackCount == null ? "-" : `${record.sourceFallbackCount}`} />
-      </div>
-
-        {record.notes ? <div className="mt-3 rounded-md bg-muted px-3 py-2 text-xs leading-5 text-muted-foreground">{record.notes}</div> : null}
-      </CardContent>
-    </Card>
-  );
-}
-
-
-function ExperimentScoreBox({ provider, before, after, delta }: { provider: string; before?: number | null; after?: number | null; delta?: number | null }) {
-  const hasScore = before != null || after != null;
-  return (
-    <Card className="border-border bg-muted/50 shadow-none">
-      <CardContent className="p-3">
-        <div className="text-xs font-medium text-muted-foreground">{provider}</div>
-        <div className="mt-2 text-sm font-semibold text-foreground">{hasScore ? `${formatScore(before)} → ${formatScore(after)}` : "-"}</div>
-        <Badge className="mt-2" variant={delta == null ? "outline" : delta <= 0 ? "success" : "danger"}>
-          {delta == null ? "未计算" : `${delta > 0 ? "+" : ""}${delta}%`}
-        </Badge>
-      </CardContent>
-    </Card>
-  );
-}
-
-
-function parseScoreInput(value: string): number | null {
-  const normalized = value.trim();
-  if (!normalized) return null;
-  const parsed = Number(normalized.replace("%", ""));
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return Math.round(parsed * 1000) / 1000;
-}
-
-
-function formatScore(value?: number | null): string {
-  return value == null ? "-" : `${value}%`;
-}
-
-
-function minScore(values: Array<number | null | undefined>): number | null {
-  const numericValues = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (!numericValues.length) return null;
-  return Math.min(...numericValues);
-}
-
-
-function buildExperimentReplayConfig(record: ExperimentRecord, currentConfig: ModelConfig): { config: ModelConfig; modelHint: string; modelApplied: boolean } {
-  const promptProfile = isPromptProfile(record.promptProfile) ? record.promptProfile : currentConfig.promptProfile;
-  const promptSequence = normalizePromptSequence(record.promptSequence ?? currentConfig.promptSequence);
-  const roundModel = record.roundModel ?? null;
-  let modelApplied = false;
-  let config: ModelConfig = {
-    ...currentConfig,
-    promptProfile,
-    promptSequence,
-  };
-
-  if (roundModel?.model) {
-    const roundModelKey = getRoundModelKey(promptProfile, roundModel.round ?? record.round);
-    const storedRoundModel = roundModelKey ? currentConfig.roundModels?.[roundModelKey] : undefined;
-    if (roundModelKey && storedRoundModel?.apiKey?.trim()) {
-      config = {
-        ...config,
-        roundModels: {
-          ...(currentConfig.roundModels ?? {}),
-          [roundModelKey]: {
-            ...storedRoundModel,
-            enabled: true,
-            providerName: roundModel.providerName ?? storedRoundModel.providerName,
-            baseUrl: roundModel.baseUrl || storedRoundModel.baseUrl || currentConfig.baseUrl,
-            model: roundModel.model || storedRoundModel.model || currentConfig.model,
-            apiType: roundModel.apiType || storedRoundModel.apiType || currentConfig.apiType,
-            temperature: roundModel.temperature ?? storedRoundModel.temperature ?? currentConfig.temperature,
-            requestTimeoutSeconds: storedRoundModel.requestTimeoutSeconds ?? currentConfig.requestTimeoutSeconds,
-            maxRetries: storedRoundModel.maxRetries ?? currentConfig.maxRetries,
-          },
-        },
-      };
-      modelApplied = true;
-    } else if (!roundModel.baseUrl || roundModel.baseUrl.trim() === currentConfig.baseUrl.trim()) {
-      config = {
-        ...config,
-        model: roundModel.model || currentConfig.model,
-        apiType: roundModel.apiType || currentConfig.apiType,
-        temperature: roundModel.temperature ?? currentConfig.temperature,
-      };
-      modelApplied = true;
-    }
-  } else if (record.model?.trim()) {
-    config = {
-      ...config,
-      model: record.model.trim(),
-    };
-    modelApplied = true;
-  }
-
-  const providerLabel = roundModel?.providerName || record.providerName || "";
-  const modelLabel = roundModel?.model || record.model || "";
-  const roundLabel = roundModel?.round || record.round ? `第 ${roundModel?.round ?? record.round} 轮` : "";
-  const modelHint = [roundLabel, providerLabel, modelLabel].filter(Boolean).join(" · ");
-  return { config, modelHint, modelApplied };
-}
-
-
-function buildExperimentAnalysis(scopedRecords: ExperimentRecord[], allRecords: ExperimentRecord[]): ExperimentAnalysis {
-  const sourceRecords = scopedRecords.length ? scopedRecords : allRecords;
-  const rankings = buildStrategyRankings(sourceRecords);
-  const recommendations = buildExperimentRecommendations(sourceRecords, rankings);
-  return {
-    scopeCount: sourceRecords.length,
-    primaryAction: derivePrimaryExperimentAction(sourceRecords, rankings),
-    recommendations,
-    rankings,
-  };
-}
-
-
-function buildStrategyRankings(records: ExperimentRecord[]): ExperimentStrategyRanking[] {
-  const groups = new Map<string, ExperimentRecord[]>();
-  records.forEach((record) => {
-    const strategy = (record.strategy || "未标记策略").trim() || "未标记策略";
-    const group = groups.get(strategy) || [];
-    group.push(record);
-    groups.set(strategy, group);
-  });
-
-  return Array.from(groups.entries()).map(([strategy, strategyRecords]) => {
-    const speedaiDeltas = strategyRecords.map((record) => getExperimentDelta(record, "speedai")).filter(isFiniteNumber);
-    const paperpassDeltas = strategyRecords.map((record) => getExperimentDelta(record, "paperpass")).filter(isFiniteNumber);
-    const speedaiAverageDelta = averageNumber(speedaiDeltas);
-    const paperpassAverageDelta = averageNumber(paperpassDeltas);
-    const bestSpeedaiAfter = minScore(strategyRecords.map((record) => record.speedaiAfter));
-    const bestPaperpassAfter = minScore(strategyRecords.map((record) => record.paperpassAfter));
-    const warningCount = strategyRecords.reduce((total, record) => {
-      const speedaiDelta = getExperimentDelta(record, "speedai");
-      const paperpassDelta = getExperimentDelta(record, "paperpass");
-      return total + (isFiniteNumber(speedaiDelta) && speedaiDelta > 0.5 ? 1 : 0) + (isFiniteNumber(paperpassDelta) && paperpassDelta > 0.5 ? 1 : 0);
-    }, 0);
-    const score = scoreExperimentStrategy(speedaiAverageDelta, paperpassAverageDelta, strategyRecords.length, warningCount);
-    return {
-      strategy,
-      count: strategyRecords.length,
-      score,
-      confidence: describeExperimentConfidence(strategyRecords.length, speedaiDeltas.length, paperpassDeltas.length),
-      summary: summarizeExperimentStrategy(speedaiAverageDelta, paperpassAverageDelta, warningCount),
-      speedaiAverageDelta,
-      paperpassAverageDelta,
-      bestSpeedaiAfter,
-      bestPaperpassAfter,
-      warningCount,
-    };
-  }).sort((left, right) => {
-    const rightScore = right.score ?? Number.NEGATIVE_INFINITY;
-    const leftScore = left.score ?? Number.NEGATIVE_INFINITY;
-    if (rightScore !== leftScore) return rightScore - leftScore;
-    return right.count - left.count;
-  });
-}
-
-
-function buildExperimentRecommendations(records: ExperimentRecord[], rankings: ExperimentStrategyRanking[]): ExperimentRecommendation[] {
-  if (!records.length) {
-    return [
-      {
-        title: "先建立两轮基线",
-        text: "先跑默认两轮并保存 SpeedAI / PaperPass 分数，后续所有策略都要和它比较。",
-        metric: "起点",
-        tone: "warning",
-      },
-      {
-        title: "别先做报告重跑",
-      text: "没有基线时直接追着外部报告改，容易把局部命中修掉，却让整篇风格更像机器。",
-        metric: "避坑",
-        tone: "info",
-      },
-    ];
-  }
-
-  const recommendations: ExperimentRecommendation[] = [];
-  const bestSpeedai = minScore(records.map((record) => record.speedaiAfter));
-  const bestPaperpass = minScore(records.map((record) => record.paperpassAfter));
-  const twoRound = findRanking(rankings, "两轮主流程");
-  const threeRound = findRanking(rankings, "三轮主流程");
-  const reportRerun = findRanking(rankings, "强命中重跑后");
-  const latestRecord = getLatestExperimentRecord(records);
-
-  if (twoRound && (!threeRound || compareRankingScore(twoRound, threeRound) >= 0.8)) {
-    recommendations.push({
-      title: "默认保留两轮主流程",
-      text: "两轮目前比三轮更稳或样本更多；不要为了“多跑一轮”牺牲自然段落节奏。",
-      metric: "主流程",
-      tone: "success",
-    });
-  }
-
-  if (bestSpeedai != null && bestSpeedai <= 6 && bestPaperpass != null && bestPaperpass >= 20) {
-    recommendations.push({
-      title: "两个平台在看不同东西",
-      text: "SpeedAI 已经很低，PaperPass 仍高，说明下一步要调整整篇风格分布，而不是继续局部重跑。",
-      metric: "分歧",
-      tone: "info",
-    });
-  }
-
-  if (reportRerun && ((reportRerun.speedaiAverageDelta ?? 0) > 0 || (reportRerun.paperpassAverageDelta ?? 0) > -0.5 || reportRerun.warningCount > 0)) {
-    recommendations.push({
-      title: "外部报告只做定位",
-      text: "强命中重跑没有稳定拉低 PaperPass，甚至可能抬高 SpeedAI；它适合最后修少量硬伤。",
-      metric: "报告反馈",
-      tone: "warning",
-    });
-  }
-
-  if (latestRecord) {
-    const latestSpeedaiDelta = getExperimentDelta(latestRecord, "speedai");
-    const latestPaperpassDelta = getExperimentDelta(latestRecord, "paperpass");
-    if ((isFiniteNumber(latestSpeedaiDelta) && latestSpeedaiDelta > 0.5) || (isFiniteNumber(latestPaperpassDelta) && latestPaperpassDelta > 0.5)) {
-      recommendations.push({
-        title: "上一组出现反噬",
-        text: "最近保存的策略让至少一个平台分数上升，下一轮不要沿用同一策略批量处理。",
-        metric: "止损",
-        tone: "warning",
-      });
-    }
-  }
-
-  if (!recommendations.length && rankings[0]) {
-    recommendations.push({
-      title: `优先复测：${rankings[0].strategy}`,
-      text: "当前样本里它的综合收益最高；再补一组相同流程，确认不是模型偶然输出。",
-      metric: "复测",
-      tone: "success",
-    });
-  }
-
-  return recommendations.slice(0, 4);
-}
-
-
-function derivePrimaryExperimentAction(records: ExperimentRecord[], rankings: ExperimentStrategyRanking[]): string {
-  if (!records.length) return "先跑两轮基线";
-  const bestRanking = rankings[0];
-  if (!bestRanking) return "继续记录分数";
-  if (bestRanking.warningCount > 0 && rankings.length > 1) return `谨慎复测 ${rankings[1].strategy}`;
-  if ((bestRanking.score ?? 0) <= 0) return "暂停局部重跑";
-  return `复测 ${bestRanking.strategy}`;
-}
-
-
-function findRanking(rankings: ExperimentStrategyRanking[], keyword: string): ExperimentStrategyRanking | null {
-  return rankings.find((item) => item.strategy.includes(keyword)) ?? null;
-}
-
-
-function compareRankingScore(left: ExperimentStrategyRanking, right: ExperimentStrategyRanking): number {
-  return (left.score ?? Number.NEGATIVE_INFINITY) - (right.score ?? Number.NEGATIVE_INFINITY);
-}
-
-
-function getLatestExperimentRecord(records: ExperimentRecord[]): ExperimentRecord | null {
-  const sortedRecords = [...records].sort((left, right) => {
-    const leftTime = new Date(left.createdAt || "").getTime();
-    const rightTime = new Date(right.createdAt || "").getTime();
-    return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
-  });
-  return sortedRecords[0] ?? null;
-}
-
-
-function scoreExperimentStrategy(speedaiAverageDelta: number | null, paperpassAverageDelta: number | null, count: number, warningCount: number): number | null {
-  const providers: Array<{ delta: number; weight: number }> = [];
-  if (isFiniteNumber(speedaiAverageDelta)) providers.push({ delta: speedaiAverageDelta, weight: 0.55 });
-  if (isFiniteNumber(paperpassAverageDelta)) providers.push({ delta: paperpassAverageDelta, weight: 0.45 });
-  if (!providers.length) return null;
-
-  const totalWeight = providers.reduce((total, provider) => total + provider.weight, 0);
-  const weightedImprovement = providers.reduce((total, provider) => total + (-provider.delta * provider.weight), 0) / totalWeight;
-  const worsenPenalty = providers.reduce((total, provider) => total + Math.max(0, provider.delta) * 0.8, 0);
-  const sampleFactor = Math.min(1, Math.sqrt(count / 3));
-  const sampleBonus = Math.min(0.8, Math.log1p(count) * 0.22);
-  const score = weightedImprovement * sampleFactor + sampleBonus - warningCount * 0.35 - worsenPenalty;
-  return roundScore(score);
-}
-
-
-function summarizeExperimentStrategy(speedaiAverageDelta: number | null, paperpassAverageDelta: number | null, warningCount: number): string {
-  const speedaiImproved = isFiniteNumber(speedaiAverageDelta) && speedaiAverageDelta <= -2;
-  const paperpassImproved = isFiniteNumber(paperpassAverageDelta) && paperpassAverageDelta <= -2;
-  const speedaiWorse = isFiniteNumber(speedaiAverageDelta) && speedaiAverageDelta > 0.5;
-  const paperpassWorse = isFiniteNumber(paperpassAverageDelta) && paperpassAverageDelta > 0.5;
-
-  if (warningCount || speedaiWorse || paperpassWorse) return "出现分数上升，适合小范围复盘，不适合批量沿用。";
-  if (speedaiImproved && paperpassImproved) return "两个平台都有下降，是当前最值得复测的方向。";
-  if (speedaiImproved && !paperpassImproved) return "对 SpeedAI 有效，对 PaperPass 的收益暂时不明显。";
-  if (!speedaiImproved && paperpassImproved) return "对 PaperPass 有效果，需要确认是否会影响 SpeedAI。";
-  return "变化幅度偏小，继续补样本后再判断。";
-}
-
-
-function describeExperimentConfidence(count: number, speedaiCount: number, paperpassCount: number): string {
-  const providerKinds = Number(speedaiCount > 0) + Number(paperpassCount > 0);
-  if (count >= 5 && providerKinds >= 2) return "稳定样本";
-  if (count >= 2 && providerKinds >= 2) return "可复测";
-  if (count >= 2) return "单平台样本";
-  return "单次样本";
-}
-
-
-function getExperimentDelta(record: ExperimentRecord, provider: "speedai" | "paperpass"): number | null {
-  const explicitDelta = provider === "speedai" ? record.speedaiDelta : record.paperpassDelta;
-  if (isFiniteNumber(explicitDelta)) return explicitDelta;
-  const before = provider === "speedai" ? record.speedaiBefore : record.paperpassBefore;
-  const after = provider === "speedai" ? record.speedaiAfter : record.paperpassAfter;
-  if (!isFiniteNumber(before) || !isFiniteNumber(after)) return null;
-  return roundScore(after - before);
-}
-
-
-function averageNumber(values: number[]): number | null {
-  if (!values.length) return null;
-  const total = values.reduce((sum, value) => sum + value, 0);
-  return roundScore(total / values.length);
-}
-
-
-function roundScore(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-
-function formatDeltaLabel(value?: number | null): string {
-  if (value == null) return "-";
-  return `${value > 0 ? "+" : ""}${value}%`;
-}
-
-
 function formatDateTime(value?: string): string {
   if (!value) return "";
   const date = new Date(value);
@@ -6581,8 +5639,6 @@ function buildShareableDiagnostics(value: EnvironmentDiagnostics) {
       pythonVersion: value.runtime.pythonVersion,
       platform: value.runtime.platform,
       pythonExecutable: redactLocalPath(value.runtime.pythonExecutable),
-      nodeExecutable: redactLocalPath(value.runtime.nodeExecutable),
-      npmExecutable: redactLocalPath(value.runtime.npmExecutable),
     },
     paths: value.paths.map((item) => ({
       key: item.key,
@@ -6684,16 +5740,21 @@ function DiagnosticsPage({
   onRefresh: () => void;
   onCleanupTaskSnapshots: () => void;
 }) {
-  const warningCount = value?.checks.filter((item) => item.level === "warning").length ?? 0;
-  const errorCount = value?.checks.filter((item) => item.level === "error").length ?? 0;
-  const statusText = !value ? "等待自检" : errorCount ? `${errorCount} 个错误` : warningCount ? `${warningCount} 个提示` : "全部通过";
-  const statusVariant = errorCount ? "danger" : warningCount ? "warning" : value ? "secondary" : "outline";
+  const checks = value?.checks ?? [];
+  const warningCount = checks.filter((item) => item.level === "warning").length;
+  const errorCount = checks.filter((item) => item.level === "error").length;
+  const passedCount = checks.filter((item) => item.ok || item.level === "success" || item.level === "info").length;
+  const healthPercent = checks.length ? Math.round((passedCount / checks.length) * 100) : 0;
+  const statusText = !value ? "等待自检" : errorCount ? `${errorCount} 个错误` : warningCount ? `${warningCount} 个提示` : "运行正常";
+  const statusVariant = errorCount ? "danger" : warningCount ? "warning" : value ? "success" : "outline";
+  const problemChecks = checks.filter((item) => item.level === "error" || item.level === "warning");
   const activeBatchRerunCount = value?.activeBatchRerunCount ?? value?.activeBatchReruns?.length ?? 0;
   const recentRunCount = value?.recentRunCount ?? value?.recentRuns?.length ?? 0;
   const recentBatchRerunCount = value?.recentBatchRerunCount ?? value?.recentBatchReruns?.length ?? 0;
   const activeTaskCount = (value?.activeRunCount ?? 0) + activeBatchRerunCount;
   const recentTaskCount = recentRunCount + recentBatchRerunCount;
   const taskStateStore = value?.taskStateStore;
+  const configReady = value ? value.config.offlineMode || Boolean(value.config.hasBaseUrl && value.config.hasApiKey && value.config.model) : false;
   const [copied, setCopied] = useState(false);
   const copyDiagnostics = async () => {
     if (!value) return;
@@ -6701,21 +5762,22 @@ function DiagnosticsPage({
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   };
+
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden">
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <div className="mb-2 flex items-center gap-2">
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b pb-4">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="min-w-0">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
                 <Badge variant={statusVariant}>{statusText}</Badge>
-                <Badge variant="outline">环境诊断</Badge>
+                {value ? <Badge variant="outline">{formatDateTime(value.createdAt)}</Badge> : null}
               </div>
-              <CardTitle className="flex items-center gap-2">
+              <CardTitle className="flex items-center gap-2 text-xl">
                 <Activity />
                 启动诊断
               </CardTitle>
-              <CardDescription className="mt-1">后端、模型配置、工作目录和本地运行环境。</CardDescription>
+              <CardDescription className="mt-1 truncate">{value?.workspace || "读取当前后端、任务和目录状态"}</CardDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" onClick={() => void copyDiagnostics()} disabled={!value}>
@@ -6730,12 +5792,11 @@ function DiagnosticsPage({
           </div>
         </CardHeader>
         {value ? (
-          <CardContent>
-            <div className="grid gap-3 md:grid-cols-3">
-              <ReportStat label="工作区" value={value.workspace} />
-              <ReportStat label="自检时间" value={formatDateTime(value.createdAt)} />
-              <ReportStat label="后台任务" value={`${activeTaskCount} 运行中 / ${recentTaskCount} 摘要`} />
-            </div>
+          <CardContent className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
+            <DiagnosticSummaryTile label="自检项" value={`${passedCount}/${checks.length}`} detail={errorCount || warningCount ? "有项目需要确认" : "全部可用"} />
+            <DiagnosticSummaryTile label="模型连接" value={configReady ? "可启动" : "待补全"} detail={value.config.offlineMode ? "离线模式" : value.config.model || "未选择模型"} />
+            <DiagnosticSummaryTile label="后台任务" value={`${activeTaskCount} 运行中`} detail={`${recentTaskCount} 条近期摘要`} />
+            <DiagnosticSummaryTile label="快照" value={taskStateStore ? `${taskStateStore.fileCount} 个` : "未返回"} detail={taskStateStore ? `${taskStateStore.staleCount} 个可清理` : "等待后端状态"} />
           </CardContent>
         ) : null}
       </Card>
@@ -6743,50 +5804,85 @@ function DiagnosticsPage({
       {value ? (
         <ScrollArea className="min-h-0 pr-1">
           <div className="flex flex-col gap-4 pb-2">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-              {value.checks.map((item) => (
-                <Card
-                  key={item.key}
-                  className={cn(
-                    "shadow-sm",
-                    item.level === "error" && "border-destructive/30 bg-destructive/5",
-                    item.level === "warning" && "border-primary/25 bg-muted/60",
-                  )}
-                >
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="font-semibold text-foreground">{item.label}</div>
-                      <Badge variant={getDiagnosticBadgeVariant(item.level)}>{item.level === "success" ? "通过" : item.level === "error" ? "错误" : item.level === "warning" ? "提示" : "信息"}</Badge>
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-lg">需要处理</CardTitle>
+                      <CardDescription className="mt-1">只列出 warning 和 error。</CardDescription>
                     </div>
-                    <div className="mt-2 text-xs leading-5 text-muted-foreground">{item.message}</div>
-                  </CardContent>
-                </Card>
-              ))}
+                    <Badge variant={problemChecks.length ? "warning" : "success"}>{problemChecks.length ? `${problemChecks.length} 项` : "干净"}</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {problemChecks.length ? (
+                    <div className="grid gap-2">
+                      {problemChecks.map((item) => (
+                        <Alert key={item.key} variant={item.level === "error" ? "destructive" : undefined} className={item.level === "warning" ? "border-primary/25 bg-muted/60" : undefined}>
+                          {item.level === "error" ? <AlertCircle /> : <AlertTriangle />}
+                          <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
+                            <span>{item.label}</span>
+                            <Badge variant={getDiagnosticBadgeVariant(item.level)}>{item.level === "error" ? "错误" : "提示"}</Badge>
+                          </AlertTitle>
+                          <AlertDescription>{item.message}</AlertDescription>
+                        </Alert>
+                      ))}
+                    </div>
+                  ) : (
+                    <Empty className="min-h-[12rem] border">
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
+                        <EmptyTitle>没有待处理项</EmptyTitle>
+                        <EmptyDescription>当前后端检查没有返回错误或提示。</EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-lg">自检明细</CardTitle>
+                      <CardDescription className="mt-1">来自后端健康检查。</CardDescription>
+                    </div>
+                    <Badge variant="outline">{healthPercent}%</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-3">
+                  <Progress value={healthPercent} className="h-2" />
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {checks.map((item) => (
+                      <DiagnosticCheckCard key={item.key} item={item} />
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             </div>
 
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-lg">工作目录</CardTitle>
-                  <CardDescription>项目内文件统计只用于判断占用和权限。</CardDescription>
+                  <CardDescription className="mt-1">权限、文件数量和占用空间。</CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <div className="grid gap-2">
-                    {value.paths.map((item) => (
-                      <Card key={item.key} className="shadow-none">
-                        <CardContent className="grid gap-2 p-3 text-xs md:grid-cols-[140px_minmax(0,1fr)_130px] md:items-center">
-                          <div>
-                            <div className="font-semibold text-foreground">{item.label}</div>
-                            <div className="text-muted-foreground">
-                              {item.exists ? item.writable ? "可写" : "不可写" : "不存在"}
-                            </div>
-                          </div>
-                          <div className="min-w-0 truncate text-muted-foreground">{item.path}</div>
-                          <div className="font-semibold text-foreground md:text-right">{item.fileCount} 文件 · {formatBytes(item.sizeBytes)}</div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
+                <CardContent className="grid gap-2">
+                  {value.paths.map((item) => (
+                    <Card key={item.key} className="shadow-none">
+                      <CardContent className="grid gap-3 p-3 text-xs md:grid-cols-[150px_minmax(0,1fr)_140px] md:items-center">
+                        <div>
+                          <div className="font-semibold text-foreground">{item.label}</div>
+                          <Badge className="mt-1" variant={item.exists && item.writable ? "success" : item.exists ? "warning" : "danger"}>
+                            {item.exists ? item.writable ? "可写" : "不可写" : "不存在"}
+                          </Badge>
+                        </div>
+                        <div className="min-w-0 truncate text-muted-foreground">{item.path}</div>
+                        <div className="font-semibold text-foreground md:text-right">{item.fileCount} 文件 · {formatBytes(item.sizeBytes)}</div>
+                      </CardContent>
+                    </Card>
+                  ))}
                 </CardContent>
               </Card>
 
@@ -6796,26 +5892,24 @@ function DiagnosticsPage({
                     <CardTitle className="text-lg">模型配置</CardTitle>
                   </CardHeader>
                   <CardContent className="grid gap-2 text-xs">
-                    <DiagnosticRow label="模式" value={value.config.offlineMode ? "离线模式" : "远程模型"} />
+                    <DiagnosticRow label="运行模式" value={value.config.offlineMode ? "离线" : "远程模型"} />
                     <DiagnosticRow label="默认模型" value={value.config.model || "未填写"} />
-                    <DiagnosticRow label="Base URL" value={value.config.hasBaseUrl ? "已填写" : "未填写"} />
-                    <DiagnosticRow label="API Key" value={value.config.hasApiKey ? "已填写" : "未填写"} />
-                    <DiagnosticRow label="服务商" value={`${value.config.enabledProviderCount}/${value.config.providerCount} 启用`} />
-                    <DiagnosticRow label="专属轮次" value={`${value.config.customRoundCount} 个`} />
+                    <DiagnosticRow label="接口" value={value.config.offlineMode ? "不请求远程" : value.config.hasBaseUrl ? "已填写" : "缺少 Base URL"} />
+                    <DiagnosticRow label="密钥" value={value.config.offlineMode ? "不需要" : value.config.hasApiKey ? "已填写" : "缺少 API Key"} />
+                    <DiagnosticRow label="服务商仓库" value={`保存 ${value.config.providerCount} · 启用 ${value.config.enabledProviderCount}`} />
+                    <DiagnosticRow label="轮次专属配置" value={`${value.config.customRoundCount} 轮`} />
                     <DiagnosticRow label="超时/重试" value={`${value.config.requestTimeoutSeconds ?? "-"}s / ${value.config.maxRetries ?? "-"} 次`} />
                   </CardContent>
                 </Card>
 
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-lg">本地环境</CardTitle>
+                    <CardTitle className="text-lg">运行时</CardTitle>
                   </CardHeader>
                   <CardContent className="grid gap-2 text-xs">
-                    <DiagnosticRow label="Python" value={value.runtime.pythonVersion} />
-                    <DiagnosticRow label="Python 路径" value={value.runtime.pythonExecutable} />
-                    <DiagnosticRow label="Node" value={value.runtime.nodeExecutable || "未在后端 PATH 中发现"} />
-                    <DiagnosticRow label="npm" value={value.runtime.npmExecutable || "未在后端 PATH 中发现"} />
-                    <DiagnosticRow label="平台" value={value.runtime.platform} />
+                    <DiagnosticRow label="Python" value={value.runtime.pythonVersion || "未返回"} />
+                    <DiagnosticRow label="解释器" value={value.runtime.pythonExecutable || "未返回"} />
+                    <DiagnosticRow label="平台" value={value.runtime.platform || "未返回"} />
                   </CardContent>
                 </Card>
               </div>
@@ -6826,14 +5920,10 @@ function DiagnosticsPage({
                 <CardHeader className="pb-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <CardTitle className="text-lg">任务快照治理</CardTitle>
-                      <CardDescription className="mt-1">清理只会删除过期且非运行中的快照。</CardDescription>
+                      <CardTitle className="text-lg">任务快照</CardTitle>
+                      <CardDescription className="mt-1">用于断点恢复，清理不会删除运行中的快照。</CardDescription>
                     </div>
-                    <Button
-                      variant="outline"
-                      onClick={onCleanupTaskSnapshots}
-                      disabled={busy || taskStateStore.staleCount <= 0}
-                    >
+                    <Button variant="outline" onClick={onCleanupTaskSnapshots} disabled={busy || taskStateStore.staleCount <= 0}>
                       <Trash2 data-icon="inline-start" />
                       清理过期快照
                     </Button>
@@ -6841,100 +5931,47 @@ function DiagnosticsPage({
                 </CardHeader>
                 <CardContent className="flex flex-col gap-3">
                   <div className="grid gap-2 md:grid-cols-4">
-                    <ReportStat label="快照文件" value={`${taskStateStore.fileCount} 个 · ${formatBytes(taskStateStore.sizeBytes)}`} />
-                    <ReportStat label="任务类型" value={`轮次 ${taskStateStore.runRoundCount} · 重跑 ${taskStateStore.batchRerunCount}`} />
-                    <ReportStat label="保护中" value={`${taskStateStore.activeSnapshotCount} 个`} />
-                    <ReportStat label="可清理" value={`${taskStateStore.staleCount} 个`} />
+                    <ReportStat label="文件" value={`${taskStateStore.fileCount} · ${formatBytes(taskStateStore.sizeBytes)}`} />
+                    <ReportStat label="轮次/重跑" value={`${taskStateStore.runRoundCount} / ${taskStateStore.batchRerunCount}`} />
+                    <ReportStat label="保护中" value={`${taskStateStore.activeSnapshotCount}`} />
+                    <ReportStat label="可清理" value={`${taskStateStore.staleCount}`} />
                   </div>
                   <div className="truncate text-[11px] font-medium text-muted-foreground">{taskStateStore.path}</div>
                 </CardContent>
               </Card>
             ) : null}
 
-            {value.activeRuns.length || value.activeBatchReruns?.length ? (
+            {activeTaskCount ? (
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-lg">运行中的任务</CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <div className="grid gap-2">
-                    {value.activeRuns.map((item) => (
-                      <Alert key={item.runId}>
-                        <Activity />
-                        <AlertTitle>轮次任务 · {item.runId}</AlertTitle>
-                        <AlertDescription className="grid gap-1 text-xs">
-                          <span className="truncate">{item.sourcePath}</span>
-                          <span>事件 {item.eventCount} 个 · {item.cancelRequested ? "已请求中断" : "运行中"} · 更新 {formatDateTime(item.updatedAt)}</span>
-                        </AlertDescription>
-                      </Alert>
-                    ))}
-                    {(value.activeBatchReruns ?? []).map((item) => (
-                      <Alert key={item.runId}>
-                        <RefreshCw />
-                        <AlertTitle>批量重跑 · {item.runId}</AlertTitle>
-                        <AlertDescription className="grid gap-1 text-xs">
-                          <span className="truncate">{item.outputPath}</span>
-                          <span>
-                            {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
-                            {item.currentChunkId ? ` · 当前 ${item.currentChunkId}` : ""} · {item.cancelRequested ? "已请求停止" : item.status}
-                          </span>
-                          <span>更新 {formatDateTime(item.updatedAt)}</span>
-                        </AlertDescription>
-                      </Alert>
-                    ))}
-                  </div>
+                <CardContent className="grid gap-2">
+                  {value.activeRuns.map((item) => (
+                    <DiagnosticRunAlert key={item.runId} item={item} />
+                  ))}
+                  {(value.activeBatchReruns ?? []).map((item) => (
+                    <DiagnosticBatchAlert key={item.runId} item={item} />
+                  ))}
                 </CardContent>
               </Card>
             ) : null}
 
-            {value.recentRuns?.length || value.recentBatchReruns?.length ? (
+            {recentTaskCount ? (
               <Card>
                 <CardHeader className="pb-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <CardTitle className="text-lg">近期任务摘要</CardTitle>
+                    <CardTitle className="text-lg">近期任务</CardTitle>
                     <Badge variant="outline">轮次 {recentRunCount} · 重跑 {recentBatchRerunCount}</Badge>
                   </div>
                 </CardHeader>
-                <CardContent>
-                  <div className="grid gap-2">
-                    {(value.recentRuns ?? []).map((item) => (
-                      <Alert key={item.runId} className={cn(item.status === "interrupted" && "border-primary/25 bg-muted/60")}>
-                        <Clock3 />
-                        <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
-                          <span>{item.status === "interrupted" ? "轮次未完成" : "轮次已落盘"} · {item.runId}</span>
-                          <Badge variant={item.status === "interrupted" ? "warning" : "outline"}>{item.status}</Badge>
-                        </AlertTitle>
-                        <AlertDescription className="grid gap-1 text-xs">
-                          <span className="truncate">{item.sourcePath}</span>
-                          <span>
-                            事件 {item.eventCount} 个
-                            {item.lastEvent?.phase ? ` · 最后阶段 ${item.lastEvent.phase}` : ""}
-                            {item.lastEvent?.chunkId ? ` · 最后块 ${item.lastEvent.chunkId}` : ""}
-                          </span>
-                          {item.error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{item.error}</span> : null}
-                          <span>落盘 {formatDateTime(item.persistedAt || item.updatedAt)} · 更新 {formatDateTime(item.updatedAt)}</span>
-                        </AlertDescription>
-                      </Alert>
-                    ))}
-                    {(value.recentBatchReruns ?? []).map((item) => (
-                      <Alert key={item.runId}>
-                        <RefreshCw />
-                        <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
-                          <span>{item.status === "interrupted" ? "重跑未完成" : "重跑已落盘"} · {item.runId}</span>
-                          <Badge variant={item.status === "interrupted" ? "warning" : "outline"}>{item.status}</Badge>
-                        </AlertTitle>
-                        <AlertDescription className="grid gap-1 text-xs">
-                          <span className="truncate">{item.outputPath}</span>
-                          <span>
-                            {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
-                            {item.currentChunkId ? ` · 最后 ${item.currentChunkId}` : ""}
-                          </span>
-                          {item.error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{item.error}</span> : null}
-                          <span>落盘 {formatDateTime(item.persistedAt || item.updatedAt)} · 更新 {formatDateTime(item.updatedAt)}</span>
-                        </AlertDescription>
-                      </Alert>
-                    ))}
-                  </div>
+                <CardContent className="grid gap-2">
+                  {(value.recentRuns ?? []).map((item) => (
+                    <DiagnosticRunAlert key={item.runId} item={item} recent />
+                  ))}
+                  {(value.recentBatchReruns ?? []).map((item) => (
+                    <DiagnosticBatchAlert key={item.runId} item={item} recent />
+                  ))}
                 </CardContent>
               </Card>
             ) : null}
@@ -6943,15 +5980,84 @@ function DiagnosticsPage({
       ) : (
         <Empty className="min-h-0 border">
           <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <Activity />
-            </EmptyMedia>
+            <EmptyMedia variant="icon"><Activity /></EmptyMedia>
             <EmptyTitle>等待自检</EmptyTitle>
             <EmptyDescription>点击“重新自检”读取当前环境状态。</EmptyDescription>
           </EmptyHeader>
         </Empty>
       )}
     </div>
+  );
+}
+
+function DiagnosticSummaryTile({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <Card className="bg-muted/40 shadow-none">
+      <CardContent className="p-4">
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+        <div className="mt-2 truncate text-xl font-semibold text-foreground">{value}</div>
+        <div className="mt-1 truncate text-xs text-muted-foreground">{detail}</div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DiagnosticCheckCard({ item }: { item: EnvironmentDiagnostics["checks"][number] }) {
+  return (
+    <Card className={cn("shadow-none", item.level === "error" && "border-destructive/30 bg-destructive/5", item.level === "warning" && "border-primary/25 bg-muted/60")}>
+      <CardContent className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 font-semibold text-foreground">{item.label}</div>
+          <Badge variant={getDiagnosticBadgeVariant(item.level)}>{item.level === "success" ? "通过" : item.level === "error" ? "错误" : item.level === "warning" ? "提示" : "信息"}</Badge>
+        </div>
+        <div className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.message}</div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DiagnosticRunAlert({ item, recent = false }: { item: EnvironmentDiagnostics["activeRuns"][number]; recent?: boolean }) {
+  const status = item.cancelRequested ? "中断中" : item.status || (recent ? "已记录" : "运行中");
+  return (
+    <Alert className={cn(item.status === "interrupted" && "border-primary/25 bg-muted/60")}>
+      {recent ? <Clock3 /> : <Activity />}
+      <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
+        <span>轮次任务 · {formatShortTaskId(item.runId) ?? item.runId}</span>
+        <Badge variant={item.status === "interrupted" || item.cancelRequested ? "warning" : "outline"}>{status}</Badge>
+      </AlertTitle>
+      <AlertDescription className="grid gap-1 text-xs">
+        <span className="truncate">{item.sourcePath}</span>
+        <span>
+          事件 {item.eventCount} 个
+          {item.lastEvent?.phase ? ` · 阶段 ${item.lastEvent.phase}` : ""}
+          {item.lastEvent?.chunkId ? ` · 块 ${item.lastEvent.chunkId}` : ""}
+        </span>
+        {item.error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{item.error}</span> : null}
+        <span>{recent ? "落盘" : "更新"} {formatDateTime(item.persistedAt || item.updatedAt)}</span>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function DiagnosticBatchAlert({ item, recent = false }: { item: NonNullable<EnvironmentDiagnostics["activeBatchReruns"]>[number]; recent?: boolean }) {
+  const status = item.cancelRequested ? "停止中" : item.status || (recent ? "已记录" : "运行中");
+  return (
+    <Alert className={cn(item.status === "interrupted" && "border-primary/25 bg-muted/60")}>
+      <RefreshCw />
+      <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
+        <span>批量重跑 · {formatShortTaskId(item.runId) ?? item.runId}</span>
+        <Badge variant={item.status === "interrupted" || item.cancelRequested ? "warning" : "outline"}>{status}</Badge>
+      </AlertTitle>
+      <AlertDescription className="grid gap-1 text-xs">
+        <span className="truncate">{item.outputPath}</span>
+        <span>
+          {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
+          {item.currentChunkId ? ` · 当前 ${item.currentChunkId}` : ""}
+        </span>
+        {item.error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{item.error}</span> : null}
+        <span>{recent ? "落盘" : "更新"} {formatDateTime(item.persistedAt || item.updatedAt)}</span>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -6963,8 +6069,6 @@ function DiagnosticRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-
-
 function DetectionReportPanel({
   report,
   matches,

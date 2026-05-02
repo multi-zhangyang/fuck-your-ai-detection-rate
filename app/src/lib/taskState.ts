@@ -19,9 +19,7 @@ export type TaskPhase =
   | "exporting"
   | "rerunning-chunk"
   | "batch-rerunning"
-  | "canceling-batch-rerun"
-  | "saving-experiment"
-  | "replaying-experiment";
+  | "canceling-batch-rerun";
 
 const NON_BLOCKING_PHASES = new Set<TaskPhase>(["idle", "picking-document", "picking-report"]);
 const RUNNING_PHASES = new Set<TaskPhase>(["running-round", "canceling-run"]);
@@ -48,8 +46,6 @@ const TASK_PHASE_LABELS: Record<TaskPhase, string> = {
   "resetting-round": "放弃进度",
   exporting: "导出文件",
   "rerunning-chunk": "重跑块",
-  "saving-experiment": "保存复盘",
-  "replaying-experiment": "复现记录",
 };
 
 export function getTaskPhaseLabel(phase: TaskPhase): string {
