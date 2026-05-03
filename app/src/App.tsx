@@ -4651,7 +4651,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
             onConfirm={() => settleConfirmDialog(true)}
           />
 
-          <header className="shrink-0 border-b bg-background">
+          <header className="shrink-0 border-b bg-background/95">
             <div className="flex h-12 items-center gap-3 px-4">
               <SidebarTrigger className="border bg-card shadow-none" />
               <div className="min-w-0 flex flex-1 items-center gap-3">
