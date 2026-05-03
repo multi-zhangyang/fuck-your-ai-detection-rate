@@ -147,7 +147,8 @@ function checkRerunFailureVisibilityContract(appSource, resultCardSource, failur
   assertIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Bulk candidate adoption must be wired through the app review-decision state.", failures);
   assertIncludes(appSource, "buildRejectedCandidateReviewDecision(item.candidate)", "Bulk candidate adoption must save rejected candidates as custom review decisions.", failures);
   assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must expose visible quality reasons.", failures);
-  assertIncludes(resultCardSource, "<AlertTitle>报错</AlertTitle>", "Fallback failures may show raw error detail without helper copy.", failures);
+  assertNotIncludes(resultCardSource, "<AlertTitle>报错</AlertTitle>", "Ordinary user UI must not expose raw fallback errors.", failures);
+  assertNotIncludes(resultCardSource, "compactFeedbackText(chunk.fallbackError", "Fallback error detail must stay out of the review UI.", failures);
   assertNotIncludes(resultCardSource, "读取本块原因与当前轮配置", "Targeted rerun UI must not repeat verbose helper copy.", failures);
   assertNotIncludes(resultCardSource, "右侧仅预览，默认不导出。", "Rejected candidate UI must not repeat preview/export helper copy.", failures);
   assertNotIncludes(resultCardSource, "模型连续输出未通过硬校验，本块没有采用不合格改写。", "Fallback UI must avoid duplicate hard-check boilerplate.", failures);

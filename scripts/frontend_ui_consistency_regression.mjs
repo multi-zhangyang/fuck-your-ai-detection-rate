@@ -137,7 +137,8 @@ function runRegression() {
     assertIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate cards must expose one-click adoption.", failures);
     assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must render concise visible reasons.", failures);
     assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must drive the visible quality badge.", failures);
-    assertIncludes(resultCardSource, "<AlertTitle>报错</AlertTitle>", "Fallback UI may show the concrete error.", failures);
+    assertNotIncludes(resultCardSource, "<AlertTitle>报错</AlertTitle>", "Ordinary user UI must not expose raw fallback errors.", failures);
+    assertNotIncludes(resultCardSource, "compactFeedbackText(chunk.fallbackError", "Fallback error detail must stay out of the review UI.", failures);
     assertNotIncludes(resultCardSource, "读取本块原因与当前轮配置", "Targeted rerun UI must avoid verbose helper copy.", failures);
     assertNotIncludes(resultCardSource, "右侧仅预览，默认不导出。", "Rejected candidate UI must avoid generic preview helper copy.", failures);
     assertNotIncludes(resultCardSource, "模型连续输出未通过硬校验，本块没有采用不合格改写。", "Fallback UI must avoid duplicate hard-check boilerplate.", failures);

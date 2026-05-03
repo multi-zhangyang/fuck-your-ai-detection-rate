@@ -952,15 +952,6 @@ function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null
       ) : null}
       {reviewToolsVisible ? (
         <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border bg-muted/40 p-3 text-foreground">
-          {isSourceFallback && chunk.fallbackError ? (
-            <Alert className="py-2">
-              <ShieldAlert />
-              <AlertTitle>报错</AlertTitle>
-              <AlertDescription className="text-xs text-muted-foreground">
-                {compactFeedbackText(chunk.fallbackError, 180)}
-              </AlertDescription>
-            </Alert>
-          ) : null}
           <div className="flex flex-col gap-2">
             <Textarea
               value={feedback}
