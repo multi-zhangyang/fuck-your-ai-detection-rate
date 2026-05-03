@@ -13,7 +13,7 @@ import web_app
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 REGRESSION_DIR = ROOT_DIR / "finish" / "regression"
-SAMPLE_PATH = REGRESSION_DIR / "state_machine_sample.txt"
+SAMPLE_PATH = ROOT_DIR / "origin" / "state_machine_sample.txt"
 TASK_STATE_TEST_DIR = REGRESSION_DIR / "run_task_states"
 
 web_app.TASK_STATE_DIR = TASK_STATE_TEST_DIR
@@ -23,17 +23,21 @@ def clear_run_memory() -> None:
     with web_app.RUN_REGISTRY_LOCK:
         web_app.RUN_STATES.clear()
         web_app.ACTIVE_RUNS_BY_SOURCE.clear()
+        web_app.BATCH_RERUN_STATES.clear()
+        web_app.ACTIVE_BATCH_RERUNS_BY_OUTPUT.clear()
 
 
 def reset_run_registry() -> None:
     clear_run_memory()
+    web_app.TASK_STATE_SELF_HEAL_CACHE = None
+    web_app.TASK_STATE_SELF_HEAL_CACHE_AT = 0.0
     if TASK_STATE_TEST_DIR.exists():
         shutil.rmtree(TASK_STATE_TEST_DIR)
     TASK_STATE_TEST_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def write_sample() -> Path:
-    REGRESSION_DIR.mkdir(parents=True, exist_ok=True)
+    SAMPLE_PATH.parent.mkdir(parents=True, exist_ok=True)
     SAMPLE_PATH.write_text(
         "本文用于状态机回归测试。它不会调用模型，也不会参与实际改写。\n\n"
         "第二段用于确认同一文档重复运行时会被拦截。",
@@ -180,11 +184,17 @@ class WebRunStateRegressionTest(unittest.TestCase):
         clear_run_memory()
         diagnostics = web_app.build_environment_diagnostics()
         recent_runs = diagnostics.get("recentRuns") or []
+        recent_tasks = diagnostics.get("recentTasks") or []
         matching = [item for item in recent_runs if item.get("runId") == run_id]
+        matching_tasks = [item for item in recent_tasks if item.get("runId") == run_id]
 
         self.assertEqual(diagnostics.get("activeRunCount"), 0)
         self.assertGreaterEqual(diagnostics.get("recentRunCount", 0), 1)
+        self.assertGreaterEqual(diagnostics.get("recentTaskCount", 0), 1)
         self.assertTrue(matching)
+        self.assertTrue(matching_tasks)
+        self.assertEqual(matching_tasks[0].get("taskType"), "run-round")
+        self.assertEqual(matching_tasks[0].get("targetPath"), str(self.sample_path))
         self.assertEqual(matching[0].get("status"), "interrupted")
         self.assertTrue(matching[0].get("completed"))
         self.assertEqual(matching[0].get("lastEvent", {}).get("chunkId"), "p1_c0")
@@ -235,6 +245,87 @@ class WebRunStateRegressionTest(unittest.TestCase):
         self.assertFalse(web_app.run_round_state_path(completed_run_id).exists())
         self.assertTrue(web_app.run_round_state_path(active_run_id).exists())
         self.assertEqual(after["fileCount"], 1)
+
+    def test_task_state_cleanup_removes_corrupt_snapshots_and_stale_temp_files(self) -> None:
+        active_run_id, _ = web_app.register_run(str(self.sample_path))
+        corrupt_path = TASK_STATE_TEST_DIR / "run_round_corrupt.json"
+        stale_tmp_path = TASK_STATE_TEST_DIR / "batch_rerun_orphan.json.tmp"
+        active_tmp_path = TASK_STATE_TEST_DIR / f"run_round_{active_run_id}.json.tmp"
+        corrupt_path.write_text("{not-json", encoding="utf-8")
+        stale_tmp_path.write_text("{partial", encoding="utf-8")
+        active_tmp_path.write_text("{partial-active", encoding="utf-8")
+        old_timestamp = time.time() - 2 * 3600
+        os.utime(stale_tmp_path, (old_timestamp, old_timestamp))
+        os.utime(active_tmp_path, (old_timestamp, old_timestamp))
+
+        before = web_app.summarize_task_state_store(retention_hours=168)
+        payload = web_app.cleanup_task_state_snapshots(mode="expired", max_age_hours=168)
+        after = web_app.summarize_task_state_store(retention_hours=168)
+
+        self.assertEqual(before["invalidCount"], 1)
+        self.assertEqual(before["tempFileCount"], 2)
+        self.assertGreaterEqual(before["staleTempCount"], 2)
+        self.assertEqual(payload["deletedInvalidCount"], 1)
+        self.assertEqual(payload["deletedTempCount"], 1)
+        self.assertEqual(payload["skippedActiveTempCount"], 1)
+        self.assertFalse(corrupt_path.exists())
+        self.assertFalse(stale_tmp_path.exists())
+        self.assertTrue(active_tmp_path.exists())
+        self.assertEqual(after["invalidCount"], 0)
+        self.assertEqual(after["tempFileCount"], 1)
+
+    def test_task_state_self_heal_removes_corrupt_snapshots_and_stale_temp_files(self) -> None:
+        active_run_id, _ = web_app.register_run(str(self.sample_path))
+        corrupt_path = TASK_STATE_TEST_DIR / "run_round_corrupt.json"
+        stale_tmp_path = TASK_STATE_TEST_DIR / "batch_rerun_orphan.json.tmp"
+        active_tmp_path = TASK_STATE_TEST_DIR / f"run_round_{active_run_id}.json.tmp"
+        corrupt_path.write_text("{not-json", encoding="utf-8")
+        stale_tmp_path.write_text("{partial", encoding="utf-8")
+        active_tmp_path.write_text("{partial-active", encoding="utf-8")
+        old_timestamp = time.time() - 2 * 3600
+        os.utime(stale_tmp_path, (old_timestamp, old_timestamp))
+        os.utime(active_tmp_path, (old_timestamp, old_timestamp))
+
+        payload = web_app.ensure_task_state_store_ready(reason="regression", max_age_seconds=0)
+        after = web_app.summarize_task_state_store(retention_hours=168)
+        diagnostics = web_app.build_environment_diagnostics()
+        task_state_store = diagnostics.get("taskStateStore") or {}
+        readiness = task_state_store.get("readiness") or {}
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "cleaned")
+        self.assertEqual(payload["deletedInvalidCount"], 1)
+        self.assertEqual(payload["deletedTempCount"], 1)
+        self.assertEqual(payload["skippedActiveTempCount"], 1)
+        self.assertFalse(corrupt_path.exists())
+        self.assertFalse(stale_tmp_path.exists())
+        self.assertTrue(active_tmp_path.exists())
+        self.assertEqual(after["invalidCount"], 0)
+        self.assertEqual(after["staleCount"], 0)
+        self.assertEqual(after["staleTempCount"], 1)
+        self.assertEqual(after["staleActiveTempCount"], 1)
+        self.assertTrue(readiness.get("ok"))
+        self.assertEqual(task_state_store.get("invalidCount"), 0)
+
+    def test_task_state_self_heal_cache_throttles_repeated_health_checks(self) -> None:
+        first_path = TASK_STATE_TEST_DIR / "run_round_first_corrupt.json"
+        second_path = TASK_STATE_TEST_DIR / "run_round_second_corrupt.json"
+        first_path.write_text("{not-json", encoding="utf-8")
+
+        first = web_app.ensure_task_state_store_ready(reason="regression-first", max_age_seconds=0)
+        second_path.write_text("{not-json", encoding="utf-8")
+        cached = web_app.ensure_task_state_store_ready(reason="regression-cached", max_age_seconds=3600)
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["action"], "cleaned")
+        self.assertFalse(first_path.exists())
+        self.assertTrue(cached["cached"])
+        self.assertEqual(cached["action"], "cached")
+        self.assertTrue(second_path.exists())
+        fresh = web_app.ensure_task_state_store_ready(reason="regression-fresh", max_age_seconds=0)
+        self.assertTrue(fresh["ok"])
+        self.assertEqual(fresh["action"], "cleaned")
+        self.assertFalse(second_path.exists())
 
     def test_cancel_completed_run_is_idempotent(self) -> None:
         run_id, state = web_app.register_run(str(self.sample_path))

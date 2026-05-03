@@ -14,6 +14,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import llm_client  # noqa: E402
+from ai_json import extract_json_object  # noqa: E402
 from llm_client import extract_response_text, llm_completion, strip_reasoning_blocks, test_llm_connection  # noqa: E402
 
 DEFAULT_REPORT_PATH = ROOT_DIR / "finish" / "regression" / "llm_client_regression_report.json"
@@ -76,6 +77,47 @@ def run_regression(report_path: Path) -> dict[str, Any]:
             "responses",
             "final",
         ),
+        (
+            "chat_tool_call_arguments",
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {"type": "function", "function": {"name": "return_json", "arguments": "{\"styles\": {}}"}}
+                            ],
+                        }
+                    }
+                ]
+            },
+            "chat_completions",
+            "{\"styles\": {}}",
+        ),
+        (
+            "responses_function_call_arguments",
+            {
+                "output": [
+                    {"type": "reasoning", "content": [{"type": "text", "text": "private reasoning"}]},
+                    {"type": "function_call", "name": "return_json", "arguments": "{\"styles\": {\"body_text\": {}}}"},
+                ]
+            },
+            "responses",
+            "{\"styles\": {\"body_text\": {}}}",
+        ),
+        (
+            "responses_output_json_part",
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_json", "json": {"styles": {"body_text": {"fontSizePt": 12}}}}],
+                    }
+                ]
+            },
+            "responses",
+            "{\"styles\": {\"body_text\": {\"fontSizePt\": 12}}}",
+        ),
     ]
 
     for name, payload, api_type, expected in cases:
@@ -86,6 +128,41 @@ def run_regression(report_path: Path) -> dict[str, Any]:
     stripped = strip_reasoning_blocks("<|begin_of_thought|>secret<|end_of_thought|>\nanswer")
     checks.append({"name": "thought_tokens", "actual": stripped, "expected": "answer"})
     _assert_equal("thought_tokens", stripped, "answer", failures)
+
+    json_cases = [
+        (
+            "ai_json_markdown_wrapped",
+            "下面是结构化结果：\n```json\n{\"formatRules\":{\"styles\":{\"body_text\":{\"fontSizePt\":\"小四\"}}}}\n```",
+            12.0,
+        ),
+        (
+            "ai_json_array_styles",
+            "[{\"role\":\"normal_text\",\"fontSize\":\"小四\"}]",
+            12.0,
+        ),
+        (
+            "ai_json_tool_arguments_wrapper",
+            "{\"arguments\":\"{\\\"styles\\\":{\\\"body_text\\\":{\\\"fontSizePt\\\":\\\"小四\\\"}}}\"}",
+            12.0,
+        ),
+        (
+            "ai_json_comment_trailing_comma",
+            "```json\n{\n// comment from model\n\"styles\":{\"body_text\":{\"fontSizePt\":\"小四\",},},\n}\n```",
+            12.0,
+        ),
+    ]
+    for name, raw_text, expected_font_size in json_cases:
+        parsed = extract_json_object(raw_text)
+        styles = parsed.get("styles")
+        if isinstance(styles, list):
+            actual_font_size = styles[0].get("fontSize") if styles and isinstance(styles[0], dict) else None
+        elif isinstance(styles, dict):
+            body = styles.get("body_text")
+            actual_font_size = body.get("fontSizePt") if isinstance(body, dict) else None
+        else:
+            actual_font_size = None
+        checks.append({"name": name, "actual": actual_font_size, "expected": "小四"})
+        _assert_equal(name, str(actual_font_size), "小四", failures)
 
     class FakeResponse:
         status = 200

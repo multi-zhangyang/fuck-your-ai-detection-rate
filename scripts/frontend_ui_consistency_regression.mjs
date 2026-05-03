@@ -4,9 +4,13 @@ import { fileURLToPath } from "node:url";
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const APP_PATH = resolve(ROOT_DIR, "app", "src", "App.tsx");
+const APP_INDEX_PATH = resolve(ROOT_DIR, "app", "index.html");
 const MODEL_CONFIG_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "ModelConfigCard.tsx");
 const RESULT_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "ResultCard.tsx");
 const HISTORY_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "HistoryCard.tsx");
+const PROTECTION_MAP_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "ProtectionMapCard.tsx");
+const THEME_MODE_MENU_PATH = resolve(ROOT_DIR, "app", "src", "components", "ThemeModeMenu.tsx");
+const THEME_MODE_HOOK_PATH = resolve(ROOT_DIR, "app", "src", "hooks", "useThemeMode.ts");
 const APP_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appService.ts");
 const WEB_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webService.ts");
 const GLOBAL_CSS_PATH = resolve(ROOT_DIR, "app", "src", "styles", "global.css");
@@ -54,9 +58,13 @@ function loadSource(filePath, failures) {
 function runRegression() {
   const failures = [];
   const appSource = loadSource(APP_PATH, failures);
+  const appIndexSource = loadSource(APP_INDEX_PATH, failures);
   const modelConfigCardSource = loadSource(MODEL_CONFIG_CARD_PATH, failures);
   const resultCardSource = loadSource(RESULT_CARD_PATH, failures);
   const historyCardSource = loadSource(HISTORY_CARD_PATH, failures);
+  const protectionMapCardSource = loadSource(PROTECTION_MAP_CARD_PATH, failures);
+  const themeModeMenuSource = loadSource(THEME_MODE_MENU_PATH, failures);
+  const themeModeHookSource = loadSource(THEME_MODE_HOOK_PATH, failures);
   const appServiceSource = loadSource(APP_SERVICE_PATH, failures);
   const webServiceSource = loadSource(WEB_SERVICE_PATH, failures);
   const cssSource = loadSource(GLOBAL_CSS_PATH, failures);
@@ -65,7 +73,7 @@ function runRegression() {
   const inputSource = loadSource(INPUT_PATH, failures);
   const selectSource = loadSource(SELECT_PATH, failures);
   const textareaSource = loadSource(TEXTAREA_PATH, failures);
-  const combinedSource = [appSource, modelConfigCardSource, resultCardSource, historyCardSource, appServiceSource, webServiceSource, cssSource, buttonSource, badgeSource, inputSource, selectSource, textareaSource].join("\n");
+  const combinedSource = [appSource, appIndexSource, modelConfigCardSource, resultCardSource, historyCardSource, protectionMapCardSource, themeModeMenuSource, themeModeHookSource, appServiceSource, webServiceSource, cssSource, buttonSource, badgeSource, inputSource, selectSource, textareaSource].join("\n");
 
   if (cssSource) {
     assertIncludes(cssSource, "html {\n    @apply h-svh overflow-hidden", "Document root must keep the app viewport-bound.", failures);
@@ -82,6 +90,7 @@ function runRegression() {
 
   if (appSource) {
     assertIncludes(appSource, "SidebarProvider defaultOpen className=\"h-svh min-h-0 overflow-hidden\"", "App shell must use shadcn SidebarProvider with fixed viewport height.", failures);
+    assertIncludes(appSource, "<ThemeModeMenu />", "Top header must expose the light/dark/system theme control.", failures);
     assertIncludes(appSource, "SidebarMenuButton", "Sidebar items must use the shadcn Sidebar menu button primitive.", failures);
     assertIncludes(appSource, "isActive={activeView === item.view}", "Sidebar active state must be delegated to the shadcn Sidebar item.", failures);
     assertIncludes(appSource, "<Breadcrumb", "Top status area must use shadcn Breadcrumb composition.", failures);
@@ -107,6 +116,10 @@ function runRegression() {
     assertIncludes(appSource, "aria-labelledby=\"notification-center-title\"", "Notification center must expose an accessible title.", failures);
     assertIncludes(appSource, "data-ui-section=\"runtime-task-center\"", "Notification center must separate active runtime tasks from notification history.", failures);
     assertIncludes(appSource, "taskItems={runtimeTaskItems}", "Runtime task center items must be passed into the notification center.", failures);
+    assertIncludes(appSource, "function isRawHtmlErrorText", "Notification history must detect stale raw backend HTML error pages.", failures);
+    assertIncludes(appSource, "isRawHtmlErrorText(text)", "Notification history must filter raw HTML errors before rendering persisted history.", failures);
+    assertIncludes(appSource, "setError(\"\")", "Stale backend method-mismatch errors must be cleared from hot-reloaded app state.", failures);
+    assertIncludes(appSource, "本地后端接口方法不匹配（HTTP 405）", "App error display must translate raw 405 HTML pages into a user-facing local backend hint.", failures);
     assertIncludes(appSource, "function openTaskTargetView", "Task-center navigation must be centralized.", failures);
     assertIncludes(appSource, "function openDiffTaskTarget", "Task center must support direct navigation into focused Diff filters.", failures);
     assertIncludes(appSource, "diffFocusRequest={diffFocusRequest}", "Focused Diff requests must flow into the Diff review card.", failures);
@@ -116,6 +129,12 @@ function runRegression() {
     assertNotIncludes(appSource, "sm:grid-cols-2 xl:grid-cols-5", "Model route sheet actions must not use viewport-xl columns inside the narrower right sheet.", failures);
     assertIncludes(appSource, "modelConfigRef.current", "Model route edits must save the latest selected provider/model without waiting for a React rerender.", failures);
     assertIncludes(appSource, "modelRouteLines", "Model route summary must list effective providers and models per round.", failures);
+    assertIncludes(appSource, "scopeDiagnostics", "Protection view must keep DOCX body-scope diagnostics in app state.", failures);
+    assertIncludes(appSource, "service.getDocumentScopeDiagnostics(sourcePath)", "Document refresh must fetch DOCX body-scope diagnostics with the other document state.", failures);
+    assertIncludes(appSource, "<ProtectionMapCard value={protectionMap} diagnostics={scopeDiagnostics} />", "Protection view must pass body-scope diagnostics into the protection map.", failures);
+    assertIncludes(appSource, "if (!storedSourcePath)", "App restore must not auto-open an arbitrary first history item when the user has no active document.", failures);
+    assertIncludes(appSource, "function isDiscardableRestoreError", "Invalid legacy active-document records must be skipped without leaving a startup error.", failures);
+    assertNotIncludes(appSource, "const fallbackItem = historyItems[0]", "Startup restore must not fall back to the first history record.", failures);
     assertNotIncludes(appSource, "默认 {modelConfig.model || \"未选\"} · {activeFlowSequence.length} 轮", "Home model route summary must not keep showing the default model after custom per-round routes are selected.", failures);
     assertNotIncludes(appSource, "rotateModelRoute", "Model route Sheet must not keep the removed provider-rotation shortcut.", failures);
     assertNotIncludes(appSource, "轮换服务商", "Model route Sheet must not show the removed provider-rotation shortcut.", failures);
@@ -199,8 +218,51 @@ function runRegression() {
 
   if (historyCardSource) {
     assertIncludes(historyCardSource, "data-ui-section=\"history-governance-boundary\"", "History page must expose a clear governance boundary section.", failures);
+    assertIncludes(historyCardSource, "data-ui-section=\"history-user-summary\"", "History page must lead with user workflow outcomes.", failures);
+    assertIncludes(historyCardSource, "data-ui-section=\"history-advanced-maintenance\"", "History maintenance controls must stay grouped behind an advanced section.", failures);
     assertIncludes(historyCardSource, "Card className=\"min-h-full overflow-visible\"", "History page must use shadcn Card composition.", failures);
     assertIncludes(historyCardSource, "ImpactCard", "History cleanup impact must stay summarized in reusable cards.", failures);
+    assertNotIncludes(historyCardSource, "<Card key={card.title}", "History governance boundary must not nest cards inside the page card.", failures);
+  }
+
+  if (themeModeMenuSource && themeModeHookSource && appIndexSource && cssSource) {
+    assertIncludes(themeModeMenuSource, "DropdownMenuRadioGroup", "Theme control must use shadcn DropdownMenu radio composition.", failures);
+    assertIncludes(themeModeMenuSource, "value=\"system\"", "Theme control must expose system mode.", failures);
+    assertIncludes(themeModeMenuSource, "data-icon=\"inline-start\"", "Theme trigger icon must use the shadcn Button icon contract.", failures);
+    assertIncludes(themeModeHookSource, "fyadr.themeMode", "Theme mode must persist in localStorage under a stable app key.", failures);
+    assertIncludes(themeModeHookSource, "fyadr.themeMode.defaultDarkMigrated", "Theme mode must migrate the previous system-default preference once.", failures);
+    assertIncludes(themeModeHookSource, "value === \"system\" && !migrated", "Legacy stored system theme must be treated as the old default and moved to dark.", failures);
+    assertIncludes(themeModeHookSource, "const DEFAULT_THEME_MODE: ThemeMode = \"dark\"", "Theme mode must default to dark when no user preference exists.", failures);
+    assertIncludes(themeModeHookSource, "prefers-color-scheme: dark", "System theme mode must listen to the OS color scheme.", failures);
+    assertIncludes(themeModeHookSource, "classList.toggle(\"dark\"", "Theme mode must toggle Tailwind's dark class.", failures);
+    assertIncludes(appIndexSource, "fyadr.themeMode", "Initial HTML must apply the saved/system theme before React mounts.", failures);
+    assertIncludes(appIndexSource, "fyadr.themeMode.defaultDarkMigrated", "Initial HTML must migrate legacy system-default theme before React mounts.", failures);
+    assertIncludes(appIndexSource, "const defaultMode = \"dark\"", "Initial HTML must default to dark before React mounts.", failures);
+    assertIncludes(appIndexSource, "document.documentElement.classList.add(\"dark\")", "Initial HTML fallback must keep the app dark if theme storage throws.", failures);
+    assertIncludes(cssSource, ".dark {", "Global CSS must define dark-mode semantic tokens.", failures);
+    assertIncludes(cssSource, "--sidebar-background:", "Dark-mode variables must include sidebar tokens.", failures);
+  }
+
+  if (protectionMapCardSource) {
+    assertIncludes(protectionMapCardSource, "data-ui-section=\"docx-scope-diagnostics\"", "Protection map must expose the body-scope diagnostics section for regression checks.", failures);
+    assertIncludes(protectionMapCardSource, "<Sheet open={open}", "Full body-scope diagnostics must use a shadcn Sheet.", failures);
+    assertIncludes(protectionMapCardSource, "<SheetTitle>正文边界完整诊断</SheetTitle>", "Body-scope diagnostics Sheet must have an accessible shadcn SheetTitle.", failures);
+    assertIncludes(protectionMapCardSource, "普通段落和自动编号正文会参与改写。", "Protection map must surface that numbered body paragraphs stay editable.", failures);
+    assertIncludes(protectionMapCardSource, "只把摘要到致谢之间的正文交给模型处理", "Protection map must describe the enforced rewrite scope.", failures);
+    assertNotIncludes(protectionMapCardSource, "<Card key={`${section.key}", "Protection map list rows must not nest shadcn Cards inside another Card.", failures);
+    assertNotIncludes(protectionMapCardSource, "line-clamp-", "Protection map diagnostics should avoid optional Tailwind line-clamp dependencies.", failures);
+  }
+
+  if (appServiceSource && webServiceSource) {
+    assertIncludes(appServiceSource, "getDocumentScopeDiagnostics(sourcePath: string): Promise<DocumentScopeDiagnostics>;", "App service contract must expose document-scope diagnostics.", failures);
+    assertIncludes(webServiceSource, "/api/document-scope-diagnostics", "Web service must call the document-scope diagnostics API.", failures);
+    assertIncludes(webServiceSource, "function formatHttpErrorMessage", "Web service must centralize HTTP error display text.", failures);
+    assertIncludes(webServiceSource, "function isHtmlErrorPage", "Web service must detect HTML error pages returned by Flask or proxies.", failures);
+    assertIncludes(webServiceSource, "buildUnavailableScopeDiagnostics", "Missing document-scope diagnostics endpoints must degrade without breaking document restore.", failures);
+    assertIncludes(webServiceSource, "buildEmptyHistoryArtifactQueryResponse", "Missing history artifact endpoints must degrade without showing startup errors.", failures);
+    assertIncludes(webServiceSource, "isEndpointCompatibilityError", "Web service must recognize old-backend 404/405 compatibility gaps.", failures);
+    assertIncludes(webServiceSource, "HTTP 405", "Web service must provide a specific friendly message for method-mismatch responses.", failures);
+    assertNotIncludes(webServiceSource, "errorPayload?.message || responseText ||", "Web service must not surface raw non-JSON responseText to users.", failures);
   }
 
   if (modelConfigCardSource) {
@@ -257,9 +319,13 @@ function runRegression() {
     ok: failures.length === 0,
     createdAt: new Date().toISOString(),
     appPath: APP_PATH,
+    appIndexPath: APP_INDEX_PATH,
     modelConfigCardPath: MODEL_CONFIG_CARD_PATH,
     resultCardPath: RESULT_CARD_PATH,
     historyCardPath: HISTORY_CARD_PATH,
+    protectionMapCardPath: PROTECTION_MAP_CARD_PATH,
+    themeModeMenuPath: THEME_MODE_MENU_PATH,
+    themeModeHookPath: THEME_MODE_HOOK_PATH,
     cssPath: GLOBAL_CSS_PATH,
     buttonPath: BUTTON_PATH,
     badgePath: BADGE_PATH,

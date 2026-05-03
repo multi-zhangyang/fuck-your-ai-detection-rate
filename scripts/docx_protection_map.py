@@ -17,6 +17,7 @@ PROTECT_REASON_LABELS = {
     "back_matter": "附录/声明等后置内容",
     "caption": "图名/表名",
     "structured_field": "关键词等结构字段",
+    "outside_body_scope": "摘要到致谢之外的内容",
 }
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,11 +20,14 @@ from fyadr_records import (  # noqa: E402
     delete_document,
     load_records_normalized,
     preview_delete_document,
+    rebuild_history_index,
     save_records,
 )
+from fyadr_history_db import DB_PATH  # noqa: E402
 
 
 TEST_STEM = "__fyadr_history_assets_regression__"
+REGRESSION_BACKUP_DIR = ROOT_DIR / "finish" / "regression" / "history_db_backups" / "__history_assets_regression__"
 
 
 def _backup(path: Path) -> bytes | None:
@@ -36,6 +41,26 @@ def _restore(path: Path, payload: bytes | None) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
+
+
+def _strip_test_records_from_json() -> None:
+    if not RECORDS_PATH.exists():
+        return
+    try:
+        records = json.loads(RECORDS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(records, dict):
+        return
+    sanitized = {
+        key: value
+        for key, value in records.items()
+        if TEST_STEM not in str(key)
+        and (not isinstance(value, dict) or TEST_STEM not in str(value.get("origin_path", "")))
+    }
+    if sanitized == records:
+        return
+    RECORDS_PATH.write_text(json.dumps(sanitized, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _write_text(path: Path, text: str) -> Path:
@@ -104,6 +129,11 @@ def _path_in_files(files: list[dict[str, Any]], path: Path) -> bool:
 
 def run_regression() -> dict[str, Any]:
     records_backup = _backup(RECORDS_PATH)
+    db_backup = _backup(DB_PATH)
+    original_backup_dir_env = os.environ.get("FYADR_HISTORY_BACKUP_DIR")
+    os.environ["FYADR_HISTORY_BACKUP_DIR"] = str(REGRESSION_BACKUP_DIR)
+    if REGRESSION_BACKUP_DIR.exists():
+        shutil.rmtree(REGRESSION_BACKUP_DIR, ignore_errors=True)
     created_paths: list[Path] = []
     checks: list[str] = []
 
@@ -149,12 +179,20 @@ def run_regression() -> dict[str, Any]:
 
     finally:
         _restore(RECORDS_PATH, records_backup)
+        _restore(DB_PATH, db_backup)
+        _strip_test_records_from_json()
         for path in sorted(set(created_paths), key=lambda item: len(str(item)), reverse=True):
             try:
                 if path.exists() and path.is_file():
                     path.unlink()
             except OSError:
                 pass
+        rebuild_history_index(strict=False)
+        shutil.rmtree(REGRESSION_BACKUP_DIR, ignore_errors=True)
+        if original_backup_dir_env is None:
+            os.environ.pop("FYADR_HISTORY_BACKUP_DIR", None)
+        else:
+            os.environ["FYADR_HISTORY_BACKUP_DIR"] = original_backup_dir_env
 
     return {"ok": True, "checks": checks}
 

@@ -68,10 +68,12 @@ function checkBackendTaskContract(appSource, resultCardSource, failures) {
   assertIncludes(appSource, "result.successChunkIds ?? []", "Batch rerun completion must preserve successful chunk decisions after refresh.", failures);
   assertIncludes(appSource, "batchRerunRunning={Boolean(currentBatchRerunToken)}", "Home ResultCard must receive batch rerun running state.", failures);
   assertIncludes(appSource, "onCancelBatchRerun={() => void handleCancelBatchRerun()}", "Home ResultCard must wire batch rerun cancellation.", failures);
-  assertIncludes(appSource, "activeBatchReruns", "Diagnostics/task center must render active batch rerun tasks.", failures);
-  assertIncludes(appSource, "recentBatchReruns", "Diagnostics must render persisted batch rerun summaries after backend restart.", failures);
-  assertIncludes(appSource, "近期任务摘要", "Diagnostics must label persisted task summaries clearly.", failures);
-  assertIncludes(appSource, "重跑未完成", "Persisted batch rerun summaries must keep a clear rerun-specific status.", failures);
+  assertIncludes(appSource, "activeBatchReruns", "Diagnostics/task center must keep active batch rerun fallback data.", failures);
+  assertIncludes(appSource, "recentBatchReruns", "Diagnostics must keep persisted batch rerun fallback data after backend restart.", failures);
+  assertIncludes(appSource, "function buildDiagnosticTaskItems", "Diagnostics must normalize backend and fallback task summaries together.", failures);
+  assertIncludes(appSource, "function DiagnosticTaskAlert", "Diagnostics must render persisted task summaries through one user-facing task component.", failures);
+  assertIncludes(appSource, "后台任务", "Diagnostics must label persisted task summaries as one task area.", failures);
+  assertIncludes(appSource, "未完成", "Persisted unfinished task summaries must keep a clear status.", failures);
   assertIncludes(resultCardSource, "batchRerunRunning?: boolean;", "ResultCard must expose batch rerun running prop.", failures);
   assertIncludes(resultCardSource, "onCancelBatchRerun?: () => void;", "ResultCard must expose batch rerun cancel prop.", failures);
   assertIncludes(resultCardSource, "停止重跑", "ResultCard must show a stop action during batch rerun.", failures);

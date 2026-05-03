@@ -9,6 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Callable, NamedTuple
 
+from ai_json import extract_json_payload
 from fyadr_records import ROOT_DIR, update_round
 from chunking import ChunkManifest, DEFAULT_CHUNK_LIMIT, build_manifest, restore_text_from_chunks, save_manifest
 from factual_guards import build_factual_relation_guard, validate_factual_relation_stability
@@ -51,6 +52,18 @@ ROUND_CHECKPOINT_VERSION = 3
 ROUND_COMPARE_VERSION = 2
 MAX_VALIDATION_ATTEMPTS = 2
 MAX_REJECTED_CANDIDATE_CHARS = 12000
+STRUCTURED_REWRITE_TEXT_KEYS = (
+    "rewrittenText",
+    "rewritten_text",
+    "outputText",
+    "output_text",
+    "text",
+    "content",
+    "answer",
+    "final",
+    "result",
+    "rewrite",
+)
 LATIN_WORD_RE = re.compile(r"[A-Za-z]+(?:[-'][A-Za-z]+)*")
 LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
 CJK_CHAR_RE = re.compile(r"[\u3400-\u4DBF\u4E00-\u9FFF]")
@@ -58,7 +71,16 @@ ASCII_WORD_CHAR_RE = re.compile(r"[A-Za-z0-9]")
 PARAGRAPH_BREAK_RE = re.compile(r"\n\s*\n")
 LEADING_MARKUP_RE = re.compile(r"^[>\-\*\s#]+")
 LEADING_STRUCTURE_RE = re.compile(
-    r"^(?P<marker>(?:\u7b2c[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u96f60-9]+[\u7ae0\u8282])|(?:(?:[0-9]+(?:\.[0-9]+){1,4})|(?:[0-9]+))(?=\s)|(?:\([0-9\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+\))|(?:[0-9]+[)\uff09])|(?:[\uff08(][\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+[\uff09)]))\s*"
+    r"^(?P<marker>"
+    r"(?:\u7b2c[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u96f60-9]+[\u7ae0\u8282])"
+    r"|(?:[0-9]+(?:\.[0-9]+){1,4})(?=\s)"
+    r"|(?:[0-9]+[.．、])"
+    r"|(?:[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+[.．、])"
+    r"|(?:[0-9]+)(?=\s)"
+    r"|(?:\([0-9\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+\))"
+    r"|(?:[0-9]+[)\uff09])"
+    r"|(?:[\uff08(][\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+[\uff09)])"
+    r")\s*"
 )
 NUMERIC_CITATION_RE = re.compile(r"\[(?:\d+|\d+[-\u2013\u2014]\d+)(?:[,\uff0c;\uff1b]\s*(?:\d+|\d+[-\u2013\u2014]\d+))*\]")
 _AUTHOR_TOKEN = r"(?:[\u4e00-\u9fff]{2,12}\s*(?:\u7b49)?(?:\u548c[\u4e00-\u9fff]{2,12})?|[A-Z][A-Za-z]+(?:\s+(?:&|and)\s+[A-Z][A-Za-z]+|\s+et\s+al\.)?)"
@@ -97,6 +119,8 @@ EN_MECHANICAL_CONNECTOR_RE = re.compile(r"\b(firstly|secondly|finally|in additio
 EN_TEMPLATE_PHRASE_RE = re.compile(r"\b(has important significance|provides (?:strong|important)? support|further improves|effectively promotes|in the context of)\b", re.I)
 STYLE_CARD_VERSION = 1
 STYLE_CARD_TOP_LIMIT = 5
+STYLE_VALIDATION_MIN_CHARS = 80
+STYLE_VALIDATION_MAX_ISSUES = 4
 CODE_LIKE_TERM_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"[A-Za-z_][A-Za-z0-9_]*(?:[./:_-][A-Za-z0-9_]+)+"
@@ -107,9 +131,11 @@ CODE_LIKE_TERM_RE = re.compile(
 INTRODUCED_TEMPLATE_PHRASE_RE = re.compile(
     r"(综上所述|总而言之|由此可见|具有重要意义|具有较强的现实意义|奠定了(?:坚实)?基础|提供了(?:有力|重要)?支持|在.+?背景下.+?具有.+?意义)"
 )
-PARAGRAPH_CANDIDATE_MIN_CHARS = 160
-PARAGRAPH_CANDIDATE_COUNT = 2
-SUPPORTED_REWRITE_CANDIDATE_MODES = {"economy", "quality"}
+GENERIC_CLOSING_RE = re.compile(
+    r"(综上所述|总而言之|总的来说|由此可见|整体来看|in conclusion|to sum up|overall|it can be seen that)",
+    re.IGNORECASE,
+)
+SUPPORTED_REWRITE_CANDIDATE_MODES = {"economy"}
 
 
 class ProtectedText(NamedTuple):
@@ -256,6 +282,14 @@ def _build_validation_repair_steps(validation_error: str) -> str:
         steps.append("- Keep the output language identical to the input language; English input must remain English.")
     if "markdown" in error or "answer-style" in error:
         steps.append("- Output body text only; do not add headings, bullets, explanations, markdown, or labels.")
+    if "machine-like writing style" in error or "connector" in error or "template" in error or "sentence rhythm" in error:
+        steps.extend(
+            [
+                "- Reduce newly introduced stock phrases and repeated transitions; keep concrete wording tied to the source paragraph.",
+                "- Vary sentence rhythm naturally without adding facts, claims, citations, or background.",
+                "- Do not end with a generic summary sentence unless the source already does so.",
+            ]
+        )
     if "expanded abnormally" in error:
         steps.append("- Shorten the rewrite and remove newly added background or commentary.")
     if "shrank abnormally" in error:
@@ -273,39 +307,19 @@ def normalize_rewrite_candidate_mode(value: object) -> str:
 
 
 def _candidate_count_for_chunk(prompt_profile: str, chunk_text: str, candidate_mode: str = "economy") -> int:
-    if normalize_prompt_profile(prompt_profile) not in {"cn", "cn_prewrite", "cn_custom"}:
-        return 1
-    if detect_chunk_language(chunk_text) == "en":
-        return 1
-    if normalize_rewrite_candidate_mode(candidate_mode) == "economy":
-        return 1
-    if len(chunk_text.strip()) < PARAGRAPH_CANDIDATE_MIN_CHARS:
-        return 1
-    return PARAGRAPH_CANDIDATE_COUNT
+    return 1
 
 
 def _estimate_candidate_calls(manifest: ChunkManifest, prompt_profile: str, candidate_mode: str) -> dict[str, int]:
-    counts = [
-        _candidate_count_for_chunk(prompt_profile, chunk.text, candidate_mode)
-        for chunk in manifest.chunks
-    ]
     return {
-        "estimatedApiCalls": sum(counts),
-        "candidateMaxPerChunk": max(counts) if counts else 1,
-        "twoCandidateChunkCount": sum(1 for count in counts if count > 1),
+        "estimatedApiCalls": manifest.chunk_count,
+        "candidateMaxPerChunk": 1,
+        "twoCandidateChunkCount": 0,
     }
 
 
 def _build_candidate_note(candidate_index: int) -> str | None:
-    if candidate_index <= 1:
-        return None
-    return (
-        "[CANDIDATE DIRECTION]\n"
-        "- Produce a second valid rewrite candidate for the same paragraph.\n"
-        "- Avoid the same sentence rhythm as the obvious first version.\n"
-        "- Reduce over-neat connectors such as 首先、其次、此外、因此、综上.\n"
-        "- Keep facts, citations, numbers, terms, and length close to the input."
-    )
+    return None
 
 
 def _count_matches(pattern: re.Pattern[str], text: str) -> dict[str, int]:
@@ -326,6 +340,127 @@ def _top_count_items(counts: dict[str, int], limit: int = STYLE_CARD_TOP_LIMIT, 
         for text, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
         if count >= minimum
     ][:limit]
+
+
+def _style_patterns_for_language(language: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    if language == "en":
+        return EN_MECHANICAL_CONNECTOR_RE, EN_TEMPLATE_PHRASE_RE
+    return MECHANICAL_CONNECTOR_RE, TEMPLATE_PHRASE_RE
+
+
+def _style_risk_metrics(text: str) -> dict[str, object]:
+    language = detect_chunk_language(text)
+    connector_pattern, template_pattern = _style_patterns_for_language(language)
+    connector_count = len(connector_pattern.findall(text))
+    template_count = len(template_pattern.findall(text))
+    closing_count = len(GENERIC_CLOSING_RE.findall(text))
+    sentence_stats = _sentence_length_stats(text)
+    sentence_count = int(sentence_stats.get("count", 0) or 0)
+    return {
+        "language": language,
+        "sentenceCount": sentence_count,
+        "sentenceStats": sentence_stats,
+        "connectorCount": connector_count,
+        "templateCount": template_count,
+        "closingCount": closing_count,
+        "connectorDensity": round(connector_count / max(sentence_count, 1), 4),
+        "templateDensity": round(template_count / max(sentence_count, 1), 4),
+    }
+
+
+def _collect_machine_style_validation_issues(input_text: str, output_text: str) -> list[dict[str, object]]:
+    if max(len(input_text.strip()), len(output_text.strip())) < STYLE_VALIDATION_MIN_CHARS:
+        return []
+
+    input_metrics = _style_risk_metrics(input_text)
+    output_metrics = _style_risk_metrics(output_text)
+    output_sentence_count = int(output_metrics.get("sentenceCount", 0) or 0)
+    if output_sentence_count <= 0:
+        return []
+
+    issues: list[dict[str, object]] = []
+    input_connector_count = int(input_metrics.get("connectorCount", 0) or 0)
+    output_connector_count = int(output_metrics.get("connectorCount", 0) or 0)
+    input_template_count = int(input_metrics.get("templateCount", 0) or 0)
+    output_template_count = int(output_metrics.get("templateCount", 0) or 0)
+    input_closing_count = int(input_metrics.get("closingCount", 0) or 0)
+    output_closing_count = int(output_metrics.get("closingCount", 0) or 0)
+    output_connector_density = float(output_metrics.get("connectorDensity", 0) or 0)
+    output_template_density = float(output_metrics.get("templateDensity", 0) or 0)
+
+    if output_sentence_count >= 3 and output_connector_count >= input_connector_count + 3 and output_connector_density >= 0.55:
+        issues.append(
+            {
+                "code": "connector_density_increased",
+                "level": "medium",
+                "message": "Output introduced a high density of mechanical transitions.",
+                "evidence": {
+                    "inputConnectorCount": input_connector_count,
+                    "outputConnectorCount": output_connector_count,
+                    "outputConnectorDensity": output_connector_density,
+                },
+            }
+        )
+
+    introduced_templates = _find_introduced_template_phrases(input_text, output_text)
+    if output_template_count >= input_template_count + 2 and output_template_density >= 0.18:
+        issues.append(
+            {
+                "code": "template_density_increased",
+                "level": "high",
+                "message": "Output introduced too many stock academic template phrases.",
+                "evidence": {
+                    "inputTemplateCount": input_template_count,
+                    "outputTemplateCount": output_template_count,
+                    "outputTemplateDensity": output_template_density,
+                    "introducedTemplates": introduced_templates[:5],
+                },
+            }
+        )
+    elif len(introduced_templates) >= 2 and output_template_density >= 0.12:
+        issues.append(
+            {
+                "code": "template_phrase_drift",
+                "level": "medium",
+                "message": "Output added multiple detector-friendly template phrases.",
+                "evidence": introduced_templates[:5],
+            }
+        )
+
+    input_variance = float((input_metrics.get("sentenceStats") or {}).get("variance", 0) or 0)
+    output_variance = float((output_metrics.get("sentenceStats") or {}).get("variance", 0) or 0)
+    if (
+        output_sentence_count >= 5
+        and output_variance < 24
+        and (input_variance == 0 or output_variance < max(18, input_variance * 0.55))
+    ):
+        issues.append(
+            {
+                "code": "sentence_rhythm_over_regularized",
+                "level": "medium",
+                "message": "Output sentence lengths became too uniform.",
+                "evidence": {
+                    "inputVariance": round(input_variance, 2),
+                    "outputVariance": round(output_variance, 2),
+                    "sentenceCount": output_sentence_count,
+                },
+            }
+        )
+
+    if output_sentence_count >= 2 and output_closing_count > input_closing_count and output_closing_count >= 1:
+        issues.append(
+            {
+                "code": "generic_closing_added",
+                "level": "medium",
+                "message": "Output added a generic summary closing phrase.",
+                "evidence": {
+                    "inputClosingCount": input_closing_count,
+                    "outputClosingCount": output_closing_count,
+                },
+            }
+        )
+
+    return issues[:STYLE_VALIDATION_MAX_ISSUES]
 
 
 def _chunk_opening_signature(text: str) -> str:
@@ -411,13 +546,18 @@ def _build_local_style_card(chunk_text: str, global_style_profile: dict[str, obj
     repeated_openings = _style_item_texts(global_style_profile.get("repeatedOpenings"))
     chunk_opening = _chunk_opening_signature(chunk_text)
     active_opening = chunk_opening if language != "en" and any(chunk_opening.startswith(opening[:8]) for opening in repeated_openings) else ""
+    local_metrics = _style_risk_metrics(chunk_text)
+    needs_baseline_style_guard = (
+        len(chunk_text.strip()) >= STYLE_VALIDATION_MIN_CHARS
+        and int(local_metrics.get("sentenceCount", 0) or 0) >= 2
+    )
 
     local_items = [
         *[item for item, count in local_connectors.items() if count > 0],
         *[item for item, count in local_templates.items() if count > 0],
     ]
     has_global_risk = bool(global_style_profile.get("riskCodes"))
-    if not has_global_risk and not local_items and not active_opening:
+    if not has_global_risk and not local_items and not active_opening and not needs_baseline_style_guard:
         return None
 
     if language == "en":
@@ -425,6 +565,7 @@ def _build_local_style_card(chunk_text: str, global_style_profile: dict[str, obj
             "[LOCAL STYLE CARD]",
             "- Reduce detector-friendly uniformity in this chunk without changing facts, terms, numbers, citations, or paragraph role.",
             "- Vary sentence rhythm naturally; avoid making the paragraph read like a neat template.",
+            "- Keep wording concrete to the source; do not add generic closing summaries or stock academic formulas.",
         ]
         if global_connectors:
             lines.append(f"- Avoid overusing globally repeated transitions when possible: {', '.join(global_connectors[:4])}.")
@@ -439,6 +580,7 @@ def _build_local_style_card(chunk_text: str, global_style_profile: dict[str, obj
         "[LOCAL STYLE CARD]",
         "- 这一块需要降低全文层面的模板感，但不能改变事实、术语、数值、引用、编号和段落角色。",
         "- 句式节奏要有自然起伏，避免写成整齐的总分模板或百科式说明。",
+        "- 表达必须贴着原段落的具体内容走，不要新增泛化总结句、空泛意义句或套路化学术公式。",
     ]
     if global_connectors:
         lines.append(f"- 全文高频连接词尽量少重复：{'、'.join(global_connectors[:4])}。")
@@ -470,9 +612,43 @@ def _score_rewrite_candidate(input_text: str, output_text: str) -> float:
     risk_penalty = sum(2.0 if risk.get("level") == "high" else 1.0 for risk in risks)
     sentence_stats = _sentence_length_stats(output_text)
     rhythm_penalty = 0.6 if int(sentence_stats.get("count", 0) or 0) >= 4 and float(sentence_stats.get("variance", 0) or 0) < 35 else 0
-    connector_penalty = len(MECHANICAL_CONNECTOR_RE.findall(output_text)) * 0.18
-    template_penalty = len(TEMPLATE_PHRASE_RE.findall(output_text)) * 0.35
-    return expansion_penalty + risk_penalty + rhythm_penalty + connector_penalty + template_penalty
+    output_style_metrics = _style_risk_metrics(output_text)
+    connector_penalty = int(output_style_metrics.get("connectorCount", 0) or 0) * 0.18
+    template_penalty = int(output_style_metrics.get("templateCount", 0) or 0) * 0.35
+    style_validation_penalty = sum(
+        2.2 if str(issue.get("level", "")).lower() == "high" else 1.1
+        for issue in _collect_machine_style_validation_issues(input_text, output_text)
+    )
+    return expansion_penalty + risk_penalty + rhythm_penalty + connector_penalty + template_penalty + style_validation_penalty
+
+
+def _extract_structured_rewrite_text(output_text: str) -> str | None:
+    stripped = str(output_text or "").strip()
+    if not stripped or not (stripped.startswith("{") or stripped.startswith("[") or stripped.startswith("```")):
+        return None
+    try:
+        payload = extract_json_payload(stripped)
+    except ValueError:
+        return None
+    if isinstance(payload, list):
+        text_items = [str(item).strip() for item in payload if isinstance(item, str) and str(item).strip()]
+        return "\n\n".join(text_items) if text_items else None
+    if not isinstance(payload, dict):
+        return None
+    for key in STRUCTURED_REWRITE_TEXT_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list):
+            text_items = [str(item).strip() for item in value if isinstance(item, str) and str(item).strip()]
+            if text_items:
+                return "\n\n".join(text_items)
+    paragraphs = payload.get("paragraphs")
+    if isinstance(paragraphs, list):
+        text_items = [str(item).strip() for item in paragraphs if isinstance(item, str) and str(item).strip()]
+        if text_items:
+            return "\n\n".join(text_items)
+    return None
 
 
 def normalize_chunk_output(input_text: str, output_text: str) -> str:
@@ -488,6 +664,11 @@ def normalize_chunk_output(input_text: str, output_text: str) -> str:
     )
     if not normalized:
         return ""
+    structured_text = _extract_structured_rewrite_text(normalized)
+    if structured_text is not None:
+        normalized = structured_text.strip()
+        if not normalized:
+            return ""
 
     if len(_split_contract_paragraphs(input_text)) > 1:
         normalized = strip_leading_output_wrapper(input_text, normalized)
@@ -741,6 +922,14 @@ def validate_structure_placeholders(output_text: str, tokens: dict[str, str], ch
         raise ValueError(f"Chunk {chunk_id} introduced unknown structure placeholders: {', '.join(unexpected[:5])}")
 
 
+def _validate_machine_style_stability(input_text: str, output_text: str, chunk_id: str) -> None:
+    issues = _collect_machine_style_validation_issues(input_text, output_text)
+    if not issues:
+        return
+    summary = "; ".join(str(issue.get("code", "")) for issue in issues if issue.get("code"))
+    raise ValueError(f"Chunk {chunk_id} introduced machine-like writing style: {summary}")
+
+
 def _validate_structure_and_citations(input_text: str, output_text: str, chunk_id: str) -> None:
     input_marker = _extract_leading_structure_marker(input_text)
     if input_marker:
@@ -786,6 +975,7 @@ def validate_chunk_output(input_text: str, output_text: str, chunk_id: str) -> N
     validate_factual_relation_stability(input_text, normalized_output, f"Chunk {chunk_id}")
     _validate_language_stability(input_text, normalized_output, chunk_id)
     _validate_length_stability(input_text, normalized_output, chunk_id)
+    _validate_machine_style_stability(input_text, normalized_output, chunk_id)
 
     if len(normalized_output) > max(len(input_text) * 2, len(input_text) + 200):
         raise ValueError(f"Chunk {chunk_id} expanded abnormally; possible answer-style drift")
@@ -1308,7 +1498,14 @@ def _build_paragraph_split_summary(manifest: ChunkManifest) -> dict[str, object]
 
 
 def _split_sentences_for_quality(text: str) -> list[str]:
-    return [match.group(0).strip() for match in CN_SENTENCE_RE.finditer(text) if match.group(0).strip()]
+    normalized = re.sub(r"\s+", " ", str(text or "").replace("\r\n", "\n").replace("\r", "\n")).strip()
+    if not normalized:
+        return []
+    parts = re.split(r"(?<=[\u3002\uff01\uff1f\uff1b!?;])\s*|(?<=[.!?;])\s+", normalized)
+    sentences = [part.strip() for part in parts if part and part.strip()]
+    if len(sentences) <= 1 and "\n" in str(text or ""):
+        sentences = [part.strip() for part in re.split(r"\n+", str(text or "")) if part.strip()]
+    return sentences
 
 
 def _sentence_length_stats(text: str) -> dict[str, object]:
@@ -1333,12 +1530,14 @@ def _assess_machine_like_risks(text: str) -> list[dict[str, object]]:
     if not compact:
         return risks
 
-    connector_count = len(MECHANICAL_CONNECTOR_RE.findall(text))
-    template_count = len(TEMPLATE_PHRASE_RE.findall(text))
-    sentence_stats = _sentence_length_stats(text)
-    sentence_count = int(sentence_stats["count"])
-    connector_density = connector_count / max(sentence_count, 1)
-    template_density = template_count / max(sentence_count, 1)
+    metrics = _style_risk_metrics(text)
+    connector_count = int(metrics.get("connectorCount", 0) or 0)
+    template_count = int(metrics.get("templateCount", 0) or 0)
+    closing_count = int(metrics.get("closingCount", 0) or 0)
+    sentence_stats = metrics.get("sentenceStats") if isinstance(metrics.get("sentenceStats"), dict) else _sentence_length_stats(text)
+    sentence_count = int(metrics.get("sentenceCount", 0) or 0)
+    connector_density = float(metrics.get("connectorDensity", 0) or 0)
+    template_density = float(metrics.get("templateDensity", 0) or 0)
 
     if sentence_count >= 5 and float(sentence_stats["variance"]) < 35:
         risks.append({
@@ -1358,6 +1557,12 @@ def _assess_machine_like_risks(text: str) -> list[dict[str, object]]:
             "level": "high",
             "message": "高频模板句式偏多，建议局部重写。",
         })
+    if closing_count >= 2 or (closing_count >= 1 and sentence_count <= 3):
+        risks.append({
+            "code": "generic_closing_phrase",
+            "level": "medium",
+            "message": "泛化总结句偏明显，建议改成贴合段落内容的表达。",
+        })
     return risks
 
 
@@ -1371,6 +1576,7 @@ def _build_chunk_quality(input_text: str, output_text: str) -> dict[str, object]
     missing_citations = sorted(input_citations - output_citations)
     risks = _assess_machine_like_risks(output_text)
     introduced_templates = _find_introduced_template_phrases(input_text, output_text)
+    style_validation_issues = _collect_machine_style_validation_issues(input_text, output_text)
     flags: list[str] = []
     advisory_flags: list[str] = []
     review_reasons: list[dict[str, object]] = []
@@ -1421,12 +1627,18 @@ def _build_chunk_quality(input_text: str, output_text: str) -> dict[str, object]
             "evidence": introduced_templates[:5],
         })
         rewrite_advice.append("可选优化：避开新增模板化总结句，改成更贴合原段落语境的具体表达。")
+    if style_validation_issues:
+        advisory_flags.append("machine_style_drift")
+        review_reasons.extend(style_validation_issues)
+        rewrite_advice.append("建议定向重跑：减少新引入的套路句、机械连接词和过整齐句长，保留原文事实边界。")
     return {
         "expansionRatio": expansion_ratio,
         "missingCitationCount": len(missing_citations),
         "missingCitations": missing_citations[:8],
         "introducedTemplatePhraseCount": len(introduced_templates),
         "introducedTemplatePhrases": introduced_templates[:5],
+        "styleValidationIssueCount": len(style_validation_issues),
+        "styleValidationIssues": style_validation_issues,
         "machineLikeRiskCount": len(risks),
         "machineLikeRisks": risks,
         "protectedTokenCount": len(protected.tokens),
@@ -1490,8 +1702,8 @@ def _build_quality_summary(
     output_text = restored_preview or "\n".join(chunk_outputs.values())
     risks = _assess_machine_like_risks(output_text)
     introduced_template_phrases: list[str] = []
+    style_validation_issues: list[dict[str, object]] = []
     frozen_chunk_ids = sorted({str(event.get("chunkId", "")) for event in validation_events if event.get("event") == "chunk-frozen"})
-    candidate_selection_ids = sorted({str(event.get("chunkId", "")) for event in validation_events if event.get("event") == "candidate-selected"})
     candidate_call_estimate = _estimate_candidate_calls(manifest, prompt_profile, candidate_mode)
     effective_style_profile = global_style_profile or _build_global_style_profile(manifest)
     style_card_chunk_ids = [
@@ -1508,6 +1720,7 @@ def _build_quality_summary(
         introduced_template_phrases.extend(
             _find_introduced_template_phrases(chunk.text, chunk_outputs.get(chunk.chunk_id, ""))
         )
+        style_validation_issues.extend(_collect_machine_style_validation_issues(chunk.text, chunk_outputs.get(chunk.chunk_id, "")))
         protected_token_count += len(protected.tokens)
         for token_type, count in summarize_protected_token_types(protected).items():
             protected_token_types[token_type] = protected_token_types.get(token_type, 0) + count
@@ -1524,13 +1737,14 @@ def _build_quality_summary(
             "term-preservation",
             "factual-order-and-binding-preservation",
             "length-stability",
+            "machine-style-drift",
         ],
         "reviewRules": [
             "machine-like-expression",
             "template-phrase-drift",
         ],
         "frozenChunkCount": len(frozen_chunk_ids),
-        "candidateSelectionCount": len(candidate_selection_ids),
+        "candidateSelectionCount": 0,
         "rewriteCandidateMode": normalize_rewrite_candidate_mode(candidate_mode),
         **candidate_call_estimate,
         "styleCardVersion": STYLE_CARD_VERSION,
@@ -1547,6 +1761,8 @@ def _build_quality_summary(
         "protectedTokenTypes": protected_token_types,
         "introducedTemplatePhraseCount": len(introduced_template_phrases),
         "introducedTemplatePhrases": introduced_template_phrases[:12],
+        "styleValidationIssueCount": len(style_validation_issues),
+        "styleValidationIssues": style_validation_issues[:12],
         "machineLikeRiskCount": len(risks),
         "machineLikeRisks": risks,
         "sentenceStats": _sentence_length_stats(output_text),
@@ -1770,7 +1986,6 @@ def run_round(
                         }
                     )
             else:
-                selected_score = 0.0
                 candidate_count = _candidate_count_for_chunk(normalized_prompt_profile, chunk.text, normalized_candidate_mode)
             for validation_attempt in range(1, MAX_VALIDATION_ATTEMPTS + 1):
                 if chunk.chunk_id in chunk_outputs:
@@ -1821,20 +2036,7 @@ def run_round(
                         )
 
                 if valid_candidates:
-                    selected_score, chunk_output, selected_candidate = min(valid_candidates, key=lambda item: item[0])
-                    if len(valid_candidates) > 1:
-                        validation_events.append(
-                            {
-                                "event": "candidate-selected",
-                                "round": round_number,
-                                "chunkId": chunk.chunk_id,
-                                "paragraphIndex": chunk.paragraph_index,
-                                "chunkIndex": chunk.chunk_index,
-                                "candidate": selected_candidate,
-                                "candidateCount": len(valid_candidates),
-                                "score": round(selected_score, 3),
-                            }
-                        )
+                    _selected_score, chunk_output, _selected_candidate = min(valid_candidates, key=lambda item: item[0])
                     validation_error = None
                     break
                 if validation_error is not None and validation_attempt >= MAX_VALIDATION_ATTEMPTS:

@@ -442,7 +442,7 @@ async function runSmoke() {
     await clickByText(browserClient, "学校规范");
     await waitForText(browserClient, "学校模板说明文档", 12_000);
     await clickByText(browserClient, "历史记录");
-    await waitForText(browserClient, "文档与生成物管理", 12_000);
+    await waitForText(browserClient, "文档与轮次归档", 12_000);
     await clickByText(browserClient, "启动诊断");
     await waitForText(browserClient, "重新自检", 12_000);
     await clickByText(browserClient, "提示词预览");

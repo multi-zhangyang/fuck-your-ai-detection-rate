@@ -5,6 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/brand-logo.png" />
     <title>Fuck your AI detection rate</title>
+    <script>
+      (() => {
+        try {
+          const key = "fyadr.themeMode";
+          const migrationKey = "fyadr.themeMode.defaultDarkMigrated";
+          const defaultMode = "dark";
+          const stored = localStorage.getItem(key);
+          const migrated = localStorage.getItem(migrationKey) === "1";
+          const mode = stored === "system" && !migrated
+            ? defaultMode
+            : stored === "light" || stored === "dark" || stored === "system" ? stored : defaultMode;
+          if (stored === "system" && !migrated) {
+            localStorage.setItem(key, defaultMode);
+            localStorage.setItem(migrationKey, "1");
+          }
+          const prefersDark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
+          const resolved = mode === "system" && prefersDark ? "dark" : mode === "dark" ? "dark" : "light";
+          document.documentElement.classList.toggle("dark", resolved === "dark");
+          document.documentElement.dataset.themeMode = mode;
+          document.documentElement.dataset.resolvedTheme = resolved;
+          document.documentElement.style.colorScheme = resolved;
+        } catch {
+          document.documentElement.classList.add("dark");
+          document.documentElement.dataset.themeMode = "dark";
+          document.documentElement.dataset.resolvedTheme = "dark";
+          document.documentElement.style.colorScheme = "dark";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

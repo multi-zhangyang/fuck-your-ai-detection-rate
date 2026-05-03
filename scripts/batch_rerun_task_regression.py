@@ -157,8 +157,10 @@ def check_health_reports_active_batch_reruns(failures: list[str]) -> None:
     try:
         diagnostics = web_app.build_environment_diagnostics()
         active_batches = diagnostics.get("activeBatchReruns") or []
+        tasks = diagnostics.get("tasks") or []
         _assert(diagnostics.get("activeBatchRerunCount") == 1, "Health diagnostics should count active batch reruns.", failures)
         _assert(any(item.get("runId") == run_id for item in active_batches), "Health diagnostics should expose active batch rerun status.", failures)
+        _assert(any(item.get("runId") == run_id and item.get("taskType") == "batch-rerun" and item.get("taskGroup") == "active" for item in tasks), "Unified task diagnostics should expose active batch reruns.", failures)
         _assert(any(item.get("key") == "runs" and item.get("level") == "warning" for item in diagnostics.get("checks", [])), "Health diagnostics should warn when any task is active.", failures)
     finally:
         web_app.BATCH_RERUN_STATES.pop(run_id, None)
@@ -180,10 +182,17 @@ def check_persisted_batch_summary_survives_memory_loss(failures: list[str]) -> N
     web_app.ACTIVE_BATCH_RERUNS_BY_OUTPUT.clear()
     diagnostics = web_app.build_environment_diagnostics()
     recent_batches = diagnostics.get("recentBatchReruns") or []
+    recent_tasks = diagnostics.get("recentTasks") or []
     matching = [item for item in recent_batches if item.get("runId") == run_id]
+    matching_tasks = [item for item in recent_tasks if item.get("runId") == run_id]
     _assert(diagnostics.get("activeBatchRerunCount") == 0, "Persisted summaries should not be treated as live tasks after memory loss.", failures)
     _assert(diagnostics.get("recentBatchRerunCount", 0) >= 1, "Diagnostics should count recent persisted batch summaries.", failures)
+    _assert(diagnostics.get("recentTaskCount", 0) >= 1, "Diagnostics should count unified recent task summaries.", failures)
     _assert(bool(matching), "Persisted batch summary should survive in diagnostics after memory loss.", failures)
+    _assert(bool(matching_tasks), "Persisted batch summary should appear in unified recent task diagnostics.", failures)
+    if matching_tasks:
+        _assert(matching_tasks[0].get("taskType") == "batch-rerun", "Unified recent task should identify batch rerun type.", failures)
+        _assert(matching_tasks[0].get("targetPath") == str(OUTPUT_PATH), "Unified recent task should preserve target output path.", failures)
     if matching:
         item = matching[0]
         _assert(item.get("status") == "interrupted", f"Unfinished persisted task should be marked interrupted, got {item.get('status')!r}.", failures)

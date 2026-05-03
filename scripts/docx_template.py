@@ -27,6 +27,7 @@ from docx_pipeline import (
     _looks_like_back_matter_heading,
     _looks_like_caption,
     _looks_like_formula_paragraph,
+    _looks_like_numbered_body_item,
     _looks_like_references_heading,
     _looks_like_toc_heading,
     _normalize_marker_text,
@@ -76,6 +77,7 @@ ROLE_FONT_FALLBACKS = {
     "cn_keywords": ("cn_abstract_body", "body_text"),
     "en_keywords": ("en_abstract_body", "body_text"),
     "ack_body": ("body_text",),
+    "numbered_body": ("body_text",),
 }
 STRUCTURAL_FORMAT_ROLES = {"toc_heading", "references_heading", "references_body", "ack_heading"}
 CONTENT_LOCKED_FORMAT_ROLES = {
@@ -321,6 +323,7 @@ def apply_school_format_rules(
     document = Document(str(normalized_export_path))
     content_fingerprint_before = _collect_document_text_fingerprint(document)
     editable_top_level_indexes = _load_editable_top_level_paragraph_indexes(snapshot_path)
+    body_scope_top_level_indexes = _load_body_scope_top_level_paragraph_indexes(snapshot_path)
     editable_only_mode = editable_top_level_indexes is not None
     _apply_school_section_layout(document, active_rules)
     paragraphs = _collect_top_level_nonempty_paragraphs(document)
@@ -348,9 +351,16 @@ def apply_school_format_rules(
         )
         if role is None:
             continue
-        if index < start_index and role not in CONTENT_LOCKED_FORMAT_ROLES:
-            continue
         actual_paragraph_index = paragraph_indexes_by_element.get(id(paragraph._element))
+        if editable_only_mode:
+            if (
+                body_scope_top_level_indexes is None
+                or actual_paragraph_index is None
+                or actual_paragraph_index not in body_scope_top_level_indexes
+            ):
+                continue
+        elif index < start_index and role not in CONTENT_LOCKED_FORMAT_ROLES:
+            continue
         is_editable_top_level = (
             not editable_only_mode
             or (
@@ -358,8 +368,6 @@ def apply_school_format_rules(
                 and actual_paragraph_index in editable_top_level_indexes
             )
         )
-        if editable_only_mode and not is_editable_top_level and role not in CONTENT_LOCKED_FORMAT_ROLES:
-            continue
         school_profile = _build_rule_profile_for_role(role, paragraph, active_rules)
         if school_profile is None:
             school_profile = _build_school_profile_for_role(role, paragraph)
@@ -406,7 +414,7 @@ def apply_school_format_rules(
         "tableStyleCount": int(table_layout_stats.get("tableParagraphCount", 0) or 0),
         "tableBorderCount": int(table_layout_stats.get("borderedTableCount", 0) or 0),
         "mode": "school_rules",
-        "formatScope": "content_locked_style_allowed" if editable_only_mode else "full_generated_document",
+        "formatScope": "body_scope_style_only" if editable_only_mode else "full_generated_document",
         "schoolName": str(active_rules.get("schoolName", "")),
         "preflightPath": str(preflight_report.get("path", "")),
         "preflightIssueCount": int(preflight_report.get("issueCount", 0) or 0),
@@ -455,6 +463,28 @@ def _load_editable_top_level_paragraph_indexes(snapshot_path: Path | None) -> se
         except (KeyError, TypeError, ValueError):
             continue
     return editable_indexes
+
+
+def _load_body_scope_top_level_paragraph_indexes(snapshot_path: Path | None) -> set[int] | None:
+    if snapshot_path is None:
+        return None
+
+    snapshot = _load_docx_snapshot(snapshot_path)
+    if snapshot is None:
+        return None
+
+    outside_reasons = {"front_matter", "outside_body_scope", "back_matter", "generated_field"}
+    body_scope_indexes: set[int] = set()
+    for unit in snapshot.units:
+        if str(unit.target.get("kind", "")) != "paragraph":
+            continue
+        if str(unit.protect_reason or "") in outside_reasons:
+            continue
+        try:
+            body_scope_indexes.add(int(unit.target["paragraph_index"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return body_scope_indexes
 
 
 def _find_body_start_index(paragraphs: list[Paragraph]) -> int:
@@ -541,8 +571,7 @@ def _classify_template_role(
         return None
     if _paragraph_has_field_code(paragraph):
         return None
-    if _paragraph_has_numbering(paragraph):
-        return None
+    has_numbering = _paragraph_has_numbering(paragraph)
     if _looks_like_formula_paragraph(text, style_name=paragraph.style.name if paragraph.style is not None else ""):
         return None
 
@@ -577,13 +606,17 @@ def _classify_template_role(
         return "heading_2"
     if _is_level_1_heading(text):
         return "heading_1"
+    if has_numbering and (normalized_style.startswith("heading") or normalized_style.startswith("标题")):
+        return None
+    if has_numbering:
+        return "numbered_body"
     return "body_text"
 
 
 def _select_role_candidate(role: str, candidates: list[Paragraph]) -> Paragraph:
     if len(candidates) == 1:
         return candidates[0]
-    if role in {"body_text", "cn_abstract_body", "en_abstract_body", "ack_body"}:
+    if role in {"body_text", "numbered_body", "cn_abstract_body", "en_abstract_body", "ack_body"}:
         return max(candidates, key=_score_body_candidate)
     return candidates[0]
 
@@ -723,6 +756,8 @@ def _build_school_profile_for_role(role: str, paragraph: Paragraph) -> TemplateP
         return _school_body_profile(role, text, cn_font=FONT_CN_SONG, en_font=FONT_EN_TIMES, font_size_pt=SIZE_XIAO_4)
     if _looks_like_caption(text):
         return _school_caption_profile(role, text)
+    if role == "numbered_body":
+        return _school_body_profile(role, text, cn_font=FONT_CN_SONG, en_font=FONT_EN_TIMES, first_line_indent_pt=None)
     if role == "body_text":
         if normalized.startswith("图注") or normalized.startswith("表注"):
             return _school_note_profile(role, text)
@@ -739,12 +774,15 @@ def _build_rule_profile_for_role(role: str, paragraph: Paragraph, rules: dict[st
     if not isinstance(raw_style, dict):
         return None
     alignment = ALIGNMENT_BY_NAME.get(str(raw_style.get("alignment", "")).strip().lower())
+    first_line_indent_pt = _as_optional_float(raw_style.get("firstLineIndentPt"))
+    if role == "numbered_body":
+        first_line_indent_pt = None
     return TemplateParagraphProfile(
         role=style_key,
         style_name=paragraph.style.name if paragraph.style is not None else "",
         source_text=paragraph.text.strip(),
         alignment=int(alignment) if alignment is not None else None,
-        first_line_indent_pt=_as_optional_float(raw_style.get("firstLineIndentPt")),
+        first_line_indent_pt=first_line_indent_pt,
         space_before_pt=_as_optional_float(raw_style.get("spaceBeforePt")),
         space_after_pt=_as_optional_float(raw_style.get("spaceAfterPt")),
         line_spacing_rule=int(WD_LINE_SPACING.EXACTLY) if _as_optional_float(raw_style.get("lineSpacingPt")) is not None else None,
@@ -761,6 +799,8 @@ def _build_rule_profile_for_role(role: str, paragraph: Paragraph, rules: dict[st
 def _resolve_rule_style_key(role: str, paragraph: Paragraph) -> str:
     text = paragraph.text.strip()
     normalized = _normalize_marker_text(text)
+    if role == "numbered_body":
+        return "body_text"
     if _is_level_4_heading(text):
         return "heading_4"
     if _looks_like_caption(text):
@@ -1313,21 +1353,29 @@ def _is_safe_heading_text(text: str, *, max_chars: int) -> bool:
 
 def _is_level_1_heading(text: str) -> bool:
     normalized = text.strip()
+    if _looks_like_numbered_body_item(normalized):
+        return False
     return bool(LEVEL_1_HEADING_RE.match(normalized)) and _is_safe_heading_text(normalized, max_chars=32)
 
 
 def _is_level_2_heading(text: str) -> bool:
     normalized = text.strip()
+    if _looks_like_numbered_body_item(normalized):
+        return False
     return bool(LEVEL_2_HEADING_RE.match(normalized)) and _is_safe_heading_text(normalized, max_chars=36)
 
 
 def _is_level_3_heading(text: str) -> bool:
     normalized = text.strip()
+    if _looks_like_numbered_body_item(normalized):
+        return False
     return bool(LEVEL_3_HEADING_RE.match(normalized)) and _is_safe_heading_text(normalized, max_chars=40)
 
 
 def _is_level_4_heading(text: str) -> bool:
     normalized = text.strip()
+    if _looks_like_numbered_body_item(normalized):
+        return False
     return bool(LEVEL_4_HEADING_RE.match(normalized)) and _is_safe_heading_text(normalized, max_chars=44)
 
 

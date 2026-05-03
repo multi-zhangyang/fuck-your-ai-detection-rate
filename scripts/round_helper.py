@@ -27,7 +27,7 @@ from docx_bodymap import (
     validate_docx_body_map,
     write_docx_body_map_input,
 )
-from docx_pipeline import ensure_docx_processing_assets, get_docx_extracted_text_path, get_docx_snapshot_path
+from docx_pipeline import ensure_docx_processing_assets, get_docx_extracted_text_path, get_docx_scope_diagnostics_path, get_docx_snapshot_path
 
 
 Transform = Callable[[str, str, int, str], str]
@@ -49,6 +49,7 @@ class RoundContext:
     source_kind: str
     extracted_from_docx: bool
     docx_snapshot_path: Path | None = None
+    scope_diagnostics_path: Path | None = None
     body_map_path: Path | None = None
     validation_path: Path | None = None
 
@@ -66,6 +67,7 @@ class RoundContext:
             "source_kind": self.source_kind,
             "extracted_from_docx": self.extracted_from_docx,
             "docx_snapshot_path": str(self.docx_snapshot_path) if self.docx_snapshot_path else "",
+            "scope_diagnostics_path": str(self.scope_diagnostics_path) if self.scope_diagnostics_path else "",
             "body_map_path": str(self.body_map_path) if self.body_map_path else "",
             "validation_path": str(self.validation_path) if self.validation_path else "",
         }
@@ -166,9 +168,11 @@ def build_round_context(
 
     if source_kind == ".docx":
         docx_snapshot_path = get_docx_snapshot_path(normalized_source)
+        scope_diagnostics_path = get_docx_scope_diagnostics_path(normalized_source)
         ensure_docx_processing_assets(
             normalized_source,
             snapshot_path=docx_snapshot_path,
+            scope_diagnostics_path=scope_diagnostics_path,
         )
         return RoundContext(
             doc_id=doc_id,
@@ -183,6 +187,7 @@ def build_round_context(
             source_kind=source_kind,
             extracted_from_docx=True,
             docx_snapshot_path=docx_snapshot_path,
+            scope_diagnostics_path=scope_diagnostics_path,
             body_map_path=INTERMEDIATE_DIR / f"{stem}_round{resolved_round}_body_map.json",
             validation_path=INTERMEDIATE_DIR / f"{stem}_round{resolved_round}_validation.json",
         )
@@ -211,6 +216,7 @@ def build_round_context(
         source_kind=source_kind,
         extracted_from_docx=extracted_from_docx,
         docx_snapshot_path=None,
+        scope_diagnostics_path=None,
         body_map_path=None,
         validation_path=None,
     )
@@ -226,10 +232,12 @@ def ensure_round_input_text(source_path: Path | str) -> tuple[Path, bool]:
     if suffix == ".docx":
         extracted_path = get_docx_extracted_text_path(normalized_source)
         snapshot_path = get_docx_snapshot_path(normalized_source)
+        scope_diagnostics_path = get_docx_scope_diagnostics_path(normalized_source)
         ensure_docx_processing_assets(
             normalized_source,
             extracted_path=extracted_path,
             snapshot_path=snapshot_path,
+            scope_diagnostics_path=scope_diagnostics_path,
         )
         return extracted_path, True
 
@@ -314,6 +322,8 @@ def run_document_round(
             validation_path=relative_to_root(context.validation_path) if context.validation_path is not None else None,
         )
         result["body_map_path"] = str(context.body_map_path)
+        if context.scope_diagnostics_path is not None:
+            result["scope_diagnostics_path"] = str(context.scope_diagnostics_path)
         if context.validation_path is not None:
             result["validation_path"] = str(context.validation_path)
         result["validation_report"] = validation_report

@@ -33,7 +33,11 @@ FINAL_TEXT_PART_TYPES = {
     "answer",
     "content",
     "final",
+    "json",
+    "json_object",
+    "json_text",
     "message_text",
+    "output_json",
     "output_text",
     "text",
 }
@@ -361,11 +365,45 @@ def _extract_text_from_content_parts(parts: object) -> str:
             fragments.append(value_field)
             return
 
+        json_field = node.get("json")
+        if json_field is not None and node_type in FINAL_TEXT_PART_TYPES:
+            fragments.append(json.dumps(json_field, ensure_ascii=False) if not isinstance(json_field, str) else json_field)
+            return
+
         content_field = node.get("content")
         if node_type in FINAL_TEXT_PART_TYPES and isinstance(content_field, (list, dict, str)):
             visit(content_field)
 
     visit(parts)
+    return "".join(fragments).strip()
+
+
+def _extract_text_from_tool_payload(value: object) -> str:
+    fragments: list[str] = []
+
+    def add(fragment: object) -> None:
+        if isinstance(fragment, str):
+            normalized = _normalize_text_fragment(fragment)
+            if normalized:
+                fragments.append(normalized)
+        elif isinstance(fragment, (dict, list)):
+            fragments.append(json.dumps(fragment, ensure_ascii=False))
+
+    def visit(node: object) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        function_payload = node.get("function")
+        if isinstance(function_payload, dict):
+            add(function_payload.get("arguments"))
+            return
+        add(node.get("arguments"))
+        add(node.get("input"))
+
+    visit(value)
     return "".join(fragments).strip()
 
 
@@ -375,9 +413,17 @@ def extract_response_text(data: dict[str, object], response_body: str, api_type:
         if isinstance(output, list):
             collected_fragments: list[str] = []
             for item in output:
-                if not isinstance(item, dict) or item.get("type") != "message":
+                if not isinstance(item, dict):
                     continue
-                extracted = _extract_text_from_content_parts(item.get("content"))
+                item_type = str(item.get("type", "") or "").strip().lower()
+                if item_type in {"function_call", "tool_call"}:
+                    extracted = _extract_text_from_tool_payload(item)
+                elif item_type == "message":
+                    extracted = _extract_text_from_content_parts(item.get("content"))
+                elif item_type in FINAL_TEXT_PART_TYPES:
+                    extracted = _extract_text_from_content_parts(item)
+                else:
+                    continue
                 if extracted:
                     collected_fragments.append(extracted)
             if collected_fragments:
@@ -405,6 +451,17 @@ def extract_response_text(data: dict[str, object], response_body: str, api_type:
         extracted = _extract_text_from_content_parts(content)
         if extracted:
             return extracted
+
+        tool_text = _extract_text_from_tool_payload(message.get("tool_calls"))
+        if tool_text:
+            return tool_text
+        function_text = _extract_text_from_tool_payload(message.get("function_call"))
+        if function_text:
+            return function_text
+
+        choice_text = _normalize_text_fragment(choices[0].get("text") if isinstance(choices[0], dict) else None)
+        if choice_text:
+            return choice_text
 
         if any(_normalize_text_fragment(message.get(field)) for field in THINKING_PART_TYPES):
             raise RuntimeError(

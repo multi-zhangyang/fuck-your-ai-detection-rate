@@ -17,11 +17,13 @@ from fyadr_records import (
     build_artifact_summary,
     delete_document,
     delete_rounds,
+    list_referenced_history_artifact_paths,
     list_records,
     normalize_doc_id,
     preview_delete_document,
 )
 from chunking import load_manifest, restore_text_from_chunks, split_text_to_paragraphs
+from detection_matching import build_detection_matches
 from fyadr_round_service import (
     build_global_style_profile_from_texts,
     build_language_guard,
@@ -56,7 +58,9 @@ from docx_export_guard import (
 from docx_pipeline import (
     _load_docx_snapshot,
     _split_text_into_blocks,
+    build_docx_scope_diagnostics,
     ensure_docx_processing_assets,
+    get_docx_scope_diagnostics_path,
     get_docx_snapshot_path,
     rebuild_docx_from_snapshot,
     write_docx_text,
@@ -72,8 +76,38 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_PREVIEW_MAX_CHARS = 12000
 TARGETED_RERUN_VALIDATION_ATTEMPTS = 2
+DETECTION_FEEDBACK_MAX_SEGMENTS = 6
+DETECTION_FEEDBACK_MAX_ANCHORS = 10
 _RATE_LIMIT_STATE: dict[str, list[float]] = {}
 _RATE_LIMIT_LOCK = threading.Lock()
+API_READ_ALLOWED_ROOTS = tuple((ROOT_DIR / name).resolve() for name in ("finish", "origin", "prompts", "references"))
+API_OUTPUT_ALLOWED_ROOTS = ((ROOT_DIR / "finish").resolve(),)
+DETECTOR_MECHANICAL_CONNECTOR_RE = re.compile(
+    r"(首先|其次|再次|最后|此外|同时|因此|所以|综上|总之|由此可见|值得注意的是|"
+    r"\bfirstly\b|\bsecondly\b|\bfinally\b|\bin addition\b|\bfurthermore\b|\btherefore\b|\bin conclusion\b|\boverall\b)",
+    re.IGNORECASE,
+)
+DETECTOR_TEMPLATE_PHRASE_RE = re.compile(
+    r"(具有重要意义|提供了.+?支持|进一步提升|有效促进|在.+?背景下|"
+    r"\bhas important significance\b|\bprovides (?:strong|important)? support\b|\bfurther improves\b|\beffectively promotes\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_path_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_api_path(path_value: str | Path, *, allowed_roots: tuple[Path, ...], label: str) -> Path:
+    normalized_path = normalize_path(Path(path_value)).resolve()
+    if not any(_is_path_under(normalized_path, root) for root in allowed_roots):
+        allowed = ", ".join(str(root) for root in allowed_roots)
+        raise ValueError(f"{label} must stay under allowed workspace directories: {allowed}")
+    return normalized_path
 
 
 def _truncate_issue_text(value: Any, limit: int = 180) -> str:
@@ -220,10 +254,27 @@ def _build_provider_rate_limiter(model_config: dict[str, Any]) -> Callable[[], f
     return wait_for_slot
 
 
+def _coerce_history_artifact_stats(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    empty_stats = _empty_artifact_stats()
+    if not any(key in value for key in empty_stats):
+        return None
+    stats = dict(empty_stats)
+    for key in stats:
+        item = value.get(key)
+        if isinstance(item, (int, float)):
+            stats[key] = int(item)
+    return stats
+
+
 def _map_history_round(item: dict[str, Any]) -> dict[str, Any]:
     prompt_sequence = item.get("prompt_sequence")
     quality_summary = _load_history_quality_summary(item)
     run_audit = _build_history_run_audit(item, quality_summary)
+    artifact_stats = _coerce_history_artifact_stats(item.get("artifactStats"))
+    if artifact_stats is None:
+        artifact_stats = _coerce_history_artifact_stats(item.get("artifact_stats"))
     return {
         "round": int(item.get("round", 0)),
         "prompt": str(item.get("prompt", "")),
@@ -233,6 +284,7 @@ def _map_history_round(item: dict[str, Any]) -> dict[str, Any]:
         "outputPath": str(item.get("output_path", "")),
         "manifestPath": str(item.get("manifest_path", "")),
         "comparePath": str(item.get("compare_path", "")),
+        "qualityPath": str(item.get("quality_path", "")),
         "scoreTotal": item.get("score_total"),
         "chunkLimit": item.get("chunk_limit"),
         "inputSegmentCount": item.get("input_segment_count"),
@@ -240,7 +292,7 @@ def _map_history_round(item: dict[str, Any]) -> dict[str, Any]:
         "bodyMapPath": str(item.get("body_map_path", "")),
         "validationPath": str(item.get("validation_path", "")),
         "timestamp": str(item.get("timestamp", "")),
-        "artifactStats": build_artifact_summary([item]),
+        "artifactStats": artifact_stats if artifact_stats is not None else build_artifact_summary([item]),
         "qualitySummary": quality_summary or None,
         "runAudit": run_audit or None,
     }
@@ -305,17 +357,53 @@ def _record_entry_to_history(doc_id: str, entry: dict[str, Any]) -> dict[str, An
         default=None,
     )
     origin_path = str(entry.get("origin_path", doc_id))
+    source_kind = str(entry.get("sourceKind", entry.get("source_kind", Path(origin_path).suffix.lower() or ".txt")))
+    artifact_stats = _coerce_history_artifact_stats(entry.get("artifactStats"))
+    if artifact_stats is None:
+        artifact_stats = _coerce_history_artifact_stats(entry.get("artifact_stats"))
 
     return {
         "docId": doc_id,
         "sourcePath": origin_path,
         "originPath": origin_path,
+        "sourceKind": source_kind,
         "completedRounds": completed_rounds,
         "latestOutputPath": latest_round.get("outputPath", "") if latest_round else "",
         "lastTimestamp": latest_round.get("timestamp", "") if latest_round else "",
-        "artifactStats": build_artifact_summary([item for item in rounds if isinstance(item, dict)]),
+        "artifactStats": artifact_stats if artifact_stats is not None else build_artifact_summary([item for item in rounds if isinstance(item, dict)]),
         "rounds": history_rounds,
     }
+
+
+def _indexed_history_document_to_record_entry(document: dict[str, Any]) -> dict[str, Any]:
+    rounds = document.get("rounds") if isinstance(document.get("rounds"), list) else []
+    origin_path = str(document.get("originPath", document.get("sourcePath", document.get("docId", ""))))
+    return {
+        "origin_path": origin_path,
+        "sourceKind": str(document.get("sourceKind", Path(origin_path).suffix.lower() or ".txt")),
+        "artifactStats": document.get("artifactStats"),
+        "rounds": [item for item in rounds if isinstance(item, dict)],
+    }
+
+
+def _list_indexed_history_documents() -> list[dict[str, Any]] | None:
+    try:
+        from fyadr_history_db import list_history_documents_from_index
+
+        documents = list_history_documents_from_index()
+    except Exception:
+        return None
+    return documents if isinstance(documents, list) else None
+
+
+def _get_indexed_history_document(doc_id: str) -> dict[str, Any] | None:
+    try:
+        from fyadr_history_db import get_history_document_from_index
+
+        document = get_history_document_from_index(doc_id)
+    except Exception:
+        return None
+    return document if isinstance(document, dict) else None
 
 
 def _find_record_context_for_output(output_path: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
@@ -619,6 +707,78 @@ def _record_matches_prompt(
     return _record_prompt_sequence_key(item, normalized_profile) == ",".join(prompt_sequence)
 
 
+def _source_to_doc_id(source_path: str) -> tuple[Path, str]:
+    normalized_source = normalize_path(Path(source_path))
+    try:
+        relative_doc_id = normalized_source.relative_to(ROOT_DIR)
+        doc_id = normalize_doc_id(str(relative_doc_id).replace("\\", "/"))
+    except ValueError:
+        doc_id = normalize_doc_id(str(normalized_source))
+    return normalized_source, doc_id
+
+
+def _route_key(prompt_profile: str, prompt_sequence: list[str]) -> tuple[str, tuple[str, ...]]:
+    normalized_profile = normalize_prompt_profile(prompt_profile)
+    if normalized_profile != "cn_custom":
+        return normalized_profile, ()
+    return normalized_profile, tuple(prompt_sequence)
+
+
+def find_conflicting_history_route(source_path: str, model_config: dict[str, Any]) -> dict[str, Any] | None:
+    """Return an existing completed route when a fresh route would hide history."""
+    _, doc_id = _source_to_doc_id(source_path)
+    requested_profile = normalize_prompt_profile(model_config.get("promptProfile", "cn_prewrite"))
+    requested_sequence = normalize_prompt_sequence(requested_profile, model_config.get("promptSequence"))
+    requested_key = _route_key(requested_profile, requested_sequence)
+    records = list_records()
+    entry = records.get(doc_id, {}) if isinstance(records, dict) else {}
+    rounds = entry.get("rounds", []) if isinstance(entry, dict) else []
+    normalized_rounds = [item for item in rounds if isinstance(item, dict) and isinstance(item.get("round"), int)]
+    if not normalized_rounds:
+        return None
+    if any(_record_matches_prompt(item, requested_profile, requested_sequence) for item in normalized_rounds):
+        return None
+
+    route_groups: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+    for item in normalized_rounds:
+        item_profile = normalize_prompt_profile(str(item.get("prompt_profile", "cn") or "cn"))
+        item_sequence = (
+            normalize_prompt_sequence(item_profile, item.get("prompt_sequence"))
+            if item_profile == "cn_custom"
+            else normalize_prompt_sequence(item_profile)
+        )
+        item_key = _route_key(item_profile, item_sequence)
+        if item_key == requested_key:
+            continue
+        group = route_groups.setdefault(
+            item_key,
+            {
+                "promptProfile": item_profile,
+                "promptSequence": item_sequence,
+                "completedRounds": [],
+                "latestOutputPath": "",
+            },
+        )
+        group["completedRounds"].append(int(item["round"]))
+        if item.get("output_path"):
+            group["latestOutputPath"] = str(item.get("output_path") or "")
+
+    if not route_groups:
+        return None
+    preferred = max(
+        route_groups.values(),
+        key=lambda item: (max(item["completedRounds"] or [0]), len(item["completedRounds"])),
+    )
+    preferred["completedRounds"] = sorted(set(preferred["completedRounds"]))
+    preferred["docId"] = doc_id
+    preferred["requestedPromptProfile"] = requested_profile
+    preferred["requestedPromptSequence"] = requested_sequence
+    preferred["message"] = (
+        "该文档已有另一条提示词路线的完成记录。为避免误开新任务，请先切回历史记录对应路线再继续。"
+    )
+    return preferred
+
+
 def _find_round_provider(model_config: dict[str, Any], override: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
     provider_id = str(override.get("providerId", "") or "").strip()
     providers = model_config.get("modelProviders")
@@ -843,6 +1003,17 @@ def get_document_history(source_path: str) -> dict[str, Any]:
         doc_id = normalize_doc_id(str(relative_doc_id).replace("\\", "/"))
     except ValueError:
         doc_id = normalize_doc_id(str(normalized_source))
+
+    indexed_document = _get_indexed_history_document(doc_id)
+    if indexed_document is not None:
+        history = _record_entry_to_history(doc_id, _indexed_history_document_to_record_entry(indexed_document))
+        return {
+            "docId": doc_id,
+            "sourcePath": str(normalized_source),
+            "artifactStats": history.get("artifactStats", _empty_artifact_stats()),
+            "rounds": history.get("rounds", []),
+        }
+
     records = list_records()
     entry = records.get(doc_id, {}) if isinstance(records, dict) else {}
     rounds = entry.get("rounds", []) if isinstance(entry, dict) else []
@@ -864,7 +1035,57 @@ def get_document_protection_map(source_path: str) -> dict[str, Any]:
     return build_docx_protection_map(normalized_source)
 
 
+def get_document_scope_diagnostics(source_path: str) -> dict[str, Any]:
+    normalized_source = normalize_path(Path(source_path))
+    source_kind = normalized_source.suffix.lower() or ".txt"
+    if source_kind != ".docx":
+        return {
+            "available": False,
+            "ok": True,
+            "sourcePath": str(normalized_source),
+            "sourceKind": source_kind,
+            "message": "当前文档不是 DOCX，无法生成正文边界诊断。",
+            "path": "",
+            "totalTextUnitCount": 0,
+            "editableUnitCount": 0,
+            "protectedUnitCount": 0,
+            "scope": {},
+            "reasonCounts": {},
+            "issues": [],
+            "units": [],
+            "issueCount": 0,
+            "errorCount": 0,
+            "warningCount": 0,
+        }
+
+    _, snapshot_path, snapshot = ensure_docx_processing_assets(normalized_source)
+    diagnostics_path = get_docx_scope_diagnostics_path(normalized_source)
+    payload = _read_json_report(diagnostics_path)
+    if payload is None:
+        payload = build_docx_scope_diagnostics(snapshot, snapshot_path=snapshot_path)
+        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload["available"] = True
+    payload["sourceKind"] = ".docx"
+    payload["path"] = str(diagnostics_path)
+    payload["message"] = "已生成 DOCX 正文边界诊断。"
+    return payload
+
+
 def list_document_histories() -> dict[str, Any]:
+    indexed_documents = _list_indexed_history_documents()
+    if indexed_documents is not None:
+        items = [
+            _record_entry_to_history(str(document.get("docId", "")), _indexed_history_document_to_record_entry(document))
+            for document in indexed_documents
+            if isinstance(document, dict) and str(document.get("docId", "")).strip()
+        ]
+        items.sort(key=lambda item: (item.get("lastTimestamp", ""), item.get("docId", "")), reverse=True)
+        return {
+            "items": items,
+            "total": len(items),
+        }
+
     records = list_records()
     items = [
         _record_entry_to_history(doc_id, entry)
@@ -876,6 +1097,131 @@ def list_document_histories() -> dict[str, Any]:
         "items": items,
         "total": len(items),
     }
+
+
+def query_history_artifact_governance(filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    normalized_filters = filters if isinstance(filters, dict) else {}
+    try:
+        from fyadr_history_db import query_history_artifacts_from_index
+
+        result = query_history_artifacts_from_index(normalized_filters)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "source": "sqlite",
+            "error": str(exc),
+            "filters": normalized_filters,
+            "items": [],
+            "total": 0,
+            "limit": 0,
+            "offset": 0,
+            "hasMore": False,
+            "stats": _empty_artifact_stats(),
+        }
+    if result is None:
+        return {
+            "ok": False,
+            "source": "sqlite",
+            "error": "SQLite history index is unavailable or stale.",
+            "filters": normalized_filters,
+            "items": [],
+            "total": 0,
+            "limit": 0,
+            "offset": 0,
+            "hasMore": False,
+            "stats": _empty_artifact_stats(),
+        }
+    return result
+
+
+def check_history_database_governance() -> dict[str, Any]:
+    try:
+        from fyadr_records import check_history_index
+
+        return check_history_index(strict=False)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "issueCount": 1,
+            "errorCount": 1,
+            "warningCount": 0,
+            "repairableIssueCount": 1,
+            "issues": [
+                {
+                    "code": "history_index_check_failed",
+                    "severity": "error",
+                    "message": str(exc),
+                    "repairable": True,
+                    "recommendedAction": "history-db-repair",
+                }
+            ],
+        }
+
+
+def repair_history_database_governance() -> dict[str, Any]:
+    try:
+        from fyadr_records import repair_history_index
+
+        return repair_history_index(strict=True)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "before": check_history_database_governance(),
+            "after": {
+                "ok": False,
+                "issueCount": 1,
+                "errorCount": 1,
+                "warningCount": 0,
+                "repairableIssueCount": 1,
+                "issues": [
+                    {
+                        "code": "history_index_repair_failed",
+                        "severity": "error",
+                        "message": str(exc),
+                        "repairable": True,
+                        "recommendedAction": "history-db-repair",
+                    }
+                ],
+            },
+        }
+
+
+def list_history_database_backups(validate: bool = False) -> dict[str, Any]:
+    from fyadr_records import list_history_index_backups
+
+    return list_history_index_backups(validate=validate)
+
+
+def backup_history_database_governance(reason: str = "manual", keep: int = 12) -> dict[str, Any]:
+    from fyadr_records import backup_history_index
+
+    return backup_history_index(reason=reason, keep=keep)
+
+
+def compact_history_database_governance(create_backup: bool = True, keep: int = 12) -> dict[str, Any]:
+    from fyadr_records import compact_history_index
+
+    return compact_history_index(create_backup=create_backup, keep=keep)
+
+
+def recover_history_database_governance(backup_path: str | None = None, keep: int = 12) -> dict[str, Any]:
+    from fyadr_records import recover_history_index
+
+    return recover_history_index(backup_path=backup_path, keep=keep)
+
+
+def get_history_database_maintenance_summary() -> dict[str, Any]:
+    from fyadr_records import get_history_index_maintenance_summary
+
+    return get_history_index_maintenance_summary()
+
+
+def ensure_history_database_ready(reason: str = "app", max_age_seconds: float = 30, compact: bool = True) -> dict[str, Any]:
+    from fyadr_records import ensure_history_governance_ready
+
+    return ensure_history_governance_ready(reason=reason, max_age_seconds=max_age_seconds, compact=compact)
 
 
 HISTORY_ORPHAN_SCAN_DIRS: dict[str, Path] = {
@@ -988,6 +1334,15 @@ def _normalize_protected_paths(protected_paths: object | None) -> set[Path]:
 
 def _collect_referenced_history_artifacts(protected_paths: object | None = None) -> set[Path]:
     referenced_paths = _normalize_protected_paths(protected_paths)
+    indexed_paths = list_referenced_history_artifact_paths()
+    if indexed_paths is not None:
+        for raw_path in indexed_paths:
+            try:
+                referenced_paths.add(normalize_path(Path(raw_path)))
+            except Exception:
+                continue
+        return referenced_paths
+
     records = list_records()
     for entry in records.values():
         if not isinstance(entry, dict):
@@ -1706,7 +2061,7 @@ def list_available_models(model_config: dict[str, Any]) -> dict[str, Any]:
 
 
 def export_round_output(output_path: str, export_path: str, target_format: str) -> dict[str, Any]:
-    normalized_output_path = normalize_path(Path(output_path))
+    normalized_output_path = _resolve_api_path(output_path, allowed_roots=API_OUTPUT_ALLOWED_ROOTS, label="Output path")
     normalized_export_path = Path(export_path).resolve()
     normalized_export_path.parent.mkdir(parents=True, exist_ok=True)
     if target_format == "txt":
@@ -1870,7 +2225,7 @@ def _collect_docx_text_fingerprint(path: Path) -> list[tuple[str, str]]:
 
 
 def read_output_text(output_path: str, max_chars: int | None = None) -> dict[str, Any]:
-    normalized_output_path = normalize_path(Path(output_path))
+    normalized_output_path = _resolve_api_path(output_path, allowed_roots=API_READ_ALLOWED_ROOTS, label="Output path")
     text = normalized_output_path.read_text(encoding="utf-8")
     total_chars = len(text)
     normalized_limit = max_chars if isinstance(max_chars, int) and max_chars > 0 else None
@@ -1891,7 +2246,7 @@ def read_output_text(output_path: str, max_chars: int | None = None) -> dict[str
 
 
 def read_round_compare(output_path: str) -> dict[str, Any]:
-    normalized_output_path = normalize_path(Path(output_path))
+    normalized_output_path = _resolve_api_path(output_path, allowed_roots=API_OUTPUT_ALLOWED_ROOTS, label="Output path")
     compare_path = _find_compare_path_for_output(normalized_output_path)
     if not compare_path.exists():
         raise ValueError(f"Compare data not found for output: {normalized_output_path}")
@@ -1901,13 +2256,18 @@ def read_round_compare(output_path: str) -> dict[str, Any]:
     return payload
 
 
+def build_detection_matches_for_output(output_path: str, report: dict[str, Any]) -> list[dict[str, Any]]:
+    compare_payload = read_round_compare(output_path)
+    return build_detection_matches(report, compare_payload)
+
+
 def _find_review_decisions_path_for_output(output_path: Path) -> Path:
     compare_path = _find_compare_path_for_output(output_path)
     return compare_path.with_name(f"{compare_path.stem}_review_decisions.json")
 
 
 def load_review_decisions(output_path: str) -> dict[str, Any]:
-    normalized_output_path = normalize_path(Path(output_path))
+    normalized_output_path = _resolve_api_path(output_path, allowed_roots=API_OUTPUT_ALLOWED_ROOTS, label="Output path")
     decisions_path = _find_review_decisions_path_for_output(normalized_output_path)
     if not decisions_path.exists():
         return {"path": str(decisions_path), "decisions": {}}
@@ -1926,7 +2286,7 @@ def load_review_decisions(output_path: str) -> dict[str, Any]:
 
 
 def save_review_decisions(output_path: str, decisions: dict[str, Any]) -> dict[str, Any]:
-    normalized_output_path = normalize_path(Path(output_path))
+    normalized_output_path = _resolve_api_path(output_path, allowed_roots=API_OUTPUT_ALLOWED_ROOTS, label="Output path")
     decisions_path = _find_review_decisions_path_for_output(normalized_output_path)
     compare_payload = read_round_compare(str(normalized_output_path))
     valid_chunk_ids = {
@@ -2140,6 +2500,150 @@ def _short_evidence(text: str, patterns: list[str], limit: int = 90) -> str:
     return ""
 
 
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_detection_feedback_segments(user_feedback: str) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    for raw_line in str(user_feedback or "").splitlines():
+        line = " ".join(raw_line.split())
+        if "#" not in line:
+            continue
+        index_match = re.search(r"#\s*(\d+)", line)
+        if not index_match:
+            continue
+        percentages = [float(match.group(1)) for match in re.finditer(r"(\d+(?:\.\d+)?)\s*%", line)]
+        probability = percentages[0] if percentages else 0.0
+        match_score = percentages[1] if len(percentages) > 1 else 0.0
+        excerpt = line
+        colon_positions = [line.rfind(":"), line.rfind("：")]
+        colon_position = max(colon_positions)
+        if colon_position >= 0 and colon_position + 1 < len(line):
+            excerpt = line[colon_position + 1 :].strip()
+        elif percentages:
+            percent_matches = list(re.finditer(r"\d+(?:\.\d+)?\s*%", line))
+            if percent_matches:
+                excerpt = line[percent_matches[-1].end() :].strip(" ，,;；:：")
+        if not excerpt:
+            excerpt = line
+        segments.append(
+            {
+                "index": int(index_match.group(1)),
+                "probability": probability,
+                "matchScore": match_score,
+                "excerpt": excerpt[:420],
+                "line": line[:560],
+            }
+        )
+        if len(segments) >= DETECTION_FEEDBACK_MAX_SEGMENTS:
+            break
+    return segments
+
+
+def _normalize_detector_anchor(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _is_low_signal_detector_anchor(value: str) -> bool:
+    normalized = _normalize_detector_anchor(value)
+    if len(normalized) < 3:
+        return True
+    if normalized in {
+        "and",
+        "for",
+        "from",
+        "the",
+        "this",
+        "that",
+        "with",
+        "method",
+        "value",
+        "system",
+        "model",
+        "data",
+        "analysis",
+    }:
+        return True
+    if normalized.isdigit() and len(normalized) < 3:
+        return True
+    return False
+
+
+def _extract_detector_feedback_anchors(text: str) -> list[str]:
+    raw = str(text or "")
+    anchors: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        normalized = _normalize_detector_anchor(value)
+        if _is_low_signal_detector_anchor(normalized) or normalized in seen:
+            return
+        seen.add(normalized)
+        anchors.append(str(value).strip())
+
+    for match in re.finditer(r"(?:\[[0-9,\s-]+\]|\d+(?:\.\d+)?\s*(?:%|ms|s|kg|g|cm|mm|px|万元|元|次|个|篇|章|节|页|年)?)", raw):
+        add(match.group(0))
+    for match in re.finditer(r"[A-Za-z][A-Za-z0-9+.#/-]{2,}", raw):
+        add(match.group(0))
+    for match in re.finditer(r"[\u3400-\u9fff]{4,}", raw):
+        run = match.group(0)
+        if len(run) <= 10:
+            add(run)
+            continue
+        positions = [0, max(0, len(run) // 3), max(0, len(run) * 2 // 3), max(0, len(run) - 8)]
+        for position in positions:
+            add(run[position : position + 8])
+    return anchors[:DETECTION_FEEDBACK_MAX_ANCHORS]
+
+
+def _anchor_in_text(anchor: str, text: str) -> bool:
+    normalized_anchor = _normalize_detector_anchor(anchor)
+    normalized_text = _normalize_detector_anchor(text)
+    return bool(normalized_anchor and normalized_anchor in normalized_text)
+
+
+def _build_detection_feedback_profile(
+    input_text: str,
+    previous_output_text: str,
+    user_feedback: str,
+) -> dict[str, Any]:
+    segments = _extract_detection_feedback_segments(user_feedback)
+    if not segments and _is_external_detection_feedback(user_feedback):
+        segments = [
+            {
+                "index": 0,
+                "probability": 0.0,
+                "matchScore": 0.0,
+                "excerpt": " ".join(str(user_feedback or "").split())[:420],
+                "line": " ".join(str(user_feedback or "").split())[:560],
+            }
+        ]
+    excerpt_text = "\n".join(str(segment.get("excerpt", "")) for segment in segments)
+    analysis_text = "\n".join(item for item in (excerpt_text, previous_output_text, input_text, user_feedback) if str(item or "").strip())
+    anchors = _extract_detector_feedback_anchors(excerpt_text or user_feedback)
+    local_text = "\n".join([input_text, previous_output_text])
+    matched_anchors = [anchor for anchor in anchors if _anchor_in_text(anchor, local_text)]
+    probabilities = [_safe_float(segment.get("probability")) for segment in segments if _safe_float(segment.get("probability")) > 0]
+    match_scores = [_safe_float(segment.get("matchScore")) for segment in segments if _safe_float(segment.get("matchScore")) > 0]
+    connector_hits = len(DETECTOR_MECHANICAL_CONNECTOR_RE.findall(analysis_text))
+    template_hits = len(DETECTOR_TEMPLATE_PHRASE_RE.findall(analysis_text))
+    return {
+        "segments": segments,
+        "excerptText": excerpt_text,
+        "analysisText": analysis_text,
+        "anchors": anchors,
+        "matchedAnchors": matched_anchors,
+        "maxProbability": max(probabilities, default=0.0),
+        "maxMatchScore": max(match_scores, default=0.0),
+        "connectorHits": connector_hits,
+        "templateHits": template_hits,
+    }
+
+
 def _build_detection_surgery_feedback(
     input_text: str,
     previous_output_text: str,
@@ -2161,6 +2665,7 @@ def _build_detection_surgery_feedback(
         "- Change only sentence openings, connector choices, word order, and a few template-like phrases where necessary.",
         "- Keep facts, numbers, citations, figure/table references, technical terms, paragraph role, and language unchanged.",
     ]
+    detector_profile = _build_detection_feedback_profile(input_text, previous_output_text, user_feedback)
 
     def add_card(code: str, level: str, title: str, repair: str, evidence: str = "") -> None:
         card = f"- [{code} / {level}] {title}\n  Repair: {repair}"
@@ -2169,6 +2674,55 @@ def _build_detection_surgery_feedback(
         cards.append(card)
         tags.append(code)
         advice.append(title)
+
+    detector_segments = detector_profile.get("segments") if isinstance(detector_profile.get("segments"), list) else []
+    matched_anchors = detector_profile.get("matchedAnchors") if isinstance(detector_profile.get("matchedAnchors"), list) else []
+    if detector_segments:
+        segment_preview = "; ".join(
+            f"#{segment.get('index')} {round(_safe_float(segment.get('probability')))}% / match {round(_safe_float(segment.get('matchScore')))}%"
+            for segment in detector_segments[:3]
+        )
+        excerpt_preview = " | ".join(
+            str(segment.get("excerpt", "")).strip()[:150]
+            for segment in detector_segments[:2]
+            if str(segment.get("excerpt", "")).strip()
+        )
+        evidence = segment_preview if not excerpt_preview else f"{segment_preview}; excerpts: {excerpt_preview}"
+        add_card(
+            "detector-high-risk-segment",
+            "high" if _safe_float(detector_profile.get("maxProbability")) >= 80 else "medium",
+            "Use the report-hit segment as the exact repair target, not as permission to rewrite the whole chunk.",
+            "Only disturb the exposed sentence pattern: adjust opening, clause order, and transition wording around the matched excerpt while preserving all claims and local evidence.",
+            evidence,
+        )
+        note_lines.append(
+            f"- Parsed detector hits: {len(detector_segments)} segment(s), max probability {round(_safe_float(detector_profile.get('maxProbability')))}%, max match {round(_safe_float(detector_profile.get('maxMatchScore')))}%."
+        )
+    if matched_anchors:
+        add_card(
+            "detector-anchor-preservation",
+            "high",
+            "Detected report anchors overlap this chunk; preserve them while changing surrounding syntax.",
+            "Keep these anchors, numbers, citations, model names, and domain terms intact. Do not paraphrase or delete them; rewrite only the connective tissue around them.",
+            " / ".join(str(anchor) for anchor in matched_anchors[:8]),
+        )
+        note_lines.append(f"- Preserve detector anchors while repairing rhythm: {', '.join(str(anchor) for anchor in matched_anchors[:8])}.")
+    if _safe_float(detector_profile.get("connectorHits")) >= 3:
+        add_card(
+            "detector-rhythm-repair",
+            "medium",
+            "Report feedback and chunk text show repeated mechanical transitions.",
+            "Remove or replace a small number of repeated transitions, but keep the paragraph order and causal relation unchanged.",
+            f"connectorHits={int(_safe_float(detector_profile.get('connectorHits')))}",
+        )
+    if _safe_float(detector_profile.get("templateHits")) >= 1:
+        add_card(
+            "detector-template-repair",
+            "medium",
+            "Report feedback overlaps with stock academic template phrasing.",
+            "Replace broad value claims or formulaic academic phrasing with concrete wording tied to this paragraph's actual method, data, module, or result.",
+            f"templateHits={int(_safe_float(detector_profile.get('templateHits')))}",
+        )
 
     if _looks_like_english_text(input_text or previous_output_text):
         add_card(
@@ -2291,14 +2845,6 @@ def _build_compact_round_brief(
     ]
 
 
-def _build_rerun_candidate_note(candidate_index: int) -> str:
-    if candidate_index <= 1:
-        return "- Candidate 1: make the most direct repair according to the repair cards."
-    if candidate_index == 2:
-        return "- Candidate 2: use a visibly different sentence rhythm and avoid the previous output's opening and transition pattern."
-    return "- Candidate 3: choose a more conservative version with tighter length control and fewer abstract template phrases."
-
-
 def _build_targeted_validation_retry_note(validation_error: str) -> str:
     repair_steps = _build_validation_repair_steps(validation_error)
     sections = [
@@ -2311,16 +2857,6 @@ def _build_targeted_validation_retry_note(validation_error: str) -> str:
         sections.append(repair_steps)
     sections.append(f"- Validation error: {validation_error.strip()}")
     return "\n".join(sections)
-
-
-def _should_generate_rerun_candidates(chunk: dict[str, Any], input_text: str) -> bool:
-    quality = chunk.get("quality") if isinstance(chunk.get("quality"), dict) else {}
-    flags = quality.get("flags") if isinstance(quality, dict) else []
-    flag_set = {str(flag) for flag in flags} if isinstance(flags, list) else set()
-    if flag_set & {"machine_like_expression", "template_phrase_drift", "over_expanded", "over_compressed"}:
-        return True
-    return len(input_text.strip()) >= 180
-
 
 def _build_rerun_strategy_note(chunk: dict[str, Any], user_feedback: str = "") -> tuple[str, list[str], list[str]]:
     quality = chunk.get("quality") if isinstance(chunk.get("quality"), dict) else {}
@@ -2386,7 +2922,6 @@ def _build_targeted_rerun_prompt_input(
     rerun_note: str,
     issue_cards: list[str],
     style_card: str | None,
-    candidate_index: int,
     validation_retry_note: str | None = None,
 ) -> str:
     compact_brief = _build_compact_round_brief(prompt_profile, round_number, prompt_sequence)
@@ -2425,7 +2960,9 @@ def _build_targeted_rerun_prompt_input(
 
     sections.extend(
         [
-            "[CANDIDATE DIRECTION]\n" + _build_rerun_candidate_note(candidate_index),
+            "[TARGETED REPAIR DIRECTION]\n"
+            "- Generate one conservative repair for this chunk; do not produce alternatives.\n"
+            "- Follow the repair cards and human feedback directly while preserving structure and facts.",
             "[BAD PREVIOUS OUTPUT - DO NOT COPY ITS STYLE]\n" + _truncate_prompt_block(previous_output_text, 5000),
             "[INPUT TEXT]\n" + protected_input_text,
         ]
@@ -2545,7 +3082,7 @@ def _bump_quality_summary_counter(compare_payload: dict[str, Any], key: str, chu
 
 
 def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str, Any], user_feedback: str = "") -> dict[str, Any]:
-    normalized_output_path = normalize_path(Path(output_path))
+    normalized_output_path = _resolve_api_path(output_path, allowed_roots=API_OUTPUT_ALLOWED_ROOTS, label="Output path")
     compare_path = _find_compare_path_for_output(normalized_output_path)
     compare_payload = read_round_compare(str(normalized_output_path))
     chunks = compare_payload.get("chunks")
@@ -2583,6 +3120,11 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
         previous_output_text,
         user_feedback,
     )
+    detector_profile = (
+        _build_detection_feedback_profile(input_text, previous_output_text, user_feedback)
+        if _is_external_detection_feedback(user_feedback)
+        else {}
+    )
     if detector_cards:
         issue_cards = _unique_strings([*detector_cards, *issue_cards])
     if detector_note:
@@ -2592,8 +3134,7 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
     if style_card:
         strategy_tags = _unique_strings([*strategy_tags, "global-style-card"])
         advice_items = _unique_strings([*advice_items, "重跑会参考全文高频连接词、模板句和重复开头，避免继续放大全文层面的机械感。"])
-    needs_detector_candidates = _is_external_detection_feedback(user_feedback)
-    candidate_count = 1 if mode == "offline" else (2 if needs_detector_candidates or _should_generate_rerun_candidates(target_chunk, input_text) else 1)
+    candidate_count = 1
     valid_candidates: list[tuple[float, str, int]] = []
     candidate_errors: list[str] = []
 
@@ -2616,7 +3157,6 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
                 rerun_note=rerun_note,
                 issue_cards=issue_cards,
                 style_card=style_card,
-                candidate_index=candidate_index,
                 validation_retry_note=validation_retry_note,
             )
             candidate_output_for_review = ""
@@ -2682,6 +3222,17 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
     target_chunk["rerunSelectedScore"] = round(selected_score, 3)
     target_chunk["rerunPromptNote"] = rerun_note
     target_chunk["rerunUserFeedback"] = " ".join(str(user_feedback or "").split())[:800]
+    if detector_profile:
+        target_chunk["rerunDetectorProfile"] = {
+            "segmentCount": len(detector_profile.get("segments", [])) if isinstance(detector_profile.get("segments"), list) else 0,
+            "maxProbability": round(_safe_float(detector_profile.get("maxProbability")), 3),
+            "maxMatchScore": round(_safe_float(detector_profile.get("maxMatchScore")), 3),
+            "matchedAnchors": [str(anchor) for anchor in detector_profile.get("matchedAnchors", [])[:DETECTION_FEEDBACK_MAX_ANCHORS]]
+            if isinstance(detector_profile.get("matchedAnchors"), list)
+            else [],
+            "connectorHits": int(_safe_float(detector_profile.get("connectorHits"))),
+            "templateHits": int(_safe_float(detector_profile.get("templateHits"))),
+        }
     if used_fallback:
         target_chunk["rerunStatus"] = "fallback"
         target_chunk["rerunFallbackMode"] = fallback_mode

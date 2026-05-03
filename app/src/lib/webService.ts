@@ -3,15 +3,21 @@ import type {
   DeleteHistoryResult,
   DeleteHistoryOptions,
   DetectionReport,
+  DetectionReportMatch,
   DetectionReportProvider,
   DocumentHistory,
   DocumentProtectionMap,
+  DocumentScopeDiagnostics,
   DocumentStatus,
   EnvironmentDiagnostics,
   ExportIssueSample,
   ExportResult,
   FormatRules,
   FormatRulesResult,
+  HistoryArtifactQueryFilters,
+  HistoryArtifactQueryResponse,
+  HistoryDatabaseCheckResult,
+  HistoryDatabaseRepairResult,
   HistoryDeleteImpact,
   HistoryOrphanDeleteResult,
   HistoryOrphanScanResult,
@@ -38,6 +44,8 @@ const WEB_API_GLOBALS = globalThis as { __FYADR_WEB_API__?: string };
 const WEB_API_BASE = WEB_API_GLOBALS.__FYADR_WEB_API__ ?? import.meta.env.VITE_FYADR_API_BASE ?? "";
 const FORMAT_RULE_PARSE_DEFAULT_TIMEOUT_MS = 300_000;
 const FORMAT_RULE_PARSE_MAX_TIMEOUT_MS = 1_815_000;
+const SAVED_SECRET_PLACEHOLDER = "__FYADR_SAVED_SECRET__";
+const MAX_UPLOAD_BYTES = 40 * 1024 * 1024;
 const PROMPT_PREVIEW_FALLBACKS: Array<{ id: PromptId; label: string; description: string; relativePath: string }> = [
   { id: "prewrite", label: "预改写", description: "保守自然化", relativePath: "prompts/fyadr-cn-prewrite.md" },
   { id: "classical", label: "经典改写", description: "解释性慢节奏", relativePath: "prompts/fyadr-cn-classical.md" },
@@ -68,15 +76,75 @@ const defaultModelConfig: ModelConfig = {
 function readModelConfigBackup(): Partial<ModelConfig> {
   try {
     const raw = globalThis.localStorage?.getItem(MODEL_CONFIG_BACKUP_KEY);
-    return raw ? (JSON.parse(raw) as Partial<ModelConfig>) : {};
+    return raw ? sanitizeModelConfigSecrets(JSON.parse(raw) as Partial<ModelConfig>) : {};
   } catch {
     return {};
   }
 }
 
+function sanitizeSecret(value: unknown): string {
+  return typeof value === "string" && value.trim() ? SAVED_SECRET_PLACEHOLDER : "";
+}
+
+function hasVisibleSecret(value: unknown): boolean {
+  return typeof value === "string" && value.trim() !== "" && value.trim() !== SAVED_SECRET_PLACEHOLDER;
+}
+
+function sanitizeModelConfigSecrets<T extends Partial<ModelConfig>>(config: T): T {
+  const sanitized = {
+    ...config,
+    apiKey: sanitizeSecret(config.apiKey),
+    modelProviders: config.modelProviders?.map((provider) => ({
+      ...provider,
+      apiKey: sanitizeSecret(provider.apiKey),
+    })),
+    roundModels: config.roundModels
+      ? Object.fromEntries(
+          Object.entries(config.roundModels).map(([key, route]) => [
+            key,
+            {
+              ...route,
+              apiKey: sanitizeSecret(route.apiKey),
+            },
+          ]),
+        )
+      : config.roundModels,
+  };
+  return sanitized as T;
+}
+
+function restoreVisibleSecrets(base: ModelConfig, source: ModelConfig): ModelConfig {
+  const restored: ModelConfig = {
+    ...base,
+    apiKey: hasVisibleSecret(source.apiKey) ? source.apiKey : base.apiKey,
+    modelProviders: base.modelProviders?.map((provider) => {
+      const sourceProvider = source.modelProviders?.find((item) => item.id === provider.id || item.name === provider.name);
+      return {
+        ...provider,
+        apiKey: hasVisibleSecret(sourceProvider?.apiKey) ? sourceProvider?.apiKey ?? provider.apiKey : provider.apiKey,
+      };
+    }),
+    roundModels: base.roundModels
+      ? Object.fromEntries(
+          Object.entries(base.roundModels).map(([key, route]) => {
+            const sourceRoute = source.roundModels?.[key];
+            return [
+              key,
+              {
+                ...route,
+                apiKey: hasVisibleSecret(sourceRoute?.apiKey) ? sourceRoute?.apiKey ?? route.apiKey : route.apiKey,
+              },
+            ];
+          }),
+        )
+      : base.roundModels,
+  };
+  return restored;
+}
+
 function writeModelConfigBackup(config: ModelConfig): void {
   try {
-    globalThis.localStorage?.setItem(MODEL_CONFIG_BACKUP_KEY, JSON.stringify(config));
+    globalThis.localStorage?.setItem(MODEL_CONFIG_BACKUP_KEY, JSON.stringify(sanitizeModelConfigSecrets(config)));
   } catch {
     // Ignore local backup failures; backend config remains authoritative.
   }
@@ -100,6 +168,95 @@ function getUtf8Size(value: string): number {
   } catch {
     return value.length;
   }
+}
+
+function formatBytes(value: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let size = Math.max(0, value);
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size >= 10 || unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function assertFileSize(file: File, label: string): void {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new Error(`${label} is too large (${formatBytes(file.size)}). Limit: ${formatBytes(MAX_UPLOAD_BYTES)}.`);
+  }
+}
+
+function isEndpointCompatibilityError(error: unknown): boolean {
+  const status = (error as { status?: number } | null)?.status;
+  return status === 404 || status === 405;
+}
+
+function getSourceKindFromPath(sourcePath: string): string {
+  const lowerPath = sourcePath.toLowerCase();
+  if (lowerPath.endsWith(".docx")) return "docx";
+  if (lowerPath.endsWith(".txt")) return "txt";
+  return "";
+}
+
+function buildUnavailableScopeDiagnostics(sourcePath: string, detail = ""): DocumentScopeDiagnostics {
+  return {
+    available: false,
+    ok: true,
+    sourcePath,
+    sourceKind: getSourceKindFromPath(sourcePath),
+    message: detail || "正文边界诊断暂不可用，已跳过非阻断诊断；正文保护与导出仍按后端保护图执行。",
+    totalTextUnitCount: 0,
+    editableUnitCount: 0,
+    protectedUnitCount: 0,
+    reasonCounts: {},
+    scope: {},
+    issueCount: 0,
+    errorCount: 0,
+    warningCount: 0,
+    issues: [],
+    units: [],
+  };
+}
+
+function normalizeHistoryArtifactKinds(filters: HistoryArtifactQueryFilters): NonNullable<HistoryArtifactQueryResponse["filters"]["kinds"]> {
+  const kinds = filters.kinds ?? (Array.isArray(filters.kind) ? filters.kind : filters.kind ? [filters.kind] : []);
+  return kinds.filter((kind, index, items) => items.indexOf(kind) === index);
+}
+
+function buildEmptyHistoryArtifactQueryResponse(
+  filters: HistoryArtifactQueryFilters,
+  error: string,
+): HistoryArtifactQueryResponse {
+  const limit = Math.max(0, Number(filters.limit ?? 8) || 8);
+  const offset = Math.max(0, Number(filters.offset ?? 0) || 0);
+  return {
+    ok: false,
+    source: "sqlite",
+    filters: {
+      ...filters,
+      kinds: normalizeHistoryArtifactKinds(filters),
+      limit,
+      offset,
+    },
+    items: [],
+    total: 0,
+    limit,
+    offset,
+    hasMore: false,
+    stats: {
+      total: 0,
+      existing: 0,
+      intermediate: 0,
+      exports: 0,
+      reports: 0,
+      sources: 0,
+      external: 0,
+      missing: 0,
+      bytes: 0,
+    },
+    error,
+  };
 }
 
 async function loadPromptPreviewsViaReadOutput(): Promise<PromptPreviewResponse> {
@@ -152,6 +309,62 @@ async function fetchWithFriendlyError(input: string, init?: RequestInit): Promis
   }
 }
 
+function parseJsonErrorPayload(responseText: string): (Record<string, unknown> & { message?: string }) | null {
+  try {
+    const parsed = JSON.parse(responseText) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown> & { message?: string })
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isHtmlErrorPage(responseText: string): boolean {
+  const trimmed = responseText.trim().toLowerCase();
+  return trimmed.startsWith("<!doctype") || trimmed.startsWith("<html") || trimmed.includes("<title>") || trimmed.includes("<body");
+}
+
+function getPlainHttpErrorText(responseText: string): string {
+  const text = responseText.replace(/\s+/g, " ").trim();
+  if (!text || isHtmlErrorPage(text)) {
+    return "";
+  }
+  return text.length > 240 ? `${text.slice(0, 240)}...` : text;
+}
+
+function formatHttpErrorMessage(
+  status: number,
+  responseText: string,
+  errorPayload: (Record<string, unknown> & { message?: string }) | null,
+): string {
+  const payloadMessage = typeof errorPayload?.message === "string" ? errorPayload.message.trim() : "";
+  if (payloadMessage) {
+    return payloadMessage;
+  }
+  if (status === 405) {
+    return "本地后端接口方法不匹配（HTTP 405）。请刷新页面；如果仍出现，请重启本地 Web 服务，确认前后端是同一版本。";
+  }
+  if (isHtmlErrorPage(responseText)) {
+    return `本地后端返回了 HTML 错误页（HTTP ${status}）。请刷新页面；如果仍出现，请重启本地 Web 服务，确认前后端是同一版本。`;
+  }
+  return getPlainHttpErrorText(responseText) || `请求失败（HTTP ${status}）。`;
+}
+
+function createHttpRequestError(response: Response, responseText: string): Error & {
+  payload?: Record<string, unknown> | null;
+  status?: number;
+} {
+  const errorPayload = parseJsonErrorPayload(responseText);
+  const requestError = new Error(formatHttpErrorMessage(response.status, responseText, errorPayload)) as Error & {
+    payload?: Record<string, unknown> | null;
+    status?: number;
+  };
+  requestError.payload = errorPayload;
+  requestError.status = response.status;
+  return requestError;
+}
+
 async function requestJson<T>(input: string, init?: RequestJsonInit): Promise<T> {
   const { timeoutMs, signal, ...requestInit } = init ?? {};
   const controller = timeoutMs || signal ? new AbortController() : null;
@@ -173,20 +386,7 @@ async function requestJson<T>(input: string, init?: RequestJsonInit): Promise<T>
     });
     const responseText = await response.text();
     if (!response.ok) {
-      const errorPayload = (() => {
-        try {
-          return JSON.parse(responseText) as Record<string, unknown> & { message?: string };
-        } catch {
-          return null;
-        }
-      })();
-      const requestError = new Error(errorPayload?.message || responseText || `Request failed: ${response.status}`) as Error & {
-        payload?: Record<string, unknown> | null;
-        status?: number;
-      };
-      requestError.payload = errorPayload;
-      requestError.status = response.status;
-      throw requestError;
+      throw createHttpRequestError(response, responseText);
     }
     return JSON.parse(responseText) as T;
   } finally {
@@ -383,14 +583,7 @@ function parseExportIssueSamples(value: string | null): ExportIssueSample[] {
 async function exportResponseToResult(response: Response, targetFormat: "txt" | "docx"): Promise<ExportResult> {
   if (!response.ok) {
     const responseText = await response.text();
-    const errorPayload = (() => {
-      try {
-        return JSON.parse(responseText) as { message?: string };
-      } catch {
-        return null;
-      }
-    })();
-    throw new Error(errorPayload?.message || responseText || `Export failed: ${response.status}`);
+    throw createHttpRequestError(response, responseText);
   }
   const blob = await response.blob();
   const filename = extractDownloadFilename(
@@ -618,7 +811,7 @@ export const webService: AppService = {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    const merged = mergeModelConfig(payload, saved);
+    const merged = restoreVisibleSecrets(mergeModelConfig(saved), payload);
     writeModelConfigBackup(merged);
     return merged;
   },
@@ -643,6 +836,7 @@ export const webService: AppService = {
     if (!file) {
       return null;
     }
+    assertFileSize(file, "Document");
     const lowerName = file.name.toLowerCase();
     const requestBody = lowerName.endsWith(".docx")
       ? {
@@ -675,6 +869,7 @@ export const webService: AppService = {
     if (!file) {
       return null;
     }
+    assertFileSize(file, "Detection report");
     return requestJson<DetectionReport>("/api/detection-report", {
       method: "POST",
       body: JSON.stringify({
@@ -685,12 +880,33 @@ export const webService: AppService = {
     });
   },
 
+  async buildDetectionMatches(outputPath: string, report: DetectionReport): Promise<DetectionReportMatch[]> {
+    const payload = await requestJson<{ matches: DetectionReportMatch[] }>("/api/detection-matches", {
+      method: "POST",
+      body: JSON.stringify({ outputPath, report }),
+    });
+    return payload.matches ?? [];
+  },
+
   async getDocumentHistory(sourcePath: string): Promise<DocumentHistory> {
     return requestJson<DocumentHistory>(`/api/document-history?sourcePath=${encodeURIComponent(sourcePath)}`);
   },
 
   async getDocumentProtectionMap(sourcePath: string): Promise<DocumentProtectionMap> {
     return requestJson<DocumentProtectionMap>(`/api/document-protection-map?sourcePath=${encodeURIComponent(sourcePath)}`);
+  },
+
+  async getDocumentScopeDiagnostics(sourcePath: string): Promise<DocumentScopeDiagnostics> {
+    try {
+      return await requestJson<DocumentScopeDiagnostics>(`/api/document-scope-diagnostics?sourcePath=${encodeURIComponent(sourcePath)}`);
+    } catch (error) {
+      return buildUnavailableScopeDiagnostics(
+        sourcePath,
+        isEndpointCompatibilityError(error)
+          ? "当前后端未提供正文边界诊断接口，已跳过非阻断诊断；重启本地 Web 服务后可恢复完整诊断。"
+          : "正文边界诊断暂不可用，已跳过非阻断诊断；正文保护与导出仍按后端保护图执行。",
+      );
+    }
   },
 
   async listDocumentHistories(): Promise<HistoryListResponse> {
@@ -727,6 +943,40 @@ export const webService: AppService = {
         mode: options?.mode ?? "records_and_artifacts",
       }),
     });
+  },
+
+  async queryHistoryArtifacts(filters: HistoryArtifactQueryFilters = {}): Promise<HistoryArtifactQueryResponse> {
+    const query = new URLSearchParams();
+    if (filters.docId) query.set("docId", filters.docId);
+    if (filters.roundNumber) query.set("roundNumber", String(filters.roundNumber));
+    const kinds = filters.kinds ?? (Array.isArray(filters.kind) ? filters.kind : filters.kind ? [filters.kind] : []);
+    kinds.forEach((kind) => query.append("kind", kind));
+    if (filters.exists !== undefined) query.set("exists", String(filters.exists));
+    if (filters.minBytes) query.set("minBytes", String(filters.minBytes));
+    if (filters.maxBytes) query.set("maxBytes", String(filters.maxBytes));
+    if (filters.pathContains) query.set("pathContains", filters.pathContains);
+    if (filters.limit) query.set("limit", String(filters.limit));
+    if (filters.offset) query.set("offset", String(filters.offset));
+    const suffix = query.toString();
+    try {
+      return await requestJson<HistoryArtifactQueryResponse>(`/api/history-artifacts${suffix ? `?${suffix}` : ""}`);
+    } catch (error) {
+      if (isEndpointCompatibilityError(error)) {
+        return buildEmptyHistoryArtifactQueryResponse(
+          filters,
+          "当前后端未提供历史资产索引接口，已跳过非阻断治理探测；重启本地 Web 服务后可恢复完整历史治理。",
+        );
+      }
+      throw error;
+    }
+  },
+
+  async checkHistoryDatabase(): Promise<HistoryDatabaseCheckResult> {
+    return requestJson<HistoryDatabaseCheckResult>("/api/history-db/check");
+  },
+
+  async repairHistoryDatabase(): Promise<HistoryDatabaseRepairResult> {
+    return requestJson<HistoryDatabaseRepairResult>("/api/history-db/repair", { method: "POST" });
   },
 
   async scanHistoryOrphans(protectedPaths: string[] = []): Promise<HistoryOrphanScanResult> {

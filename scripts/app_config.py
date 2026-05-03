@@ -11,7 +11,7 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_RETRIES = 3
 SUPPORTED_PROMPT_PROFILES = {"cn", "cn_prewrite", "cn_custom"}
 SUPPORTED_PROMPT_IDS = {"prewrite", "classical", "round1", "round2"}
-SUPPORTED_REWRITE_CANDIDATE_MODES = {"economy", "quality"}
+SUPPORTED_REWRITE_CANDIDATE_MODES = {"economy"}
 ROUND_MODEL_KEYS = {
     "cn_prewrite:1",
     "cn_prewrite:2",
@@ -22,6 +22,8 @@ ROUND_MODEL_KEYS = {
     "cn_custom:2",
     "cn_custom:3",
 }
+SAVED_SECRET_PLACEHOLDER = "__FYADR_SAVED_SECRET__"
+_MISSING_SECRET = object()
 
 
 def _clamp_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
@@ -96,6 +98,126 @@ def _normalize_rate_max_requests(raw_config: dict[str, Any]) -> int:
     if five_minute_value > 0:
         return five_minute_value
     return _normalize_rate_limit(raw_config.get("rateLimitPerMinute", 0))
+
+
+def _is_saved_secret_placeholder(value: Any) -> bool:
+    return str(value or "").strip() == SAVED_SECRET_PLACEHOLDER
+
+
+def _secret_or_existing(value: Any = _MISSING_SECRET, existing_value: Any = "") -> str:
+    existing_candidate = str(existing_value or "").strip()
+    if value is _MISSING_SECRET:
+        return existing_candidate
+    candidate = str(value or "").strip()
+    if _is_saved_secret_placeholder(candidate):
+        return existing_candidate
+    return candidate
+
+
+def _secret_for_client(value: Any) -> str:
+    return SAVED_SECRET_PLACEHOLDER if str(value or "").strip() else ""
+
+
+def _redact_secret_fields(config: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(config)
+    api_key = str(redacted.get("apiKey", "") or "").strip()
+    redacted["apiKey"] = _secret_for_client(api_key)
+    redacted["hasApiKey"] = bool(api_key)
+    redacted["apiKeyPreview"] = f"...{api_key[-4:]}" if api_key else ""
+    return redacted
+
+
+def redact_app_config(config: dict[str, Any]) -> dict[str, Any]:
+    redacted = _redact_secret_fields(config)
+    providers = []
+    for provider in redacted.get("modelProviders", []) or []:
+        if isinstance(provider, dict):
+            providers.append(_redact_secret_fields(provider))
+    redacted["modelProviders"] = providers
+
+    round_models: dict[str, Any] = {}
+    raw_round_models = redacted.get("roundModels", {})
+    if isinstance(raw_round_models, dict):
+        for key, round_config in raw_round_models.items():
+            if isinstance(round_config, dict):
+                round_models[str(key)] = _redact_secret_fields(round_config)
+    redacted["roundModels"] = round_models
+    return redacted
+
+
+def _existing_providers_by_key(existing: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    providers: dict[str, dict[str, Any]] = {}
+    for provider in existing.get("modelProviders", []) or []:
+        if not isinstance(provider, dict):
+            continue
+        provider_id = str(provider.get("id", "") or "").strip()
+        provider_name = str(provider.get("name", "") or "").strip()
+        if provider_id:
+            providers[f"id:{provider_id}"] = provider
+        if provider_name:
+            providers[f"name:{provider_name}"] = provider
+    return providers
+
+
+def _merge_existing_provider_secrets(value: Any, existing: dict[str, Any]) -> Any:
+    if not isinstance(value, list):
+        return value
+    existing_by_key = _existing_providers_by_key(existing)
+    merged: list[Any] = []
+    for provider in value:
+        if not isinstance(provider, dict):
+            merged.append(provider)
+            continue
+        provider_id = str(provider.get("id", "") or "").strip()
+        provider_name = str(provider.get("name", "") or "").strip()
+        existing_provider = (
+            existing_by_key.get(f"id:{provider_id}")
+            or existing_by_key.get(f"name:{provider_name}")
+            or {}
+        )
+        next_provider = dict(provider)
+        next_provider["apiKey"] = _secret_or_existing(
+            next_provider.get("apiKey", _MISSING_SECRET),
+            existing_provider.get("apiKey") if isinstance(existing_provider, dict) else "",
+        )
+        merged.append(next_provider)
+    return merged
+
+
+def _merge_existing_round_model_secrets(value: Any, existing: dict[str, Any]) -> Any:
+    if not isinstance(value, dict):
+        return value
+    existing_round_models = existing.get("roundModels", {})
+    if not isinstance(existing_round_models, dict):
+        existing_round_models = {}
+    merged: dict[str, Any] = {}
+    for key, round_config in value.items():
+        if not isinstance(round_config, dict):
+            merged[key] = round_config
+            continue
+        existing_round = existing_round_models.get(str(key), {})
+        next_round = dict(round_config)
+        next_round["apiKey"] = _secret_or_existing(
+            next_round.get("apiKey", _MISSING_SECRET),
+            existing_round.get("apiKey") if isinstance(existing_round, dict) else "",
+        )
+        merged[key] = next_round
+    return merged
+
+
+def hydrate_app_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    existing = load_app_config()
+    hydrated = dict(config)
+    hydrated["apiKey"] = _secret_or_existing(hydrated.get("apiKey", _MISSING_SECRET), existing.get("apiKey"))
+    hydrated["modelProviders"] = _merge_existing_provider_secrets(
+        hydrated.get("modelProviders", existing.get("modelProviders", [])),
+        existing,
+    )
+    hydrated["roundModels"] = _merge_existing_round_model_secrets(
+        hydrated.get("roundModels", existing.get("roundModels", {})),
+        existing,
+    )
+    return hydrated
 
 
 def _normalize_round_models(value: Any) -> dict[str, dict[str, Any]]:
@@ -234,11 +356,17 @@ def save_app_config(config: dict[str, Any]) -> dict[str, Any]:
             existing = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             existing = {}
-    raw_round_models = config.get("roundModels", existing.get("roundModels", {}))
-    raw_model_providers = config.get("modelProviders", existing.get("modelProviders", []))
+    raw_round_models = _merge_existing_round_model_secrets(
+        config.get("roundModels", existing.get("roundModels", {})),
+        existing,
+    )
+    raw_model_providers = _merge_existing_provider_secrets(
+        config.get("modelProviders", existing.get("modelProviders", [])),
+        existing,
+    )
     normalized = {
         "baseUrl": str(config.get("baseUrl", "")).strip(),
-        "apiKey": str(config.get("apiKey", "")).strip(),
+        "apiKey": _secret_or_existing(config.get("apiKey", _MISSING_SECRET), existing.get("apiKey")),
         "model": str(config.get("model", "")).strip(),
         "apiType": _normalize_api_type(config.get("apiType", "chat_completions")),
         "temperature": float(config.get("temperature", 0.7)),

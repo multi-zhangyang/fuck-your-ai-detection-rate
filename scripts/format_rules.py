@@ -7,6 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from ai_json import extract_json_object
 from app_config import DEFAULT_MAX_RETRIES, DEFAULT_REQUEST_TIMEOUT_SECONDS, load_app_config
 from llm_client import llm_completion
 
@@ -20,6 +21,34 @@ FORMAT_RULE_PARSE_MAX_TIMEOUT_SECONDS = 1800
 FORMAT_RULE_PARSE_MAX_RETRIES = 0
 
 ALIGNMENT_VALUES = {"left", "center", "right", "justify"}
+FULLWIDTH_TRANSLATION = str.maketrans(
+    "０１２３４５６７８９．，：；（）％",
+    "0123456789.,:;()%",
+)
+STYLE_KEY_ALIASES = {
+    "cnFont": ("cnFont", "cn_font", "chineseFont", "zhFont", "eastAsiaFont", "中文字体", "汉字字体", "中文用字"),
+    "enFont": ("enFont", "en_font", "englishFont", "westernFont", "latinFont", "asciiFont", "西文字体", "英文字体", "数字字体"),
+    "fontSizePt": ("fontSizePt", "fontSize", "font_size", "size", "字号", "字体大小", "字级"),
+    "bold": ("bold", "isBold", "fontBold", "加粗", "粗体"),
+    "italic": ("italic", "isItalic", "斜体"),
+    "alignment": ("alignment", "align", "paragraphAlignment", "对齐", "对齐方式"),
+    "firstLineIndentPt": ("firstLineIndentPt", "firstLineIndent", "indent", "textIndent", "首行缩进", "缩进"),
+    "spaceBeforePt": ("spaceBeforePt", "spaceBefore", "beforeSpacing", "段前", "段前距"),
+    "spaceAfterPt": ("spaceAfterPt", "spaceAfter", "afterSpacing", "段后", "段后距"),
+    "lineSpacingPt": ("lineSpacingPt", "fixedLineSpacing", "lineSpacing", "lineHeight", "行距", "固定行距", "固定值"),
+    "lineSpacingMultiple": ("lineSpacingMultiple", "lineSpacingMultiplier", "multipleLineSpacing", "倍数行距", "倍行距"),
+}
+STYLE_CONTAINER_KEYS = ("style", "paragraph", "paragraphStyle", "format", "rules", "value")
+ROLE_FIELD_KEYS = ("role", "styleRole", "key", "name", "target", "section")
+PAGE_CONTAINER_KEYS = ("page", "pageSetup", "page_setting", "pageSettings", "页面", "页面设置")
+PAGE_MARGIN_CONTAINER_KEYS = ("margins", "margin", "pageMargins", "页边距")
+PAGE_KEY_ALIASES = {
+    "paper": ("paper", "paperSize", "pageSize", "纸张", "纸型"),
+    "topMarginCm": ("topMarginCm", "top", "topMargin", "marginTop", "上", "上边距", "页边距上"),
+    "bottomMarginCm": ("bottomMarginCm", "bottom", "bottomMargin", "marginBottom", "下", "下边距", "页边距下"),
+    "leftMarginCm": ("leftMarginCm", "left", "leftMargin", "marginLeft", "左", "左边距", "页边距左"),
+    "rightMarginCm": ("rightMarginCm", "right", "rightMargin", "marginRight", "右", "右边距", "页边距右"),
+}
 
 DEFAULT_FORMAT_RULES: dict[str, Any] = {
     "version": FORMAT_RULES_VERSION,
@@ -59,6 +88,14 @@ DEFAULT_FORMAT_RULES: dict[str, Any] = {
 
 
 SIZE_NAME_TO_PT = {
+    "\u521d\u53f7": 42.0,
+    "\u5c0f\u521d": 36.0,
+    "1": 26.0,
+    "\u4e00": 26.0,
+    "\u5c0f1": 24.0,
+    "\u5c0f\u4e00": 24.0,
+    "2": 22.0,
+    "\u4e8c": 22.0,
     "\u5c0f2": 18.0,
     "\u5c0f\u4e8c": 18.0,
     "3": 16.0,
@@ -73,29 +110,73 @@ SIZE_NAME_TO_PT = {
     "\u4e94": 10.5,
     "\u5c0f5": 9.0,
     "\u5c0f\u4e94": 9.0,
+    "6": 7.5,
+    "\u516d": 7.5,
+    "\u5c0f6": 6.5,
+    "\u5c0f\u516d": 6.5,
+    "7": 5.5,
+    "\u4e03": 5.5,
+    "8": 5.0,
+    "\u516b": 5.0,
 }
 ROLE_MARKERS = {
-    "toc_heading": ("\u76ee\u5f55",),
-    "cn_abstract_lead": ("\u6458\u8981",),
-    "cn_abstract_body": ("\u6458\u8981",),
-    "en_abstract_lead": ("Abstract",),
-    "en_abstract_body": ("Abstract",),
-    "cn_keywords": ("\u5173\u952e\u8bcd",),
-    "en_keywords": ("Key words", "Keywords", "Key Words"),
-    "heading_1": ("\u4e00\u7ea7\u6807\u9898",),
-    "heading_2": ("\u4e8c\u7ea7\u6807\u9898",),
-    "heading_3": ("\u4e09\u7ea7\u6807\u9898",),
-    "heading_4": ("\u56db\u7ea7\u6807\u9898",),
-    "body_text": ("\u8bba\u6587\u6b63\u6587", "\u6b63\u6587"),
-    "caption": ("\u56fe\u5e8f", "\u56fe\u540d", "\u8868\u5e8f", "\u8868\u540d"),
-    "note": ("\u56fe\u6ce8", "\u8868\u6ce8"),
-    "table_text": ("\u8868\u683c\u5185", "\u8868\u683c\u5185\u5bb9"),
-    "references_heading": ("\u53c2\u8003\u6587\u732e",),
-    "references_body": ("\u53c2\u8003\u6587\u732e",),
-    "ack_heading": ("\u81f4\u8c22",),
-    "ack_body": ("\u81f4\u8c22",),
+    "toc_heading": ("\u76ee\u5f55", "\u76ee \u5f55", "Contents"),
+    "cn_abstract_lead": ("\u4e2d\u6587\u6458\u8981\u6807\u9898", "\u6458\u8981\u6807\u9898", "\u4e2d\u6587\u6458\u8981", "\u6458\u8981", "\u6458 \u8981"),
+    "cn_abstract_body": ("\u4e2d\u6587\u6458\u8981\u6b63\u6587", "\u4e2d\u6587\u6458\u8981\u5185\u5bb9", "\u6458\u8981\u6b63\u6587", "\u6458\u8981\u5185\u5bb9", "\u6458\u8981"),
+    "en_abstract_lead": ("\u82f1\u6587\u6458\u8981\u6807\u9898", "\u82f1\u6587\u6458\u8981", "Abstract title", "Abstract heading", "Abstract", "ABSTRACT"),
+    "en_abstract_body": ("\u82f1\u6587\u6458\u8981\u6b63\u6587", "\u82f1\u6587\u6458\u8981\u5185\u5bb9", "\u82f1\u6587\u6458\u8981\u6bb5\u843d", "Abstract body", "Abstract paragraph", "Abstract"),
+    "cn_keywords": ("\u5173\u952e\u8bcd\u5185\u5bb9", "\u5173\u952e\u5b57\u5185\u5bb9", "\u4e2d\u6587\u5173\u952e\u8bcd", "\u5173\u952e\u8bcd", "\u5173\u952e\u5b57"),
+    "en_keywords": ("\u82f1\u6587\u5173\u952e\u8bcd\u5185\u5bb9", "\u82f1\u6587\u5173\u952e\u8bcd", "Key words content", "Keywords content", "Key words", "Keywords", "Key Words", "KEYWORDS"),
+    "heading_1": ("\u4e00\u7ea7\u6807\u9898", "\u7b2c\u4e00\u5c42\u6b21\u6807\u9898", "\u7b2c\u4e00\u5c42\u6807\u9898", "\u7ae0\u6807\u9898", "\u7ae0\u9898", "\u6807\u98981", "\u6807\u9898\u4e00"),
+    "heading_2": ("\u4e8c\u7ea7\u6807\u9898", "\u7b2c\u4e8c\u5c42\u6b21\u6807\u9898", "\u7b2c\u4e8c\u5c42\u6807\u9898", "\u8282\u6807\u9898", "\u6807\u98982", "\u6807\u9898\u4e8c"),
+    "heading_3": ("\u4e09\u7ea7\u6807\u9898", "\u7b2c\u4e09\u5c42\u6b21\u6807\u9898", "\u7b2c\u4e09\u5c42\u6807\u9898", "\u5c0f\u8282\u6807\u9898", "\u6807\u98983", "\u6807\u9898\u4e09"),
+    "heading_4": ("\u56db\u7ea7\u6807\u9898", "\u7b2c\u56db\u5c42\u6b21\u6807\u9898", "\u7b2c\u56db\u5c42\u6807\u9898", "\u6807\u98984", "\u6807\u9898\u56db"),
+    "body_text": ("\u8bba\u6587\u6b63\u6587", "\u6b63\u6587\u6bb5\u843d", "\u6b63\u6587\u6587\u5b57", "\u6b63\u6587\u5185\u5bb9", "\u4e3b\u4f53\u6587\u5b57", "\u6b63\u6587"),
+    "caption": ("\u56fe\u9898", "\u8868\u9898", "\u56fe\u8868\u6807\u9898", "\u56fe\u8868\u9898\u6ce8", "\u56fe\u5e8f", "\u56fe\u540d", "\u8868\u5e8f", "\u8868\u540d"),
+    "note": ("\u56fe\u8868\u6ce8\u91ca", "\u56fe\u8868\u8bf4\u660e", "\u56fe\u6ce8", "\u8868\u6ce8", "\u56fe\u8868\u6ce8", "\u6ce8\u91ca", "\u8bf4\u660e\u6587\u5b57"),
+    "table_text": ("\u8868\u683c\u5185\u5bb9", "\u8868\u683c\u5185", "\u8868\u5185\u6587\u5b57", "\u8868\u4e2d\u6587\u5b57", "\u8868\u683c\u6587\u5b57"),
+    "references_heading": ("\u53c2\u8003\u6587\u732e\u6807\u9898", "\u53c2\u8003\u6587\u732e"),
+    "references_body": ("\u53c2\u8003\u6587\u732e\u5185\u5bb9", "\u53c2\u8003\u6587\u732e\u6b63\u6587", "\u53c2\u8003\u6587\u732e\u6761\u76ee", "\u6587\u732e\u6761\u76ee", "\u6587\u732e\u5185\u5bb9", "\u6587\u732e\u6b63\u6587", "\u53c2\u8003\u6587\u732e"),
+    "ack_heading": ("\u81f4\u8c22\u6807\u9898", "\u8c22\u8f9e\u6807\u9898", "\u81f4\u8c22", "\u8c22\u8f9e"),
+    "ack_body": ("\u81f4\u8c22\u5185\u5bb9", "\u8c22\u8f9e\u5185\u5bb9", "\u81f4\u8c22\u6b63\u6587", "\u81f4\u8c22", "\u8c22\u8f9e"),
 }
-FONT_NAMES = ("\u5b8b\u4f53", "\u9ed1\u4f53", "\u6977\u4f53", "\u4eff\u5b8b", "\u5fae\u8f6f\u96c5\u9ed1", "Times New Roman")
+STYLE_ROLE_KEYS = tuple(DEFAULT_FORMAT_RULES["styles"].keys())
+AI_ROLE_ALIASES = {
+    "toc_heading": ("toc", "toc_title", "contents_title", "table_of_contents_heading", "目录标题", "目录页标题", "目录题名"),
+    "cn_abstract_lead": ("cn_abstract_title", "chinese_abstract_title", "zh_abstract_heading", "摘要标题", "中文摘要标题", "摘要题名"),
+    "cn_abstract_body": ("cn_abstract_content", "cn_abstract_body", "chinese_abstract_body", "zh_abstract_body", "摘要正文", "摘要内容", "中文摘要正文", "中文摘要内容"),
+    "en_abstract_lead": ("en_abstract_title", "english_abstract_title", "abstract_title", "abstract_heading", "英文摘要标题", "英文摘要题名"),
+    "en_abstract_body": ("en_abstract_content", "en_abstract_body", "english_abstract_body", "abstract_body", "abstract_content", "英文摘要正文", "英文摘要内容"),
+    "cn_keywords": ("cn_keywords", "chinese_keywords", "keyword_content_cn", "关键词内容", "关键词正文", "中文关键词"),
+    "en_keywords": ("en_keywords", "english_keywords", "key_words", "keyword_content_en", "英文关键词", "英文关键词内容"),
+    "heading_1": ("h1", "heading1", "heading_1", "title1", "level1_heading", "chapter_title", "chapter_heading", "first_level_heading", "章标题", "章题", "一级标题", "第一层标题"),
+    "heading_2": ("h2", "heading2", "heading_2", "title2", "level2_heading", "section_title", "section_heading", "second_level_heading", "节标题", "二级标题", "第二层标题"),
+    "heading_3": ("h3", "heading3", "heading_3", "title3", "level3_heading", "subsection_title", "third_level_heading", "三级标题", "第三层标题"),
+    "heading_4": ("h4", "heading4", "heading_4", "title4", "level4_heading", "fourth_level_heading", "四级标题", "第四层标题"),
+    "body_text": ("body", "body_text", "main_text", "paragraph", "content_text", "normal_text", "正文", "论文正文", "正文段落", "正文字体", "主体文字"),
+    "caption": ("caption", "figure_caption", "table_caption", "caption_text", "图题", "表题", "图表标题", "图表题注"),
+    "note": ("note", "figure_note", "table_note", "chart_note", "图注", "表注", "图表注释", "图表说明"),
+    "table_text": ("table_text", "table_body", "table_content", "table_cell_text", "表内文字", "表格内容", "表格文字"),
+    "references_heading": ("references_title", "references_heading", "reference_heading", "bibliography_title", "参考文献标题", "文献标题"),
+    "references_body": ("references_body", "reference_items", "references_items", "bibliography_body", "bibliography_items", "参考文献正文", "参考文献内容", "文献条目", "参考文献条目"),
+    "ack_heading": ("ack_heading", "ack_title", "acknowledgement_title", "acknowledgments_title", "thanks_heading", "致谢标题", "谢辞标题", "鸣谢标题"),
+    "ack_body": ("ack_body", "ack_content", "acknowledgement_body", "acknowledgements_body", "thanks_body", "致谢正文", "致谢内容", "谢辞内容", "鸣谢内容"),
+}
+FONT_NAMES = (
+    "\u5b8b\u4f53",
+    "\u9ed1\u4f53",
+    "\u6977\u4f53",
+    "\u4eff\u5b8b",
+    "\u4eff\u5b8b_GB2312",
+    "\u5fae\u8f6f\u96c5\u9ed1",
+    "\u534e\u6587\u4e2d\u5b8b",
+    "\u65b9\u6b63\u5c0f\u6807\u5b8b\u7b80\u4f53",
+    "Times New Roman",
+    "Arial",
+    "Calibri",
+    "Cambria",
+    "Courier New",
+)
 CONTENT_STYLE_ROLES = {"cn_abstract_body", "en_abstract_body", "cn_keywords", "en_keywords", "references_body", "ack_body"}
 HEADING_STYLE_ROLES = {"toc_heading", "cn_abstract_lead", "en_abstract_lead", "references_heading", "ack_heading", "heading_1", "heading_2", "heading_3", "heading_4"}
 REQUIRED_FORMAT_ROLES = [
@@ -111,6 +192,42 @@ REQUIRED_FORMAT_ROLES = [
     "ack_heading",
     "ack_body",
 ]
+_ALL_ROLE_MARKERS = tuple(dict.fromkeys(marker for markers in ROLE_MARKERS.values() for marker in markers))
+_ALL_ROLE_MARKER_RE = re.compile(
+    "|".join(re.escape(marker) for marker in sorted(_ALL_ROLE_MARKERS, key=len, reverse=True)),
+    flags=re.IGNORECASE,
+)
+_AMBIGUOUS_ROLE_MARKERS = {"\u6458\u8981", "\u6458 \u8981", "Abstract", "ABSTRACT", "\u5173\u952e\u8bcd", "\u5173\u952e\u5b57", "Key words", "Keywords", "Key Words", "KEYWORDS", "\u53c2\u8003\u6587\u732e", "\u81f4\u8c22", "\u8c22\u8f9e"}
+
+
+def _role_key_signature(value: str) -> str:
+    return re.sub(r"[\s_\-./\\:：,，;；()（）\[\]【】{}]+", "", str(value or "").strip().lower())
+
+
+def _build_role_alias_map() -> dict[str, str]:
+    alias_map: dict[str, str] = {}
+    for role in STYLE_ROLE_KEYS:
+        alias_map[_role_key_signature(role)] = role
+        alias_map[_role_key_signature(role.replace("_", ""))] = role
+    for role, aliases in AI_ROLE_ALIASES.items():
+        for alias in aliases:
+            alias_map[_role_key_signature(alias)] = role
+    for role, markers in ROLE_MARKERS.items():
+        for marker in markers:
+            if marker in _AMBIGUOUS_ROLE_MARKERS:
+                continue
+            alias_map.setdefault(_role_key_signature(marker), role)
+    return alias_map
+
+
+ROLE_ALIAS_TO_CANONICAL = _build_role_alias_map()
+
+
+def _canonical_format_role(role: Any) -> str | None:
+    raw = str(role or "").strip()
+    if raw in STYLE_ROLE_KEYS:
+        return raw
+    return ROLE_ALIAS_TO_CANONICAL.get(_role_key_signature(raw))
 
 
 def _normalize_instruction_text(text: str) -> str:
@@ -147,7 +264,94 @@ def _context_windows(text: str, markers: tuple[str, ...], *, radius: int = 180) 
     return windows
 
 
+def _context_has_style_signal(context: str) -> bool:
+    if any(font in context for font in FONT_NAMES):
+        return True
+    return bool(
+        re.search(
+            r"(\u5c0f?\s*[1-8\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b]\s*\u53f7|\u521d\u53f7|\u5c0f\u521d|\u5b57\u4f53|\u5b57\u53f7|\u884c\u8ddd|\u884c\u95f4\u8ddd|\u5c45\u4e2d|\u5c45\u5de6|\u5c45\u53f3|\u5bf9\u9f50|\u52a0\u7c97|\u6bb5\u524d|\u6bb5\u540e|\u9996\u884c\u7f29\u8fdb|\d+(?:\.\d+)?\s*(?:pt|\u78c5))",
+            context,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _role_context_windows(text: str, role: str, markers: tuple[str, ...], *, radius: int = 260) -> list[str]:
+    windows: list[str] = []
+    seen: set[str] = set()
+    units = _split_instruction_units(text)
+    for index, unit in enumerate(units):
+        role_matches: list[tuple[int, int, str]] = []
+        for marker_role, role_markers in ROLE_MARKERS.items():
+            for marker in role_markers:
+                for match in re.finditer(re.escape(marker), unit, flags=re.IGNORECASE):
+                    role_matches.append((match.start(), match.end(), marker_role))
+        if not role_matches:
+            continue
+        role_matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+        for match_index, (start, end, marker_role) in enumerate(role_matches):
+            if marker_role != role:
+                continue
+            next_start = len(unit)
+            for other_start, _other_end, _other_role in role_matches[match_index + 1:]:
+                if other_start >= end and _other_role != marker_role:
+                    next_start = other_start
+                    break
+            context = unit[start:min(len(unit), max(end, min(next_start, start + radius)))]
+            if role in CONTENT_STYLE_ROLES and index + 1 < len(units) and _looks_like_content_style_continuation(units[index + 1]):
+                context = f"{context}{units[index + 1]}"
+            elif (
+                len(context) < 24
+                and index + 1 < len(units)
+                and not _context_has_style_signal(context)
+                and not (role in HEADING_STYLE_ROLES and _looks_like_content_style_continuation(units[index + 1]))
+            ):
+                context = f"{context}{units[index + 1]}"
+            context = context.strip()[:radius]
+            if context and context not in seen:
+                seen.add(context)
+                windows.append(context)
+    if not windows:
+        windows.extend(_context_windows(text, markers, radius=radius))
+    return windows
+
+
+def _looks_like_content_style_continuation(unit: str) -> bool:
+    return bool(
+        re.search(r"(?:\u5185\u5bb9|\u6b63\u6587|\u6587\u5b57|\u6761\u76ee)\s*(?:\u7528|\u91c7\u7528|\u4e3a|\u5b57\u4f53)", unit)
+        or re.search(r"(?:\u884c\u8ddd|\u884c\u95f4\u8ddd|\u5b57\u53f7|\u5b57\u4f53)", unit)
+    )
+
+
 def _extract_font(context: str, *, prefer_english: bool = False) -> str | None:
+    fonts = _extract_fonts(context, prefer_english=prefer_english)
+    return fonts.get("enFont") if prefer_english and fonts.get("enFont") else fonts.get("cnFont") or fonts.get("enFont")
+
+
+def _extract_fonts(context: str, *, prefer_english: bool = False) -> dict[str, str]:
+    result: dict[str, str] = {}
+    latin_fonts = ("Times New Roman", "Arial", "Calibri", "Cambria", "Courier New")
+    cjk_fonts = tuple(font for font in FONT_NAMES if font not in latin_fonts)
+    cjk_found: list[tuple[int, str]] = []
+    latin_found: list[tuple[int, str]] = []
+    for font in cjk_fonts:
+        if font in context:
+            cjk_found.append((context.index(font), font))
+    for font in latin_fonts:
+        match = re.search(re.escape(font).replace("\\ ", r"\s+"), context, flags=re.IGNORECASE)
+        if match:
+            canonical = "Times New Roman" if font.lower() == "times new roman" else font
+            latin_found.append((match.start(), canonical))
+    if cjk_found:
+        result["cnFont"] = min(cjk_found, key=lambda item: item[0])[1]
+    if latin_found:
+        result["enFont"] = min(latin_found, key=lambda item: item[0])[1]
+    if prefer_english and result.get("enFont") and not result.get("cnFont"):
+        result["cnFont"] = result["enFont"]
+    return result
+
+
+def _extract_font_legacy(context: str, *, prefer_english: bool = False) -> str | None:
     if prefer_english and re.search(r"Times\s+New\s+Roman", context, flags=re.IGNORECASE):
         return "Times New Roman"
     found: list[tuple[int, str]] = []
@@ -170,10 +374,16 @@ def _normalize_size_token(prefix: str, value: str) -> str:
 
 def _extract_font_size_pt(context: str) -> float | None:
     patterns = (
-        r"(\u5c0f?)\s*([2345])\s*\u53f7",
-        r"(\u5c0f?)\s*([\u4e8c\u4e09\u56db\u4e94])\s*\u53f7",
-        r"(\u5c0f)\s*([2345\u4e8c\u4e09\u56db\u4e94])",
+        r"(\u5c0f?)\s*([1-8])\s*\u53f7(?:\u5b57)?",
+        r"(\u5c0f?)\s*([\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b])\s*\u53f7(?:\u5b57)?",
+        r"(\u5c0f)\s*([1-8\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b])",
     )
+    named = re.search(r"(\u5c0f\u521d|\u521d\u53f7|\u5c0f\u4e00|\u4e00\u53f7|\u5c0f\u4e8c|\u4e8c\u53f7|\u5c0f\u4e09|\u4e09\u53f7|\u5c0f\u56db|\u56db\u53f7|\u5c0f\u4e94|\u4e94\u53f7|\u5c0f\u516d|\u516d\u53f7|\u4e03\u53f7|\u516b\u53f7)", context)
+    if named:
+        raw_key = named.group(1)
+        key = raw_key if raw_key in SIZE_NAME_TO_PT else raw_key.replace("\u53f7", "")
+        if key in SIZE_NAME_TO_PT:
+            return SIZE_NAME_TO_PT[key]
     for pattern in patterns:
         match = re.search(pattern, context)
         if not match:
@@ -189,25 +399,37 @@ def _extract_font_size_pt(context: str) -> float | None:
 
 def _extract_line_spacing(context: str) -> dict[str, float]:
     result: dict[str, float] = {}
-    fixed = re.search(r"(?:\u56fa\u5b9a(?:\u503c)?\s*)?(\d+(?:\.\d+)?)\s*\u78c5", context)
-    if fixed and ("\u884c\u8ddd" in context or "\u884c\u95f4\u8ddd" in context or "\u56fa\u5b9a" in context):
-        result["lineSpacingPt"] = float(fixed.group(1))
-        result["lineSpacingMultiple"] = None
-    multiple = re.search(r"(\d+(?:\.\d+)?)\s*\u500d\u884c\u8ddd", context)
+    fixed_patterns = (
+        r"(?:\u884c\u8ddd|\u884c\u95f4\u8ddd)[^0-9\u3002\uff1b;]{0,16}(?:\u56fa\u5b9a(?:\u503c)?[^0-9]{0,8})?(\d+(?:\.\d+)?)\s*(?:pt|\u78c5)",
+        r"\u56fa\u5b9a(?:\u503c)?[^0-9\u3002\uff1b;]{0,8}(\d+(?:\.\d+)?)\s*(?:pt|\u78c5)",
+    )
+    for pattern in fixed_patterns:
+        fixed = re.search(pattern, context, flags=re.IGNORECASE)
+        if fixed:
+            result["lineSpacingPt"] = float(fixed.group(1))
+            result["lineSpacingMultiple"] = None
+            break
+    multiple = re.search(r"(\d+(?:\.\d+)?)\s*\u500d(?:\u884c\u8ddd|\u884c\u95f4\u8ddd)?", context)
     if multiple:
         result["lineSpacingMultiple"] = float(multiple.group(1))
+        result["lineSpacingPt"] = None
+    elif "\u5355\u500d\u884c\u8ddd" in context:
+        result["lineSpacingMultiple"] = 1.0
+        result["lineSpacingPt"] = None
+    elif "\u53cc\u500d\u884c\u8ddd" in context:
+        result["lineSpacingMultiple"] = 2.0
         result["lineSpacingPt"] = None
     return result
 
 
 def _extract_alignment(context: str) -> str | None:
-    if "\u4e24\u7aef\u5bf9\u9f50" in context:
+    if "\u4e24\u7aef\u5bf9\u9f50" in context or "\u4e24\u8fb9\u5bf9\u9f50" in context or "\u5206\u6563\u5bf9\u9f50" in context:
         return "justify"
-    if "\u53f3\u5bf9\u9f50" in context:
+    if "\u53f3\u5bf9\u9f50" in context or "\u5c45\u53f3" in context or "\u9760\u53f3" in context:
         return "right"
-    if "\u5c45\u5de6" in context or "\u5de6\u5bf9\u9f50" in context:
+    if "\u5c45\u5de6" in context or "\u5de6\u5bf9\u9f50" in context or "\u9760\u5de6" in context or "\u5de6\u9f50" in context:
         return "left"
-    if "\u5c45\u4e2d" in context:
+    if "\u5c45\u4e2d" in context or "\u4e2d\u5fc3\u5bf9\u9f50" in context:
         return "center"
     return None
 
@@ -223,11 +445,44 @@ def _extract_bold(context: str) -> bool | None:
 def _extract_indent(context: str) -> float | None:
     if re.search(r"\u4e24\u4e2a\u5b57(?:\u4e2d\u95f4|\u4e4b\u95f4)\u7a7a\u4e24\u683c", context):
         return None
-    if "\u7a7a\u4e24\u683c" in context or "\u9996\u884c\u7f29\u8fdb\u4e24\u5b57" in context:
+    if re.search(r"\u9996\u884c(?:\u7f29\u8fdb)?\s*0\s*(?:\u5b57\u7b26|\u5b57|\u683c|cm|\u5398\u7c73)", context):
+        return 0.0
+    if "\u4e0d\u7f29\u8fdb" in context or "\u65e0\u9996\u884c\u7f29\u8fdb" in context:
+        return 0.0
+    if (
+        "\u7a7a\u4e24\u683c" in context
+        or "\u9996\u884c\u7f29\u8fdb\u4e24\u5b57" in context
+        or re.search(r"\u9996\u884c(?:\u7f29\u8fdb)?\s*2\s*(?:\u5b57\u7b26|\u4e2a\u5b57|\u5b57|\u683c)", context)
+    ):
         return 21.0
-    if "\u5de6\u9876\u683c" in context:
+    cm_match = re.search(r"\u9996\u884c(?:\u7f29\u8fdb)?\s*(\d+(?:\.\d+)?)\s*(?:cm|\u5398\u7c73)", context, flags=re.IGNORECASE)
+    if cm_match:
+        return round(float(cm_match.group(1)) * 28.35, 2)
+    if "\u5de6\u9876\u683c" in context or "\u9876\u683c" in context:
         return 0.0
     return None
+
+
+def _extract_paragraph_spacing(context: str) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for key, label in (("spaceBeforePt", "\u6bb5\u524d"), ("spaceAfterPt", "\u6bb5\u540e")):
+        match = re.search(rf"{label}\s*(\d+(?:\.\d+)?)\s*(?:pt|\u78c5)", context, flags=re.IGNORECASE)
+        if match:
+            result[key] = float(match.group(1))
+            continue
+        line_match = re.search(rf"{label}\s*(\d+(?:\.\d+)?)\s*\u884c", context)
+        if line_match:
+            result[key] = round(float(line_match.group(1)) * 12.0, 2)
+    if "\u4e0a\u9762\u7a7a\u4e00\u884c" in context or "\u4e0a\u7a7a\u4e00\u884c" in context:
+        result.setdefault("spaceBeforePt", 12.0)
+    return result
+
+
+def _length_to_cm(value: float, unit: str) -> float:
+    normalized_unit = str(unit or "").lower()
+    if normalized_unit in {"mm", "\u6beb\u7c73"}:
+        return round(value / 10.0, 3)
+    return round(value, 3)
 
 
 def _extract_content_rule_context_legacy(context: str) -> str | None:
@@ -248,14 +503,19 @@ def _strip_content_parentheticals(context: str) -> str:
 
 
 def _extract_content_rule_context(context: str) -> str | None:
+    content_marker = r"(?:\u5185\u5bb9\u6587\u5b57|\u5185\u5bb9|\u6b63\u6587|\u6761\u76ee|\u6587\u5b57|body|paragraph)"
     patterns = (
-        r"(?:\uff08|\()(?:[^\uff09)]{0,20})?(?:\u5185\u5bb9\u6587\u5b57|\u5185\u5bb9)\s*(?:\u7528|\u4e3a|\u5b57\u4f53\u4e3a)?(?P<body>[^\uff09)]{1,140})(?:\uff09|\))",
-        r"(?:\u5185\u5bb9\u6587\u5b57|\u5185\u5bb9)\s*(?:\u7528|\u4e3a|\u5b57\u4f53\u4e3a)?(?P<body>[^\u3002\uff1b;]{1,140})",
+        rf"(?:\uff08|\()(?:[^\uff09)]{{0,20}})?{content_marker}\s*(?:\uff1a|:|\u7528|\u91c7\u7528|\u4e3a|\u5b57\u4f53\u4e3a)?(?P<body>[^\uff09)]{{1,140}})(?:\uff09|\))",
+        rf"{content_marker}\s*(?:\uff1a|:|\u7528|\u91c7\u7528|\u4e3a|\u5b57\u4f53\u4e3a)?(?P<body>[^\u3002\uff1b;]{{1,140}})",
     )
+    matches: list[str] = []
     for pattern in patterns:
-        match = re.search(pattern, context, flags=re.IGNORECASE)
-        if match:
-            return match.group("body").strip()
+        for match in re.finditer(pattern, context, flags=re.IGNORECASE):
+            body = match.group("body").strip()
+            if body:
+                matches.append(body)
+    if matches:
+        return matches[-1]
     return None
 
 
@@ -268,10 +528,36 @@ def _style_context_for_role(role: str, context: str) -> str:
 
 
 def _is_role_context_candidate(role: str, context: str) -> bool:
+    if role in CONTENT_STYLE_ROLES:
+        if role == "cn_keywords":
+            if "\u5173\u952e\u8bcd" not in context and "\u5173\u952e\u5b57" not in context:
+                return False
+        elif role == "en_keywords":
+            if not re.search(r"\b(?:Key\s*words|Keywords)\b", context, flags=re.IGNORECASE) and "\u82f1\u6587\u5173\u952e\u8bcd" not in context:
+                return False
+        elif not re.search(r"(\u5185\u5bb9|\u6b63\u6587|\u6587\u5b57|\u6761\u76ee|body|paragraph)", context, flags=re.IGNORECASE):
+            return False
+    if role in {"cn_abstract_lead", "en_abstract_lead", "references_heading", "ack_heading"}:
+        first_chunk = re.split(r"[\u3002\uff1b;]", context, maxsplit=1)[0]
+        if re.search(r"(\u6b63\u6587|\u5185\u5bb9|\u6761\u76ee|body|paragraph)", first_chunk, flags=re.IGNORECASE) and not re.search(r"(\u6807\u9898|title|heading)", first_chunk, flags=re.IGNORECASE):
+            return False
     if role.startswith("heading_"):
         scoped_markers = ("\u6458\u8981", "Abstract", "\u5173\u952e\u8bcd", "Key words", "Keywords", "\u53c2\u8003\u6587\u732e", "\u81f4\u8c22", "\u76ee\u5f55")
         if any(marker in context for marker in scoped_markers):
             return False
+    if role == "body_text" and any(marker in context for marker in ("\u6458\u8981", "Abstract", "\u5173\u952e\u8bcd", "Key words", "Keywords", "\u53c2\u8003\u6587\u732e", "\u81f4\u8c22", "\u76ee\u5f55")):
+        if not re.search(r"(?:\u8bba\u6587\u6b63\u6587|\u6b63\u6587\u6bb5\u843d|\u4e3b\u4f53\u6587\u5b57)", context):
+            return False
+    if role.startswith("cn_abstract") and ("\u82f1\u6587\u6458\u8981" in context or re.search(r"\bAbstract\b", context, flags=re.IGNORECASE)):
+        if "\u4e2d\u6587\u6458\u8981" not in context:
+            return False
+    if role.startswith("en_abstract") and "\u4e2d\u6587\u6458\u8981" in context and "Abstract" not in context:
+        return False
+    if role == "cn_keywords" and re.search(r"\b(?:Key\s*words|Keywords)\b", context, flags=re.IGNORECASE):
+        if "\u4e2d\u6587\u5173\u952e" not in context and "\u5173\u952e\u8bcd" not in context[:20] and "\u5173\u952e\u5b57" not in context[:20]:
+            return False
+    if role == "en_keywords" and ("\u5173\u952e\u8bcd" in context or "\u5173\u952e\u5b57" in context) and not re.search(r"\b(?:Key\s*words|Keywords)\b", context, flags=re.IGNORECASE):
+        return False
     if role == "references_heading" and "\u5185\u5bb9" in context and "\u53c2\u8003\u6587\u732e" not in context[:80]:
         return False
     if role == "ack_heading" and "\u5185\u5bb9" in context and "\u81f4\u8c22" not in context[:80]:
@@ -283,20 +569,18 @@ def _extract_style_from_context(role: str, context: str) -> dict[str, Any]:
     context = _style_context_for_role(role, context)
     style: dict[str, Any] = {}
     prefer_english = role.startswith("en_")
-    font = _extract_font(context, prefer_english=prefer_english)
-    if font:
-        if font == "Times New Roman" and prefer_english:
-            style["cnFont"] = "Times New Roman"
-            style["enFont"] = "Times New Roman"
-        elif font == "Times New Roman":
-            style["enFont"] = "Times New Roman"
-        else:
-            style["cnFont"] = font
-            style.setdefault("enFont", "Times New Roman")
+    fonts = _extract_fonts(context, prefer_english=prefer_english)
+    if fonts.get("cnFont"):
+        style["cnFont"] = fonts["cnFont"]
+    if fonts.get("enFont"):
+        style["enFont"] = fonts["enFont"]
+    if style.get("cnFont") and not style.get("enFont"):
+        style["enFont"] = "Times New Roman"
     size = _extract_font_size_pt(context)
     if size is not None:
         style["fontSizePt"] = size
     style.update(_extract_line_spacing(context))
+    style.update(_extract_paragraph_spacing(context))
     alignment = _extract_alignment(context)
     if alignment:
         style["alignment"] = alignment
@@ -307,6 +591,19 @@ def _extract_style_from_context(role: str, context: str) -> dict[str, Any]:
     if indent is not None:
         style["firstLineIndentPt"] = indent
     return style
+
+
+def _style_candidate_score(role: str, context: str, style: dict[str, Any]) -> float:
+    score = float(len(style))
+    if role in CONTENT_STYLE_ROLES and _extract_content_rule_context(context):
+        score += 20.0
+    if role in HEADING_STYLE_ROLES and re.search(r"(\u5185\u5bb9|\u6b63\u6587|\u6761\u76ee|body|paragraph)", context, flags=re.IGNORECASE):
+        score -= 10.0
+    if role in HEADING_STYLE_ROLES and style.get("alignment"):
+        score += 1.5
+    if role in CONTENT_STYLE_ROLES and ("lineSpacingPt" in style or "lineSpacingMultiple" in style):
+        score += 1.0
+    return score
 
 
 def extract_deterministic_format_rules(document_text: str) -> dict[str, Any]:
@@ -322,33 +619,46 @@ def extract_deterministic_format_rules(document_text: str) -> dict[str, Any]:
         "quality": {"warnings": [], "deterministicHits": 0, "inferredRoles": []},
     }
     page_patterns = {
-        "topMarginCm": r"\u4e0a\s*(\d+(?:\.\d+)?)\s*cm",
-        "bottomMarginCm": r"\u4e0b\s*(\d+(?:\.\d+)?)\s*cm",
-        "leftMarginCm": r"\u5de6\s*(\d+(?:\.\d+)?)\s*cm",
-        "rightMarginCm": r"\u53f3\s*(\d+(?:\.\d+)?)\s*cm",
+        "topMarginCm": r"(?:\u4e0a|\u4e0a\u8fb9|\u4e0a\u8fb9\u8ddd|\u9875\u8fb9\u8ddd\u4e0a)\s*(\d+(?:\.\d+)?)\s*(cm|\u5398\u7c73|mm|\u6beb\u7c73)",
+        "bottomMarginCm": r"(?:\u4e0b|\u4e0b\u8fb9|\u4e0b\u8fb9\u8ddd|\u9875\u8fb9\u8ddd\u4e0b)\s*(\d+(?:\.\d+)?)\s*(cm|\u5398\u7c73|mm|\u6beb\u7c73)",
+        "leftMarginCm": r"(?:\u5de6|\u5de6\u8fb9|\u5de6\u8fb9\u8ddd|\u9875\u8fb9\u8ddd\u5de6)\s*(\d+(?:\.\d+)?)\s*(cm|\u5398\u7c73|mm|\u6beb\u7c73)",
+        "rightMarginCm": r"(?:\u53f3|\u53f3\u8fb9|\u53f3\u8fb9\u8ddd|\u9875\u8fb9\u8ddd\u53f3)\s*(\d+(?:\.\d+)?)\s*(cm|\u5398\u7c73|mm|\u6beb\u7c73)",
     }
     if "A4" in text.upper():
         raw["page"]["paper"] = "A4"
     for key, pattern in page_patterns.items():
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
-            raw["page"][key] = float(match.group(1))
+            raw["page"][key] = _length_to_cm(float(match.group(1)), match.group(2))
+    vertical_margin = re.search(r"(?:\u4e0a\u4e0b|\u4e0a\u3001\u4e0b|\u4e0a\u4e0b\u9875\u8fb9\u8ddd|\u4e0a\u3001\u4e0b\u9875\u8fb9\u8ddd|\u9875\u8fb9\u8ddd\u4e0a\u4e0b)[^\d]{0,12}(\d+(?:\.\d+)?)\s*(cm|\u5398\u7c73|mm|\u6beb\u7c73)", text, flags=re.IGNORECASE)
+    if vertical_margin:
+        value = _length_to_cm(float(vertical_margin.group(1)), vertical_margin.group(2))
+        raw["page"].setdefault("topMarginCm", value)
+        raw["page"].setdefault("bottomMarginCm", value)
+    horizontal_margin = re.search(r"(?:\u5de6\u53f3|\u5de6\u3001\u53f3|\u5de6\u53f3\u9875\u8fb9\u8ddd|\u5de6\u3001\u53f3\u9875\u8fb9\u8ddd|\u9875\u8fb9\u8ddd\u5de6\u53f3)[^\d]{0,12}(\d+(?:\.\d+)?)\s*(cm|\u5398\u7c73|mm|\u6beb\u7c73)", text, flags=re.IGNORECASE)
+    if horizontal_margin:
+        value = _length_to_cm(float(horizontal_margin.group(1)), horizontal_margin.group(2))
+        raw["page"].setdefault("leftMarginCm", value)
+        raw["page"].setdefault("rightMarginCm", value)
     for role, markers in ROLE_MARKERS.items():
         best_style: dict[str, Any] = {}
         best_source = ""
-        for context in _context_windows(text, markers):
+        best_score = -1.0
+        for context in _role_context_windows(text, role, markers):
             if not _is_role_context_candidate(role, context):
                 continue
             style = _extract_style_from_context(role, context)
-            if len(style) > len(best_style):
+            score = _style_candidate_score(role, context, style)
+            if score > best_score:
                 best_style = style
                 best_source = context.strip()[:260]
+                best_score = score
         if best_style:
             raw["styles"][role] = best_style
             raw["styleMeta"][role] = {"sourceText": best_source, "confidence": 0.92, "isInferred": False}
     if "body_text" in raw["styles"]:
         body = raw["styles"]["body_text"]
-        for role in ("cn_abstract_body", "en_abstract_body", "references_body"):
+        for role in ("cn_abstract_body", "en_abstract_body", "references_body", "ack_body"):
             raw["styles"].setdefault(role, dict(body))
             raw["styleMeta"].setdefault(role, {"sourceText": "Inherited from explicit body text rule.", "confidence": 0.66, "isInferred": True})
     raw["notes"].extend(_extract_non_style_instruction_notes(text))
@@ -373,6 +683,84 @@ def _extract_non_style_instruction_notes(text: str) -> list[str]:
     return notes
 
 
+def _copy_inferred_style(rules: dict[str, Any], target_role: str, source_role: str, *, reason: str, confidence: float = 0.62) -> None:
+    meta = rules.setdefault("styleMeta", {})
+    if target_role in meta or source_role not in rules.get("styles", {}):
+        return
+    rules["styles"][target_role] = dict(rules["styles"][source_role])
+    meta[target_role] = {
+        "sourceText": reason,
+        "confidence": confidence,
+        "isInferred": True,
+    }
+
+
+def _apply_inferred_style_defaults(rules: dict[str, Any]) -> None:
+    meta = rules.get("styleMeta") if isinstance(rules.get("styleMeta"), dict) else {}
+    if not isinstance(meta, dict):
+        rules["styleMeta"] = {}
+        meta = rules["styleMeta"]
+    if "body_text" in meta:
+        for role in ("cn_abstract_body", "references_body", "ack_body"):
+            _copy_inferred_style(rules, role, "body_text", reason=f"Inherited from explicit body_text rule for {role}.")
+        if "en_abstract_body" not in meta:
+            inherited = dict(rules["styles"]["body_text"])
+            en_font = inherited.get("enFont") or "Times New Roman"
+            inherited["cnFont"] = en_font
+            inherited["enFont"] = en_font
+            rules["styles"]["en_abstract_body"] = inherited
+            meta["en_abstract_body"] = {
+                "sourceText": "Inherited from explicit body_text rule with western font for English abstract body.",
+                "confidence": 0.58,
+                "isInferred": True,
+            }
+    if "cn_abstract_body" in meta and "cn_keywords" not in meta:
+        _copy_inferred_style(rules, "cn_keywords", "cn_abstract_body", reason="Inherited from explicit Chinese abstract body rule.")
+        rules["styles"]["cn_keywords"]["firstLineIndentPt"] = 0.0
+    if "en_abstract_body" in meta and "en_keywords" not in meta:
+        _copy_inferred_style(rules, "en_keywords", "en_abstract_body", reason="Inherited from explicit English abstract body rule.")
+        rules["styles"]["en_keywords"]["firstLineIndentPt"] = 0.0
+    for previous_role, next_role in (("heading_1", "heading_2"), ("heading_2", "heading_3"), ("heading_3", "heading_4")):
+        if previous_role in meta and next_role not in meta:
+            _copy_inferred_style(
+                rules,
+                next_role,
+                previous_role,
+                reason=f"Inherited from explicit {previous_role} rule because {next_role} was not specified.",
+                confidence=0.52,
+            )
+
+
+def validate_format_rules_structure(rules: dict[str, Any]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    page = rules.get("page") if isinstance(rules.get("page"), dict) else {}
+    for key in ("topMarginCm", "bottomMarginCm", "leftMarginCm", "rightMarginCm"):
+        value = page.get(key)
+        if not isinstance(value, (int, float)) or not 0.5 <= float(value) <= 6.0:
+            issues.append({"code": "page_margin_out_of_range", "key": key, "value": value})
+    styles = rules.get("styles") if isinstance(rules.get("styles"), dict) else {}
+    for role, style in styles.items():
+        canonical_role = _canonical_format_role(role)
+        if not canonical_role or not isinstance(style, dict):
+            issues.append({"code": "unknown_style_role", "role": str(role)})
+            continue
+        font_size = style.get("fontSizePt")
+        if not isinstance(font_size, (int, float)) or not 5.0 <= float(font_size) <= 42.0:
+            issues.append({"code": "font_size_out_of_range", "role": canonical_role, "value": font_size})
+        alignment = style.get("alignment")
+        if alignment is not None and alignment not in ALIGNMENT_VALUES:
+            issues.append({"code": "invalid_alignment", "role": canonical_role, "value": alignment})
+        line_spacing_pt = style.get("lineSpacingPt")
+        line_spacing_multiple = style.get("lineSpacingMultiple")
+        if line_spacing_pt is not None and line_spacing_multiple is not None:
+            issues.append({"code": "conflicting_line_spacing", "role": canonical_role})
+        if line_spacing_pt is not None and (not isinstance(line_spacing_pt, (int, float)) or not 6 <= float(line_spacing_pt) <= 60):
+            issues.append({"code": "line_spacing_pt_out_of_range", "role": canonical_role, "value": line_spacing_pt})
+        if line_spacing_multiple is not None and (not isinstance(line_spacing_multiple, (int, float)) or not 0.7 <= float(line_spacing_multiple) <= 3.0):
+            issues.append({"code": "line_spacing_multiple_out_of_range", "role": canonical_role, "value": line_spacing_multiple})
+    return issues
+
+
 def merge_deterministic_rules(ai_rules: dict[str, Any], deterministic_rules: dict[str, Any]) -> dict[str, Any]:
     merged = normalize_format_rules(ai_rules)
     normalized_deterministic = normalize_format_rules(deterministic_rules)
@@ -380,18 +768,30 @@ def merge_deterministic_rules(ai_rules: dict[str, Any], deterministic_rules: dic
         merged["page"].update({k: v for k, v in normalized_deterministic.get("page", {}).items() if k in deterministic_rules.get("page", {})})
     deterministic_styles = deterministic_rules.get("styles", {}) if isinstance(deterministic_rules.get("styles"), dict) else {}
     for role, style in deterministic_styles.items():
+        canonical_role = _canonical_format_role(role)
+        if not canonical_role:
+            continue
         if not isinstance(style, dict):
             continue
-        base = dict(merged["styles"].get(role, merged["styles"]["body_text"]))
-        base.update({key: value for key, value in normalize_format_rules({"styles": {role: style}})["styles"][role].items() if key in style})
-        merged["styles"][role] = base
+        base = dict(merged["styles"].get(canonical_role, merged["styles"]["body_text"]))
+        normalized_style = normalize_format_rules({"styles": {canonical_role: style}})["styles"][canonical_role]
+        base.update({key: value for key, value in normalized_style.items() if key in style})
+        if base.get("lineSpacingPt") is not None:
+            base["lineSpacingMultiple"] = None
+        elif base.get("lineSpacingMultiple") is not None:
+            base["lineSpacingPt"] = None
+        merged["styles"][canonical_role] = base
     style_meta: dict[str, Any] = {}
-    if isinstance(ai_rules.get("styleMeta"), dict):
-        style_meta.update(ai_rules["styleMeta"])
+    if isinstance(merged.get("styleMeta"), dict):
+        style_meta.update(merged["styleMeta"])
     if isinstance(deterministic_rules.get("styleMeta"), dict):
-        style_meta.update(deterministic_rules["styleMeta"])
+        style_meta.update(_normalize_style_meta(deterministic_rules["styleMeta"]))
     merged["styleMeta"] = style_meta
+    _apply_inferred_style_defaults(merged)
     merged["quality"] = build_format_rules_quality(merged, deterministic_rules)
+    validation_issues = validate_format_rules_structure(merged)
+    merged["quality"]["validationIssues"] = validation_issues
+    merged["quality"]["validationIssueCount"] = len(validation_issues)
     merged["notes"] = list(dict.fromkeys([*merged.get("notes", []), *deterministic_rules.get("notes", [])]))
     return merged
 
@@ -479,19 +879,35 @@ def _fallback_format_rules(document_text: str, reason: str) -> dict[str, Any]:
     rules["notes"] = notes
     return rules
 
+FORMAT_ROLE_PROMPT_GUIDE = """角色映射表：
+- toc_heading：目录标题，不是目录条目正文。
+- cn_abstract_lead / cn_abstract_body：中文摘要标题 / 中文摘要正文。若同一句写“摘要：标题样式；内容/正文：正文样式”，必须拆成两个角色。
+- en_abstract_lead / en_abstract_body：英文摘要标题 / 英文摘要正文。Abstract 单独作为标题，Abstract body/content/英文摘要正文作为正文。
+- cn_keywords / en_keywords：关键词内容样式；如果“关键词”标签与“关键词内容”不同，优先抽取内容样式。
+- heading_1 / heading_2 / heading_3 / heading_4：一级到四级标题；章标题通常是 heading_1，节标题通常是 heading_2。
+- body_text：论文正文或正文段落。
+- caption / note / table_text：图题表题 / 图注表注图表注释 / 表格内文字。
+- references_heading / references_body：参考文献标题 / 文献条目或参考文献内容。
+- ack_heading / ack_body：致谢标题 / 致谢内容。"""
+
 PROMPT_TEMPLATE = """你是论文 Word 排版规范的结构化抽取器。你的输出只是“候选 JSON”，后端程序会继续校验、归一化、合并默认值；不要编造学校没有写明的要求。
 
 硬性要求：
 1. 只输出一个 JSON 对象，不要 Markdown 代码块，不要解释，不要前后缀。
 2. JSON 顶层字段必须包含 version、schoolName、sourceSummary、page、styles、styleMeta、notes。
 3. styles 的键只能使用这些角色：toc_heading, cn_abstract_lead, en_abstract_lead, cn_keywords, en_keywords, cn_abstract_body, en_abstract_body, heading_1, heading_2, heading_3, heading_4, body_text, caption, note, table_text, references_heading, references_body, ack_heading, ack_body。
-4. 只抽取能映射到 Word 样式的规则：字体、字号、加粗、对齐、缩进、段前段后、固定行距、倍数行距、页边距、纸张。
-5. 封面、目录自动生成、页码分节、图表不跨页、公式编辑器、引用排序等无法直接映射为段落样式的内容，放入 notes，不要硬塞进 styles。
-6. 字号统一换算为磅：小2=18，3号=16，小3=15，4号=14，小4=12，5号=10.5，小5=9。
-7. alignment 只能是 left、center、right、justify。
-8. 固定行距写 lineSpacingPt，倍数行距写 lineSpacingMultiple，两者不要同时写成有效数值。
-9. 对每个 styles 角色，styleMeta 中尽量写 sourceText、confidence、isInferred；明确来自原文时 isInferred=false，不确定或继承时 isInferred=true 且 confidence 不要高于 0.7。
-10. 学校说明没有提到的角色可以省略；不要为了完整而凭空生成。后端会用默认值补齐。
+4. 全文逐句扫描；同一句或同一行出现多个角色时，必须拆成多个 styles，不要把前一个角色的字体字号套到后一个角色。
+5. 标题和内容要分离：标题样式只给 *_lead / *_heading，正文、内容、条目样式只给 *_body / cn_keywords / en_keywords / references_body / ack_body。
+6. 只抽取能映射到 Word 样式的规则：字体、字号、加粗、对齐、缩进、段前段后、固定行距、倍数行距、页边距、纸张。
+7. 封面、目录自动生成、页码分节、图表不跨页、公式编辑器、引用排序等无法直接映射为段落样式的内容，放入 notes，不要硬塞进 styles。
+8. 字号统一换算为磅：初号=42，小初=36，1号=26，小1=24，2号=22，小2=18，3号=16，小3=15，4号=14，小4=12，5号=10.5，小5=9，6号=7.5，小6=6.5，7号=5.5，8号=5。
+9. 页边距统一换算为厘米；25mm 输出 2.5，30mm 输出 3.0。
+10. alignment 只能是 left、center、right、justify；“两端对齐/分散对齐”输出 justify。
+11. 固定行距写 lineSpacingPt，倍数行距写 lineSpacingMultiple，两者不要同时写成有效数值。
+12. 对每个 styles 角色，styleMeta 中尽量写 sourceText、confidence、isInferred；明确来自原文时 isInferred=false，不确定或继承时 isInferred=true 且 confidence 不要高于 0.7。
+13. 学校说明没有提到的角色可以省略；不要为了完整而凭空生成。后端会用默认值补齐。
+
+{role_guide}
 
 JSON schema 摘要：
 {schema}
@@ -521,6 +937,278 @@ def save_active_format_rules(rules: dict[str, Any], path: Path | None = None) ->
     return rules_path
 
 
+def _normalize_scalar_text(value: Any) -> str:
+    return str(value or "").strip().translate(FULLWIDTH_TRANSLATION)
+
+
+def _iter_raw_style_items(raw_styles: Any) -> list[tuple[Any, Any]]:
+    if isinstance(raw_styles, dict):
+        return list(raw_styles.items())
+    if not isinstance(raw_styles, list):
+        return []
+    items: list[tuple[Any, Any]] = []
+    for index, raw_item in enumerate(raw_styles):
+        if not isinstance(raw_item, dict):
+            continue
+        role = next((raw_item.get(key) for key in ROLE_FIELD_KEYS if str(raw_item.get(key, "")).strip()), None)
+        if role is None:
+            role = raw_item.get("id", f"style_{index}")
+        items.append((role, raw_item))
+    return items
+
+
+def _extract_nested_mapping(raw_style: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(raw_style)
+    for key in STYLE_CONTAINER_KEYS:
+        nested = raw_style.get(key)
+        if isinstance(nested, dict):
+            normalized.update(nested)
+    return normalized
+
+
+def _get_alias_value(raw: dict[str, Any], canonical_key: str) -> Any:
+    aliases = STYLE_KEY_ALIASES.get(canonical_key, (canonical_key,))
+    for alias in aliases:
+        if alias in raw:
+            return raw[alias]
+    signature_to_key = {_role_key_signature(str(key)): key for key in raw.keys()}
+    for alias in aliases:
+        matched_key = signature_to_key.get(_role_key_signature(alias))
+        if matched_key is not None:
+            return raw[matched_key]
+    return None
+
+
+def _normalize_font_value(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if re.search(r"Times\s+New\s+Roman", raw, flags=re.IGNORECASE):
+        return "Times New Roman"
+    return raw
+
+
+def _normalize_alignment(value: Any) -> str | None:
+    raw = _normalize_scalar_text(value).casefold()
+    if not raw:
+        return None
+    if raw in ALIGNMENT_VALUES:
+        return raw
+    if any(token in raw for token in ("两端", "分散", "justify", "justified")):
+        return "justify"
+    if any(token in raw for token in ("居中", "中心", "center", "centred", "middle")):
+        return "center"
+    if any(token in raw for token in ("右", "right")):
+        return "right"
+    if any(token in raw for token in ("左", "left")):
+        return "left"
+    return None
+
+
+def _coerce_page_length_cm(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return round(float(value), 3)
+    raw = _normalize_scalar_text(value)
+    if not raw:
+        return None
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*(cm|厘米|mm|毫米)?", raw, flags=re.IGNORECASE)
+    if not match:
+        return None
+    unit = match.group(2) or "cm"
+    return _length_to_cm(float(match.group(1)), unit)
+
+
+def _coerce_style_number(key: str, value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = _normalize_scalar_text(value)
+    if not raw:
+        return None
+    if key == "fontSizePt":
+        size = _extract_font_size_pt(raw)
+        if size is not None:
+            return size
+    if key == "firstLineIndentPt":
+        indent = _extract_indent(f"首行缩进{raw}")
+        if indent is not None:
+            return indent
+    if key in {"spaceBeforePt", "spaceAfterPt"}:
+        label = "段前" if key == "spaceBeforePt" else "段后"
+        spacing = _extract_paragraph_spacing(f"{label}{raw}")
+        if key in spacing:
+            return spacing[key]
+    if key == "lineSpacingPt":
+        line_spacing = _extract_line_spacing(f"行距{raw}")
+        if line_spacing.get("lineSpacingPt") is not None:
+            return line_spacing["lineSpacingPt"]
+        if line_spacing.get("lineSpacingMultiple") is not None:
+            return None
+    if key == "lineSpacingMultiple":
+        line_spacing = _extract_line_spacing(raw if "倍" in raw else f"{raw}倍行距")
+        if line_spacing.get("lineSpacingMultiple") is not None:
+            return line_spacing["lineSpacingMultiple"]
+    number_match = re.search(r"-?\d+(?:\.\d+)?", raw)
+    if number_match:
+        return float(number_match.group(0))
+    return None
+
+
+def _extract_style_line_spacing(raw: dict[str, Any], style: dict[str, Any]) -> None:
+    raw_line_pt = _get_alias_value(raw, "lineSpacingPt")
+    raw_line_multiple = _get_alias_value(raw, "lineSpacingMultiple")
+    if raw_line_pt is not None:
+        line_spacing = _extract_line_spacing(f"行距{_normalize_scalar_text(raw_line_pt)}")
+        if line_spacing.get("lineSpacingPt") is not None:
+            style["lineSpacingPt"] = line_spacing["lineSpacingPt"]
+            style["lineSpacingMultiple"] = None
+            return
+        if line_spacing.get("lineSpacingMultiple") is not None:
+            style["lineSpacingMultiple"] = line_spacing["lineSpacingMultiple"]
+            style["lineSpacingPt"] = None
+            return
+        coerced = _coerce_style_number("lineSpacingPt", raw_line_pt)
+        if coerced is not None:
+            style["lineSpacingPt"] = coerced
+            style["lineSpacingMultiple"] = None
+    if raw_line_multiple is not None:
+        coerced = _coerce_style_number("lineSpacingMultiple", raw_line_multiple)
+        if coerced is not None:
+            style["lineSpacingMultiple"] = coerced
+            style["lineSpacingPt"] = None
+
+
+def _normalize_raw_style_object(role: str, raw_style: dict[str, Any]) -> dict[str, Any]:
+    raw = _extract_nested_mapping(raw_style)
+    normalized: dict[str, Any] = {}
+    font_blob = " ".join(
+        [
+            *[
+                _normalize_scalar_text(raw.get(alias))
+                for key in ("cnFont", "enFont")
+                for alias in STYLE_KEY_ALIASES.get(key, ())
+                if raw.get(alias) is not None
+            ],
+            *[
+                _normalize_scalar_text(raw.get(alias))
+                for alias in ("font", "fontFamily", "fontName", "字体", "字体要求")
+                if raw.get(alias) is not None
+            ],
+        ]
+    )
+    if font_blob:
+        detected_fonts = _extract_fonts(font_blob, prefer_english=role.startswith("en_"))
+        normalized.update({key: value for key, value in detected_fonts.items() if value})
+    for key in ("cnFont", "enFont"):
+        value = _get_alias_value(raw, key)
+        font = _normalize_font_value(value)
+        if font:
+            normalized[key] = font
+    if role.startswith("en_") and normalized.get("enFont") and not normalized.get("cnFont"):
+        normalized["cnFont"] = normalized["enFont"]
+    for key in ("fontSizePt", "firstLineIndentPt", "spaceBeforePt", "spaceAfterPt"):
+        value = _get_alias_value(raw, key)
+        if value is not None:
+            number = _coerce_style_number(key, value)
+            if number is not None:
+                normalized[key] = number
+    _extract_style_line_spacing(raw, normalized)
+    bold = _get_alias_value(raw, "bold")
+    if bold is not None:
+        normalized["bold"] = _coerce_optional_bool(bold)
+    italic = _get_alias_value(raw, "italic")
+    if italic is not None:
+        normalized["italic"] = _coerce_optional_bool(italic)
+    alignment = _normalize_alignment(_get_alias_value(raw, "alignment"))
+    if alignment:
+        normalized["alignment"] = alignment
+    return normalized
+
+
+def _extract_page_mapping(raw_rules: dict[str, Any]) -> dict[str, Any]:
+    page: dict[str, Any] = {}
+    for key in PAGE_CONTAINER_KEYS:
+        raw_page = raw_rules.get(key)
+        if isinstance(raw_page, dict):
+            page.update(raw_page)
+            for margin_key in PAGE_MARGIN_CONTAINER_KEYS:
+                if isinstance(raw_page.get(margin_key), dict):
+                    page.update(raw_page[margin_key])
+    if not page and isinstance(raw_rules.get("page"), dict):
+        page.update(raw_rules["page"])
+    for key in PAGE_MARGIN_CONTAINER_KEYS:
+        margins = raw_rules.get(key)
+        if isinstance(margins, dict):
+            page.update(margins)
+        elif isinstance(raw_rules.get("page"), dict) and isinstance(raw_rules["page"].get(key), dict):
+            page.update(raw_rules["page"][key])
+    return page
+
+
+def _get_page_alias_value(raw_page: dict[str, Any], canonical_key: str) -> Any:
+    aliases = PAGE_KEY_ALIASES.get(canonical_key, (canonical_key,))
+    for alias in aliases:
+        if alias in raw_page:
+            return raw_page[alias]
+    signature_to_key = {_role_key_signature(str(key)): key for key in raw_page.keys()}
+    for alias in aliases:
+        matched_key = signature_to_key.get(_role_key_signature(alias))
+        if matched_key is not None:
+            return raw_page[matched_key]
+    return None
+
+
+def _normalize_page_rules(raw_rules: dict[str, Any], base_page: dict[str, Any]) -> dict[str, Any]:
+    page = dict(base_page)
+    raw_page = _extract_page_mapping(raw_rules)
+    if not raw_page:
+        return page
+    paper = _get_page_alias_value(raw_page, "paper")
+    if str(paper or "").strip():
+        page["paper"] = str(paper).strip().upper() if str(paper).strip().lower() == "a4" else str(paper).strip()
+    for key in ("topMarginCm", "bottomMarginCm", "leftMarginCm", "rightMarginCm"):
+        value = _get_page_alias_value(raw_page, key)
+        if value is None:
+            continue
+        length = _coerce_page_length_cm(value)
+        if length is not None:
+            page[key] = length
+    return page
+
+
+def _normalize_style_meta(raw_meta: Any) -> dict[str, dict[str, Any]]:
+    if isinstance(raw_meta, list):
+        raw_meta = {
+            str(item.get("role") or item.get("styleRole") or item.get("key") or item.get("name") or index): item
+            for index, item in enumerate(raw_meta)
+            if isinstance(item, dict)
+        }
+    if not isinstance(raw_meta, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for role, meta in raw_meta.items():
+        canonical_role = _canonical_format_role(role)
+        if not canonical_role or not isinstance(meta, dict):
+            continue
+        normalized: dict[str, Any] = {}
+        if str(meta.get("sourceText", "")).strip():
+            normalized["sourceText"] = str(meta["sourceText"]).strip()[:500]
+        if "confidence" in meta:
+            confidence = _coerce_optional_number(meta.get("confidence"))
+            if confidence is not None:
+                if confidence > 1 and "%" in str(meta.get("confidence", "")):
+                    confidence = confidence / 100.0
+                normalized["confidence"] = max(0.0, min(1.0, confidence))
+        if "isInferred" in meta:
+            normalized["isInferred"] = _coerce_optional_bool(meta.get("isInferred"))
+        if not normalized:
+            continue
+        current_confidence = float(result.get(canonical_role, {}).get("confidence", -1) or -1)
+        next_confidence = float(normalized.get("confidence", 0) or 0)
+        if canonical_role not in result or next_confidence >= current_confidence:
+            result[canonical_role] = normalized
+    return result
+
+
 def normalize_format_rules(raw_rules: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_rules, dict):
         raise ValueError("Format rules must be a JSON object.")
@@ -529,37 +1217,39 @@ def normalize_format_rules(raw_rules: dict[str, Any]) -> dict[str, Any]:
     rules["schoolName"] = str(raw_rules.get("schoolName", rules["schoolName"]) or "").strip() or "custom"
     rules["sourceSummary"] = str(raw_rules.get("sourceSummary", rules["sourceSummary"]) or "").strip()
 
-    raw_page = raw_rules.get("page")
-    if isinstance(raw_page, dict):
-        for key in ("paper", "topMarginCm", "bottomMarginCm", "leftMarginCm", "rightMarginCm"):
-            if key in raw_page:
-                rules["page"][key] = _coerce_number(raw_page[key]) if key.endswith("Cm") else str(raw_page[key] or "A4")
+    rules["page"] = _normalize_page_rules(raw_rules, rules["page"])
 
     raw_styles = raw_rules.get("styles")
-    if isinstance(raw_styles, dict):
-        for role, raw_style in raw_styles.items():
-            if not isinstance(raw_style, dict):
-                continue
-            base_style = dict(rules["styles"].get(role, rules["styles"]["body_text"]))
-            for key in ("cnFont", "enFont"):
-                if key in raw_style and str(raw_style[key] or "").strip():
-                    base_style[key] = str(raw_style[key]).strip()
-            for key in ("fontSizePt", "firstLineIndentPt", "spaceBeforePt", "spaceAfterPt", "lineSpacingPt", "lineSpacingMultiple"):
-                if key in raw_style:
-                    base_style[key] = _coerce_optional_number(raw_style[key])
-            if "bold" in raw_style:
-                base_style["bold"] = _coerce_optional_bool(raw_style["bold"])
-            if "italic" in raw_style:
-                base_style["italic"] = _coerce_optional_bool(raw_style["italic"])
-            if str(raw_style.get("alignment", "")).strip() in ALIGNMENT_VALUES:
-                base_style["alignment"] = str(raw_style["alignment"]).strip()
-            rules["styles"][str(role)] = base_style
+    explicit_style_meta: dict[str, dict[str, Any]] = {}
+    for role, raw_style in _iter_raw_style_items(raw_styles):
+        canonical_role = _canonical_format_role(role)
+        if not canonical_role:
+            continue
+        if not isinstance(raw_style, dict):
+            continue
+        base_style = dict(rules["styles"].get(canonical_role, rules["styles"]["body_text"]))
+        normalized_style = _normalize_raw_style_object(canonical_role, raw_style)
+        for key, value in normalized_style.items():
+            if key in {"bold", "italic", "lineSpacingPt", "lineSpacingMultiple"} or value is not None:
+                base_style[key] = value
+        if base_style.get("lineSpacingPt") is not None:
+            base_style["lineSpacingMultiple"] = None
+        elif base_style.get("lineSpacingMultiple") is not None:
+            base_style["lineSpacingPt"] = None
+        rules["styles"][canonical_role] = base_style
+        if normalized_style:
+            explicit_style_meta[canonical_role] = {
+                "sourceText": f"Structured style rule for {canonical_role}.",
+                "confidence": 0.74,
+                "isInferred": False,
+            }
 
     raw_notes = raw_rules.get("notes")
     if isinstance(raw_notes, list):
         rules["notes"] = [str(item).strip() for item in raw_notes if str(item).strip()]
-    if isinstance(raw_rules.get("styleMeta"), dict):
-        rules["styleMeta"] = raw_rules["styleMeta"]
+    rules["styleMeta"] = _normalize_style_meta(raw_rules.get("styleMeta"))
+    for role, meta in explicit_style_meta.items():
+        rules["styleMeta"].setdefault(role, meta)
     if isinstance(raw_rules.get("quality"), dict):
         rules["quality"] = raw_rules["quality"]
     return rules
@@ -569,7 +1259,7 @@ def parse_format_rules_from_text(document_text: str, *, model_config: dict[str, 
     text = str(document_text or "").strip()
     if not text:
         raise ValueError("Format instruction text is empty.")
-    if text.startswith("{") or text.startswith("```"):
+    if text.startswith("{") or text.startswith("[") or text.startswith("```"):
         try:
             parsed_rules = _extract_json_object(text)
             deterministic_rules = extract_deterministic_format_rules(text)
@@ -589,7 +1279,7 @@ def parse_format_rules_from_text(document_text: str, *, model_config: dict[str, 
         return _fallback_format_rules(text, "解析模型配置不完整。")
 
     schema_text = SCHEMA_PATH.read_text(encoding="utf-8") if SCHEMA_PATH.exists() else "{}"
-    prompt = PROMPT_TEMPLATE.format(schema=schema_text, document_text=text[:20000])
+    prompt = PROMPT_TEMPLATE.format(role_guide=FORMAT_ROLE_PROMPT_GUIDE, schema=schema_text, document_text=text[:20000])
     try:
         configured_timeout = int(config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS))
     except (TypeError, ValueError):
@@ -622,20 +1312,7 @@ def parse_format_rules_from_text(document_text: str, *, model_config: dict[str, 
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
-    candidate = text.strip()
-    if candidate.startswith("```"):
-        candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
-        candidate = re.sub(r"\s*```$", "", candidate)
-    try:
-        data = json.loads(candidate)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", candidate, flags=re.DOTALL)
-        if not match:
-            raise
-        data = json.loads(match.group(0))
-    if not isinstance(data, dict):
-        raise ValueError("LLM did not return a JSON object.")
-    return data
+    return extract_json_object(text, allow_style_array=True)
 
 
 def _coerce_number(value: Any) -> float:
@@ -648,7 +1325,18 @@ def _coerce_number(value: Any) -> float:
 def _coerce_optional_number(value: Any) -> float | None:
     if value is None or value == "":
         return None
-    return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = _normalize_scalar_text(value)
+    if not raw:
+        return None
+    size = _extract_font_size_pt(raw)
+    if size is not None:
+        return size
+    match = re.search(r"-?\d+(?:\.\d+)?", raw)
+    if match:
+        return float(match.group(0))
+    return None
 
 
 def _coerce_optional_bool(value: Any) -> bool | None:

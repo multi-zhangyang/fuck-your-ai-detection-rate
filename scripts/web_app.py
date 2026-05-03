@@ -15,16 +15,25 @@ from typing import Any
 from urllib.parse import quote
 
 from flask import Flask, Response, jsonify, request, send_file, stream_with_context
+from werkzeug.exceptions import RequestEntityTooLarge
 
-from app_config import get_app_config_path, load_app_config, save_app_config
+from app_config import get_app_config_path, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
 from detection_report_parser import parse_detection_report_pdf
 from app_service import (
+    build_detection_matches_for_output,
+    backup_history_database_governance,
+    check_history_database_governance,
+    compact_history_database_governance,
     delete_document_history,
     delete_history_orphan_artifacts,
+    ensure_history_database_ready,
     export_round_output,
+    find_conflicting_history_route,
     get_document_history,
     get_document_protection_map,
+    get_document_scope_diagnostics,
     get_document_status,
+    get_history_database_maintenance_summary,
     get_round_progress_status,
     list_available_models,
     list_document_histories,
@@ -32,12 +41,16 @@ from app_service import (
     preview_document_history_delete,
     read_output_text,
     read_round_compare,
+    query_history_artifact_governance,
+    recover_history_database_governance,
+    repair_history_database_governance,
     rerun_compare_chunk,
     reset_round_progress,
     run_round_for_app,
     save_review_decisions,
     scan_history_orphan_artifacts,
     test_model_connection,
+    list_history_database_backups,
 )
 from format_rules import (
     get_default_format_rules,
@@ -55,7 +68,11 @@ TASK_STATE_DIR = ROOT_DIR / "finish" / "intermediate" / "task_states"
 RUN_STATE_TTL_SECONDS = 1800
 SSE_KEEPALIVE_INTERVAL_SECONDS = 15
 TASK_STATE_RETENTION_HOURS = 168
+TASK_STATE_TEMP_RETENTION_HOURS = 1
+TASK_STATE_SELF_HEAL_INTERVAL_SECONDS = 60
 TASK_STATE_SNAPSHOT_PREFIXES = ("run_round_", "batch_rerun_")
+DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_UPLOAD_BYTES = 40 * 1024 * 1024
 PROMPT_DIR = ROOT_DIR / "prompts"
 PROMPT_PREVIEW_FILES: tuple[dict[str, str], ...] = (
     {
@@ -126,10 +143,27 @@ ACTIVE_RUNS_BY_SOURCE: dict[str, str] = {}
 BATCH_RERUN_STATES: dict[str, BatchRerunState] = {}
 ACTIVE_BATCH_RERUNS_BY_OUTPUT: dict[str, str] = {}
 RUN_REGISTRY_LOCK = threading.Lock()
+TASK_STATE_SELF_HEAL_LOCK = threading.Lock()
+TASK_STATE_SELF_HEAL_CACHE: dict[str, Any] | None = None
+TASK_STATE_SELF_HEAL_CACHE_AT = 0.0
 RUN_AUTO_RETRY_DELAY_SECONDS = 10
 RUN_AUTO_RETRY_MAX_ATTEMPTS = 3
 RUN_AUTO_NEXT_ROUND_DELAY_SECONDS = 60
 app = Flask(__name__)
+
+
+def _read_byte_limit_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+app.config["MAX_CONTENT_LENGTH"] = _read_byte_limit_env("FYADR_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES)
 
 
 def ensure_workspace_dirs() -> None:
@@ -143,6 +177,12 @@ def error_response(message: str, status: int = 400, **extra: Any) -> tuple[Respo
     payload: dict[str, Any] = {"message": message}
     payload.update({key: value for key, value in extra.items() if value is not None})
     return jsonify(payload), status
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_request_too_large(_exc: RequestEntityTooLarge) -> tuple[Response, int]:
+    limit_mb = app.config.get("MAX_CONTENT_LENGTH", DEFAULT_MAX_REQUEST_BYTES) / (1024 * 1024)
+    return error_response(f"Request body is too large. Limit: {limit_mb:.0f} MB.", 413)
 
 
 def make_ascii_header_value(value: object) -> str:
@@ -166,9 +206,32 @@ def sanitize_filename(filename: str) -> str:
     return candidate
 
 
+def _max_upload_bytes() -> int:
+    return _read_byte_limit_env("FYADR_MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)
+
+
+def _assert_upload_size(size_bytes: int, *, label: str) -> None:
+    limit = _max_upload_bytes()
+    if size_bytes > limit:
+        raise ValueError(f"{label} is too large. Limit: {limit // (1024 * 1024)} MB.")
+
+
+def _decode_upload_base64(content_base64: str, *, label: str) -> bytes:
+    compact = "".join(str(content_base64 or "").split())
+    estimated_size = (len(compact) * 3) // 4
+    _assert_upload_size(estimated_size, label=label)
+    try:
+        data = base64.b64decode(compact, validate=True)
+    except Exception as exc:
+        raise ValueError(f"{label} is not valid base64.") from exc
+    _assert_upload_size(len(data), label=label)
+    return data
+
+
 def write_uploaded_file(filename: str, content: str) -> Path:
     ensure_workspace_dirs()
     safe_name = sanitize_filename(filename)
+    _assert_upload_size(len(content.encode("utf-8")), label="Text upload")
     target_path = ORIGIN_DIR / safe_name
     target_path.write_text(content, encoding="utf-8")
     return target_path
@@ -178,7 +241,7 @@ def write_uploaded_binary_file(filename: str, content_base64: str) -> Path:
     ensure_workspace_dirs()
     safe_name = sanitize_filename(filename)
     target_path = ORIGIN_DIR / safe_name
-    target_path.write_bytes(base64.b64decode(content_base64))
+    target_path.write_bytes(_decode_upload_base64(content_base64, label="Document upload"))
     return target_path
 
 
@@ -188,7 +251,7 @@ def write_uploaded_detection_report(filename: str, content_base64: str) -> Path:
     if not safe_name.lower().endswith(".pdf"):
         raise ValueError("Detection report must be a PDF file.")
     target_path = DETECTION_REPORT_DIR / safe_name
-    target_path.write_bytes(base64.b64decode(content_base64))
+    target_path.write_bytes(_decode_upload_base64(content_base64, label="Detection report"))
     return target_path
 
 
@@ -212,6 +275,28 @@ def build_prompt_preview_item(meta: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def _is_path_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_api_file_path(value: str, *, allowed_roots: tuple[Path, ...], label: str) -> Path:
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = (ROOT_DIR / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    if not any(_is_path_under(candidate, root) for root in allowed_roots):
+        allowed = ", ".join(str(root) for root in allowed_roots)
+        raise ValueError(f"{label} must stay under allowed workspace directories: {allowed}")
+    if not candidate.exists():
+        raise ValueError(f"{label} does not exist: {candidate}")
+    return candidate
+
+
 def normalize_source_path(source_path: str) -> str:
     candidate = Path(source_path).expanduser()
     if not candidate.is_absolute():
@@ -219,6 +304,10 @@ def normalize_source_path(source_path: str) -> str:
     if not candidate.exists():
         raise ValueError(f"Source file does not exist: {candidate}")
     return str(candidate)
+
+
+def normalize_api_source_path(source_path: str) -> str:
+    return str(_resolve_api_file_path(source_path, allowed_roots=(ORIGIN_DIR,), label="Source file"))
 
 
 def prune_run_states() -> None:
@@ -263,6 +352,10 @@ def normalize_output_path(output_path: str) -> str:
     return str(candidate)
 
 
+def normalize_api_output_path(output_path: str) -> str:
+    return str(_resolve_api_file_path(output_path, allowed_roots=(ROOT_DIR / "finish",), label="Output file"))
+
+
 def batch_rerun_state_path(run_id: str) -> Path:
     safe_run_id = "".join(char for char in run_id if char.isalnum() or char in {"-", "_"}).strip()
     if not safe_run_id:
@@ -289,6 +382,18 @@ def iter_task_state_snapshot_paths() -> list[Path]:
     return sorted(paths.values(), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
 
 
+def iter_task_state_temp_paths() -> list[Path]:
+    ensure_workspace_dirs()
+    paths: dict[str, Path] = {}
+    try:
+        for prefix in TASK_STATE_SNAPSHOT_PREFIXES:
+            for path in TASK_STATE_DIR.glob(f"{prefix}*.json.tmp"):
+                paths[str(path.resolve())] = path
+    except OSError:
+        return []
+    return sorted(paths.values(), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+
+
 def task_state_snapshot_kind(path: Path) -> str:
     if path.name.startswith("run_round_"):
         return "runRound"
@@ -309,6 +414,15 @@ def read_task_state_snapshot(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def task_state_run_id_from_path(path: Path) -> str:
+    name = path.name
+    for prefix in TASK_STATE_SNAPSHOT_PREFIXES:
+        if name.startswith(prefix):
+            suffix = ".json.tmp" if name.endswith(".json.tmp") else ".json"
+            return name[len(prefix):-len(suffix)] if name.endswith(suffix) else ""
+    return ""
+
+
 def get_active_task_ids() -> set[str]:
     with RUN_REGISTRY_LOCK:
         return {
@@ -317,9 +431,79 @@ def get_active_task_ids() -> set[str]:
         }
 
 
+def inspect_task_state_snapshot(path: Path, *, active_ids: set[str], cutoff: float) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    payload = read_task_state_snapshot(path)
+    state = payload.get("state") if isinstance(payload, dict) and isinstance(payload.get("state"), dict) else {}
+    kind = task_state_snapshot_kind(path)
+    run_id = str(state.get("runId", "")).strip() if state else ""
+    if not run_id:
+        run_id = task_state_run_id_from_path(path)
+    active = bool(run_id and run_id in active_ids)
+    completed = bool(state.get("completed")) if state else False
+    status = str(state.get("status", "") or "").strip() if state else ""
+    target_path = str(state.get("sourcePath") or state.get("outputPath") or "") if state else ""
+    stale = bool(not active and stat.st_mtime < cutoff)
+    invalid = payload is None
+    interrupted = bool(not active and not completed and not invalid)
+    return {
+        "file": path.name,
+        "path": str(path),
+        "kind": kind,
+        "runId": run_id,
+        "status": status or ("invalid" if invalid else "unknown"),
+        "targetPath": target_path,
+        "completed": completed,
+        "active": active,
+        "stale": stale,
+        "invalid": invalid,
+        "interrupted": interrupted,
+        "sizeBytes": stat.st_size,
+        "persistedAt": str(payload.get("persistedAt", "") or "") if isinstance(payload, dict) else "",
+        "updatedAt": str(state.get("updatedAt", "") or "") if state else datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat().replace("+00:00", "Z"),
+        "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def inspect_task_state_temp_file(path: Path, *, temp_cutoff: float, active_ids: set[str] | None = None) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    run_id = task_state_run_id_from_path(path)
+    active = bool(run_id and active_ids and run_id in active_ids)
+    return {
+        "file": path.name,
+        "path": str(path),
+        "kind": task_state_snapshot_kind(path),
+        "runId": run_id,
+        "active": active,
+        "stale": stat.st_mtime < temp_cutoff,
+        "sizeBytes": stat.st_size,
+        "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def list_task_state_snapshot_items(retention_hours: int = TASK_STATE_RETENTION_HOURS, limit: int = 40) -> list[dict[str, Any]]:
+    normalized_hours = max(1, min(int(retention_hours or TASK_STATE_RETENTION_HOURS), 24 * 365))
+    cutoff = time.time() - normalized_hours * 3600
+    active_ids = get_active_task_ids()
+    items = [
+        item
+        for item in (inspect_task_state_snapshot(path, active_ids=active_ids, cutoff=cutoff) for path in iter_task_state_snapshot_paths())
+        if item is not None
+    ]
+    items.sort(key=lambda item: str(item.get("modifiedAt", "")), reverse=True)
+    return items[: max(1, min(int(limit or 40), 200))]
+
+
 def summarize_task_state_store(retention_hours: int = TASK_STATE_RETENTION_HOURS) -> dict[str, Any]:
     now = time.time()
     cutoff = now - max(1, retention_hours) * 3600
+    temp_cutoff = now - TASK_STATE_TEMP_RETENTION_HOURS * 3600
     active_ids = get_active_task_ids()
     file_count = 0
     size_bytes = 0
@@ -327,29 +511,43 @@ def summarize_task_state_store(retention_hours: int = TASK_STATE_RETENTION_HOURS
     batch_rerun_count = 0
     active_snapshot_count = 0
     stale_count = 0
+    completed_count = 0
+    interrupted_count = 0
+    invalid_count = 0
     newest_mtime = 0.0
     oldest_mtime = 0.0
     for path in iter_task_state_snapshot_paths():
-        try:
-            stat = path.stat()
-        except OSError:
+        item = inspect_task_state_snapshot(path, active_ids=active_ids, cutoff=cutoff)
+        if item is None:
             continue
-        payload = read_task_state_snapshot(path) or {}
-        state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
-        run_id = str(state.get("runId", "")).strip() if isinstance(state, dict) else ""
-        kind = task_state_snapshot_kind(path)
+        mtime = path.stat().st_mtime if path.exists() else 0
+        kind = str(item.get("kind", "unknown"))
         file_count += 1
-        size_bytes += stat.st_size
+        size_bytes += int(item.get("sizeBytes", 0) or 0)
         if kind == "runRound":
             run_round_count += 1
         elif kind == "batchRerun":
             batch_rerun_count += 1
-        if run_id in active_ids:
+        if bool(item.get("active")):
             active_snapshot_count += 1
-        elif stat.st_mtime < cutoff:
+        if bool(item.get("stale")):
             stale_count += 1
-        newest_mtime = max(newest_mtime, stat.st_mtime)
-        oldest_mtime = stat.st_mtime if oldest_mtime <= 0 else min(oldest_mtime, stat.st_mtime)
+        if bool(item.get("completed")):
+            completed_count += 1
+        if bool(item.get("interrupted")):
+            interrupted_count += 1
+        if bool(item.get("invalid")):
+            invalid_count += 1
+        newest_mtime = max(newest_mtime, mtime)
+        oldest_mtime = mtime if oldest_mtime <= 0 else min(oldest_mtime, mtime)
+
+    temp_items = [
+        item
+        for item in (inspect_task_state_temp_file(path, temp_cutoff=temp_cutoff, active_ids=active_ids) for path in iter_task_state_temp_paths())
+        if item is not None
+    ]
+    active_temp_count = sum(1 for item in temp_items if bool(item.get("active")))
+    stale_active_temp_count = sum(1 for item in temp_items if bool(item.get("active")) and bool(item.get("stale")))
     return {
         "path": str(TASK_STATE_DIR),
         "fileCount": file_count,
@@ -358,7 +556,15 @@ def summarize_task_state_store(retention_hours: int = TASK_STATE_RETENTION_HOURS
         "batchRerunCount": batch_rerun_count,
         "activeSnapshotCount": active_snapshot_count,
         "staleCount": stale_count,
+        "completedCount": completed_count,
+        "interruptedCount": interrupted_count,
+        "invalidCount": invalid_count,
+        "tempFileCount": len(temp_items),
+        "activeTempCount": active_temp_count,
+        "staleTempCount": sum(1 for item in temp_items if bool(item.get("stale"))),
+        "staleActiveTempCount": stale_active_temp_count,
         "retentionHours": retention_hours,
+        "tempRetentionHours": TASK_STATE_TEMP_RETENTION_HOURS,
         "oldestUpdatedAt": datetime.fromtimestamp(oldest_mtime, timezone.utc).isoformat().replace("+00:00", "Z") if oldest_mtime else "",
         "newestUpdatedAt": datetime.fromtimestamp(newest_mtime, timezone.utc).isoformat().replace("+00:00", "Z") if newest_mtime else "",
     }
@@ -367,33 +573,37 @@ def summarize_task_state_store(retention_hours: int = TASK_STATE_RETENTION_HOURS
 def cleanup_task_state_snapshots(mode: str = "expired", max_age_hours: int = TASK_STATE_RETENTION_HOURS) -> dict[str, Any]:
     normalized_mode = mode if mode in {"expired", "completed", "all"} else "expired"
     normalized_hours = max(1, min(int(max_age_hours or TASK_STATE_RETENTION_HOURS), 24 * 365))
-    cutoff = time.time() - normalized_hours * 3600
+    now = time.time()
+    cutoff = now - normalized_hours * 3600
+    temp_cutoff = now - TASK_STATE_TEMP_RETENTION_HOURS * 3600
     active_ids = get_active_task_ids()
     before = summarize_task_state_store(normalized_hours)
     deleted_files: list[str] = []
+    deleted_temp_files: list[str] = []
+    deleted_invalid_files: list[str] = []
     failed_files: list[dict[str, str]] = []
     skipped_active_count = 0
+    skipped_active_temp_count = 0
     deleted_bytes = 0
 
     for path in iter_task_state_snapshot_paths():
-        payload = read_task_state_snapshot(path)
-        if payload is None:
-            continue
-        state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
-        run_id = str(state.get("runId", "")).strip() if isinstance(state, dict) else ""
-        if run_id in active_ids:
-            skipped_active_count += 1
-            continue
         try:
             stat = path.stat()
         except OSError as exc:
             failed_files.append({"file": path.name, "message": str(exc)})
             continue
+        payload = read_task_state_snapshot(path)
+        state = payload.get("state") if isinstance(payload, dict) and isinstance(payload.get("state"), dict) else {}
+        run_id = str(state.get("runId", "")).strip() if state else task_state_run_id_from_path(path)
+        if run_id in active_ids:
+            skipped_active_count += 1
+            continue
+        invalid = payload is None
         completed = bool(state.get("completed")) if isinstance(state, dict) else False
         should_delete = (
             normalized_mode == "all"
             or (normalized_mode == "completed" and completed)
-            or (normalized_mode == "expired" and stat.st_mtime < cutoff)
+            or (normalized_mode == "expired" and (stat.st_mtime < cutoff or invalid))
         )
         if not should_delete:
             continue
@@ -401,8 +611,30 @@ def cleanup_task_state_snapshots(mode: str = "expired", max_age_hours: int = TAS
             deleted_bytes += stat.st_size
             path.unlink()
             deleted_files.append(path.name)
+            if invalid:
+                deleted_invalid_files.append(path.name)
         except OSError as exc:
             failed_files.append({"file": path.name, "message": str(exc)})
+
+    if normalized_mode in {"expired", "all"}:
+        for path in iter_task_state_temp_paths():
+            item = inspect_task_state_temp_file(path, temp_cutoff=temp_cutoff)
+            if item is None:
+                continue
+            run_id = str(item.get("runId", "") or "")
+            if run_id in active_ids:
+                skipped_active_temp_count += 1
+                continue
+            if normalized_mode == "expired" and not bool(item.get("stale")):
+                continue
+            try:
+                stat = path.stat()
+                deleted_bytes += stat.st_size
+                path.unlink()
+                deleted_temp_files.append(path.name)
+                deleted_files.append(path.name)
+            except OSError as exc:
+                failed_files.append({"file": path.name, "message": str(exc)})
 
     after = summarize_task_state_store(normalized_hours)
     return {
@@ -410,13 +642,100 @@ def cleanup_task_state_snapshots(mode: str = "expired", max_age_hours: int = TAS
         "mode": normalized_mode,
         "maxAgeHours": normalized_hours,
         "deletedCount": len(deleted_files),
+        "deletedSnapshotCount": len(deleted_files) - len(deleted_temp_files),
+        "deletedTempCount": len(deleted_temp_files),
+        "deletedInvalidCount": len(deleted_invalid_files),
         "deletedBytes": deleted_bytes,
         "deletedFiles": deleted_files,
+        "deletedTempFiles": deleted_temp_files,
+        "deletedInvalidFiles": deleted_invalid_files,
         "failedFiles": failed_files,
         "skippedActiveCount": skipped_active_count,
+        "skippedActiveTempCount": skipped_active_temp_count,
         "before": before,
         "after": after,
     }
+
+
+def _task_state_actionable_stale_temp_count(summary: dict[str, Any]) -> int:
+    stale_temp_count = int(summary.get("staleTempCount", 0) or 0)
+    stale_active_temp_count = int(summary.get("staleActiveTempCount", 0) or 0)
+    return max(0, stale_temp_count - stale_active_temp_count)
+
+
+def _task_state_store_needs_cleanup(summary: dict[str, Any]) -> bool:
+    return (
+        int(summary.get("invalidCount", 0) or 0) > 0
+        or int(summary.get("staleCount", 0) or 0) > 0
+        or _task_state_actionable_stale_temp_count(summary) > 0
+    )
+
+
+def ensure_task_state_store_ready(
+    reason: str = "health",
+    max_age_seconds: float = TASK_STATE_SELF_HEAL_INTERVAL_SECONDS,
+) -> dict[str, Any]:
+    global TASK_STATE_SELF_HEAL_CACHE, TASK_STATE_SELF_HEAL_CACHE_AT
+
+    with TASK_STATE_SELF_HEAL_LOCK:
+        now = time.monotonic()
+        if max_age_seconds > 0 and TASK_STATE_SELF_HEAL_CACHE is not None and now - TASK_STATE_SELF_HEAL_CACHE_AT < max_age_seconds:
+            cached = dict(TASK_STATE_SELF_HEAL_CACHE)
+            cached["cached"] = True
+            cached["cachedAction"] = cached.get("action", "none")
+            cached["action"] = "cached"
+            return cached
+
+        checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        cleanup: dict[str, Any] | None = None
+        try:
+            ensure_workspace_dirs()
+            before = summarize_task_state_store()
+            after = before
+            actions: list[str] = []
+            if _task_state_store_needs_cleanup(before):
+                cleanup = cleanup_task_state_snapshots(mode="expired", max_age_hours=TASK_STATE_RETENTION_HOURS)
+                after = cleanup.get("after") if isinstance(cleanup.get("after"), dict) else summarize_task_state_store()
+                if int(cleanup.get("deletedCount", 0) or 0) > 0:
+                    actions.append("cleanup-expired")
+
+            cleanup_ok = bool(cleanup.get("ok", True) if cleanup else True)
+            ok = cleanup_ok and not _task_state_store_needs_cleanup(after)
+            action = "failed" if cleanup is not None and not cleanup_ok else "cleaned" if actions else "none"
+            payload: dict[str, Any] = {
+                "ok": ok,
+                "reason": reason,
+                "checkedAt": checked_at,
+                "action": action,
+                "actions": actions,
+                "cached": False,
+                "before": before,
+                "after": after,
+                "deletedCount": int(cleanup.get("deletedCount", 0) or 0) if cleanup else 0,
+                "deletedSnapshotCount": int(cleanup.get("deletedSnapshotCount", 0) or 0) if cleanup else 0,
+                "deletedTempCount": int(cleanup.get("deletedTempCount", 0) or 0) if cleanup else 0,
+                "deletedInvalidCount": int(cleanup.get("deletedInvalidCount", 0) or 0) if cleanup else 0,
+                "deletedBytes": int(cleanup.get("deletedBytes", 0) or 0) if cleanup else 0,
+                "skippedActiveCount": int(cleanup.get("skippedActiveCount", 0) or 0) if cleanup else 0,
+                "skippedActiveTempCount": int(cleanup.get("skippedActiveTempCount", 0) or 0) if cleanup else 0,
+                "failedFiles": cleanup.get("failedFiles", []) if cleanup else [],
+            }
+            if cleanup is not None:
+                payload["cleanup"] = cleanup
+        except Exception as exc:
+            payload = {
+                "ok": False,
+                "reason": reason,
+                "checkedAt": checked_at,
+                "action": "failed",
+                "actions": [],
+                "cached": False,
+                "error": str(exc),
+            }
+
+        TASK_STATE_SELF_HEAL_CACHE = payload
+        TASK_STATE_SELF_HEAL_CACHE_AT = time.monotonic()
+        return payload
 
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -959,6 +1278,50 @@ def load_persisted_batch_rerun_summary(run_id: str) -> dict[str, Any] | None:
     return summary
 
 
+def normalize_task_summary_item(summary: dict[str, Any], *, task_type: str, task_group: str) -> dict[str, Any]:
+    item = dict(summary)
+    target_path = str(item.get("sourcePath") or item.get("outputPath") or "")
+    item["taskType"] = task_type
+    item["taskGroup"] = task_group
+    item["targetPath"] = target_path
+    item["active"] = task_group == "active"
+    item["sortAt"] = str(item.get("updatedAt") or item.get("persistedAt") or item.get("createdAt") or "")
+    return item
+
+
+def build_task_summary_items(
+    active_runs: list[dict[str, Any]],
+    active_batch_reruns: list[dict[str, Any]],
+    recent_runs: list[dict[str, Any]],
+    recent_batch_reruns: list[dict[str, Any]],
+    *,
+    include_active: bool = True,
+    limit: int = 16,
+) -> list[dict[str, Any]]:
+    normalized_limit = max(1, min(int(limit or 16), 100))
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_many(source: list[dict[str, Any]], *, task_type: str, task_group: str) -> None:
+        for summary in source:
+            run_id = str(summary.get("runId", "")).strip()
+            if not run_id:
+                continue
+            key = (task_type, run_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(normalize_task_summary_item(summary, task_type=task_type, task_group=task_group))
+
+    if include_active:
+        add_many(active_runs, task_type="run-round", task_group="active")
+        add_many(active_batch_reruns, task_type="batch-rerun", task_group="active")
+    add_many(recent_runs, task_type="run-round", task_group="recent")
+    add_many(recent_batch_reruns, task_type="batch-rerun", task_group="recent")
+    items.sort(key=lambda item: str(item.get("sortAt", "")), reverse=True)
+    return items[:normalized_limit]
+
+
 def append_batch_rerun_event(run_id: str, event: dict[str, Any]) -> None:
     state = BATCH_RERUN_STATES.get(run_id)
     if not state:
@@ -992,11 +1355,18 @@ def finalize_batch_rerun(run_id: str, *, result: dict[str, Any] | None = None, e
 
 def merge_model_config_for_run(incoming: dict[str, Any]) -> dict[str, Any]:
     saved = load_app_config()
-    merged = {**saved, **incoming}
-    merged["roundModels"] = {**(saved.get("roundModels", {}) or {}), **(incoming.get("roundModels", {}) or {})}
+    hydrated_incoming = hydrate_app_config_secrets(incoming)
+    merged = {**saved, **hydrated_incoming}
+    if "roundModels" in incoming:
+        merged["roundModels"] = {
+            **(saved.get("roundModels", {}) or {}),
+            **(hydrated_incoming.get("roundModels", {}) or {}),
+        }
+    else:
+        merged["roundModels"] = saved.get("roundModels", {}) or {}
     if "modelProviders" not in incoming:
         merged["modelProviders"] = saved.get("modelProviders", []) or []
-    return merged
+    return hydrate_app_config_secrets(merged)
 
 
 def summarize_workspace_path(path: Path, *, label: str, kind: str) -> dict[str, Any]:
@@ -1049,7 +1419,48 @@ def build_environment_diagnostics() -> dict[str, Any]:
             active_batch_reruns.append(serialize_batch_rerun_state(run_id, state))
     recent_runs = load_recent_run_summaries({str(item.get("runId", "")) for item in active_runs})
     recent_batch_reruns = load_recent_batch_rerun_summaries({str(item.get("runId", "")) for item in active_batch_reruns})
+    recent_tasks = build_task_summary_items([], [], recent_runs, recent_batch_reruns, include_active=False, limit=16)
+    tasks = build_task_summary_items(active_runs, active_batch_reruns, recent_runs, recent_batch_reruns, limit=20)
+    task_state_readiness = ensure_task_state_store_ready(reason="health", max_age_seconds=TASK_STATE_SELF_HEAL_INTERVAL_SECONDS)
     task_state_store = summarize_task_state_store()
+    task_state_store["readiness"] = task_state_readiness
+    task_state_ready_ok = bool(task_state_readiness.get("ok"))
+    task_state_has_actionable_drift = _task_state_store_needs_cleanup(task_state_store)
+    task_state_level = "success" if task_state_ready_ok and not task_state_has_actionable_drift else "warning"
+    task_state_message = (
+        "Task state snapshots were cleaned automatically."
+        if task_state_ready_ok and task_state_readiness.get("action") == "cleaned"
+        else "Task state snapshots are healthy."
+        if task_state_ready_ok and not task_state_has_actionable_drift
+        else "Task state snapshots need attention; automatic cleanup did not finish cleanly."
+        if not task_state_ready_ok
+        else "Task state snapshots still include stale or invalid files."
+    )
+    history_readiness = ensure_history_database_ready(reason="health", max_age_seconds=30, compact=True)
+    try:
+        history_database = get_history_database_maintenance_summary()
+    except Exception as exc:
+        history_database = {"ok": False, "error": str(exc)}
+    history_database["readiness"] = history_readiness
+    history_policy = history_database.get("policy") if isinstance(history_database.get("policy"), dict) else {}
+    history_should_compact = bool(history_policy.get("shouldCompact"))
+    history_ready_ok = bool(history_readiness.get("ok"))
+    history_db_level = "success" if bool(history_database.get("ok")) and history_ready_ok and not history_should_compact else "warning"
+    history_db_message = (
+        "SQLite history index is healthy."
+        if bool(history_database.get("ok")) and history_ready_ok and not history_should_compact
+        else "SQLite history index was optimized automatically."
+        if history_ready_ok and history_readiness.get("action") == "compact-index"
+        else "SQLite history index was repaired automatically."
+        if history_ready_ok and history_readiness.get("action") not in {"", "none", "compact-index"}
+        else "SQLite history index can be compacted; automatic cleanup will handle it after destructive history changes."
+        if history_should_compact
+        else "SQLite history index needs attention; automatic repair did not finish cleanly."
+        if not history_ready_ok
+        else f"SQLite history diagnostics are unavailable: {history_database.get('error')}"
+        if history_database.get("error")
+        else "SQLite history index has not been created yet."
+    )
     path_summaries = [
         summarize_workspace_path(ROOT_DIR, label="项目根目录", kind="workspace"),
         summarize_workspace_path(ORIGIN_DIR, label="源文档目录", kind="origin"),
@@ -1094,6 +1505,20 @@ def build_environment_diagnostics() -> dict[str, Any]:
             "level": "success" if len(active_runs) + len(active_batch_reruns) == 0 else "warning",
             "message": "当前没有后台运行中的任务。" if len(active_runs) + len(active_batch_reruns) == 0 else f"当前有 {len(active_runs)} 个运行中的轮次，{len(active_batch_reruns)} 个批量重跑任务。",
         },
+        {
+            "key": "taskStateStore",
+            "label": "Task state",
+            "ok": task_state_ready_ok and not task_state_has_actionable_drift,
+            "level": task_state_level,
+            "message": task_state_message,
+        },
+        {
+            "key": "historyDatabase",
+            "label": "SQLite history",
+            "ok": bool(history_database.get("ok")),
+            "level": history_db_level,
+            "message": history_db_message,
+        },
     ]
     return {
         "ok": all(item["level"] != "error" for item in checks),
@@ -1103,12 +1528,17 @@ def build_environment_diagnostics() -> dict[str, Any]:
         "activeBatchRerunCount": len(active_batch_reruns),
         "recentRunCount": len(recent_runs),
         "recentBatchRerunCount": len(recent_batch_reruns),
+        "taskCount": len(tasks),
+        "recentTaskCount": len(recent_tasks),
         "checks": checks,
+        "tasks": tasks,
         "activeRuns": active_runs,
         "activeBatchReruns": active_batch_reruns,
+        "recentTasks": recent_tasks,
         "recentRuns": recent_runs,
         "recentBatchReruns": recent_batch_reruns,
         "taskStateStore": task_state_store,
+        "historyDatabase": history_database,
         "paths": path_summaries,
         "config": {
             "path": str(config_path),
@@ -1299,7 +1729,21 @@ def options_api(_path: str | None = None) -> Response:
 
 @app.after_request
 def add_cors_headers(response: Response) -> Response:
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    origin = request.headers.get("Origin", "").strip()
+    allowed_origins = {
+        "http://127.0.0.1:1420",
+        "http://localhost:1420",
+        "http://127.0.0.1:8765",
+        "http://localhost:8765",
+        *{
+            item.strip()
+            for item in os.getenv("FYADR_ALLOWED_ORIGINS", "").split(",")
+            if item.strip()
+        },
+    }
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     response.headers["Access-Control-Expose-Headers"] = (
@@ -1317,7 +1761,7 @@ def add_cors_headers(response: Response) -> Response:
 
 @app.route("/api/model-config", methods=["GET"])
 def get_model_config() -> Response:
-    return jsonify(load_app_config())
+    return jsonify(redact_app_config(load_app_config()))
 
 
 @app.route("/api/prompts", methods=["GET"])
@@ -1365,7 +1809,7 @@ def post_cleanup_task_state_snapshots() -> tuple[Response, int] | Response:
 def post_model_config() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
-        return jsonify(save_app_config(payload))
+        return jsonify(redact_app_config(save_app_config(payload)))
     except Exception as exc:
         return error_response(str(exc))
 
@@ -1397,7 +1841,10 @@ def post_parse_format_rules() -> tuple[Response, int] | Response:
             raise ValueError("Format instruction text is required.")
         if model_config is not None and not isinstance(model_config, dict):
             raise ValueError("modelConfig must be an object when provided.")
-        rules = parse_format_rules_from_text(document_text, model_config=model_config)
+        rules = parse_format_rules_from_text(
+            document_text,
+            model_config=hydrate_app_config_secrets(model_config) if isinstance(model_config, dict) else model_config,
+        )
         return jsonify({"ok": True, "path": "", "rules": rules})
     except Exception as exc:
         return error_response(str(exc))
@@ -1420,7 +1867,7 @@ def post_activate_format_rules() -> tuple[Response, int] | Response:
 def post_test_connection() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
-        return jsonify(test_model_connection(payload))
+        return jsonify(test_model_connection(hydrate_app_config_secrets(payload)))
     except Exception as exc:
         return error_response(str(exc))
 
@@ -1429,7 +1876,7 @@ def post_test_connection() -> tuple[Response, int] | Response:
 def post_list_models() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
-        return jsonify(list_available_models(payload))
+        return jsonify(list_available_models(hydrate_app_config_secrets(payload)))
     except Exception as exc:
         return error_response(str(exc))
 
@@ -1471,7 +1918,7 @@ def get_status() -> tuple[Response, int] | Response:
         prompt_sequence = parse_prompt_sequence_value(request.args.get("promptSequence"))
         return jsonify(
             get_document_status(
-                require_query_value("sourcePath"),
+                normalize_api_source_path(require_query_value("sourcePath")),
                 prompt_profile=prompt_profile,
                 prompt_sequence=prompt_sequence,
             )
@@ -1483,7 +1930,8 @@ def get_status() -> tuple[Response, int] | Response:
 @app.route("/api/document-history", methods=["GET"])
 def get_history() -> tuple[Response, int] | Response:
     try:
-        return jsonify(get_document_history(require_query_value("sourcePath")))
+        ensure_history_database_ready(reason="document-history", max_age_seconds=15, compact=False)
+        return jsonify(get_document_history(normalize_api_source_path(require_query_value("sourcePath"))))
     except Exception as exc:
         return error_response(str(exc))
 
@@ -1491,7 +1939,15 @@ def get_history() -> tuple[Response, int] | Response:
 @app.route("/api/document-protection-map", methods=["GET"])
 def get_protection_map() -> tuple[Response, int] | Response:
     try:
-        return jsonify(get_document_protection_map(require_query_value("sourcePath")))
+        return jsonify(get_document_protection_map(normalize_api_source_path(require_query_value("sourcePath"))))
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/document-scope-diagnostics", methods=["GET"])
+def get_scope_diagnostics() -> tuple[Response, int] | Response:
+    try:
+        return jsonify(get_document_scope_diagnostics(normalize_api_source_path(require_query_value("sourcePath"))))
     except Exception as exc:
         return error_response(str(exc))
 
@@ -1499,7 +1955,99 @@ def get_protection_map() -> tuple[Response, int] | Response:
 @app.route("/api/history-documents", methods=["GET"])
 def get_history_list() -> tuple[Response, int] | Response:
     try:
+        ensure_history_database_ready(reason="history-list", max_age_seconds=15, compact=False)
         return jsonify(list_document_histories())
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/history-artifacts", methods=["GET", "POST"])
+def get_history_artifacts() -> tuple[Response, int] | Response:
+    try:
+        ensure_history_database_ready(reason="history-artifacts", max_age_seconds=15, compact=False)
+        payload = (request.get_json(silent=True) or {}) if request.method == "POST" else {}
+        filters = {
+            "docId": payload.get("docId", request.args.get("docId", "")),
+            "roundNumber": payload.get("roundNumber", request.args.get("roundNumber", "")),
+            "kind": payload.get("kinds", payload.get("kind", request.args.getlist("kind") or request.args.get("kind", ""))),
+            "exists": payload.get("exists", request.args.get("exists", "")),
+            "minBytes": payload.get("minBytes", request.args.get("minBytes", "")),
+            "maxBytes": payload.get("maxBytes", request.args.get("maxBytes", "")),
+            "pathContains": payload.get("pathContains", request.args.get("pathContains", "")),
+            "limit": payload.get("limit", request.args.get("limit", "")),
+            "offset": payload.get("offset", request.args.get("offset", "")),
+        }
+        return jsonify(query_history_artifact_governance(filters))
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/history-db/check", methods=["GET"])
+def get_history_database_check() -> tuple[Response, int] | Response:
+    try:
+        ensure_history_database_ready(reason="history-check", max_age_seconds=0, compact=False)
+        return jsonify(check_history_database_governance())
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/history-db/maintenance", methods=["GET"])
+def get_history_database_maintenance() -> tuple[Response, int] | Response:
+    try:
+        readiness = ensure_history_database_ready(reason="history-maintenance", max_age_seconds=0, compact=True)
+        payload = get_history_database_maintenance_summary()
+        payload["readiness"] = readiness
+        return jsonify(payload)
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/history-db/repair", methods=["POST"])
+def post_history_database_repair() -> tuple[Response, int] | Response:
+    try:
+        return jsonify(repair_history_database_governance())
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/history-db/backups", methods=["GET"])
+def get_history_database_backups() -> tuple[Response, int] | Response:
+    try:
+        validate = request.args.get("validate", "").strip().lower() in {"1", "true", "yes"}
+        return jsonify(list_history_database_backups(validate=validate))
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/history-db/backup", methods=["POST"])
+def post_history_database_backup() -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        reason = str(payload.get("reason", "manual")).strip() or "manual"
+        keep = int(payload.get("keep", 12) or 12)
+        return jsonify(backup_history_database_governance(reason=reason, keep=keep))
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/history-db/compact", methods=["POST"])
+def post_history_database_compact() -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        create_backup = payload.get("createBackup", True)
+        keep = int(payload.get("keep", 12) or 12)
+        return jsonify(compact_history_database_governance(create_backup=bool(create_backup), keep=keep))
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/history-db/recover", methods=["POST"])
+def post_history_database_recover() -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        backup_path = str(payload.get("backupPath", "")).strip() or None
+        keep = int(payload.get("keep", 12) or 12)
+        return jsonify(recover_history_database_governance(backup_path=backup_path, keep=keep))
     except Exception as exc:
         return error_response(str(exc))
 
@@ -1601,6 +2149,21 @@ def get_read_compare() -> tuple[Response, int] | Response:
         return error_response(str(exc))
 
 
+@app.route("/api/detection-matches", methods=["POST"])
+def post_detection_matches() -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        output_path = str(payload.get("outputPath", "")).strip()
+        report = payload.get("report")
+        if not output_path:
+            raise ValueError("outputPath is required.")
+        if not isinstance(report, dict):
+            raise ValueError("report must be an object.")
+        return jsonify({"matches": build_detection_matches_for_output(output_path, report)})
+    except Exception as exc:
+        return error_response(str(exc))
+
+
 @app.route("/api/review-decisions", methods=["GET"])
 def get_review_decisions() -> tuple[Response, int] | Response:
     try:
@@ -1640,7 +2203,7 @@ def post_rerun_chunk() -> tuple[Response, int] | Response:
             raise ValueError("chunkId is required.")
         if not isinstance(model_config, dict):
             raise ValueError("modelConfig is required.")
-        return jsonify(rerun_compare_chunk(output_path, chunk_id, model_config, user_feedback=user_feedback))
+        return jsonify(rerun_compare_chunk(output_path, chunk_id, hydrate_app_config_secrets(model_config), user_feedback=user_feedback))
     except Exception as exc:
         failure: dict[str, Any] | None = None
         if output_path and chunk_id:
@@ -1682,14 +2245,15 @@ def post_batch_rerun() -> tuple[Response, int] | Response:
         if not targets:
             raise ValueError("No valid batch rerun targets were provided.")
 
-        run_id, _, already_active = register_or_reuse_batch_rerun(output_path, len(targets))
+        normalized_output_path = normalize_api_output_path(output_path)
+        run_id, _, already_active = register_or_reuse_batch_rerun(normalized_output_path, len(targets))
         if already_active:
             return jsonify({"runId": run_id, "alreadyActive": True}), 202
 
         effective_model_config = merge_model_config_for_run(model_config)
         worker = threading.Thread(
             target=batch_rerun_async,
-            args=(run_id, normalize_output_path(output_path), targets, effective_model_config),
+            args=(run_id, normalized_output_path, targets, effective_model_config),
             daemon=True,
         )
         worker.start()
@@ -1744,14 +2308,24 @@ def post_run_round() -> tuple[Response, int] | Response:
         if not isinstance(model_config, dict):
             raise ValueError("modelConfig is required.")
 
-        run_id, _, already_active = register_or_reuse_run(source_path)
+        normalized_source_path = normalize_api_source_path(source_path)
+        effective_model_config = merge_model_config_for_run(model_config)
+        if not bool(payload.get("allowNewRoute") or effective_model_config.get("allowNewRoute")):
+            route_conflict = find_conflicting_history_route(normalized_source_path, effective_model_config)
+            if route_conflict:
+                return error_response(
+                    str(route_conflict.get("message") or "Document has completed history under another prompt route."),
+                    status=409,
+                    code="prompt_route_conflict",
+                    routeConflict=route_conflict,
+                )
+        run_id, _, already_active = register_or_reuse_run(normalized_source_path)
         if already_active:
             return jsonify({"runId": run_id, "alreadyActive": True}), 202
 
-        effective_model_config = merge_model_config_for_run(model_config)
         worker = threading.Thread(
             target=run_round_async,
-            args=(run_id, normalize_source_path(source_path), effective_model_config),
+            args=(run_id, normalized_source_path, effective_model_config),
             daemon=True,
         )
         worker.start()
@@ -1798,7 +2372,7 @@ def get_run_round_status(run_id: str) -> tuple[Response, int] | Response:
 @app.route("/api/round-progress-status", methods=["GET"])
 def get_round_progress_status_route() -> tuple[Response, int] | Response:
     try:
-        source_path = require_query_value("sourcePath")
+        source_path = normalize_api_source_path(require_query_value("sourcePath"))
         prompt_profile = request.args.get("promptProfile", "cn_prewrite")
         prompt_sequence = parse_prompt_sequence_value(request.args.get("promptSequence"))
         round_number = optional_int_query_value("roundNumber")
@@ -1829,14 +2403,15 @@ def delete_round_progress_route() -> tuple[Response, int] | Response:
         round_number = int(payload.get("roundNumber", 0) or 0)
         if not source_path or round_number <= 0:
             raise ValueError("sourcePath and roundNumber are required.")
-        active_run = get_active_run_for_source(source_path)
+        normalized_source_path = normalize_api_source_path(source_path)
+        active_run = get_active_run_for_source(normalized_source_path)
         if active_run is not None:
             active_run_id, active_state = active_run
             return error_response(
                 f"Current document has an active {active_state.status} run ({active_run_id}); cancel or wait before resetting round progress.",
                 409,
             )
-        return jsonify(reset_round_progress(source_path, prompt_profile, round_number, prompt_sequence=prompt_sequence))
+        return jsonify(reset_round_progress(normalized_source_path, prompt_profile, round_number, prompt_sequence=prompt_sequence))
     except Exception as exc:
         return error_response(str(exc))
 
@@ -1946,6 +2521,12 @@ def not_found_api(_: Any) -> tuple[Response, int]:
 
 def main() -> None:
     ensure_workspace_dirs()
+    task_state_readiness = ensure_task_state_store_ready(reason="startup", max_age_seconds=0)
+    if task_state_readiness.get("action") not in {"", "none"}:
+        print(f"Task state startup check: {task_state_readiness.get('action')} (ok={bool(task_state_readiness.get('ok'))})")
+    readiness = ensure_history_database_ready(reason="startup", max_age_seconds=0, compact=True)
+    if readiness.get("action") not in {"", "none"}:
+        print(f"SQLite history startup check: {readiness.get('action')} (ok={bool(readiness.get('ok'))})")
     print("Fuck your AI detection rate Web API running at http://127.0.0.1:8765")
     app.run(host="127.0.0.1", port=8765, threaded=True)
 

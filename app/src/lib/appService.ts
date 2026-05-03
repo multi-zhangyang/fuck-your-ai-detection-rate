@@ -2,9 +2,11 @@ import type {
   DeleteHistoryResult,
   DeleteHistoryOptions,
   DetectionReport,
+  DetectionReportMatch,
   DetectionReportProvider,
   DocumentHistory,
   DocumentProtectionMap,
+  DocumentScopeDiagnostics,
   DocumentStatus,
   EnvironmentDiagnostics,
   ExportResult,
@@ -14,6 +16,10 @@ import type {
   FormatRules,
   FormatRulesResult,
   HistoryDeleteImpact,
+  HistoryArtifactQueryFilters,
+  HistoryArtifactQueryResponse,
+  HistoryDatabaseCheckResult,
+  HistoryDatabaseRepairResult,
   HistoryOrphanDeleteResult,
   HistoryOrphanScanResult,
   HistoryListResponse,
@@ -48,9 +54,11 @@ export interface AppService {
   testModelConnection(config: ModelConfig): Promise<TestConnectionResult>;
   pickInputFile(): Promise<PickedDocument | null>;
   pickDetectionReport(providerHint?: DetectionReportProvider): Promise<DetectionReport | null>;
+  buildDetectionMatches(outputPath: string, report: DetectionReport): Promise<DetectionReportMatch[]>;
   getDocumentStatus(sourcePath: string, modelConfig: ModelConfig): Promise<DocumentStatus>;
   getDocumentHistory(sourcePath: string): Promise<DocumentHistory>;
   getDocumentProtectionMap(sourcePath: string): Promise<DocumentProtectionMap>;
+  getDocumentScopeDiagnostics(sourcePath: string): Promise<DocumentScopeDiagnostics>;
   listDocumentHistories(): Promise<HistoryListResponse>;
   deleteDocumentHistory(
     docId: string,
@@ -60,6 +68,9 @@ export interface AppService {
     docId: string,
     options?: DeleteHistoryOptions,
   ): Promise<HistoryDeleteImpact>;
+  queryHistoryArtifacts(filters?: HistoryArtifactQueryFilters): Promise<HistoryArtifactQueryResponse>;
+  checkHistoryDatabase(): Promise<HistoryDatabaseCheckResult>;
+  repairHistoryDatabase(): Promise<HistoryDatabaseRepairResult>;
   scanHistoryOrphans(protectedPaths?: string[]): Promise<HistoryOrphanScanResult>;
   deleteHistoryOrphans(protectedPaths?: string[]): Promise<HistoryOrphanDeleteResult>;
   startRunRound(sourcePath: string, modelConfig: ModelConfig): Promise<string | null>;

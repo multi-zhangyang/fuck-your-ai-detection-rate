@@ -3,6 +3,7 @@ import { create } from "zustand";
 import type {
   DocumentHistory,
   DocumentProtectionMap,
+  DocumentScopeDiagnostics,
   DocumentStatus,
   ExportResult,
   HistoryDocumentSummary,
@@ -34,6 +35,7 @@ type AppState = {
   documentStatus: DocumentStatus | null;
   history: DocumentHistory | null;
   protectionMap: DocumentProtectionMap | null;
+  scopeDiagnostics: DocumentScopeDiagnostics | null;
   historyItems: HistoryDocumentSummary[];
   historyPanelOpen: boolean;
   roundResult: RoundResult | null;
@@ -49,6 +51,7 @@ type AppState = {
   setDocumentStatus: (status: DocumentStatus | null) => void;
   setHistory: (history: DocumentHistory | null) => void;
   setProtectionMap: (protectionMap: DocumentProtectionMap | null) => void;
+  setScopeDiagnostics: (scopeDiagnostics: DocumentScopeDiagnostics | null) => void;
   setHistoryItems: (items: HistoryDocumentSummary[]) => void;
   setHistoryPanelOpen: (open: boolean) => void;
   setRoundResult: (result: RoundResult | null) => void;
@@ -67,6 +70,7 @@ export const useAppState = create<AppState>((set) => ({
   documentStatus: null,
   history: null,
   protectionMap: null,
+  scopeDiagnostics: null,
   historyItems: [],
   historyPanelOpen: true,
   roundResult: null,
@@ -82,6 +86,7 @@ export const useAppState = create<AppState>((set) => ({
   setDocumentStatus: (documentStatus) => set({ documentStatus }),
   setHistory: (history) => set({ history }),
   setProtectionMap: (protectionMap) => set({ protectionMap }),
+  setScopeDiagnostics: (scopeDiagnostics) => set({ scopeDiagnostics }),
   setHistoryItems: (historyItems) => set({ historyItems }),
   setHistoryPanelOpen: (historyPanelOpen) => set({ historyPanelOpen }),
   setRoundResult: (roundResult) => set({ roundResult }),

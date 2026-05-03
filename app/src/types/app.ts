@@ -64,7 +64,7 @@ export type ModelConfig = {
   offlineMode: boolean;
   promptProfile: PromptProfile;
   promptSequence: PromptId[];
-  rewriteCandidateMode?: "economy" | "quality";
+  rewriteCandidateMode?: "economy";
   requestTimeoutSeconds: number;
   maxRetries: number;
   modelProviders?: ModelProviderConfig[];
@@ -113,9 +113,34 @@ export type TaskStateStoreSummary = {
   batchRerunCount: number;
   activeSnapshotCount: number;
   staleCount: number;
+  completedCount?: number;
+  interruptedCount?: number;
+  invalidCount?: number;
+  tempFileCount?: number;
+  activeTempCount?: number;
+  staleTempCount?: number;
+  staleActiveTempCount?: number;
   retentionHours: number;
+  tempRetentionHours?: number;
   oldestUpdatedAt?: string;
   newestUpdatedAt?: string;
+  readiness?: Record<string, unknown>;
+};
+
+export type TaskSummaryItem = Record<string, unknown> & {
+  runId: string;
+  taskType: "run-round" | "batch-rerun" | string;
+  taskGroup: "active" | "recent" | string;
+  targetPath: string;
+  active: boolean;
+  status: string;
+  completed: boolean;
+  cancelRequested?: boolean;
+  restoredFromDisk?: boolean;
+  persistedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  sortAt?: string;
 };
 
 export type TaskStateCleanupResult = {
@@ -123,10 +148,16 @@ export type TaskStateCleanupResult = {
   mode: "expired" | "completed" | "all" | string;
   maxAgeHours: number;
   deletedCount: number;
+  deletedSnapshotCount?: number;
+  deletedTempCount?: number;
+  deletedInvalidCount?: number;
   deletedBytes: number;
   deletedFiles: string[];
+  deletedTempFiles?: string[];
+  deletedInvalidFiles?: string[];
   failedFiles: Array<{ file: string; message: string }>;
   skippedActiveCount: number;
+  skippedActiveTempCount?: number;
   before: TaskStateStoreSummary;
   after: TaskStateStoreSummary;
 };
@@ -145,7 +176,12 @@ export type EnvironmentDiagnostics = {
   recentRuns?: RunRoundStatus[];
   recentBatchRerunCount?: number;
   recentBatchReruns?: BatchRerunStatus[];
+  taskCount?: number;
+  tasks?: TaskSummaryItem[];
+  recentTaskCount?: number;
+  recentTasks?: TaskSummaryItem[];
   taskStateStore?: TaskStateStoreSummary;
+  historyDatabase?: Record<string, unknown>;
   config: {
     path: string;
     exists: boolean;
@@ -177,7 +213,7 @@ export type RoundProgress = {
   currentChunk?: number;
   totalChunks?: number;
   completedChunks?: number;
-  rewriteCandidateMode?: "economy" | "quality";
+  rewriteCandidateMode?: "economy";
   candidateMaxPerChunk?: number;
   estimatedApiCalls?: number;
   twoCandidateChunkCount?: number;
@@ -368,7 +404,7 @@ export type RoundQualitySummary = {
   styleCardVersion?: number;
   styleCardChunkCount?: number;
   styleCardChunkIds?: string[];
-  rewriteCandidateMode?: "economy" | "quality";
+  rewriteCandidateMode?: "economy";
   candidateMaxPerChunk?: number;
   estimatedApiCalls?: number;
   twoCandidateChunkCount?: number;
@@ -547,6 +583,80 @@ export type DocumentProtectionMap = {
   sections: ProtectionMapSection[];
 };
 
+export type ScopeDiagnosticUnitFlags = {
+  abstractStart?: boolean;
+  bodyStart?: boolean;
+  acknowledgementHeading?: boolean;
+  referencesHeading?: boolean;
+  backMatterHeading?: boolean;
+  tocHeading?: boolean;
+  tocEntry?: boolean;
+  heading?: boolean;
+  numberedBodyItem?: boolean;
+  keywordLine?: boolean;
+  caption?: boolean;
+  note?: boolean;
+  formula?: boolean;
+};
+
+export type ScopeDiagnosticUnit = {
+  unitIndex: number;
+  target?: Record<string, unknown>;
+  targetKind: string;
+  styleName: string;
+  editable: boolean;
+  protectReason: string;
+  textLength: number;
+  textPreview: string;
+  hasFieldCode: boolean;
+  hasDrawing: boolean;
+  hasNumbering: boolean;
+  numberingLevel?: number | null;
+  flags: ScopeDiagnosticUnitFlags;
+};
+
+export type ScopeDiagnosticIssue = {
+  code: string;
+  severity: "error" | "warning" | "info" | string;
+  message: string;
+  unit?: ScopeDiagnosticUnit;
+};
+
+export type ScopeDiagnosticSummary = {
+  startIndex?: number | null;
+  startReason?: string;
+  startUnit?: ScopeDiagnosticUnit | null;
+  endIndex?: number | null;
+  endReason?: string;
+  endUnit?: ScopeDiagnosticUnit | null;
+  acknowledgementIndex?: number | null;
+  acknowledgementUnit?: ScopeDiagnosticUnit | null;
+  postAcknowledgementBoundaryIndex?: number | null;
+  postAcknowledgementBoundaryUnit?: ScopeDiagnosticUnit | null;
+};
+
+export type DocumentScopeDiagnostics = {
+  available: boolean;
+  ok: boolean;
+  version?: number;
+  sourcePath: string;
+  sourceKind: string;
+  snapshotPath?: string;
+  path?: string;
+  message: string;
+  totalTextUnitCount: number;
+  editableUnitCount: number;
+  protectedUnitCount: number;
+  reasonCounts: Record<string, number>;
+  scope: ScopeDiagnosticSummary;
+  issueCount: number;
+  errorCount: number;
+  warningCount: number;
+  issues: ScopeDiagnosticIssue[];
+  truncatedIssues?: number;
+  units: ScopeDiagnosticUnit[];
+};
+
 export type RoundResult = {
   round: number;
   outputPath: string;
@@ -570,7 +680,7 @@ export type RoundResult = {
     temperature?: number;
     rateLimitWindowMinutes?: number;
     rateLimitMaxRequests?: number;
-    rewriteCandidateMode?: "economy" | "quality";
+    rewriteCandidateMode?: "economy";
     routeSource?: "default" | "provider" | "round_snapshot" | string;
   };
   docEntry: Record<string, unknown>;
@@ -648,6 +758,90 @@ export type HistoryArtifactStats = {
   external: number;
   missing: number;
   bytes: number;
+};
+
+export type HistoryArtifactGovernanceMode = "missing" | "current" | "large";
+
+export type HistoryArtifactQueryKind = "sources" | "intermediate" | "exports" | "reports" | "external";
+
+export type HistoryArtifactQueryFilters = {
+  docId?: string;
+  roundNumber?: number | null;
+  kind?: HistoryArtifactQueryKind | HistoryArtifactQueryKind[];
+  kinds?: HistoryArtifactQueryKind[];
+  exists?: boolean | "existing" | "missing" | "all";
+  minBytes?: number | null;
+  maxBytes?: number | null;
+  pathContains?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export type HistoryArtifactQueryItem = {
+  path: string;
+  absolutePath: string;
+  kind: HistoryArtifactQueryKind;
+  exists: boolean;
+  bytes: number;
+  modifiedAt: string;
+  documentCount: number;
+  roundCount: number;
+  docIds: string[];
+  roles: string[];
+  firstTimestamp: string;
+  lastTimestamp: string;
+};
+
+export type HistoryArtifactQueryResponse = {
+  ok: boolean;
+  source: "sqlite" | string;
+  filters: HistoryArtifactQueryFilters & {
+    docId?: string;
+    roundNumber?: number | null;
+    kinds?: HistoryArtifactQueryKind[];
+    limit?: number;
+    offset?: number;
+  };
+  items: HistoryArtifactQueryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  stats: HistoryArtifactStats;
+  error?: string;
+};
+
+export type HistoryDatabaseIssue = {
+  code: string;
+  severity: "error" | "warning" | "info" | string;
+  message: string;
+  repairable?: boolean;
+  recommendedAction?: string;
+  details?: Record<string, unknown>;
+};
+
+export type HistoryDatabaseCheckResult = {
+  ok: boolean;
+  checkedAt?: string;
+  path?: string;
+  status?: Record<string, unknown>;
+  expectedCounts?: Record<string, number> | null;
+  issueCount: number;
+  errorCount: number;
+  warningCount: number;
+  repairableIssueCount?: number;
+  issues: HistoryDatabaseIssue[];
+  error?: string;
+};
+
+export type HistoryDatabaseRepairResult = {
+  ok: boolean;
+  repairedAt?: string;
+  path?: string;
+  before?: HistoryDatabaseCheckResult;
+  after?: HistoryDatabaseCheckResult;
+  rebuild?: Record<string, unknown>;
+  error?: string;
 };
 
 export type HistoryOrphanArtifactFile = {

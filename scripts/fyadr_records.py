@@ -46,7 +46,11 @@ The fyadr web pipeline should conceptually perform the same operations as
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import threading
+import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +66,30 @@ DELETE_MODES = {"records_and_artifacts", "records_artifacts_and_source", "record
 ORIGIN_DIR = ROOT_DIR / "origin"
 INTERMEDIATE_DIR = ROOT_DIR / "finish" / "intermediate"
 WEB_EXPORTS_DIR = ROOT_DIR / "finish" / "web_exports"
+_HISTORY_READY_LOCK = threading.RLock()
+_HISTORY_READY_CACHE: Dict[str, Any] | None = None
+_HISTORY_READY_CACHE_AT = 0.0
+_HISTORY_GOVERNANCE_LOCK = threading.RLock()
+_HISTORY_GOVERNANCE_CACHE: Dict[str, Any] | None = None
+_HISTORY_GOVERNANCE_CACHE_AT = 0.0
+_HISTORY_GOVERNANCE_CACHE_COMPACT = False
+RECOVER_FIRST_HISTORY_ISSUE_CODES = {
+    "sqlite_integrity_check_failed",
+    "history_index_unreadable",
+    "foreign_key_check_failed",
+}
+
+
+def _invalidate_history_ready_cache() -> None:
+    global _HISTORY_READY_CACHE, _HISTORY_READY_CACHE_AT
+    global _HISTORY_GOVERNANCE_CACHE, _HISTORY_GOVERNANCE_CACHE_AT, _HISTORY_GOVERNANCE_CACHE_COMPACT
+    with _HISTORY_READY_LOCK:
+        _HISTORY_READY_CACHE = None
+        _HISTORY_READY_CACHE_AT = 0.0
+    with _HISTORY_GOVERNANCE_LOCK:
+        _HISTORY_GOVERNANCE_CACHE = None
+        _HISTORY_GOVERNANCE_CACHE_AT = 0.0
+        _HISTORY_GOVERNANCE_CACHE_COMPACT = False
 
 
 @dataclass
@@ -104,6 +132,12 @@ def _ensure_finish_dir() -> None:
     FINISH_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _write_records_json(normalized_records: Dict[str, Any]) -> None:
+    _ensure_finish_dir()
+    text = json.dumps(normalized_records, ensure_ascii=False, indent=2, sort_keys=True)
+    RECORDS_PATH.write_text(text, encoding="utf-8")
+
+
 def load_records() -> Dict[str, Any]:
     """Load all AIGC records from the JSON file.
 
@@ -129,11 +163,587 @@ def load_records() -> Dict[str, Any]:
 
 
 def save_records(records: Dict[str, Any]) -> None:
-    """Persist the records dictionary back to disk as JSON."""
+    """Persist normalized records through SQLite, then export the JSON backup."""
 
-    _ensure_finish_dir()
-    text = json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True)
-    RECORDS_PATH.write_text(text, encoding="utf-8")
+    normalized_records = normalize_records(records)
+    records_hash = _records_hash(normalized_records)
+    try:
+        from fyadr_history_db import (
+            check_history_index as _check_history_index,
+            rebuild_history_index as _rebuild_history_index,
+        )
+
+        _rebuild_history_index(normalized_records, records_hash=records_hash)
+        health = _check_history_index(normalized_records, records_hash=records_hash)
+        if not bool(health.get("ok")):
+            raise RuntimeError(f"SQLite history index is unhealthy after save_records: {health.get('issues', [])}")
+        indexed_records = _load_records_from_history_index(records_hash)
+        _write_records_json(indexed_records if indexed_records is not None else normalized_records)
+        _invalidate_history_ready_cache()
+    except Exception:
+        from fyadr_history_db import (
+            check_history_index as _check_history_index,
+            rebuild_history_index as _rebuild_history_index,
+        )
+
+        _rebuild_history_index(normalized_records, records_hash=records_hash)
+        health = _check_history_index(normalized_records, records_hash=records_hash, strict=True)
+        if not bool(health.get("ok")):
+            raise RuntimeError(f"SQLite history index is unhealthy after save_records retry: {health.get('issues', [])}")
+        indexed_records = _load_records_from_history_index(records_hash)
+        _write_records_json(indexed_records if indexed_records is not None else normalized_records)
+        _invalidate_history_ready_cache()
+
+
+def _records_hash(records: Dict[str, Any]) -> str:
+    payload = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def sync_history_index(records: Dict[str, Any] | None = None, *, strict: bool = False) -> Dict[str, Any]:
+    """Synchronize the SQLite sidecar index with normalized history records."""
+
+    try:
+        if records is None:
+            indexed_records = _load_records_from_history_index()
+            normalized_records = indexed_records if indexed_records is not None else normalize_records(load_records())
+        else:
+            normalized_records = normalize_records(records)
+        records_hash = _records_hash(normalized_records)
+        from fyadr_history_db import (  # Local import avoids making JSON storage depend on sqlite at import time.
+            SCHEMA_VERSION,
+            get_history_index_status as _get_history_index_status,
+            rebuild_history_index as _rebuild_history_index,
+        )
+
+        status = _get_history_index_status()
+        if (
+            bool(status.get("exists"))
+            and int(status.get("schemaVersion", 0) or 0) == SCHEMA_VERSION
+            and str(status.get("recordsHash", "")) == records_hash
+        ):
+            status["rebuilt"] = False
+            return status
+        return _rebuild_history_index(normalized_records, records_hash=records_hash)
+    except Exception as exc:
+        if strict:
+            raise
+        return {
+            "exists": False,
+            "rebuilt": False,
+            "error": str(exc),
+        }
+
+
+def rebuild_history_index(*, strict: bool = True) -> Dict[str, Any]:
+    """Force a full SQLite history index rebuild."""
+
+    normalized_records = load_records_normalized()
+    try:
+        from fyadr_history_db import rebuild_history_index as _rebuild_history_index
+
+        result = _rebuild_history_index(normalized_records, records_hash=_records_hash(normalized_records))
+        _invalidate_history_ready_cache()
+        return result
+    except Exception:
+        if strict:
+            raise
+        return sync_history_index(normalized_records, strict=False)
+
+
+def get_history_index_status(*, refresh: bool = True) -> Dict[str, Any]:
+    """Return SQLite history index status, refreshing it from JSON by default."""
+
+    if refresh:
+        return sync_history_index(load_records_normalized(), strict=False)
+    from fyadr_history_db import get_history_index_status as _get_history_index_status
+
+    return _get_history_index_status()
+
+
+def check_history_index(*, strict: bool = False) -> Dict[str, Any]:
+    """Inspect SQLite history integrity without mutating records."""
+
+    raw_records = load_records()
+    normalized_json_records = normalize_records(raw_records)
+    indexed_records = _load_records_from_history_index()
+    if indexed_records is not None:
+        normalized_records = indexed_records
+    else:
+        normalized_records = normalized_json_records
+    records_hash = _records_hash(normalized_records) if normalized_records else ""
+    from fyadr_history_db import check_history_index as _check_history_index
+
+    report = _check_history_index(
+        normalized_records if (indexed_records is not None or RECORDS_PATH.exists()) else None,
+        records_hash=records_hash,
+        strict=strict,
+    )
+    if indexed_records is not None and RECORDS_PATH.exists() and normalized_json_records != indexed_records:
+        issues = list(report.get("issues", [])) if isinstance(report.get("issues"), list) else []
+        issues.append({
+            "code": "json_backup_stale",
+            "severity": "warning",
+            "message": "The JSON compatibility history file is stale compared with the SQLite primary history index.",
+            "repairable": True,
+            "recommendedAction": "history-db-repair",
+        })
+        error_count = sum(1 for issue in issues if isinstance(issue, dict) and issue.get("severity") == "error")
+        warning_count = sum(1 for issue in issues if isinstance(issue, dict) and issue.get("severity") == "warning")
+        report.update({
+            "ok": error_count == 0,
+            "issues": issues,
+            "issueCount": len(issues),
+            "errorCount": error_count,
+            "warningCount": warning_count,
+            "repairableIssueCount": sum(1 for issue in issues if isinstance(issue, dict) and bool(issue.get("repairable"))),
+        })
+    return report
+
+
+def repair_history_index(*, strict: bool = True) -> Dict[str, Any]:
+    """Repair SQLite history governance state from the primary index, or JSON when needed."""
+
+    indexed_records = _load_records_from_history_index()
+    if indexed_records is not None:
+        normalized_records = normalize_records(indexed_records)
+    else:
+        raw_records = load_records()
+        normalized_records = normalize_records(raw_records) if (raw_records or RECORDS_PATH.exists()) else {}
+
+    try:
+        from fyadr_history_db import repair_history_index as _repair_history_index
+
+        result = _repair_history_index(normalized_records, records_hash=_records_hash(normalized_records))
+        repaired_records = _load_records_from_history_index(_records_hash(normalized_records))
+        _write_records_json(repaired_records if repaired_records is not None else normalized_records)
+        _invalidate_history_ready_cache()
+        return result
+    except Exception:
+        if strict:
+            raise
+        return check_history_index(strict=False)
+
+
+def _history_issue_codes(report: Dict[str, Any]) -> set[str]:
+    issues = report.get("issues") if isinstance(report.get("issues"), list) else []
+    return {str(issue.get("code", "")) for issue in issues if isinstance(issue, dict) and str(issue.get("code", "")).strip()}
+
+
+def _history_error_codes(report: Dict[str, Any]) -> set[str]:
+    issues = report.get("issues") if isinstance(report.get("issues"), list) else []
+    return {
+        str(issue.get("code", ""))
+        for issue in issues
+        if isinstance(issue, dict)
+        and str(issue.get("code", "")).strip()
+        and str(issue.get("severity", "")) == "error"
+    }
+
+
+def _safe_history_governance_label(value: str) -> str:
+    label = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in str(value or "").strip())
+    return label[:80] or "auto"
+
+
+def _refresh_json_backup_from_index() -> bool:
+    indexed_records = _load_records_from_history_index()
+    if indexed_records is None:
+        return False
+    normalized_indexed_records = normalize_records(indexed_records)
+    if RECORDS_PATH.exists() and normalize_records(load_records()) == normalized_indexed_records:
+        return False
+    _write_records_json(normalized_indexed_records)
+    return True
+
+
+def ensure_history_index_ready(
+    *,
+    reason: str = "manual",
+    recover: bool = True,
+    repair: bool = True,
+    refresh_json: bool = True,
+    max_age_seconds: float = 0,
+) -> Dict[str, Any]:
+    """Make the SQLite history index usable, repairing only when diagnostics require it."""
+
+    global _HISTORY_READY_CACHE, _HISTORY_READY_CACHE_AT
+
+    with _HISTORY_READY_LOCK:
+        now = time.monotonic()
+        if max_age_seconds > 0 and _HISTORY_READY_CACHE is not None and now - _HISTORY_READY_CACHE_AT < max_age_seconds:
+            cached = dict(_HISTORY_READY_CACHE)
+            cached["cached"] = True
+            return cached
+
+        checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        actions: List[str] = []
+        recovered: Dict[str, Any] | None = None
+        repaired: Dict[str, Any] | None = None
+        refresh_error = ""
+
+        try:
+            before = check_history_index(strict=False)
+        except Exception as exc:
+            before = {
+                "ok": False,
+                "error": str(exc),
+                "issueCount": 1,
+                "errorCount": 1,
+                "warningCount": 0,
+                "issues": [
+                    {
+                        "code": "history_index_check_failed",
+                        "severity": "error",
+                        "message": str(exc),
+                        "repairable": True,
+                        "recommendedAction": "history-db-repair",
+                    }
+                ],
+            }
+
+        after = before
+        if bool(before.get("ok")):
+            if refresh_json and "json_backup_stale" in _history_issue_codes(before):
+                try:
+                    if _refresh_json_backup_from_index():
+                        actions.append("refresh-json-backup")
+                    after = check_history_index(strict=False)
+                except Exception as exc:
+                    refresh_error = str(exc)
+                    after = check_history_index(strict=False)
+        else:
+            error_codes = _history_error_codes(before)
+            should_try_recovery = recover and bool(error_codes & RECOVER_FIRST_HISTORY_ISSUE_CODES)
+            if should_try_recovery:
+                recovered = recover_history_index(backup_path=None, keep=12)
+                actions.append("recover-from-backup")
+                after = check_history_index(strict=False)
+
+            if not bool(after.get("ok")) and repair:
+                repaired = repair_history_index(strict=False)
+                actions.append("repair-index")
+                after = check_history_index(strict=False)
+
+            if bool(after.get("ok")) and refresh_json:
+                try:
+                    if _refresh_json_backup_from_index():
+                        actions.append("refresh-json-backup")
+                    after = check_history_index(strict=False)
+                except Exception as exc:
+                    refresh_error = str(exc)
+
+        ok = bool(after.get("ok")) and int(after.get("errorCount", 0) or 0) == 0
+        payload: Dict[str, Any] = {
+            "ok": ok,
+            "reason": reason,
+            "checkedAt": checked_at,
+            "actions": actions,
+            "action": actions[-1] if actions else "none",
+            "before": before,
+            "after": after,
+            "cached": False,
+        }
+        if recovered is not None:
+            payload["recovery"] = recovered
+        if repaired is not None:
+            payload["repair"] = repaired
+        if refresh_error:
+            payload["refreshJsonError"] = refresh_error
+
+        _HISTORY_READY_CACHE = payload
+        _HISTORY_READY_CACHE_AT = time.monotonic()
+        return payload
+
+
+def ensure_history_governance_ready(
+    *,
+    reason: str = "app",
+    max_age_seconds: float = 30,
+    compact: bool = True,
+    keep: int = 12,
+) -> Dict[str, Any]:
+    """Run the safe background history governance loop without deleting user files."""
+
+    global _HISTORY_GOVERNANCE_CACHE, _HISTORY_GOVERNANCE_CACHE_AT, _HISTORY_GOVERNANCE_CACHE_COMPACT
+
+    with _HISTORY_GOVERNANCE_LOCK:
+        now = time.monotonic()
+        cache_can_satisfy = _HISTORY_GOVERNANCE_CACHE is not None and (not compact or _HISTORY_GOVERNANCE_CACHE_COMPACT)
+        if max_age_seconds > 0 and cache_can_satisfy and now - _HISTORY_GOVERNANCE_CACHE_AT < max_age_seconds:
+            cached = dict(_HISTORY_GOVERNANCE_CACHE or {})
+            cached["cached"] = True
+            return cached
+
+        checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        actions: List[str] = []
+        compact_result: Dict[str, Any] | None = None
+        compact_error = ""
+
+        try:
+            index_readiness = ensure_history_index_ready(reason=reason, max_age_seconds=0)
+            actions.extend(str(item) for item in index_readiness.get("actions", []) if str(item).strip())
+            before_summary = get_history_index_maintenance_summary()
+            after_summary = before_summary
+            policy = before_summary.get("policy") if isinstance(before_summary.get("policy"), dict) else {}
+            should_compact = compact and bool(index_readiness.get("ok")) and bool(policy.get("shouldCompact"))
+            if should_compact:
+                try:
+                    compact_result = compact_history_index(
+                        create_backup=True,
+                        keep=keep,
+                        reason=f"auto_governance_{_safe_history_governance_label(reason)}",
+                    )
+                    if bool(compact_result.get("ok")):
+                        actions.append("compact-index")
+                    else:
+                        compact_error = str(compact_result.get("error", "Automatic SQLite compaction failed."))
+                finally:
+                    after_summary = get_history_index_maintenance_summary()
+
+            ok = bool(index_readiness.get("ok")) and not compact_error and (
+                compact_result is None or bool(compact_result.get("ok"))
+            )
+            payload: Dict[str, Any] = {
+                "ok": ok,
+                "reason": reason,
+                "checkedAt": checked_at,
+                "actions": actions,
+                "action": actions[-1] if actions else "none",
+                "cached": False,
+                "compactEnabled": bool(compact),
+                "index": index_readiness,
+                "before": before_summary,
+                "after": after_summary,
+                "compact": compact_result,
+            }
+            if compact_error:
+                payload["compactError"] = compact_error
+        except Exception as exc:
+            payload = {
+                "ok": False,
+                "reason": reason,
+                "checkedAt": checked_at,
+                "actions": actions,
+                "action": "failed",
+                "cached": False,
+                "compactEnabled": bool(compact),
+                "error": str(exc),
+            }
+
+        _HISTORY_GOVERNANCE_CACHE = payload
+        _HISTORY_GOVERNANCE_CACHE_AT = time.monotonic()
+        _HISTORY_GOVERNANCE_CACHE_COMPACT = bool(compact)
+        return payload
+
+
+def _history_backup_dir_override() -> Path | None:
+    raw_path = os.getenv("FYADR_HISTORY_BACKUP_DIR", "").strip()
+    if not raw_path:
+        return None
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = (ROOT_DIR / candidate).resolve()
+    return candidate.resolve()
+
+
+def list_history_index_backups(*, validate: bool = False) -> Dict[str, Any]:
+    from fyadr_history_db import list_history_index_backups as _list_history_index_backups
+
+    backup_dir = _history_backup_dir_override()
+    return _list_history_index_backups(validate=validate, backup_dir=backup_dir) if backup_dir else _list_history_index_backups(validate=validate)
+
+
+def backup_history_index(*, reason: str = "manual", keep: int = 12) -> Dict[str, Any]:
+    from fyadr_history_db import backup_history_index as _backup_history_index
+
+    backup_dir = _history_backup_dir_override()
+    return _backup_history_index(reason=reason, keep=keep, backup_dir=backup_dir) if backup_dir else _backup_history_index(reason=reason, keep=keep)
+
+
+def compact_history_index(*, create_backup: bool = True, keep: int = 12, reason: str = "manual") -> Dict[str, Any]:
+    from fyadr_history_db import compact_history_index as _compact_history_index
+
+    backup_dir = _history_backup_dir_override()
+    result = (
+        _compact_history_index(create_backup=create_backup, keep=keep, backup_dir=backup_dir, reason=reason)
+        if backup_dir
+        else _compact_history_index(create_backup=create_backup, keep=keep, reason=reason)
+    )
+    _invalidate_history_ready_cache()
+    return result
+
+
+def recover_history_index(*, backup_path: str | None = None, keep: int = 12) -> Dict[str, Any]:
+    from fyadr_history_db import recover_history_index as _recover_history_index
+
+    backup_dir = _history_backup_dir_override()
+    result = (
+        _recover_history_index(backup_path=backup_path, keep=keep, backup_dir=backup_dir)
+        if backup_dir
+        else _recover_history_index(backup_path=backup_path, keep=keep)
+    )
+    recovered_records = _load_records_from_history_index()
+    if recovered_records is not None:
+        _write_records_json(recovered_records)
+        _invalidate_history_ready_cache()
+    return result
+
+
+def get_history_index_maintenance_summary() -> Dict[str, Any]:
+    from fyadr_history_db import get_history_index_maintenance_summary as _get_history_index_maintenance_summary
+
+    backup_dir = _history_backup_dir_override()
+    return _get_history_index_maintenance_summary(backup_dir=backup_dir) if backup_dir else _get_history_index_maintenance_summary()
+
+
+def apply_history_delete_maintenance(
+    *,
+    reason: str = "history_delete",
+    documents_deleted: int = 0,
+    rounds_deleted: int = 0,
+    artifact_rows_deleted: int = 0,
+    files_deleted: int = 0,
+    keep: int = 12,
+) -> Dict[str, Any]:
+    from fyadr_history_db import apply_history_delete_maintenance as _apply_history_delete_maintenance
+
+    backup_dir = _history_backup_dir_override()
+    kwargs = {
+        "reason": reason,
+        "documents_deleted": documents_deleted,
+        "rounds_deleted": rounds_deleted,
+        "artifact_rows_deleted": artifact_rows_deleted,
+        "files_deleted": files_deleted,
+        "keep": keep,
+    }
+    if backup_dir:
+        kwargs["backup_dir"] = backup_dir
+    result = _apply_history_delete_maintenance(**kwargs)
+    _invalidate_history_ready_cache()
+    return result
+
+
+def query_history_artifacts(filters: Dict[str, Any] | None = None, *, strict: bool = False) -> Dict[str, Any]:
+    """Query SQLite history artifacts by document, round, kind, state, and size."""
+
+    try:
+        from fyadr_history_db import query_history_artifacts_from_index
+
+        result = query_history_artifacts_from_index(filters or {}, strict=strict)
+    except Exception:
+        if strict:
+            raise
+        result = None
+    if isinstance(result, dict):
+        return result
+    return {
+        "ok": False,
+        "source": "sqlite",
+        "error": "SQLite history index is unavailable or stale.",
+        "filters": filters or {},
+        "items": [],
+        "total": 0,
+        "limit": 0,
+        "offset": 0,
+        "hasMore": False,
+        "stats": _empty_history_artifact_stats(),
+    }
+
+
+def _save_document_record_transactional(records: Dict[str, Any], doc_id: str) -> Dict[str, Any]:
+    normalized_records = normalize_records(records)
+    normalized_doc_id = normalize_doc_id(doc_id)
+    doc_entry = normalized_records.get(normalized_doc_id)
+    if not isinstance(doc_entry, dict):
+        raise ValueError(f"Document record not found after normalization: {normalized_doc_id}")
+
+    records_hash = _records_hash(normalized_records)
+    try:
+        from fyadr_history_db import (
+            check_history_index as _check_history_index,
+            rebuild_history_index as _rebuild_history_index,
+            upsert_document_record,
+        )
+
+        upsert_document_record(normalized_doc_id, doc_entry, records_hash=records_hash)
+        health = _check_history_index(normalized_records, records_hash=records_hash)
+        if not bool(health.get("ok")):
+            _rebuild_history_index(normalized_records, records_hash=records_hash)
+        indexed_records = _load_records_from_history_index(records_hash)
+        if indexed_records is None:
+            indexed_records = normalized_records
+        _write_records_json(indexed_records)
+        _invalidate_history_ready_cache()
+        indexed_doc = indexed_records.get(normalized_doc_id)
+        return indexed_doc if isinstance(indexed_doc, dict) else doc_entry
+    except Exception:
+        sync_history_index(normalized_records, strict=True)
+        _write_records_json(normalized_records)
+        _invalidate_history_ready_cache()
+        return doc_entry
+
+
+def _delete_document_record_transactional(records: Dict[str, Any], doc_id: str) -> Dict[str, Any]:
+    normalized_records = normalize_records(records)
+    normalized_doc_id = normalize_doc_id(doc_id)
+    normalized_records.pop(normalized_doc_id, None)
+    records_hash = _records_hash(normalized_records)
+    try:
+        from fyadr_history_db import (
+            check_history_index as _check_history_index,
+            delete_document_record,
+            rebuild_history_index as _rebuild_history_index,
+        )
+
+        delete_document_record(normalized_doc_id, records_hash=records_hash)
+        health = _check_history_index(normalized_records, records_hash=records_hash)
+        if not bool(health.get("ok")):
+            _rebuild_history_index(normalized_records, records_hash=records_hash)
+        indexed_records = _load_records_from_history_index(records_hash)
+        if indexed_records is None:
+            indexed_records = normalized_records
+        _write_records_json(indexed_records)
+        _invalidate_history_ready_cache()
+        return indexed_records
+    except Exception:
+        sync_history_index(normalized_records, strict=True)
+        _write_records_json(normalized_records)
+        _invalidate_history_ready_cache()
+        return normalized_records
+
+
+def _load_records_from_history_index(expected_hash: str | None = None) -> Dict[str, Any] | None:
+    try:
+        from fyadr_history_db import load_records_from_index
+
+        indexed_records = load_records_from_index(expected_hash=expected_hash)
+    except Exception:
+        return None
+    if not isinstance(indexed_records, dict):
+        return None
+    return normalize_records(indexed_records)
+
+
+def _load_primary_records() -> Dict[str, Any]:
+    indexed_records = _load_records_from_history_index()
+    if indexed_records is not None:
+        if normalize_records(load_records()) != indexed_records:
+            _write_records_json(indexed_records)
+        return indexed_records
+
+    raw_records = load_records()
+    normalized_records = normalize_records(raw_records)
+    if normalized_records != raw_records:
+        save_records(normalized_records)
+        indexed_records = _load_records_from_history_index(_records_hash(normalized_records))
+        return indexed_records if indexed_records is not None else normalized_records
+
+    if normalized_records:
+        save_records(normalized_records)
+        indexed_records = _load_records_from_history_index(_records_hash(normalized_records))
+        return indexed_records if indexed_records is not None else normalized_records
+    return {}
 
 
 def normalize_record_path(path: str) -> str:
@@ -294,18 +904,14 @@ def normalize_records(records: Dict[str, Any]) -> Dict[str, Any]:
         target_entry["origin_path"] = normalize_record_path(str(raw_entry.get("origin_path", normalized_key))) or normalized_key
         target_entry["rounds"] = [
             merged_by_round_profile[key]
-            for key in sorted(merged_by_round_profile, key=lambda item: (item[0], item[1]))
+            for key in sorted(merged_by_round_profile, key=lambda item: (item[0], item[1], item[2]))
         ]
 
     return normalized_records
 
 
 def load_records_normalized() -> Dict[str, Any]:
-    raw_records = load_records()
-    normalized_records = normalize_records(raw_records)
-    if normalized_records != raw_records:
-        save_records(normalized_records)
-    return normalized_records
+    return _load_primary_records()
 
 
 def _record_path_to_absolute(path: str) -> Optional[Path]:
@@ -371,6 +977,66 @@ def _collect_round_export_paths(rounds: List[Dict[str, Any]]) -> set[Path]:
     return collected
 
 
+def _round_sql_filters(rounds: List[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    filters: list[Dict[str, Any]] = []
+    for item in rounds:
+        if not isinstance(item, dict) or not isinstance(item.get("round"), int):
+            continue
+        prompt_profile = _normalize_prompt_profile(item.get("prompt_profile", "cn"))
+        sequence_key = ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"))) if prompt_profile == "cn_custom" else ""
+        filters.append({
+            "roundNumber": int(item["round"]),
+            "promptProfile": prompt_profile,
+            "promptSequenceKey": sequence_key,
+        })
+    return filters
+
+
+def _is_export_related_artifact_path(path: Path) -> bool:
+    normalized_path = path.resolve()
+    try:
+        normalized_path.relative_to(WEB_EXPORTS_DIR.resolve())
+        return True
+    except ValueError:
+        pass
+    try:
+        normalized_path.relative_to(INTERMEDIATE_DIR.resolve())
+    except ValueError:
+        return False
+    return normalized_path.name.endswith("_format_preflight.json")
+
+
+def _collect_round_paths_from_history_index(
+    doc_id: str,
+    rounds: List[Dict[str, Any]],
+    *,
+    exports_only: bool = False,
+) -> set[Path] | None:
+    filters = _round_sql_filters(rounds)
+    if not filters:
+        return set()
+    try:
+        from fyadr_history_db import list_document_round_artifact_refs
+
+        refs = list_document_round_artifact_refs(doc_id, filters)
+    except Exception:
+        return None
+    if refs is None:
+        return None
+    paths: set[Path] = set()
+    for ref in refs:
+        raw_path = ref.get("path") if isinstance(ref, dict) else None
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        absolute = _record_path_to_absolute(raw_path)
+        if absolute is None:
+            continue
+        if exports_only and not _is_export_related_artifact_path(absolute):
+            continue
+        paths.add(absolute)
+    return paths
+
+
 def _is_safe_generated_artifact(path: Path) -> bool:
     try:
         relative = path.relative_to(ROOT_DIR)
@@ -410,6 +1076,7 @@ def _docx_processing_paths_for_source(source_path: Path) -> set[Path]:
     return {
         (INTERMEDIATE_DIR / f"{source_path.stem}_docx_snapshot.json").resolve(),
         (INTERMEDIATE_DIR / f"{source_path.stem}_extracted.txt").resolve(),
+        (INTERMEDIATE_DIR / f"{source_path.stem}_scope_diagnostics.json").resolve(),
     }
 
 
@@ -693,14 +1360,21 @@ def _build_delete_impact(
     prompt_sequence: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     if mode == "exports_only":
-        candidate_paths = _collect_round_export_paths(deleted_rounds)
+        candidate_paths = _collect_round_paths_from_history_index(doc_id, deleted_rounds, exports_only=True)
+        if candidate_paths is None:
+            candidate_paths = _collect_round_export_paths(deleted_rounds)
     elif mode == "records_only":
         candidate_paths = set()
     else:
-        retained_paths = _collect_round_file_paths(retained_rounds)
+        retained_paths = _collect_round_paths_from_history_index(doc_id, retained_rounds)
+        if retained_paths is None:
+            retained_paths = _collect_round_file_paths(retained_rounds)
+        deleted_paths = _collect_round_paths_from_history_index(doc_id, deleted_rounds)
+        if deleted_paths is None:
+            deleted_paths = _collect_round_file_paths(deleted_rounds)
         candidate_paths = {
             path
-            for path in _collect_round_file_paths(deleted_rounds)
+            for path in deleted_paths
             if path not in retained_paths and _is_safe_generated_artifact(path)
         }
         if mode == "records_artifacts_and_source" and not retained_rounds:
@@ -907,12 +1581,25 @@ def update_round(
     doc_entry["rounds"] = filtered_rounds
     records[normalized_doc_id] = doc_entry
 
-    save_records(records)
-    return doc_entry
+    return _save_document_record_transactional(records, normalized_doc_id)
 
 
 def list_records() -> Dict[str, Any]:
-    return load_records_normalized()
+    return _load_primary_records()
+
+
+def list_referenced_history_artifact_paths() -> List[str] | None:
+    """Return artifact paths referenced by the SQLite history index."""
+
+    # Ensure the index reflects the current compatibility JSON before using it
+    # for cleanup governance.
+    list_records()
+    try:
+        from fyadr_history_db import list_referenced_artifact_paths
+
+        return list_referenced_artifact_paths()
+    except Exception:
+        return None
 
 
 def _normalize_delete_mode(mode: str | None) -> str:
@@ -920,6 +1607,55 @@ def _normalize_delete_mode(mode: str | None) -> str:
     if normalized not in DELETE_MODES:
         raise ValueError(f"Unsupported delete mode: {mode}")
     return normalized
+
+
+def _history_delete_backup_reason(prefix: str, doc_id: str) -> str:
+    safe_doc = Path(normalize_doc_id(doc_id)).stem or "document"
+    return f"{prefix}_{safe_doc}"
+
+
+def _prepare_history_delete_backup(reason: str, mode: str) -> Dict[str, Any]:
+    if mode == "exports_only":
+        return {"ok": True, "skipped": True, "reason": "exports_only", "message": "No SQLite record mutation."}
+    try:
+        from fyadr_history_db import backup_history_index as _backup_history_index
+        from fyadr_history_db import get_history_index_status as _get_history_index_status
+
+        status = _get_history_index_status()
+        if not bool(status.get("exists")):
+            return {"ok": True, "skipped": True, "reason": "db_missing", "message": "SQLite history index is not present."}
+        backup_dir = _history_backup_dir_override()
+        backup = (
+            _backup_history_index(reason=reason, keep=12, backup_dir=backup_dir)
+            if backup_dir
+            else _backup_history_index(reason=reason, keep=12)
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to create SQLite history backup before deleting history: {exc}") from exc
+    if not bool(backup.get("ok")):
+        raise RuntimeError(f"Failed to create SQLite history backup before deleting history: {backup.get('error', 'backup validation failed')}")
+    return backup
+
+
+def _finalize_history_delete_maintenance(result: Dict[str, Any], backup: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    if str(result.get("mode", "")) == "exports_only":
+        return {
+            "backup": backup,
+            "policy": {"ok": True, "skipped": True, "reason": "exports_only", "message": "No SQLite record mutation."},
+        }
+    try:
+        policy = apply_history_delete_maintenance(
+            reason=reason,
+            documents_deleted=1 if bool(result.get("removedDocument")) else 0,
+            rounds_deleted=len(result.get("deletedRounds", []) if isinstance(result.get("deletedRounds"), list) else []),
+            files_deleted=len(result.get("deletedFiles", []) if isinstance(result.get("deletedFiles"), list) else []),
+        )
+    except Exception as exc:
+        policy = {"ok": False, "error": str(exc)}
+    return {
+        "backup": backup,
+        "policy": policy,
+    }
 
 
 def delete_rounds(
@@ -938,6 +1674,8 @@ def delete_rounds(
         prompt_sequence=prompt_sequence,
         mode=normalized_mode,
     )
+    maintenance_reason = _history_delete_backup_reason("pre_delete_rounds", normalized_doc_id)
+    maintenance_backup = _prepare_history_delete_backup(maintenance_reason, normalized_mode)
     records = load_records_normalized()
     doc_entry = records.get(normalized_doc_id)
     if not isinstance(doc_entry, dict):
@@ -1011,6 +1749,7 @@ def delete_rounds(
             result["promptProfile"] = normalized_prompt_profile
         if normalized_prompt_sequence is not None:
             result["promptSequence"] = normalized_prompt_sequence
+        result["historyMaintenance"] = _finalize_history_delete_maintenance(result, maintenance_backup, maintenance_reason)
         return result
 
     remaining_rounds = [
@@ -1025,10 +1764,11 @@ def delete_rounds(
         doc_entry["origin_path"] = normalized_doc_id
         doc_entry["rounds"] = remaining_rounds
         records[normalized_doc_id] = doc_entry
+        _save_document_record_transactional(records, normalized_doc_id)
     else:
         records.pop(normalized_doc_id, None)
+        records = _delete_document_record_transactional(records, normalized_doc_id)
 
-    save_records(records)
     failed_files: List[Dict[str, str]] = []
     deleted_file_stats = _empty_history_artifact_stats()
     if normalized_mode == "records_only":
@@ -1084,6 +1824,7 @@ def delete_rounds(
         result["promptProfile"] = normalized_prompt_profile
     if normalized_prompt_sequence is not None:
         result["promptSequence"] = normalized_prompt_sequence
+    result["historyMaintenance"] = _finalize_history_delete_maintenance(result, maintenance_backup, maintenance_reason)
     return result
 
 
@@ -1091,6 +1832,8 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
     normalized_mode = _normalize_delete_mode(mode)
     normalized_doc_id = normalize_doc_id(doc_id)
     impact = preview_delete_document(normalized_doc_id, mode=normalized_mode)
+    maintenance_reason = _history_delete_backup_reason("pre_delete_document", normalized_doc_id)
+    maintenance_backup = _prepare_history_delete_backup(maintenance_reason, normalized_mode)
     records = load_records_normalized()
     doc_entry = records.get(normalized_doc_id)
     if not isinstance(doc_entry, dict):
@@ -1103,7 +1846,7 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
             [],
             exports_only=True,
         )
-        return {
+        result = {
             "docId": normalized_doc_id,
             "mode": normalized_mode,
             "affectedRounds": sorted({
@@ -1118,8 +1861,10 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
             "deletedFileStats": deleted_file_stats,
             "failedFiles": failed_files,
         }
+        result["historyMaintenance"] = _finalize_history_delete_maintenance(result, maintenance_backup, maintenance_reason)
+        return result
     records.pop(normalized_doc_id, None)
-    save_records(records)
+    records = _delete_document_record_transactional(records, normalized_doc_id)
     failed_files: List[Dict[str, str]] = []
     deleted_file_stats = _empty_history_artifact_stats()
     if normalized_mode == "records_only":
@@ -1135,7 +1880,7 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
         removed_files.extend(source_removed_files)
         failed_files.extend(source_failed_files)
         deleted_file_stats = _merge_history_artifact_stats(deleted_file_stats, source_deleted_file_stats)
-    return {
+    result = {
         "docId": normalized_doc_id,
         "mode": normalized_mode,
         "affectedRounds": sorted({
@@ -1150,6 +1895,8 @@ def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
         "deletedFileStats": deleted_file_stats,
         "failedFiles": failed_files,
     }
+    result["historyMaintenance"] = _finalize_history_delete_maintenance(result, maintenance_backup, maintenance_reason)
+    return result
 
 
 def show_records(doc_id: Optional[str] = None) -> None:
@@ -1158,7 +1905,7 @@ def show_records(doc_id: Optional[str] = None) -> None:
     Output is raw JSON on stdout so it can be piped or inspected easily.
     """
 
-    records = load_records_normalized()
+    records = list_records()
     if doc_id is not None:
         payload: Any = records.get(normalize_doc_id(doc_id), {})
     else:
@@ -1186,6 +1933,67 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "delete-document", help="Delete a whole document record",
     )
     delete_parser.add_argument("doc_id", help="Document identifier to delete.")
+
+    subparsers.add_parser(
+        "history-db-status", help="Show SQLite history index status",
+    )
+    subparsers.add_parser(
+        "history-db-rebuild", help="Rebuild the SQLite history index from JSON records",
+    )
+    subparsers.add_parser(
+        "history-db-check", help="Check SQLite history index integrity without changing records",
+    )
+    subparsers.add_parser(
+        "history-db-repair", help="Repair the SQLite history index from normalized history records",
+    )
+    ensure_parser = subparsers.add_parser(
+        "history-db-ensure", help="Run SQLite history startup self-check and repair recoverable drift",
+    )
+    ensure_parser.add_argument("--reason", default="cli", help="Short reason label for diagnostics.")
+    subparsers.add_parser(
+        "history-db-maintenance", help="Show SQLite history backup and compaction policy diagnostics",
+    )
+    backups_parser = subparsers.add_parser(
+        "history-db-backups", help="List SQLite history backups",
+    )
+    backups_parser.add_argument("--validate", action="store_true", help="Validate each backup while listing it.")
+    backup_parser = subparsers.add_parser(
+        "history-db-backup", help="Create a validated SQLite history backup",
+    )
+    backup_parser.add_argument("--reason", default="manual", help="Short backup reason label.")
+    backup_parser.add_argument("--keep", type=int, default=12, help="Number of newest backups to keep.")
+    compact_parser = subparsers.add_parser(
+        "history-db-compact", help="Checkpoint, vacuum, and validate the SQLite history index",
+    )
+    compact_parser.add_argument("--no-backup", action="store_true", help="Skip the pre-compaction backup.")
+    compact_parser.add_argument("--keep", type=int, default=12, help="Number of newest backups to keep.")
+    recover_parser = subparsers.add_parser(
+        "history-db-recover", help="Recover the SQLite history index from a healthy backup",
+    )
+    recover_parser.add_argument("--backup-path", default="", help="Backup file name or path under finish/history_db_backups. Defaults to newest healthy backup.")
+    recover_parser.add_argument("--keep", type=int, default=12, help="Number of newest backups to keep.")
+    artifacts_parser = subparsers.add_parser(
+        "history-db-artifacts", help="Query SQLite history artifacts by document, round, kind, state, and size",
+    )
+    artifacts_parser.add_argument("--doc-id", default="", help="Optional document id filter.")
+    artifacts_parser.add_argument("--round", dest="round_number", type=int, default=None, help="Optional round number filter.")
+    artifacts_parser.add_argument(
+        "--kind",
+        action="append",
+        choices=["sources", "intermediate", "exports", "reports", "external"],
+        help="Optional artifact kind filter. Repeat to include multiple kinds.",
+    )
+    artifacts_parser.add_argument(
+        "--state",
+        choices=["all", "existing", "missing"],
+        default="all",
+        help="Filter by whether the artifact still exists on disk.",
+    )
+    artifacts_parser.add_argument("--min-bytes", type=int, default=None, help="Minimum stored byte size.")
+    artifacts_parser.add_argument("--max-bytes", type=int, default=None, help="Maximum stored byte size.")
+    artifacts_parser.add_argument("--path-contains", default="", help="Case-sensitive path fragment filter.")
+    artifacts_parser.add_argument("--limit", type=int, default=200, help="Maximum rows to return.")
+    artifacts_parser.add_argument("--offset", type=int, default=0, help="Rows to skip.")
 
     rollback_parser = subparsers.add_parser(
         "delete-rounds", help="Delete one round and all later rounds for a document",
@@ -1262,7 +2070,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> None:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
 
@@ -1290,9 +2098,64 @@ def main(argv: Optional[List[str]] = None) -> None:
     elif args.command == "delete-rounds":
         payload = delete_rounds(args.doc_id, args.from_round, prompt_profile=args.prompt_profile)
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    elif args.command == "history-db-status":
+        payload = get_history_index_status(refresh=True)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    elif args.command == "history-db-rebuild":
+        payload = rebuild_history_index(strict=True)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    elif args.command == "history-db-check":
+        payload = check_history_index(strict=False)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+    elif args.command == "history-db-repair":
+        payload = repair_history_index(strict=True)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    elif args.command == "history-db-ensure":
+        payload = ensure_history_index_ready(reason=args.reason, max_age_seconds=0)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+    elif args.command == "history-db-maintenance":
+        payload = get_history_index_maintenance_summary()
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+    elif args.command == "history-db-backups":
+        payload = list_history_index_backups(validate=args.validate)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+    elif args.command == "history-db-backup":
+        payload = backup_history_index(reason=args.reason, keep=args.keep)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+    elif args.command == "history-db-compact":
+        payload = compact_history_index(create_backup=not args.no_backup, keep=args.keep)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+    elif args.command == "history-db-recover":
+        payload = recover_history_index(backup_path=args.backup_path or None, keep=args.keep)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+    elif args.command == "history-db-artifacts":
+        payload = query_history_artifacts(
+            {
+                "docId": args.doc_id,
+                "roundNumber": args.round_number,
+                "kinds": args.kind or [],
+                "exists": args.state,
+                "minBytes": args.min_bytes,
+                "maxBytes": args.max_bytes,
+                "pathContains": args.path_contains,
+                "limit": args.limit,
+                "offset": args.offset,
+            },
+            strict=True,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
     else:  # pragma: no cover - argparse guarantees command
         parser.error("Unknown command")
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
-    main()
+    raise SystemExit(main())

@@ -70,6 +70,7 @@ app/.env.*
 app/ui-check*.png
 app/current-ui-*.png
 app/.codex-chrome-ui-refactor*/
+app/.codex-chrome-*/
 screenshots/
 playwright-report/
 test-results/

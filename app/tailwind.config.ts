@@ -61,13 +61,13 @@ const config: Config = {
         sm: "calc(var(--radius) - 6px)",
       },
       fontFamily: {
-        sans: ["\"Plus Jakarta Sans\"", "\"PingFang SC\"", "\"Microsoft YaHei UI\"", "sans-serif"],
+        sans: ["\"Geist\"", "\"Inter\"", "\"PingFang SC\"", "\"Microsoft YaHei UI\"", "sans-serif"],
         serif: ["\"Source Serif 4\"", "\"Noto Serif SC\"", "serif"],
-        mono: ["\"JetBrains Mono\"", "\"Cascadia Code\"", "monospace"],
+        mono: ["\"Geist Mono\"", "\"JetBrains Mono\"", "\"Cascadia Code\"", "monospace"],
       },
       boxShadow: {
-        glow: "0 20px 60px rgba(15, 23, 42, 0.14)",
-        soft: "0 12px 30px rgba(15, 23, 42, 0.08)",
+        glow: "0 18px 48px hsl(var(--foreground) / 0.08)",
+        soft: "0 8px 24px hsl(var(--foreground) / 0.06)",
       },
       backgroundImage: {
         "hero-grid":

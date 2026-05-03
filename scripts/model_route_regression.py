@@ -4,8 +4,9 @@ import os
 import tempfile
 from copy import deepcopy
 
-from app_config import load_app_config, save_app_config
-from app_service import _resolve_round_model_config
+import app_service
+from app_config import SAVED_SECRET_PLACEHOLDER, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
+from app_service import _resolve_round_model_config, find_conflicting_history_route
 
 
 def _base_config() -> dict:
@@ -180,6 +181,87 @@ def test_provider_repository_is_not_capped_at_fifty() -> None:
             os.environ["APPDATA"] = original_appdata
 
 
+def test_redacted_config_preserves_saved_secrets() -> None:
+    original_appdata = os.environ.get("APPDATA")
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["APPDATA"] = temp_dir
+            saved = save_app_config(_base_config())
+            redacted = redact_app_config(saved)
+            assert redacted["apiKey"] == SAVED_SECRET_PLACEHOLDER
+            assert redacted["hasApiKey"] is True
+            assert redacted["modelProviders"][0]["apiKey"] == SAVED_SECRET_PLACEHOLDER
+            assert "default-key" not in json_dump(redacted)
+            save_app_config(redacted)
+            loaded = load_app_config()
+            assert loaded["apiKey"] == "default-key"
+            assert loaded["modelProviders"][0]["apiKey"] == "provider-a-key"
+            hydrated = hydrate_app_config_secrets(redacted)
+            assert hydrated["apiKey"] == "default-key"
+            assert hydrated["modelProviders"][0]["apiKey"] == "provider-a-key"
+
+            cleared = deepcopy(redacted)
+            cleared["apiKey"] = ""
+            cleared["modelProviders"][0]["apiKey"] = ""
+            cleared["roundModels"]["cn_prewrite:1"]["apiKey"] = ""
+            save_app_config(cleared)
+            loaded_after_clear = load_app_config()
+            assert loaded_after_clear["apiKey"] == ""
+            assert loaded_after_clear["modelProviders"][0]["apiKey"] == ""
+            assert loaded_after_clear["roundModels"]["cn_prewrite:1"]["apiKey"] == ""
+    finally:
+        if original_appdata is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = original_appdata
+
+
+def test_route_conflict_detects_stale_custom_sequence() -> None:
+    original_list_records = app_service.list_records
+    source_path = str(app_service.ROOT_DIR / "origin" / "route-conflict.docx")
+    try:
+        app_service.list_records = lambda: {
+            "origin/route-conflict.docx": {
+                "origin_path": "origin/route-conflict.docx",
+                "rounds": [
+                    {
+                        "round": 1,
+                        "prompt_profile": "cn_custom",
+                        "prompt_sequence": ["classical", "round1"],
+                        "output_path": "finish/intermediate/route-conflict_custom_classical_round1_round1.txt",
+                    },
+                    {
+                        "round": 2,
+                        "prompt_profile": "cn_custom",
+                        "prompt_sequence": ["classical", "round1"],
+                        "output_path": "finish/intermediate/route-conflict_custom_classical_round1_round2.txt",
+                    },
+                ],
+            }
+        }
+        conflict = find_conflicting_history_route(
+            source_path,
+            {"promptProfile": "cn_custom", "promptSequence": ["classical"]},
+        )
+        assert conflict is not None
+        assert conflict["promptProfile"] == "cn_custom"
+        assert conflict["promptSequence"] == ["classical", "round1"]
+        assert conflict["completedRounds"] == [1, 2]
+        assert conflict["requestedPromptSequence"] == ["classical"]
+        assert find_conflicting_history_route(
+            source_path,
+            {"promptProfile": "cn_custom", "promptSequence": ["classical", "round1"]},
+        ) is None
+    finally:
+        app_service.list_records = original_list_records
+
+
+def json_dump(value: object) -> str:
+    import json
+
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
 def main() -> int:
     test_provider_repository_is_authoritative()
     test_disabled_round_inherits_default()
@@ -187,6 +269,8 @@ def main() -> int:
     test_disabled_provider_does_not_run()
     test_legacy_snapshot_still_works_without_provider_repository()
     test_provider_repository_is_not_capped_at_fifty()
+    test_redacted_config_preserves_saved_secrets()
+    test_route_conflict_detects_stale_custom_sequence()
     print("model route regression passed")
     return 0
 

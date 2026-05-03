@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import {
   AlertCircle,
   AlertTriangle,
@@ -28,6 +28,7 @@ import { HistoryCard } from "@/components/HistoryCard";
 import { ModelConfigCard, SchoolFormatCard } from "@/components/ModelConfigCard";
 import { ProtectionMapCard } from "@/components/ProtectionMapCard";
 import { DiffReviewCard, ResultCard, type DiffFilterMode, type DiffFocusRequest } from "@/components/ResultCard";
+import { ThemeModeMenu } from "@/components/ThemeModeMenu";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -72,7 +73,7 @@ import { useAppState } from "@/hooks/useAppState";
 import type { AppService } from "@/lib/appService";
 import { getTaskPhaseLabel, isTaskBlocking, isTaskRunningPhase, type TaskPhase } from "@/lib/taskState";
 import { cn } from "@/lib/utils";
-import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExportResult, FormatParserModelRoute, FormatRules, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, PromptPreviewResponse, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
+import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExportResult, FormatParserModelRoute, FormatRules, HistoryArtifactGovernanceMode, HistoryArtifactQueryFilters, HistoryArtifactQueryResponse, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, PromptPreviewResponse, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -371,8 +372,8 @@ function buildQualityStats(compareData: RoundCompareData | null, exportResult: E
 function buildCurrentRunAudit(roundResult: RoundResult | null, compareData: RoundCompareData | null, modelConfig: ModelConfig): RunAuditSummary {
   const qualitySummary = (roundResult?.qualitySummary ?? compareData?.qualitySummary ?? {}) as NonNullable<RoundResult["qualitySummary"]>;
   const paragraphSplitSummary = compareData?.paragraphSplitSummary ?? qualitySummary.paragraphSplitSummary;
-  const candidateMode = qualitySummary.rewriteCandidateMode ?? modelConfig.rewriteCandidateMode ?? "economy";
-  const candidateMaxPerChunk = qualitySummary.candidateMaxPerChunk ?? (candidateMode === "quality" ? 2 : 1);
+  const candidateMode = "economy";
+  const candidateMaxPerChunk = qualitySummary.candidateMaxPerChunk ?? 1;
   const chunkCount = compareData?.chunkCount ?? qualitySummary.paragraphSplitSummary?.chunkCount ?? roundResult?.inputSegmentCount ?? null;
   return {
     ...(roundResult?.runAudit ?? {}),
@@ -381,7 +382,7 @@ function buildCurrentRunAudit(roundResult: RoundResult | null, compareData: Roun
     rewriteCandidateMode: candidateMode,
     candidateMaxPerChunk,
     estimatedApiCalls: qualitySummary.estimatedApiCalls ?? (chunkCount ? chunkCount * candidateMaxPerChunk : null),
-    twoCandidateChunkCount: qualitySummary.twoCandidateChunkCount ?? null,
+    twoCandidateChunkCount: qualitySummary.twoCandidateChunkCount ?? 0,
     chunkCount,
     paragraphCount: compareData?.paragraphCount ?? qualitySummary.paragraphSplitSummary?.paragraphCount ?? roundResult?.paragraphCount ?? null,
     splitParagraphCount: paragraphSplitSummary?.splitParagraphCount ?? null,
@@ -660,478 +661,6 @@ function shouldSuppressAutoSnapshotRestore(status: DocumentStatus, config: Model
       || documentRefsMatch(suppression.docId, status.docId)
     )
   );
-}
-
-type DetectionMatchCandidate = {
-  chunkId: string;
-  score: number;
-  baseScore: number;
-  directScore: number;
-  windowScore: number;
-  directFragmentScore: number;
-  windowFragmentScore: number;
-  matchedAnchors: string[];
-  matchedFragments: string[];
-  chunkOffset: number;
-};
-
-function normalizeForDetectionMatch(value: string): string {
-  return value
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/bi-ls\s*tm/g, "bi-lstm")
-    .replace(/bi\s*-\s*lstm/g, "bi-lstm")
-    .replace(/str\s*eamlit/g, "streamlit")
-    .replace(/stream\s*lit/g, "streamlit")
-    .replace(/bert4\s+rec/g, "bert4rec")
-    .replace(/f1\s*-\s*score/g, "f1score")
-    .replace(/xg\s*boost/g, "xgboost")
-    .replace(/random\s+forest/g, "randomforest")
-    .replace(/@@fyadr_[a-z0-9_]+@@/g, "")
-    .replace(/\s+/g, "")
-    .replace(/[，。！？；：、,.!?;:'"“”‘’()[\]{}<>《》\-—_\\/|`~@#$%^&*+=]/g, "")
-    .replace(/[^a-z0-9\p{Script=Han}]/gu, "");
-}
-
-function buildNgrams(value: string, size = 8): Set<string> {
-  const normalized = normalizeForDetectionMatch(value);
-  const grams = new Set<string>();
-  if (normalized.length <= size) {
-    if (normalized) grams.add(normalized);
-    return grams;
-  }
-  for (let index = 0; index <= normalized.length - size; index += 1) {
-    grams.add(normalized.slice(index, index + size));
-  }
-  return grams;
-}
-
-function scoreNgramOverlap(segmentText: string, chunkText: string, size: number): number {
-  const segmentGrams = buildNgrams(segmentText, size);
-  const chunkGrams = buildNgrams(chunkText, size);
-  if (!segmentGrams.size || !chunkGrams.size) return 0;
-  let overlap = 0;
-  for (const gram of segmentGrams) {
-    if (chunkGrams.has(gram)) overlap += 1;
-  }
-  return overlap / Math.min(segmentGrams.size, chunkGrams.size);
-}
-
-function extractDetectionAnchors(value: string): string[] {
-  const raw = value.normalize("NFKC");
-  const anchors = new Set<string>();
-  const fixedTerms = [
-    "用户行为序列",
-    "购买意图",
-    "特征工程",
-    "数据预处理",
-    "类别不平衡",
-    "实验结果",
-    "准确率",
-    "召回率",
-    "特征重要性",
-    "可视化",
-    "模型部署",
-    "Streamlit",
-    "Random Forest",
-    "XGBoost",
-    "LSTM",
-    "Bi-LSTM",
-    "AUC",
-    "F1-Score",
-    "Accuracy",
-    "Recall",
-  ];
-  for (const term of fixedTerms) {
-    const normalized = normalizeForDetectionMatch(term);
-    if (normalized && normalizeForDetectionMatch(raw).includes(normalized)) anchors.add(normalized);
-  }
-  for (const match of raw.matchAll(/(?:图|表)\s*\d+(?:\s*[-－]\s*\d+)?|\[[0-9,，\s-]+\]|\d+\.\d+%?|\d+%/g)) {
-    const normalized = normalizeForDetectionMatch(match[0]);
-    if (normalized.length >= 2) anchors.add(normalized);
-  }
-  for (const match of raw.matchAll(/[A-Za-z][A-Za-z0-9+.#/-]{2,}/g)) {
-    const normalized = normalizeForDetectionMatch(match[0]);
-    if (normalized.length >= 3 && !["this", "that", "with", "from", "into", "then", "than", "also"].includes(normalized)) {
-      anchors.add(normalized);
-    }
-  }
-  return [...anchors].slice(0, 36);
-}
-
-function scoreAnchorOverlap(segmentText: string, chunkText: string): number {
-  const anchors = extractDetectionAnchors(segmentText);
-  if (!anchors.length) return 0;
-  const chunk = normalizeForDetectionMatch(chunkText);
-  let hits = 0;
-  for (const anchor of anchors) {
-    if (chunk.includes(anchor)) hits += 1;
-  }
-  return hits / anchors.length;
-}
-
-function formatDetectionAnchor(anchor: string): string {
-  const labels: Record<string, string> = {
-    bilstm: "Bi-LSTM",
-    lstm: "LSTM",
-    xgboost: "XGBoost",
-    randomforest: "Random Forest",
-    streamlit: "Streamlit",
-    f1score: "F1-Score",
-    auc: "AUC",
-    accuracy: "Accuracy",
-    recall: "Recall",
-    用户行为序列: "用户行为序列",
-    购买意图: "购买意图",
-    特征工程: "特征工程",
-    数据预处理: "数据预处理",
-    类别不平衡: "类别不平衡",
-    实验结果: "实验结果",
-    准确率: "准确率",
-    召回率: "召回率",
-    特征重要性: "特征重要性",
-    可视化: "可视化",
-    模型部署: "模型部署",
-  };
-  return labels[anchor] ?? anchor;
-}
-
-function collectMatchedDetectionAnchors(segmentText: string, chunkText: string): string[] {
-  const anchors = extractDetectionAnchors(segmentText);
-  if (!anchors.length) return [];
-  const chunk = normalizeForDetectionMatch(chunkText);
-  return anchors
-    .filter((anchor) => chunk.includes(anchor))
-    .map(formatDetectionAnchor)
-    .filter((anchor, index, items) => items.indexOf(anchor) === index)
-    .slice(0, 8);
-}
-
-function buildDetectionFragments(value: string): string[] {
-  const normalized = normalizeForDetectionMatch(value);
-  if (normalized.length < 16) return normalized ? [normalized] : [];
-  const size = normalized.length >= 220 ? 18 : normalized.length >= 120 ? 14 : 10;
-  const positions = new Set<number>([
-    0,
-    Math.floor(normalized.length * 0.18),
-    Math.floor(normalized.length * 0.38),
-    Math.floor(normalized.length * 0.58),
-    Math.floor(normalized.length * 0.78),
-    Math.max(0, normalized.length - size),
-  ]);
-  return [...positions]
-    .map((position) => normalized.slice(position, position + size))
-    .filter((fragment) => fragment.length >= Math.min(8, size));
-}
-
-function scoreFragmentCoverage(segmentText: string, chunkText: string): number {
-  const fragments = buildDetectionFragments(segmentText);
-  if (!fragments.length) return 0;
-  const chunk = normalizeForDetectionMatch(chunkText);
-  let hits = 0;
-  for (const fragment of fragments) {
-    if (chunk.includes(fragment)) hits += 1;
-  }
-  return hits / fragments.length;
-}
-
-function addDetectionQuoteFragment(fragments: Set<string>, fragment: string) {
-  const normalized = normalizeForDetectionMatch(fragment);
-  if (normalized.length < 18) return;
-  if ([...fragments].some((item) => item.includes(normalized) || normalized.includes(item))) return;
-  fragments.add(normalized);
-}
-
-function buildDetectionQuoteFragments(value: string): string[] {
-  const normalizedFullText = normalizeForDetectionMatch(value);
-  if (!normalizedFullText) return [];
-  const fragments = new Set<string>();
-  const sentencePieces = value
-    .normalize("NFKC")
-    .replace(/[\r\n]+/g, " ")
-    .split(/[。！？；;!?]+/g)
-    .map((piece) => piece.trim())
-    .filter(Boolean);
-
-  for (const piece of sentencePieces) {
-    const normalizedPiece = normalizeForDetectionMatch(piece);
-    if (normalizedPiece.length < 18) continue;
-    if (normalizedPiece.length <= 46) {
-      addDetectionQuoteFragment(fragments, normalizedPiece);
-      continue;
-    }
-    const size = normalizedPiece.length >= 90 ? 32 : 26;
-    const positions = [
-      0,
-      Math.floor(normalizedPiece.length * 0.28),
-      Math.floor(normalizedPiece.length * 0.56),
-      Math.max(0, normalizedPiece.length - size),
-    ];
-    for (const position of positions) {
-      addDetectionQuoteFragment(fragments, normalizedPiece.slice(position, position + size));
-    }
-  }
-
-  if (!fragments.size && normalizedFullText.length >= 18) {
-    const size = normalizedFullText.length >= 90 ? 32 : Math.min(46, normalizedFullText.length);
-    const positions = [
-      0,
-      Math.floor(normalizedFullText.length * 0.3),
-      Math.floor(normalizedFullText.length * 0.6),
-      Math.max(0, normalizedFullText.length - size),
-    ];
-    for (const position of positions) {
-      addDetectionQuoteFragment(fragments, normalizedFullText.slice(position, position + size));
-    }
-  }
-
-  return [...fragments].slice(0, 28);
-}
-
-function scoreQuoteFragmentCoverage(segmentText: string, chunkText: string): { score: number; matchedFragments: string[] } {
-  const fragments = buildDetectionQuoteFragments(segmentText);
-  if (!fragments.length) return { score: 0, matchedFragments: [] };
-  const chunk = normalizeForDetectionMatch(chunkText);
-  const matchedFragments = fragments.filter((fragment) => chunk.includes(fragment));
-  if (!matchedFragments.length) return { score: 0, matchedFragments: [] };
-  const rawScore = matchedFragments.length / fragments.length;
-  const singleHitPenalty = fragments.length >= 4 && matchedFragments.length === 1 ? 0.72 : 1;
-  return {
-    score: Math.min(1, rawScore * singleHitPenalty),
-    matchedFragments: matchedFragments.slice(0, 5),
-  };
-}
-
-function scoreDetectionMatch(segmentText: string, chunkText: string): number {
-  const segment = normalizeForDetectionMatch(segmentText);
-  const chunk = normalizeForDetectionMatch(chunkText);
-  if (!segment || !chunk) return 0;
-  if (chunk.includes(segment)) return 1;
-  if (segment.includes(chunk)) {
-    const coverage = chunk.length / Math.max(segment.length, 1);
-    if (chunk.length >= 80) return Math.min(0.94, 0.72 + coverage * 0.26);
-    if (chunk.length >= 42) return Math.min(0.88, 0.62 + coverage * 0.24);
-    return Math.min(0.75, coverage);
-  }
-  return Math.max(
-    scoreFragmentCoverage(segment, chunk) * 0.98,
-    scoreAnchorOverlap(segmentText, chunkText) * 0.86,
-    scoreNgramOverlap(segment, chunk, 12) * 0.98,
-    scoreNgramOverlap(segment, chunk, 8),
-    scoreNgramOverlap(segment, chunk, 5) * 0.95,
-    scoreNgramOverlap(segment, chunk, 4) * 0.9,
-    scoreNgramOverlap(segment, chunk, 3) * 0.8,
-    scoreNgramOverlap(segment, chunk, 2) * 0.42,
-  );
-}
-
-function scoreDetectionPosition(segmentIndex: number, segmentCount: number, chunkIndex: number, chunkCount: number): number {
-  if (segmentCount <= 1 || chunkCount <= 1) return 0;
-  const segmentPosition = segmentIndex / (segmentCount - 1);
-  const chunkPosition = chunkIndex / (chunkCount - 1);
-  return Math.max(0, 1 - Math.abs(segmentPosition - chunkPosition));
-}
-
-function scoreDetectionCandidate(
-  segmentText: string,
-  chunk: RoundCompareData["chunks"][number],
-  sortedChunks: RoundCompareData["chunks"],
-  segmentOffset: number,
-  segmentCount: number,
-  chunkOffset: number,
-): DetectionMatchCandidate {
-  const directOutputScore = scoreDetectionMatch(segmentText, chunk.outputText);
-  const directInputScore = scoreDetectionMatch(segmentText, chunk.inputText) * 0.9;
-  const directOutputFragments = scoreQuoteFragmentCoverage(segmentText, chunk.outputText);
-  const directInputFragments = scoreQuoteFragmentCoverage(segmentText, chunk.inputText);
-  const directScore = Math.max(directOutputScore, directInputScore);
-  const previousChunk = sortedChunks[chunkOffset - 1];
-  const nextChunk = sortedChunks[chunkOffset + 1];
-  const outputWindow = [previousChunk?.outputText, chunk.outputText, nextChunk?.outputText].filter(Boolean).join("\n");
-  const inputWindow = [previousChunk?.inputText, chunk.inputText, nextChunk?.inputText].filter(Boolean).join("\n");
-  const directText = [chunk.outputText, chunk.inputText].filter(Boolean).join("\n");
-  const windowText = [outputWindow, inputWindow].filter(Boolean).join("\n");
-  const outputWindowFragments = scoreQuoteFragmentCoverage(segmentText, outputWindow);
-  const inputWindowFragments = scoreQuoteFragmentCoverage(segmentText, inputWindow);
-  const directFragmentScore = Math.max(directOutputFragments.score, directInputFragments.score * 0.72);
-  const windowFragmentScore = Math.max(outputWindowFragments.score, inputWindowFragments.score * 0.68);
-  const windowScore = Math.max(
-    scoreDetectionMatch(segmentText, outputWindow) * (directScore >= 0.12 ? 0.94 : 0.68),
-    scoreDetectionMatch(segmentText, inputWindow) * (directScore >= 0.12 ? 0.84 : 0.58),
-  );
-  const directEvidenceScore = directFragmentScore >= 0.18 ? directScore : directScore * 0.82;
-  const windowEvidenceScore = windowFragmentScore >= 0.24 ? windowScore : windowScore * 0.76;
-  const baseScore = Math.max(directEvidenceScore, windowEvidenceScore, directFragmentScore * 1.02, windowFragmentScore * 0.88);
-  const positionScore = scoreDetectionPosition(segmentOffset, segmentCount, chunkOffset, sortedChunks.length);
-  const positionBoost = baseScore >= 0.18 ? positionScore * 0.018 : positionScore * 0.035;
-  const matchedFragments = directOutputFragments.matchedFragments.length
-    ? directOutputFragments.matchedFragments
-    : directInputFragments.matchedFragments.length
-      ? directInputFragments.matchedFragments
-      : outputWindowFragments.matchedFragments.length
-        ? outputWindowFragments.matchedFragments
-        : inputWindowFragments.matchedFragments;
-  return {
-    chunkId: chunk.chunkId,
-    chunkOffset,
-    baseScore,
-    directScore,
-    windowScore,
-    directFragmentScore,
-    windowFragmentScore,
-    matchedAnchors: collectMatchedDetectionAnchors(segmentText, directText).length
-      ? collectMatchedDetectionAnchors(segmentText, directText)
-      : collectMatchedDetectionAnchors(segmentText, windowText),
-    matchedFragments,
-    score: Math.min(0.99, baseScore + positionBoost),
-  };
-}
-
-function classifyDetectionCandidate(
-  candidate: DetectionMatchCandidate,
-  bestScore: number,
-  runnerUpScore: number,
-  segment: DetectionReportMatch["segment"],
-  isBest: boolean,
-): DetectionReportMatch["confidence"] | null {
-  const risk = isDetectionRerunRisk(segment);
-  const anchorCount = candidate.matchedAnchors.length;
-  const fragmentCount = candidate.matchedFragments.length;
-  const scoreGap = Math.max(0, bestScore - runnerUpScore);
-  if (!risk) return null;
-  if (
-    candidate.score < 0.35
-    && candidate.directScore < 0.22
-    && candidate.directFragmentScore < 0.16
-    && candidate.windowFragmentScore < 0.22
-    && anchorCount < 2
-  ) return null;
-
-  const hasDecisiveLead = scoreGap >= 0.12 || runnerUpScore < 0.5;
-  const hasDirectQuoteEvidence = candidate.directFragmentScore >= 0.42 || fragmentCount >= 2;
-  const hasConcreteEvidence = hasDirectQuoteEvidence || candidate.directScore >= 0.86 || anchorCount >= 4;
-  const hasCoveredChunkEvidence = candidate.directScore >= 0.78 && candidate.score >= 0.7 && (candidate.directFragmentScore >= 0.14 || anchorCount >= 2);
-  if (
-    isBest
-    && candidate.directScore >= 0.96
-    && candidate.score >= 0.92
-    && (candidate.directFragmentScore >= 0.68 || candidate.windowFragmentScore >= 0.82 || fragmentCount >= 2)
-  ) {
-    return "strong";
-  }
-  if (
-    isBest
-    && candidate.directScore >= 0.9
-    && candidate.windowScore >= 0.82
-    && candidate.directFragmentScore >= 0.58
-    && candidate.windowFragmentScore >= 0.58
-  ) {
-    return "strong";
-  }
-  if (isBest && candidate.score >= 0.74 && candidate.directScore >= 0.45 && hasDecisiveLead && hasConcreteEvidence) {
-    return "strong";
-  }
-  if (isBest && candidate.directScore >= 0.84 && candidate.directFragmentScore >= 0.28 && scoreGap >= 0.06) {
-    return "strong";
-  }
-  if (
-    isBest
-    && candidate.directScore >= 0.82
-    && candidate.score >= 0.74
-    && candidate.directFragmentScore >= 0.24
-    && candidate.windowFragmentScore >= 0.55
-  ) {
-    return "strong";
-  }
-  if (
-    !isBest
-    && candidate.directScore >= 0.78
-    && candidate.score >= 0.74
-    && (candidate.directFragmentScore >= 0.14 || candidate.windowFragmentScore >= 0.55 || anchorCount >= 1)
-  ) {
-    return "strong";
-  }
-  if (isBest && candidate.score >= 0.55 && candidate.directScore >= 0.28 && (candidate.directFragmentScore >= 0.16 || anchorCount >= 1)) {
-    return "review";
-  }
-  if (!isBest && hasCoveredChunkEvidence) {
-    return "review";
-  }
-  if (isBest && candidate.windowFragmentScore >= 0.34 && candidate.score >= 0.48) {
-    return "review";
-  }
-  if (isBest && candidate.score >= 0.62 && anchorCount >= 3 && scoreGap >= 0.08) {
-    return "review";
-  }
-  if (isBest || candidate.directScore >= 0.3 || (candidate.score >= 0.5 && anchorCount >= 2)) {
-    return "weak";
-  }
-  return null;
-}
-
-function buildDetectionMatchReason(
-  confidence: DetectionReportMatch["confidence"],
-  candidate: DetectionMatchCandidate,
-  runnerUpScore: number,
-): string {
-  const direct = Math.round(candidate.directScore * 100);
-  const window = Math.round(candidate.windowScore * 100);
-  const directFragment = Math.round(candidate.directFragmentScore * 100);
-  const windowFragment = Math.round(candidate.windowFragmentScore * 100);
-  const gap = Math.round(Math.max(0, candidate.score - runnerUpScore) * 100);
-  const anchors = candidate.matchedAnchors.length ? `，锚点：${candidate.matchedAnchors.join(" / ")}` : "";
-  const fragmentNote = `，句段证据 ${directFragment}%/${windowFragment}%`;
-  if (confidence === "strong") {
-    return `强命中：文本重合 ${direct}%，窗口 ${window}%${fragmentNote}，领先 ${gap}%${anchors}`;
-  }
-  if (confidence === "review") {
-    return `疑似命中：文本重合 ${direct}%，窗口 ${window}%${fragmentNote}，领先 ${gap}%${anchors}`;
-  }
-  return `仅参考：文本重合 ${direct}%，窗口 ${window}%${fragmentNote}，不自动重跑${anchors}`;
-}
-
-function buildDetectionMatches(report: DetectionReport | null, compareData: RoundCompareData | null): DetectionReportMatch[] {
-  if (!report || !compareData?.chunks.length) return [];
-  const matches: DetectionReportMatch[] = [];
-  const sortedChunks = [...compareData.chunks].sort((left, right) => {
-    if (left.paragraphIndex !== right.paragraphIndex) return left.paragraphIndex - right.paragraphIndex;
-    return left.chunkIndex - right.chunkIndex;
-  });
-  for (const [segmentOffset, segment] of report.segments.entries()) {
-    const segmentText = segment.matchText || segment.content;
-    const candidates = sortedChunks
-      .map((chunk, chunkOffset) => scoreDetectionCandidate(segmentText, chunk, sortedChunks, segmentOffset, report.segments.length, chunkOffset))
-      .sort((left, right) => right.score - left.score);
-    const bestScore = candidates[0]?.score ?? 0;
-    const runnerUpScore = candidates[1]?.score ?? 0;
-    const selected: DetectionReportMatch[] = [];
-    for (const [candidateIndex, candidate] of candidates.entries()) {
-      const confidence = classifyDetectionCandidate(candidate, bestScore, runnerUpScore, segment, candidateIndex === 0);
-      if (!confidence) continue;
-      if (candidateIndex > 0 && confidence === "weak") continue;
-      selected.push({
-        segment,
-        chunkId: candidate.chunkId,
-        score: Number(candidate.score.toFixed(3)),
-        confidence,
-        label: confidence === "strong" ? "强命中" : confidence === "review" ? "疑似命中" : "仅参考",
-        reason: buildDetectionMatchReason(confidence, candidate, runnerUpScore),
-        evidence: {
-          directScore: Number(candidate.directScore.toFixed(3)),
-          windowScore: Number(candidate.windowScore.toFixed(3)),
-          directFragmentScore: Number(candidate.directFragmentScore.toFixed(3)),
-          windowFragmentScore: Number(candidate.windowFragmentScore.toFixed(3)),
-          runnerUpScore: Number(runnerUpScore.toFixed(3)),
-          scoreGap: Number(Math.max(0, candidate.score - runnerUpScore).toFixed(3)),
-          matchedAnchors: candidate.matchedAnchors,
-          matchedFragments: candidate.matchedFragments,
-        },
-      });
-      if (selected.length >= 3) break;
-    }
-    matches.push(...selected);
-  }
-  return matches;
 }
 
 function isDetectionHighRisk(segment: DetectionReportMatch["segment"]): boolean {
@@ -1556,6 +1085,22 @@ function getLatestHistoryRound(
   );
 }
 
+function getPreferredHistoryRound(item: HistoryDocumentSummary): HistoryRound | null {
+  const latestByOutput = item.rounds.find((roundItem) => roundItem.outputPath && roundItem.outputPath === item.latestOutputPath);
+  return latestByOutput ?? sortHistoryRounds(item.rounds, "timestamp")[0] ?? null;
+}
+
+function buildConfigForHistorySelection(item: HistoryDocumentSummary, fallbackConfig: ModelConfig): ModelConfig {
+  const preferredRound = getPreferredHistoryRound(item);
+  const promptProfile = isPromptProfile(preferredRound?.promptProfile)
+    ? preferredRound.promptProfile
+    : fallbackConfig.promptProfile;
+  const promptSequence = promptProfile === "cn_custom"
+    ? normalizePromptSequence(preferredRound?.promptSequence ?? fallbackConfig.promptSequence)
+    : normalizePromptSequence(fallbackConfig.promptSequence);
+  return { ...fallbackConfig, promptProfile, promptSequence };
+}
+
 function resolveRestoredPromptProfile(
   storedPromptProfile: string | null,
   matchedItem: HistoryDocumentSummary | undefined,
@@ -1642,8 +1187,8 @@ function createCheckpointProgress(
   if (!status?.canResume || !status.round) {
     return null;
   }
-  const candidateMode = rewriteCandidateMode === "quality" ? "quality" : "economy";
-  const candidateMaxPerChunk = candidateMode === "quality" ? 2 : 1;
+  const candidateMode = "economy";
+  const candidateMaxPerChunk = 1;
   return {
     phase: "resuming-from-checkpoint",
     round: status.round,
@@ -1680,8 +1225,7 @@ function formatRuntimeStep(progress: RoundProgress | null, fallback: string): st
     const estimateText = progress.estimatedApiCalls
       ? `，预计约 ${progress.estimatedApiCalls} 次 API 调用`
       : "";
-    const candidateText = progress.rewriteCandidateMode === "quality" ? "质量模式" : "省钱模式";
-    return `已完成切块，共 ${progress.totalChunks} 个分块，${candidateText}${estimateText}，准备开始第 ${progress.round} 轮。`;
+    return `已完成切块，共 ${progress.totalChunks} 个分块${estimateText}，准备开始第 ${progress.round} 轮。`;
   }
   if (progress.phase === "resuming-from-checkpoint" && progress.completedChunks && progress.totalChunks) {
     if (progress.resumeStage === "finalize_output") {
@@ -1797,33 +1341,56 @@ function loadNotificationHistory(): AppNotification[] {
       return [];
     }
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? dedupeNotifications(parsed).slice(0, 80) : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const normalized = dedupeNotifications(parsed).slice(0, 80);
+    if (normalized.length !== parsed.length) {
+      localStorage.setItem(NOTIFICATION_HISTORY_KEY, JSON.stringify(normalized));
+    }
+    return normalized;
   } catch {
     return [];
   }
 }
 
 function saveNotificationHistory(items: AppNotification[]) {
-  localStorage.setItem(NOTIFICATION_HISTORY_KEY, JSON.stringify(dedupeNotifications(items).slice(0, 80)));
+  try {
+    localStorage.setItem(NOTIFICATION_HISTORY_KEY, JSON.stringify(dedupeNotifications(items).slice(0, 80)));
+  } catch {
+    // Notification history is non-critical; the live in-memory notice still remains visible.
+  }
 }
 
 function getNotificationKey(item: Pick<AppNotification, "kind" | "text">): string {
   return `${item.kind}:${item.text.trim()}`;
 }
 
+function isRawHtmlErrorText(text: string): boolean {
+  const lowered = text.toLowerCase();
+  return lowered.includes("<!doctype html")
+    || lowered.includes("<html")
+    || lowered.includes("405 method not allowed")
+    || lowered.includes("method not allowed</title>")
+    || text.includes("本地后端接口方法不匹配（HTTP 405）")
+    || text.includes("本地后端还没有加载提示词预览接口");
+}
+
 function dedupeNotifications(items: AppNotification[]): AppNotification[] {
   const seen = new Set<string>();
   const normalized: AppNotification[] = [];
   for (const item of items) {
-    if (!item?.text) {
+    const text = typeof item?.text === "string" ? item.text.trim() : "";
+    if (!text || isRawHtmlErrorText(text)) {
       continue;
     }
-    const key = getNotificationKey(item);
+    const safeItem = { ...item, text };
+    const key = getNotificationKey(safeItem);
     if (seen.has(key)) {
       continue;
     }
     seen.add(key);
-    normalized.push(item);
+    normalized.push(safeItem);
   }
   return normalized;
 }
@@ -1979,7 +1546,7 @@ function getTaskPhaseRecoveryHint(phase: TaskPhase): string {
   const hints: Partial<Record<TaskPhase, string>> = {
     "running-round": "可中断；再次开始会优先读取断点，不会从头覆盖已完成分块。",
     "canceling-run": "等待后端到安全点落盘；完成后回主页继续当前轮。",
-    "batch-rerunning": "可停止；已成功的块会保留，失败块会留在 Diff 的失败筛选里。",
+    "batch-rerunning": "可停止；已完成的内容会保留，失败内容会留在 Diff 的失败筛选里。",
     "canceling-batch-rerun": "停止请求已送达；当前块结束后释放任务。",
     "parsing-format": "耗时过长可停止解析，换更快模型或修改说明后重新解析。",
     "loading-models": "模型目录读取可停止；停止只取消本次读取，不会清空已有服务商配置。",
@@ -2045,9 +1612,14 @@ function getErrorRecoveryPlan(message: string): { hint: string; target: Workbenc
 }
 
 function stringifyError(error: unknown): string {
-  const rawMessage = String(error ?? "");
+  const rawMessage = error instanceof Error ? error.message : String(error ?? "");
   const lowered = rawMessage.toLowerCase();
 
+  if (isRawHtmlErrorText(rawMessage)) {
+    return lowered.includes("405") || lowered.includes("method not allowed")
+      ? "本地后端接口方法不匹配（HTTP 405）。通常是前后端版本或请求方式不一致；刷新页面后再试，如果还出现就重启本地 Web 服务。"
+      : "本地后端返回了 HTML 错误页。通常是前后端版本不一致或服务未正确接到 API；请刷新页面并重启本地 Web 服务。";
+  }
   if (rawMessage.includes("This document already has a running task")) {
     return "当前文档已经有任务在运行。等这一轮结束后再继续，避免把状态冲乱。";
   }
@@ -2088,6 +1660,13 @@ function stringifyError(error: unknown): string {
     return "运行通道意外断开。重新点击执行下一轮即可，系统会优先续跑。";
   }
   return rawMessage;
+}
+
+function isDiscardableRestoreError(message: string): boolean {
+  return message.includes("Source file must stay under allowed workspace directories")
+    || message.includes("sourcePath must stay under allowed workspace directories")
+    || message.includes("Source path is required")
+    || message.includes("sourcePath is required");
 }
 
 function formatExportError(error: unknown): string {
@@ -2137,6 +1716,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const [modelConfigReady, setModelConfigReady] = useState(false);
   const [historyListReady, setHistoryListReady] = useState(false);
   const [detectionReport, setDetectionReport] = useState<DetectionReport | null>(() => loadStoredDetectionReportForDocument(localStorage.getItem(ACTIVE_DOCUMENT_KEY)));
+  const [detectionMatches, setDetectionMatches] = useState<DetectionReportMatch[]>([]);
   const [diagnostics, setDiagnostics] = useState<EnvironmentDiagnostics | null>(null);
   const [promptPreviews, setPromptPreviews] = useState<PromptPreviewResponse | null>(null);
   const [promptPreviewBusy, setPromptPreviewBusy] = useState(false);
@@ -2144,6 +1724,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const [activePromptPreviewId, setActivePromptPreviewId] = useState<PromptId>("prewrite");
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [historyOrphanScan, setHistoryOrphanScan] = useState<HistoryOrphanScanResult | null>(null);
+  const [historyArtifactMode, setHistoryArtifactMode] = useState<HistoryArtifactGovernanceMode>("missing");
+  const [historyArtifactQuery, setHistoryArtifactQuery] = useState<HistoryArtifactQueryResponse | null>(null);
+  const [historyArtifactLoading, setHistoryArtifactLoading] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>(() => loadNotificationHistory());
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [diffFocusRequest, setDiffFocusRequest] = useState<DiffFocusRequest | null>(null);
@@ -2155,6 +1738,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     documentStatus,
     history,
     protectionMap,
+    scopeDiagnostics,
     historyItems,
     historyPanelOpen,
     roundResult,
@@ -2170,6 +1754,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     setDocumentStatus,
     setHistory,
     setProtectionMap,
+    setScopeDiagnostics,
     setHistoryItems,
     setHistoryPanelOpen,
     setRoundResult,
@@ -2294,7 +1879,33 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     () => compareDataMatchesDocument(compareData, documentStatus) ? compareData : null,
     [compareData, documentStatus],
   );
-  const detectionMatches = useMemo(() => buildDetectionMatches(detectionReport, activeCompareData), [detectionReport, activeCompareData]);
+
+  useEffect(() => {
+    let canceled = false;
+    const outputPath = activeCompareData?.outputPath;
+    if (!detectionReport || !outputPath) {
+      setDetectionMatches([]);
+      return () => {
+        canceled = true;
+      };
+    }
+    service.buildDetectionMatches(outputPath, detectionReport)
+      .then((matches) => {
+        if (!canceled) {
+          setDetectionMatches(matches);
+        }
+      })
+      .catch((appError) => {
+        if (!canceled) {
+          setDetectionMatches([]);
+          setNotice(`检测报告匹配失败：${stringifyError(appError)}`);
+        }
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [activeCompareData, detectionReport, service, setNotice]);
+
   const detectionMatchesByChunk = useMemo(() => groupDetectionMatchesByChunk(detectionMatches), [detectionMatches]);
   const activeRerunFailureScopeKey = useMemo(() => getRerunFailureScopeKey(activeCompareData), [activeCompareData]);
   const activeRerunFailures = useMemo(() => {
@@ -2362,6 +1973,11 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   useEffect(() => {
     const text = error || notice;
     if (!text) {
+      notificationMessageKeyRef.current = "";
+      return;
+    }
+    if (error && isRawHtmlErrorText(error)) {
+      setError("");
       notificationMessageKeyRef.current = "";
       return;
     }
@@ -3007,6 +2623,16 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         if (!cancelled) {
           setHistoryItems(result.items);
         }
+        try {
+          const artifactResult = await service.queryHistoryArtifacts({ exists: "missing", limit: 8 });
+          if (!cancelled) {
+            setHistoryArtifactQuery(artifactResult);
+          }
+        } catch {
+          if (!cancelled) {
+            setHistoryArtifactQuery(null);
+          }
+        }
       } catch (appError) {
         if (!cancelled) {
           setError(stringifyError(appError));
@@ -3042,11 +2668,12 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     const storedSourcePath = localStorage.getItem(ACTIVE_DOCUMENT_KEY) || "";
     const storedPromptProfile = localStorage.getItem(ACTIVE_PROMPT_PROFILE_KEY) as ModelConfig["promptProfile"] | null;
     const storedPromptSequence = readStoredPromptSequence();
-    const fallbackItem = historyItems[0];
-    const matchedItem = storedSourcePath
-      ? historyItems.find((item) => item.sourcePath === storedSourcePath || item.originPath === storedSourcePath || item.docId === storedSourcePath)
-      : fallbackItem;
-    const sourcePath = storedSourcePath || matchedItem?.sourcePath || "";
+    if (!storedSourcePath) {
+      restoredDocumentRef.current = true;
+      return;
+    }
+    const matchedItem = historyItems.find((item) => item.sourcePath === storedSourcePath || item.originPath === storedSourcePath || item.docId === storedSourcePath);
+    const sourcePath = matchedItem?.sourcePath || storedSourcePath;
     if (!sourcePath) {
       restoredDocumentRef.current = true;
       return;
@@ -3089,7 +2716,10 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         }
         const loadedProfile = loadedSnapshot?.round?.promptProfile ?? loadedSnapshot?.compareData.promptProfile;
         const loadedSequence = normalizePromptSequence(loadedSnapshot?.round?.promptSequence ?? loadedSnapshot?.compareData.promptSequence ?? nextConfig.promptSequence);
-        if (isPromptProfile(loadedProfile) && loadedProfile !== nextConfig.promptProfile) {
+        if (
+          isPromptProfile(loadedProfile)
+          && (loadedProfile !== nextConfig.promptProfile || !promptSequencesEqual(loadedSequence, nextConfig.promptSequence))
+        ) {
           const syncedConfig = { ...nextConfig, promptProfile: loadedProfile, promptSequence: loadedSequence };
           setModelConfig(syncedConfig);
           localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, loadedProfile);
@@ -3104,7 +2734,12 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         if (taskTicket !== taskTicketRef.current) {
           return;
         }
-        setError(stringifyError(appError));
+        const message = stringifyError(appError);
+        if (isDiscardableRestoreError(message)) {
+          setNotice("已跳过不可用的上次文档记录，请重新上传或从历史记录中手动选择可用文档。");
+        } else {
+          setError(message);
+        }
         localStorage.removeItem(ACTIVE_DOCUMENT_KEY);
         setRuntimeStep("恢复上次文档失败");
       } finally {
@@ -3114,14 +2749,16 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   }, [documentStatus, historyItems, historyListReady, modelConfig, modelConfigReady, setError, setModelConfig]);
 
   async function refreshDocumentState(sourcePath: string, config = modelConfig) {
-    const [status, nextHistory, nextProtectionMap] = await Promise.all([
+    const [status, nextHistory, nextProtectionMap, nextScopeDiagnostics] = await Promise.all([
       service.getDocumentStatus(sourcePath, config),
       service.getDocumentHistory(sourcePath),
       service.getDocumentProtectionMap(sourcePath),
+      service.getDocumentScopeDiagnostics(sourcePath),
     ]);
     setDocumentStatus(status);
     setHistory(nextHistory);
     setProtectionMap(nextProtectionMap);
+    setScopeDiagnostics(nextScopeDiagnostics);
     setDetectionReport(loadStoredDetectionReportForDocument(status.sourcePath, status.docId));
     persistActiveDocument(status.sourcePath, status.promptProfile, status.promptSequence ?? config.promptSequence);
     await refreshRoundProgressStatus(status, config);
@@ -3133,12 +2770,14 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setRoundProgressStatus(null);
       return null;
     }
+    const statusPromptProfile = status.promptProfile ?? config.promptProfile;
+    const statusPromptSequence = normalizePromptSequence(status.promptSequence ?? config.promptSequence);
     try {
       const nextStatus = await service.getRoundProgressStatus(
         status.sourcePath,
-        config.promptProfile,
+        statusPromptProfile,
         status.nextRound,
-        config.promptSequence,
+        statusPromptSequence,
       );
       setRoundProgressStatus(nextStatus);
       return nextStatus;
@@ -3172,6 +2811,107 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       protectedPaths.push(detectionReport.sourcePath);
     }
     return Array.from(new Set(protectedPaths));
+  }
+
+  function buildHistoryArtifactFilters(mode: HistoryArtifactGovernanceMode): HistoryArtifactQueryFilters | null {
+    if (mode === "current") {
+      const docId = documentStatus?.docId || historyItems[0]?.docId || "";
+      return docId ? { docId, exists: "existing", limit: 8 } : null;
+    }
+    if (mode === "large") {
+      return { exists: "existing", minBytes: 64 * 1024, limit: 8 };
+    }
+    return { exists: "missing", limit: 8 };
+  }
+
+  async function refreshHistoryArtifactGovernance(mode = historyArtifactMode) {
+    const filters = buildHistoryArtifactFilters(mode);
+    setHistoryArtifactMode(mode);
+    if (!filters) {
+      setHistoryArtifactQuery({
+        ok: false,
+        source: "sqlite",
+        filters: {},
+        items: [],
+        total: 0,
+        limit: 8,
+        offset: 0,
+        hasMore: false,
+        stats: {
+          total: 0,
+          existing: 0,
+          intermediate: 0,
+          exports: 0,
+          reports: 0,
+          sources: 0,
+          external: 0,
+          missing: 0,
+          bytes: 0,
+        },
+        error: "先选择一篇文档，再查看当前文档资产。",
+      });
+      return null;
+    }
+    setHistoryArtifactLoading(true);
+    try {
+      const result = await service.queryHistoryArtifacts(filters);
+      setHistoryArtifactQuery(result);
+      return result;
+    } catch (appError) {
+      const message = stringifyError(appError);
+      setHistoryArtifactQuery({
+        ok: false,
+        source: "sqlite",
+        filters,
+        items: [],
+        total: 0,
+        limit: filters.limit ?? 8,
+        offset: filters.offset ?? 0,
+        hasMore: false,
+        stats: {
+          total: 0,
+          existing: 0,
+          intermediate: 0,
+          exports: 0,
+          reports: 0,
+          sources: 0,
+          external: 0,
+          missing: 0,
+          bytes: 0,
+        },
+        error: message,
+      });
+      setError(message);
+      return null;
+    } finally {
+      setHistoryArtifactLoading(false);
+    }
+  }
+
+  async function handleRepairHistoryDatabase() {
+    const taskTicket = beginTask("loading-history", {
+      runtimeStep: "正在修复历史索引。",
+    });
+    try {
+      const result = await service.repairHistoryDatabase();
+      const beforeIssues = result.before?.issueCount ?? 0;
+      const afterIssues = result.after?.issueCount ?? 0;
+      await refreshHistoryList();
+      setHistoryOrphanScan(null);
+      await refreshHistoryArtifactGovernance(historyArtifactMode);
+      if (!result.ok) {
+        setError(result.error || "历史索引修复后仍有问题，请查看缺失资产。");
+      }
+      const fixedText = beforeIssues ? `处理 ${beforeIssues} 个索引问题` : "索引已重新对齐";
+      const afterText = afterIssues ? `仍有 ${afterIssues} 个提示待确认` : "当前索引健康";
+      setNotice(`历史索引已修复：${fixedText}，${afterText}。修复只重建索引，不会删除正文或导出文件。`);
+      setRuntimeStep(result.ok ? "历史索引修复完成" : "历史索引仍需检查");
+    } catch (appError) {
+      setError(stringifyError(appError));
+      setRuntimeStep("历史索引修复失败");
+    } finally {
+      finishTask(taskTicket);
+    }
   }
 
   async function refreshHistoryOrphanScan() {
@@ -3380,11 +3120,34 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setRuntimeStep("正在载入历史文档。");
       clearAutoSnapshotSuppression();
       clearDocumentDerivedState({ includeDetectionReport: true });
-      const status = await refreshDocumentState(item.sourcePath, configOverride);
-      const loadedSnapshot = await loadLatestRoundSnapshot(status, configOverride, {
+      const selectedConfig = buildConfigForHistorySelection(item, configOverride);
+      if (
+        selectedConfig.promptProfile !== modelConfig.promptProfile
+        || !promptSequencesEqual(selectedConfig.promptSequence, modelConfig.promptSequence)
+      ) {
+        setModelConfig(selectedConfig);
+        localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, selectedConfig.promptProfile);
+        localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(selectedConfig.promptSequence));
+      }
+      let status = await refreshDocumentState(item.sourcePath, selectedConfig);
+      const loadedSnapshot = await loadLatestRoundSnapshot(status, selectedConfig, {
         historyItem: item,
         allowProfileFallback: true,
       });
+      const loadedProfile = loadedSnapshot?.round?.promptProfile ?? loadedSnapshot?.compareData.promptProfile;
+      const loadedSequence = normalizePromptSequence(
+        loadedSnapshot?.round?.promptSequence ?? loadedSnapshot?.compareData.promptSequence ?? selectedConfig.promptSequence,
+      );
+      if (
+        isPromptProfile(loadedProfile)
+        && (loadedProfile !== selectedConfig.promptProfile || !promptSequencesEqual(loadedSequence, selectedConfig.promptSequence))
+      ) {
+        const syncedConfig = { ...selectedConfig, promptProfile: loadedProfile, promptSequence: loadedSequence };
+        setModelConfig(syncedConfig);
+        localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, syncedConfig.promptProfile);
+        localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(syncedConfig.promptSequence));
+        status = await refreshDocumentState(status.sourcePath, syncedConfig);
+      }
       setNotice(`已切换到历史文档。${describeDocumentProgress(status.nextRound, status.hasNextRound)}`);
       setRuntimeStep(
         loadedSnapshot
@@ -3519,6 +3282,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       setRuntimeStep("正在清理未归属生成文件。");
       const result = await service.deleteHistoryOrphans(getProtectedHistoryArtifactPaths());
       setHistoryOrphanScan(result.after);
+      void refreshHistoryArtifactGovernance();
       const deletedStats = result.deletedFileStats;
       const failedText = result.failedFiles.length ? `，${result.failedFiles.length} 个文件未能删除` : "";
       setNotice(`已清理 ${deletedStats.total} 个未归属项目文件（源副本 ${deletedStats.sources ?? 0}，生成物 ${deletedStats.intermediate + deletedStats.exports + deletedStats.reports}），释放 ${formatBytes(deletedStats.bytes)}${failedText}。`);
@@ -3582,12 +3346,14 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       const result = await service.deleteDocumentHistory(docId, options);
       const items = await refreshHistoryList();
       setHistoryOrphanScan(null);
+      void refreshHistoryArtifactGovernance();
 
       if (documentStatus?.docId === docId) {
         if (result.removedDocument) {
           setDocumentStatus(null);
           setHistory(null);
           setProtectionMap(null);
+          setScopeDiagnostics(null);
           clearDocumentDerivedState({ includeDetectionReport: true });
           saveStoredDetectionReport(null, null);
         } else {
@@ -4087,7 +3853,20 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       return;
     }
 
-    const runConfig = modelConfig;
+    const statusPromptSequence = normalizePromptSequence(documentStatus.promptSequence ?? modelConfig.promptSequence);
+    const runConfig = {
+      ...modelConfig,
+      promptProfile: documentStatus.promptProfile,
+      promptSequence: statusPromptSequence,
+    };
+    if (
+      runConfig.promptProfile !== modelConfig.promptProfile
+      || !promptSequencesEqual(runConfig.promptSequence, modelConfig.promptSequence)
+    ) {
+      setModelConfig(runConfig);
+      localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, runConfig.promptProfile);
+      localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(runConfig.promptSequence));
+    }
     clearPendingAutoActionForSource(documentStatus.sourcePath);
     const taskTicket = beginTask("running-round", {
       runtimeStep: `准备执行第 ${documentStatus.nextRound} 轮。`,
@@ -4097,8 +3876,10 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       const checkpointStatus = roundProgressStatus
         && sameWorkspacePath(roundProgressStatus.sourcePath, documentStatus.sourcePath)
         && roundProgressStatus.round === documentStatus.nextRound
+        && roundProgressStatus.promptProfile === runConfig.promptProfile
+        && promptSequencesEqual(roundProgressStatus.promptSequence, runConfig.promptSequence)
         ? roundProgressStatus
-        : await refreshRoundProgressStatus(documentStatus, modelConfig);
+        : await refreshRoundProgressStatus(documentStatus, runConfig);
       const checkpointProgress = createCheckpointProgress(checkpointStatus, modelConfig.rewriteCandidateMode);
       visibleProgressRef.current = checkpointProgress;
       setProgress(checkpointProgress);
@@ -4155,7 +3936,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       }, runToken);
 
       setRuntimeStep(checkpointProgress ? formatRuntimeStep(checkpointProgress, `准备续跑第 ${documentStatus.nextRound} 轮。`) : `准备执行第 ${documentStatus.nextRound} 轮。`);
-      setNotice(checkpointProgress ? checkpointProgress.resumeExplanation || "已识别断点，本次会从已完成分块后继续，不会重头跑。" : `本次运行将使用 ${describePromptProfile(modelConfig.promptProfile)}，中途失败时会优先尝试断点续跑。`);
+      setNotice(checkpointProgress ? checkpointProgress.resumeExplanation || "已识别断点，本次会从已完成分块后继续，不会重头跑。" : `本次运行将使用 ${describePromptProfile(runConfig.promptProfile)}，中途失败时会优先尝试断点续跑。`);
 
       clearAutoSnapshotSuppression();
       const nextResult = await service.awaitRunRound(documentStatus.sourcePath, runConfig, runToken);
@@ -4178,7 +3959,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         setReviewDecisions({ ...buildDefaultReviewDecisions(nextCompareData), ...normalizeSavedReviewDecisions(savedReview.decisions) });
       });
 
-      const status = await refreshDocumentState(documentStatus.sourcePath);
+      const status = await refreshDocumentState(documentStatus.sourcePath, runConfig);
       await refreshHistoryList();
       setHistoryPanelOpen(true);
       setRuntimeStep(status.hasNextRound ? `第 ${nextResult.round} 轮已完成，可继续执行第 ${status.nextRound} 轮。` : `第 ${nextResult.round} 轮已完成，全部轮次已结束。`);
@@ -4596,11 +4377,11 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       const session = batchRerunSessionRef.current;
       const cancelRequested = Boolean(session?.cancelRequested || activeBatchStatus?.cancelRequested);
       const batchDetail = activeBatchStatus
-        ? `${activeBatchStatus.completedCount}/${activeBatchStatus.totalCount} 块 · 成功 ${activeBatchStatus.successCount} · 失败 ${activeBatchStatus.failureCount}${activeBatchStatus.currentChunkId ? ` · 当前 ${activeBatchStatus.currentChunkId}` : ""}`
-        : runtimeLabel || "批量重跑运行中";
+        ? `已处理 ${activeBatchStatus.completedCount}/${activeBatchStatus.totalCount} · 成功 ${activeBatchStatus.successCount} · 失败 ${activeBatchStatus.failureCount}`
+        : runtimeLabel || "局部优化运行中";
       items.push({
         id: `batch:${currentBatchRerunToken}`,
-        title: session?.label || "批量重跑",
+        title: session?.label || "局部优化",
         status: cancelRequested ? "停止中" : "运行中",
         detail: batchDetail,
         recoveryHint: getTaskPhaseRecoveryHint(cancelRequested ? "canceling-batch-rerun" : "batch-rerunning"),
@@ -4673,17 +4454,17 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       if (reviewChunkIds.length || failedChunkIds.length || candidateChunkIds.length) {
         items.push({
           id: `diff-action:${activeCompareData.outputPath || activeCompareData.docId}:${reviewChunkIds.length}:${failedChunkIds.length}:${candidateChunkIds.length}`,
-          title: failedChunkIds.length ? "Diff 有重跑失败" : candidateChunkIds.length ? "Diff 有高风险候选" : "Diff 有块需处理",
+          title: failedChunkIds.length ? "Diff 有优化失败" : candidateChunkIds.length ? "Diff 有高风险内容" : "Diff 有内容需确认",
           status: failedChunkIds.length ? "需处理" : "待审阅",
-          detail: `需处理 ${reviewChunkIds.length} 块 · 失败 ${failedChunkIds.length} · 高风险 ${candidateChunkIds.length}`,
+          detail: `待确认 ${reviewChunkIds.length} 处 · 失败 ${failedChunkIds.length} · 高风险 ${candidateChunkIds.length}`,
           recoveryHint: failedChunkIds.length
-            ? "先查看失败块和模型候选，确认可用再采用；否则补充反馈后单块重跑。"
+            ? "先查看失败内容，确认可用再采用；否则补充反馈后局部优化。"
             : candidateChunkIds.length
-              ? "候选输出不会自动导出；可查看模型原始候选，自行判断采用或重跑。"
-              : "可直接跳到需处理筛选，不必在整篇 Diff 里手动翻找。",
+              ? "这些内容不会自动导出；先人工确认，再决定采用或重新优化。"
+              : "可直接跳到待确认内容，不必在整篇 Diff 里手动翻找。",
           tone: failedChunkIds.length ? "red" : "amber",
           running: false,
-          actionLabel: preferredFilter === "failed" ? "查看失败块" : preferredFilter === "candidate" ? "查看高风险候选" : "只看需处理",
+          actionLabel: preferredFilter === "failed" ? "查看失败内容" : preferredFilter === "candidate" ? "查看高风险内容" : "只看待确认",
           onAction: () => openDiffTaskTarget(preferredFilter, preferredChunkId),
         });
       }
@@ -4732,9 +4513,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       }
       items.push({
         id: `diagnostics-batch:${item.runId}`,
-        title: "后台批量重跑",
+        title: "后台局部优化",
         status: item.cancelRequested ? "停止中" : item.status || "运行中",
-        detail: `${item.completedCount}/${item.totalCount} 块 · 成功 ${item.successCount} · 失败 ${item.failureCount}${item.currentChunkId ? ` · 当前 ${item.currentChunkId}` : ""}`,
+        detail: `已处理 ${item.completedCount}/${item.totalCount} · 成功 ${item.successCount} · 失败 ${item.failureCount}`,
         recoveryHint: getTaskPhaseRecoveryHint(item.cancelRequested ? "canceling-batch-rerun" : "batch-rerunning"),
         tone: item.cancelRequested ? "red" : "amber",
         running: true,
@@ -4747,7 +4528,14 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
 
     const checkpointMatchesCurrentDocument = Boolean(
       roundProgressStatus?.canResume
-      && (!documentStatus?.sourcePath || sameWorkspacePath(roundProgressStatus.sourcePath, documentStatus.sourcePath)),
+      && (
+        !documentStatus?.sourcePath
+        || (
+          sameWorkspacePath(roundProgressStatus.sourcePath, documentStatus.sourcePath)
+          && roundProgressStatus.promptProfile === documentStatus.promptProfile
+          && promptSequencesEqual(roundProgressStatus.promptSequence, documentStatus.promptSequence)
+        )
+      ),
     );
     if (!currentRunToken && checkpointMatchesCurrentDocument && roundProgressStatus) {
       const allChunksDone = roundProgressStatus.resumeStage === "finalize_output";
@@ -4767,7 +4555,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
 
     return items;
-  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, reviewDecisions, roundProgressStatus, runtimeLabel, taskPhase]);
+  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.promptProfile, documentStatus?.promptSequence, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, reviewDecisions, roundProgressStatus, runtimeLabel, taskPhase]);
   const activeRuntimeTaskCount = runtimeTaskItems.filter((item) => item.running).length;
   const statusAutoAction = !error && pendingAutoAction ? pendingAutoAction : null;
 
@@ -4863,9 +4651,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
             onConfirm={() => settleConfirmDialog(true)}
           />
 
-          <header className="shrink-0 border-b bg-background/95">
+          <header className="shrink-0 border-b bg-background">
             <div className="flex h-12 items-center gap-3 px-4">
-              <SidebarTrigger className="border bg-card" />
+              <SidebarTrigger className="border bg-card shadow-none" />
               <div className="min-w-0 flex flex-1 items-center gap-3">
                 <Breadcrumb>
                   <BreadcrumbList>
@@ -4882,8 +4670,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                   {activeViewMeta.description}
                 </Badge>
               </div>
+              <ThemeModeMenu />
             </div>
-            <div className="flex h-10 items-center gap-2 overflow-x-auto border-t bg-muted/35 px-4 text-xs">
+            <div className="vercel-subbar flex h-10 items-center gap-2 overflow-x-auto border-t px-4 text-xs">
               <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" onClick={() => setActiveView("home")}>
                 <FileText data-icon="inline-start" />
                 <span className="text-muted-foreground">当前文件</span>
@@ -4924,7 +4713,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
             </div>
           </header>
 
-          <section className="min-h-0 flex-1 overflow-hidden bg-muted/30 p-4">
+          <section className="vercel-shell min-h-0 flex-1 overflow-hidden p-4">
             {activeView === "home" ? (
               <div className="h-full min-h-0 overflow-hidden">
                 <div className="grid h-full min-h-0 min-w-0 max-w-full gap-4 overflow-hidden min-[1180px]:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)] 2xl:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)]">
@@ -5027,7 +4816,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
             ) : activeView === "format" ? (
               <div className="h-full min-h-0 overflow-auto">{formatPanel}</div>
             ) : activeView === "protection" ? (
-              <div className="h-full min-h-0 overflow-auto"><ProtectionMapCard value={protectionMap} /></div>
+              <div className="h-full min-h-0 overflow-auto"><ProtectionMapCard value={protectionMap} diagnostics={scopeDiagnostics} /></div>
             ) : activeView === "diagnostics" ? (
               <div className="h-full min-h-0 overflow-auto">
                 <DiagnosticsPage
@@ -5045,12 +4834,18 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                 promptProfile={modelConfig.promptProfile}
                 promptSequence={modelConfig.promptSequence}
                 orphanScan={historyOrphanScan}
+                artifactQuery={historyArtifactQuery}
+                artifactMode={historyArtifactMode}
+                artifactLoading={historyArtifactLoading}
                 open={historyPanelOpen}
                 busy={uiBusy}
                 onToggle={() => setHistoryPanelOpen(!historyPanelOpen)}
                 onSelect={(item) => void handleSelectHistory(item)}
                 onPreviewDelete={(docId, options) => handlePreviewHistoryDelete(docId, options)}
                 onDelete={(docId, options) => void handleDeleteHistory(docId, options)}
+                onArtifactModeChange={(mode) => void refreshHistoryArtifactGovernance(mode)}
+                onRefreshArtifacts={() => void refreshHistoryArtifactGovernance()}
+                onRepairHistoryDatabase={() => void handleRepairHistoryDatabase()}
                 onScanOrphans={() => void handleScanHistoryOrphans()}
                 onDeleteOrphans={() => void handleDeleteHistoryOrphans()}
                 onDownload={(item, format) => void handleExportFromHistory(item, format)}
@@ -5521,10 +5316,11 @@ function HomeRunPanel({
       : `混用路线 ${customizedRouteCount}/${activeFlowSequence.length}`
     : `默认 ${modelConfig.model || "未选"} · ${activeFlowSequence.length} 轮`;
   const modelRouteLines = modelRouteSummary.map((item) => `${item.index + 1}. ${item.providerLabel} · ${item.modelLabel}`);
-  const rewriteCandidateMode = modelConfig.rewriteCandidateMode === "quality" ? "quality" : "economy";
-  const candidateMaxPerChunk = rewriteCandidateMode === "quality" ? 2 : 1;
   const activeRunStatus = roundProgressStatus?.activeRun && !roundProgressStatus.activeRun.completed ? roundProgressStatus.activeRun : null;
-  const resumableCheckpoint = roundProgressStatus?.canResume && roundProgressStatus.round === value?.nextRound
+  const resumableCheckpoint = roundProgressStatus?.canResume
+    && roundProgressStatus.round === value?.nextRound
+    && roundProgressStatus.promptProfile === value?.promptProfile
+    && promptSequencesEqual(roundProgressStatus.promptSequence, value?.promptSequence)
     ? roundProgressStatus
     : null;
   const runRecoveryState = buildRunRecoveryPanelState({
@@ -5542,12 +5338,6 @@ function HomeRunPanel({
       ? "继续收尾"
       : "继续本轮"
     : "";
-  const setRewriteCandidateMode = (mode: "economy" | "quality") => {
-    const currentConfig = modelConfigRef.current;
-    const nextConfig = { ...currentConfig, rewriteCandidateMode: mode };
-    modelConfigRef.current = nextConfig;
-    onModelConfigChange(nextConfig);
-  };
   const canRunNextRound = hasPendingRound && !busy && !running && !activeRunStatus && unavailableRouteCount === 0;
   const runButtonText = running
     ? `正在执行第 ${value?.nextRound ?? ""} 轮`
@@ -5771,39 +5561,6 @@ function HomeRunPanel({
           </div>
           {hasDocument ? (
             <>
-              <div className="flex min-w-0 flex-col gap-2 overflow-hidden">
-                <div className="flex min-w-0 items-center justify-between gap-3">
-                  <div className="text-xs font-medium text-muted-foreground">候选策略</div>
-                  <Badge variant="secondary" className="shrink-0">{candidateMaxPerChunk} 候选/块</Badge>
-                </div>
-                <ToggleGroup
-                  type="single"
-                  value={rewriteCandidateMode}
-                  onValueChange={(mode) => {
-                    if (mode === "economy" || mode === "quality") {
-                      setRewriteCandidateMode(mode);
-                    }
-                  }}
-                  className="!grid w-full min-w-0 grid-cols-2 overflow-hidden rounded-lg border bg-background p-1"
-                >
-                  <ToggleGroupItem
-                    value="economy"
-                    variant="outline"
-                    disabled={busy || running}
-                    className="h-10 w-full min-w-0 overflow-hidden rounded-md border-0 px-2 text-xs data-[state=on]:bg-muted data-[state=on]:shadow-sm"
-                  >
-                    <span className="min-w-0 truncate">省钱模式</span>
-                  </ToggleGroupItem>
-                  <ToggleGroupItem
-                    value="quality"
-                    variant="outline"
-                    disabled={busy || running}
-                    className="h-10 w-full min-w-0 overflow-hidden rounded-md border-0 px-2 text-xs data-[state=on]:bg-muted data-[state=on]:shadow-sm"
-                  >
-                    <span className="min-w-0 truncate">质量模式</span>
-                  </ToggleGroupItem>
-                </ToggleGroup>
-              </div>
               <RunRecoveryPanel state={runRecoveryState} />
               <AutoRunSignal action={pendingAutoAction} onReject={onRejectAutoAction} />
               {progress?.totalChunks && !runRecoveryState && currentRunProgressPercent != null ? (
@@ -6156,6 +5913,7 @@ function redactLocalPath(value: string): string {
 }
 
 function buildShareableDiagnostics(value: EnvironmentDiagnostics) {
+  const diagnosticTasks = buildDiagnosticTaskItems(value);
   return {
     ok: value.ok,
     createdAt: value.createdAt,
@@ -6200,6 +5958,22 @@ function buildShareableDiagnostics(value: EnvironmentDiagnostics) {
     activeBatchRerunCount: value.activeBatchRerunCount ?? value.activeBatchReruns?.length ?? 0,
     recentRunCount: value.recentRunCount ?? value.recentRuns?.length ?? 0,
     recentBatchRerunCount: value.recentBatchRerunCount ?? value.recentBatchReruns?.length ?? 0,
+    taskCount: value.taskCount ?? diagnosticTasks.length,
+    recentTaskCount: value.recentTaskCount ?? value.recentTasks?.length ?? diagnosticTasks.filter((item) => !isDiagnosticTaskActive(item)).length,
+    tasks: diagnosticTasks.map((item) => ({
+      runId: item.runId,
+      taskType: item.taskType,
+      taskGroup: item.taskGroup,
+      active: isDiagnosticTaskActive(item),
+      status: item.status,
+      completed: item.completed,
+      cancelRequested: item.cancelRequested,
+      restoredFromDisk: item.restoredFromDisk,
+      targetPath: redactLocalPath(getTaskItemString(item, "targetPath")),
+      updatedAt: getTaskItemString(item, "updatedAt"),
+      persistedAt: getTaskItemString(item, "persistedAt"),
+      sortAt: getTaskItemString(item, "sortAt"),
+    })),
     taskStateStore: value.taskStateStore ? {
       ...value.taskStateStore,
       path: redactLocalPath(value.taskStateStore.path),
@@ -6298,8 +6072,9 @@ function DiagnosticsPage({
   const activeBatchRerunCount = value?.activeBatchRerunCount ?? value?.activeBatchReruns?.length ?? 0;
   const recentRunCount = value?.recentRunCount ?? value?.recentRuns?.length ?? 0;
   const recentBatchRerunCount = value?.recentBatchRerunCount ?? value?.recentBatchReruns?.length ?? 0;
-  const activeTaskCount = (value?.activeRunCount ?? 0) + activeBatchRerunCount;
-  const recentTaskCount = recentRunCount + recentBatchRerunCount;
+  const taskItems = buildDiagnosticTaskItems(value);
+  const activeTaskCount = value?.tasks?.length ? taskItems.filter(isDiagnosticTaskActive).length : (value?.activeRunCount ?? 0) + activeBatchRerunCount;
+  const recentTaskCount = value?.recentTaskCount ?? value?.recentTasks?.length ?? recentRunCount + recentBatchRerunCount;
   const taskStateStore = value?.taskStateStore;
   const configReady = value ? value.config.offlineMode || Boolean(value.config.hasBaseUrl && value.config.hasApiKey && value.config.model) : false;
   const [copied, setCopied] = useState(false);
@@ -6342,7 +6117,7 @@ function DiagnosticsPage({
           <CardContent className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
             <DiagnosticSummaryTile label="自检项" value={`${passedCount}/${checks.length}`} detail={errorCount || warningCount ? "有项目需要确认" : "全部可用"} />
             <DiagnosticSummaryTile label="模型连接" value={configReady ? "可启动" : "待补全"} detail={value.config.offlineMode ? "离线模式" : value.config.model || "未选择模型"} />
-            <DiagnosticSummaryTile label="后台任务" value={`${activeTaskCount} 运行中`} detail={`${recentTaskCount} 条近期摘要`} />
+            <DiagnosticSummaryTile label="后台任务" value={`${activeTaskCount} 运行中`} detail={`${recentTaskCount} 条近期记录`} />
             <DiagnosticSummaryTile label="快照" value={taskStateStore ? `${taskStateStore.fileCount} 个` : "未返回"} detail={taskStateStore ? `${taskStateStore.staleCount} 个可清理` : "等待后端状态"} />
           </CardContent>
         ) : null}
@@ -6479,7 +6254,7 @@ function DiagnosticsPage({
                 <CardContent className="flex flex-col gap-3">
                   <div className="grid gap-2 md:grid-cols-4">
                     <ReportStat label="文件" value={`${taskStateStore.fileCount} · ${formatBytes(taskStateStore.sizeBytes)}`} />
-                    <ReportStat label="轮次/重跑" value={`${taskStateStore.runRoundCount} / ${taskStateStore.batchRerunCount}`} />
+                    <ReportStat label="快照分布" value={`${taskStateStore.runRoundCount} / ${taskStateStore.batchRerunCount}`} />
                     <ReportStat label="保护中" value={`${taskStateStore.activeSnapshotCount}`} />
                     <ReportStat label="可清理" value={`${taskStateStore.staleCount}`} />
                   </div>
@@ -6488,40 +6263,32 @@ function DiagnosticsPage({
               </Card>
             ) : null}
 
-            {activeTaskCount ? (
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg">运行中的任务</CardTitle>
-                </CardHeader>
-                <CardContent className="grid gap-2">
-                  {value.activeRuns.map((item) => (
-                    <DiagnosticRunAlert key={item.runId} item={item} />
-                  ))}
-                  {(value.activeBatchReruns ?? []).map((item) => (
-                    <DiagnosticBatchAlert key={item.runId} item={item} />
-                  ))}
-                </CardContent>
-              </Card>
-            ) : null}
-
-            {recentTaskCount ? (
-              <Card>
-                <CardHeader className="pb-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <CardTitle className="text-lg">近期任务摘要</CardTitle>
-                    <Badge variant="outline">轮次 {recentRunCount} · 重跑 {recentBatchRerunCount}</Badge>
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-lg">后台任务</CardTitle>
+                    <CardDescription className="mt-1">{activeTaskCount} 个运行中 · {recentTaskCount} 条近期记录</CardDescription>
                   </div>
-                </CardHeader>
-                <CardContent className="grid gap-2">
-                  {(value.recentRuns ?? []).map((item) => (
-                    <DiagnosticRunAlert key={item.runId} item={item} recent />
-                  ))}
-                  {(value.recentBatchReruns ?? []).map((item) => (
-                    <DiagnosticBatchAlert key={item.runId} item={item} recent />
-                  ))}
-                </CardContent>
-              </Card>
-            ) : null}
+                  <Badge variant={activeTaskCount ? "warning" : "outline"}>{activeTaskCount ? "有任务运行" : "空闲"}</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="grid gap-2">
+                {taskItems.length ? (
+                  taskItems.map((item) => (
+                    <DiagnosticTaskAlert key={`${item.taskType}-${item.runId}`} item={item} />
+                  ))
+                ) : (
+                  <Empty className="min-h-[10rem] border">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
+                      <EmptyTitle>暂无后台任务</EmptyTitle>
+                      <EmptyDescription>最近没有需要恢复或继续的任务。</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                )}
+              </CardContent>
+            </Card>
           </div>
         </ScrollArea>
       ) : (
@@ -6563,54 +6330,155 @@ function DiagnosticCheckCard({ item }: { item: EnvironmentDiagnostics["checks"][
   );
 }
 
-function DiagnosticRunAlert({ item, recent = false }: { item: EnvironmentDiagnostics["activeRuns"][number]; recent?: boolean }) {
-  const status = item.cancelRequested
-    ? "中断中"
-    : recent && !item.completed
-      ? "轮次未完成"
-      : item.status || (recent ? "已记录" : "运行中");
-  return (
-    <Alert className={cn(item.status === "interrupted" && "border-primary/25 bg-muted/60")}>
-      {recent ? <Clock3 /> : <Activity />}
-      <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
-        <span>轮次任务 · {formatShortTaskId(item.runId) ?? item.runId}</span>
-        <Badge variant={item.status === "interrupted" || item.cancelRequested ? "warning" : "outline"}>{status}</Badge>
-      </AlertTitle>
-      <AlertDescription className="grid gap-1 text-xs">
-        <span className="truncate">{item.sourcePath}</span>
-        <span>
-          事件 {item.eventCount} 个
-          {item.lastEvent?.phase ? ` · 阶段 ${item.lastEvent.phase}` : ""}
-          {item.lastEvent?.chunkId ? ` · 块 ${item.lastEvent.chunkId}` : ""}
-        </span>
-        {item.error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{item.error}</span> : null}
-        <span>{recent ? "落盘" : "更新"} {formatDateTime(item.persistedAt || item.updatedAt)}</span>
-      </AlertDescription>
-    </Alert>
-  );
+type DiagnosticTaskItem = NonNullable<EnvironmentDiagnostics["tasks"]>[number];
+
+function buildDiagnosticTaskItems(value: EnvironmentDiagnostics | null): DiagnosticTaskItem[] {
+  if (!value) {
+    return [];
+  }
+  const backendItems = value.tasks ?? [];
+  if (backendItems.length) {
+    return [...backendItems].sort(compareDiagnosticTasks);
+  }
+  const fallbackItems: DiagnosticTaskItem[] = [
+    ...value.activeRuns.map((item) => ({
+      ...item,
+      taskType: "run-round",
+      taskGroup: "active",
+      targetPath: item.sourcePath,
+      active: true,
+      sortAt: item.updatedAt,
+    })),
+    ...(value.activeBatchReruns ?? []).map((item) => ({
+      ...item,
+      taskType: "batch-rerun",
+      taskGroup: "active",
+      targetPath: item.outputPath,
+      active: true,
+      sortAt: item.updatedAt,
+    })),
+    ...(value.recentRuns ?? []).map((item) => ({
+      ...item,
+      taskType: "run-round",
+      taskGroup: "recent",
+      targetPath: item.sourcePath,
+      active: false,
+      sortAt: item.persistedAt || item.updatedAt,
+    })),
+    ...(value.recentBatchReruns ?? []).map((item) => ({
+      ...item,
+      taskType: "batch-rerun",
+      taskGroup: "recent",
+      targetPath: item.outputPath,
+      active: false,
+      sortAt: item.persistedAt || item.updatedAt,
+    })),
+  ];
+  return fallbackItems.sort(compareDiagnosticTasks);
 }
 
-function DiagnosticBatchAlert({ item, recent = false }: { item: NonNullable<EnvironmentDiagnostics["activeBatchReruns"]>[number]; recent?: boolean }) {
-  const status = item.cancelRequested
-    ? "停止中"
-    : recent && !item.completed
-      ? "重跑未完成"
-      : item.status || (recent ? "已记录" : "运行中");
+function compareDiagnosticTasks(left: DiagnosticTaskItem, right: DiagnosticTaskItem): number {
+  if (isDiagnosticTaskActive(left) !== isDiagnosticTaskActive(right)) {
+    return isDiagnosticTaskActive(left) ? -1 : 1;
+  }
+  return getTaskItemString(right, "sortAt").localeCompare(getTaskItemString(left, "sortAt"));
+}
+
+function isDiagnosticTaskActive(item: DiagnosticTaskItem): boolean {
+  return Boolean(item.active || getTaskItemString(item, "taskGroup") === "active");
+}
+
+function getTaskItemString(item: DiagnosticTaskItem, key: string): string {
+  const value = item[key];
+  return typeof value === "string" ? value : "";
+}
+
+function getTaskItemNumber(item: DiagnosticTaskItem, key: string): number | null {
+  const value = item[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getTaskItemRecord(item: DiagnosticTaskItem, key: string): Record<string, unknown> | null {
+  const value = item[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function getDiagnosticTaskStatus(item: DiagnosticTaskItem): string {
+  const status = getTaskItemString(item, "status");
+  if (Boolean(item.cancelRequested)) {
+    return "停止中";
+  }
+  if (isDiagnosticTaskActive(item)) {
+    return status === "canceling" ? "停止中" : "运行中";
+  }
+  if (!item.completed) {
+    return "未完成";
+  }
+  if (status === "interrupted") {
+    return "已中断";
+  }
+  if (status === "failed") {
+    return "失败";
+  }
+  if (status === "canceled") {
+    return "已停止";
+  }
+  return status || "已记录";
+}
+
+function getDiagnosticTaskBadgeVariant(item: DiagnosticTaskItem): ComponentProps<typeof Badge>["variant"] {
+  const status = getTaskItemString(item, "status");
+  if (status === "failed") {
+    return "danger";
+  }
+  if (status === "interrupted" || Boolean(item.cancelRequested) || isDiagnosticTaskActive(item) || !item.completed) {
+    return "warning";
+  }
+  return "outline";
+}
+
+function DiagnosticTaskAlert({ item }: { item: DiagnosticTaskItem }) {
+  const isBatch = getTaskItemString(item, "taskType") === "batch-rerun";
+  const active = isDiagnosticTaskActive(item);
+  const status = getDiagnosticTaskStatus(item);
+  const lastEvent = getTaskItemRecord(item, "lastEvent");
+  const targetPath = getTaskItemString(item, "targetPath") || getTaskItemString(item, "sourcePath") || getTaskItemString(item, "outputPath");
+  const updatedAt = getTaskItemString(item, "persistedAt") || getTaskItemString(item, "updatedAt") || getTaskItemString(item, "createdAt");
+  const totalCount = getTaskItemNumber(item, "totalCount");
+  const completedCount = getTaskItemNumber(item, "completedCount");
+  const successCount = getTaskItemNumber(item, "successCount");
+  const failureCount = getTaskItemNumber(item, "failureCount");
+  const eventCount = getTaskItemNumber(item, "eventCount");
+  const phase = typeof lastEvent?.phase === "string" ? lastEvent.phase : "";
+  const chunkId = typeof lastEvent?.chunkId === "string" ? lastEvent.chunkId : getTaskItemString(item, "currentChunkId");
+  const error = getTaskItemString(item, "error");
+
   return (
-    <Alert className={cn(item.status === "interrupted" && "border-primary/25 bg-muted/60")}>
-      <RefreshCw />
+    <Alert className={cn((getTaskItemString(item, "status") === "interrupted" || active) && "border-primary/25 bg-muted/60")}>
+      {active ? <Activity /> : <Clock3 />}
       <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
-        <span>批量重跑 · {formatShortTaskId(item.runId) ?? item.runId}</span>
-        <Badge variant={item.status === "interrupted" || item.cancelRequested ? "warning" : "outline"}>{status}</Badge>
+        <span>后台任务 · {formatShortTaskId(item.runId) ?? item.runId}</span>
+        <span className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">{isBatch ? "局部优化" : "全文改写"}</Badge>
+          <Badge variant={getDiagnosticTaskBadgeVariant(item)}>{status}</Badge>
+        </span>
       </AlertTitle>
       <AlertDescription className="grid gap-1 text-xs">
-        <span className="truncate">{item.outputPath}</span>
-        <span>
-          {item.completedCount}/{item.totalCount} 块 · 成功 {item.successCount} · 失败 {item.failureCount}
-          {item.currentChunkId ? ` · 当前 ${item.currentChunkId}` : ""}
-        </span>
-        {item.error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{item.error}</span> : null}
-        <span>{recent ? "落盘" : "更新"} {formatDateTime(item.persistedAt || item.updatedAt)}</span>
+        <span className="truncate">{targetPath || "未返回路径"}</span>
+        {isBatch && totalCount !== null ? (
+          <span>
+            {completedCount ?? 0}/{totalCount} 段 · 成功 {successCount ?? 0} · 失败 {failureCount ?? 0}
+            {chunkId ? ` · 当前 ${chunkId}` : ""}
+          </span>
+        ) : (
+          <span>
+            事件 {eventCount ?? 0} 个
+            {phase ? ` · 阶段 ${phase}` : ""}
+            {chunkId ? ` · 块 ${chunkId}` : ""}
+          </span>
+        )}
+        {error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{error}</span> : null}
+        <span>{active ? "更新" : "落盘"} {formatDateTime(updatedAt)}</span>
       </AlertDescription>
     </Alert>
   );

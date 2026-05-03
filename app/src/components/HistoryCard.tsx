@@ -1,13 +1,18 @@
 import { useState } from "react";
-import { Clock3, Download, FolderClock, RotateCcw, Search, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, Clock3, Database, Download, FolderClock, RotateCcw, Search, ShieldCheck, Trash2, Wrench } from "lucide-react";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type {
   DeleteHistoryOptions,
   DocumentHistory,
+  HistoryArtifactGovernanceMode,
+  HistoryArtifactQueryItem,
+  HistoryArtifactQueryResponse,
   HistoryArtifactStats,
   HistoryDeleteImpact,
   HistoryDocumentSummary,
@@ -24,12 +29,18 @@ type Props = {
   promptProfile: ModelConfig["promptProfile"];
   promptSequence: PromptId[];
   orphanScan: HistoryOrphanScanResult | null;
+  artifactQuery: HistoryArtifactQueryResponse | null;
+  artifactMode: HistoryArtifactGovernanceMode;
+  artifactLoading: boolean;
   open: boolean;
   busy: boolean;
   onToggle: () => void;
   onSelect: (item: HistoryDocumentSummary) => void;
   onPreviewDelete: (docId: string, options?: DeleteHistoryOptions) => Promise<HistoryDeleteImpact | null>;
   onDelete: (docId: string, options?: DeleteHistoryOptions) => void;
+  onArtifactModeChange: (mode: HistoryArtifactGovernanceMode) => void;
+  onRefreshArtifacts: () => void;
+  onRepairHistoryDatabase: () => void;
   onScanOrphans: () => void;
   onDeleteOrphans: () => void;
   onDownload: (item: HistoryRound, format: "txt" | "docx") => void;
@@ -215,85 +226,197 @@ function getSafeArtifactStats(stats?: HistoryArtifactStats): HistoryArtifactStat
   };
 }
 
-function ArtifactStats({ stats }: { stats?: HistoryArtifactStats }) {
-  const safeStats = getSafeArtifactStats(stats);
-  return (
-    <div className="grid gap-2 sm:grid-cols-5">
-      <StatPill label="可清理文件" value={`${safeStats.existing}`} />
-      <StatPill label="导出副本" value={`${safeStats.exports}`} />
-      <StatPill label="中间产物" value={`${safeStats.intermediate}`} />
-      <StatPill label="审计/报告" value={`${safeStats.reports}`} />
-      <StatPill label="占用空间" value={formatBytes(safeStats.bytes)} />
-    </div>
-  );
-}
-
-function ArtifactGovernanceMap({ stats, sourcePath, compact = false }: { stats?: HistoryArtifactStats; sourcePath?: string; compact?: boolean }) {
-  const safeStats = getSafeArtifactStats(stats);
-  const toneClasses: Record<string, string> = {
-    emerald: "border-border bg-muted/50 text-foreground",
-    indigo: "border-border bg-muted/50 text-foreground",
-    amber: "border-border bg-muted/50 text-foreground",
-    orange: "border-border bg-muted/50 text-foreground",
-    sky: "border-border bg-muted/50 text-foreground",
-    slate: "border-border bg-muted/50 text-foreground",
-  };
-  const items = [
-    {
-      label: "源文档",
-      value: "保留",
-      detail: sourcePath ? formatPathScope(sourcePath) : "默认保留；彻底清理时也只删除项目 origin 内副本",
-      tone: "emerald",
-    },
-    {
-      label: "历史记录",
-      value: "索引",
-      detail: "只移除记录只会隐藏索引，不删除项目文件",
-      tone: "indigo",
-    },
-    {
-      label: "中间产物",
-      value: `${safeStats.intermediate}`,
-      detail: "Diff、manifest、checkpoint、body-map 等运行链路文件",
-      tone: "amber",
-    },
-    {
-      label: "导出副本",
-      value: `${safeStats.exports}`,
-      detail: "仅指项目 web_exports 内副本，不影响浏览器已下载文件",
-      tone: "orange",
-    },
-    {
-      label: "审计/报告",
-      value: `${safeStats.reports}`,
-      detail: "导出审计、保护区报告、外部报告解析记录",
-      tone: "sky",
-    },
-  ];
-  return (
-    <div className={`grid gap-2 ${compact ? "md:grid-cols-3" : "lg:grid-cols-5"}`}>
-      {items.map((item) => (
-        <div
-          key={item.label}
-          className={`rounded-lg border px-3 py-2 ${toneClasses[item.tone] ?? toneClasses.slate}`}
-        >
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] font-black opacity-70">{item.label}</span>
-            <span className="text-sm font-black">{item.value}</span>
-          </div>
-          {!compact ? <div className="mt-1 line-clamp-2 text-[11px] leading-5 opacity-80">{item.detail}</div> : null}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function getOrphanKindLabel(kind: string): string {
   if (kind === "sources") return "源文档副本";
   if (kind === "exports") return "项目导出";
   if (kind === "reports") return "报告文件";
   if (kind === "intermediate") return "中间产物";
   return "其他";
+}
+
+function getArtifactModeCopy(mode: HistoryArtifactGovernanceMode): { title: string; detail: string } {
+  if (mode === "current") {
+    return {
+      title: "当前文档资产",
+      detail: "只看正在选中的文档，适合判断这一篇还能清理或追溯哪些生成物。",
+    };
+  }
+  if (mode === "large") {
+    return {
+      title: "占用空间较大",
+      detail: "只看仍存在且体积较大的项目生成物，适合优先释放空间。",
+    };
+  }
+  return {
+    title: "缺失资产",
+    detail: "索引里有记录但磁盘上已不存在，通常来自旧导出、中间文件或手动删除。",
+  };
+}
+
+function getArtifactQueryStateLabel(query: HistoryArtifactQueryResponse | null, loading: boolean): string {
+  if (loading) return "读取中";
+  if (!query) return "未读取";
+  if (!query.ok) return "需检查";
+  return query.total ? `${query.total} 条` : "无异常";
+}
+
+function HistoryArtifactRow({ item }: { item: HistoryArtifactQueryItem }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs md:flex-row md:items-center md:justify-between">
+      <div className="min-w-0">
+        <div className="truncate font-semibold text-foreground">{item.path}</div>
+        <div className="mt-0.5 flex flex-wrap gap-2 text-muted-foreground">
+          <span>{getOrphanKindLabel(item.kind)}</span>
+          <span>{item.documentCount} 篇文档</span>
+          <span>{item.roundCount} 个轮次</span>
+        </div>
+      </div>
+      <div className="flex shrink-0 flex-wrap gap-2">
+        <Badge variant={item.exists ? "outline" : "warning"}>{item.exists ? "仍存在" : "已缺失"}</Badge>
+        <Badge variant="outline">{formatBytes(item.bytes)}</Badge>
+      </div>
+    </div>
+  );
+}
+
+function HistoryArtifactGovernancePanel({
+  query,
+  mode,
+  loading,
+  previewImpact,
+  previewLoading,
+  currentDocId,
+  busy,
+  onModeChange,
+  onRefresh,
+  onRepairIndex,
+  onPreviewCurrentCleanup,
+}: {
+  query: HistoryArtifactQueryResponse | null;
+  mode: HistoryArtifactGovernanceMode;
+  loading: boolean;
+  previewImpact: HistoryDeleteImpact | null;
+  previewLoading: boolean;
+  currentDocId: string | null;
+  busy: boolean;
+  onModeChange: (mode: HistoryArtifactGovernanceMode) => void;
+  onRefresh: () => void;
+  onRepairIndex: () => void;
+  onPreviewCurrentCleanup: () => void;
+}) {
+  const copy = getArtifactModeCopy(mode);
+  const stats = getSafeArtifactStats(query?.stats);
+  const previewItems = query?.items.slice(0, 6) ?? [];
+  const shouldSuggestRepair = mode === "missing" && (stats.missing > 0 || query?.ok === false);
+  const shouldSuggestPreview = (mode === "current" || mode === "large") && Boolean(currentDocId);
+  return (
+    <section data-ui-section="history-asset-governance" className="rounded-lg border border-border bg-muted/20 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary">资产治理</Badge>
+            <Badge variant={query?.ok === false ? "warning" : "outline"}>{getArtifactQueryStateLabel(query, loading)}</Badge>
+          </div>
+          <h3 className="mt-2 text-base font-semibold text-foreground">{copy.title}</h3>
+          <p className="mt-1 line-clamp-2 text-sm leading-6 text-muted-foreground">{copy.detail}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy || loading}>
+            <Search data-icon="inline-start" />
+            {loading ? "读取中" : "刷新"}
+          </Button>
+          {shouldSuggestRepair ? (
+            <Button variant="outline" size="sm" onClick={onRepairIndex} disabled={busy || loading}>
+              <Wrench data-icon="inline-start" />
+              修复索引
+            </Button>
+          ) : null}
+          {shouldSuggestPreview ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onPreviewCurrentCleanup}
+              disabled={busy || loading || previewLoading || !stats.existing}
+            >
+              <Search data-icon="inline-start" />
+              {previewLoading ? "预览中" : "先看影响"}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      <ToggleGroup
+        type="single"
+        value={mode}
+        onValueChange={(value) => {
+          if (value === "missing" || value === "current" || value === "large") {
+            onModeChange(value);
+          }
+        }}
+        className="mt-4 grid gap-2 md:grid-cols-3"
+      >
+        <ToggleGroupItem value="missing" variant="outline" className="h-auto min-h-16 flex-col items-start justify-center gap-1 px-3 py-2 text-left">
+          <span className="text-sm font-semibold">缺失资产</span>
+          <span className="text-xs text-muted-foreground">索引仍在，文件已不在</span>
+        </ToggleGroupItem>
+        <ToggleGroupItem value="current" variant="outline" disabled={!currentDocId} className="h-auto min-h-16 flex-col items-start justify-center gap-1 px-3 py-2 text-left">
+          <span className="text-sm font-semibold">当前文档</span>
+          <span className="text-xs text-muted-foreground">只看这一篇的生成物</span>
+        </ToggleGroupItem>
+        <ToggleGroupItem value="large" variant="outline" className="h-auto min-h-16 flex-col items-start justify-center gap-1 px-3 py-2 text-left">
+          <span className="text-sm font-semibold">大文件</span>
+          <span className="text-xs text-muted-foreground">优先定位占用空间</span>
+        </ToggleGroupItem>
+      </ToggleGroup>
+
+      <div className="mt-4 grid gap-2 md:grid-cols-5">
+        <StatPill label="索引资产" value={`${stats.total}`} />
+        <StatPill label="仍存在" value={`${stats.existing}`} />
+        <StatPill label="缺失" value={`${stats.missing}`} />
+        <StatPill label="占用空间" value={formatBytes(stats.bytes)} />
+        <StatPill label="外部引用" value={`${stats.external}`} />
+      </div>
+
+      {shouldSuggestRepair ? (
+        <Alert className="mt-4">
+          <Wrench />
+          <AlertTitle>建议先修复索引</AlertTitle>
+          <AlertDescription>
+            缺失资产说明记录与磁盘状态可能已经不同步。修复只会重建 SQLite 索引和兼容记录，不会删除正文、导出文件或用户保存的副本。
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {shouldSuggestPreview && stats.existing > 0 ? (
+        <Alert className="mt-4">
+          <Search />
+          <AlertTitle>先预览再清理</AlertTitle>
+          <AlertDescription>
+            这里先查看当前文档会受影响的项目生成物，不直接执行删除；真正清理仍需要在下方确认。
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {query?.ok === false ? (
+        <Alert className="mt-4" variant="destructive">
+          <AlertTriangle />
+          <AlertTitle>索引读取失败</AlertTitle>
+          <AlertDescription>{query.error || "SQLite 历史索引暂时不可用，请先刷新或运行历史库修复。"}</AlertDescription>
+        </Alert>
+      ) : previewItems.length ? (
+        <div className="mt-4 flex flex-col gap-2">
+          {previewItems.map((item) => <HistoryArtifactRow key={`${item.path}-${item.kind}`} item={item} />)}
+          {query?.hasMore ? <div className="text-xs font-semibold text-muted-foreground">这里只展示前 {previewItems.length} 条，后端索引中还有更多匹配项。</div> : null}
+        </div>
+      ) : (
+        <div className="mt-4 flex items-start gap-3 rounded-lg border border-border bg-card px-3 py-3 text-sm text-muted-foreground">
+          <Database className="shrink-0" />
+          <div>{loading ? "正在读取 SQLite 历史索引。" : "当前视图没有需要处理的资产。"}</div>
+        </div>
+      )}
+      {previewImpact ? <div className="mt-4"><AssetImpactPanel impact={previewImpact} /></div> : null}
+    </section>
+  );
 }
 
 function OrphanGovernancePanel({
@@ -397,45 +520,40 @@ function mergeArtifactStats(items: Array<HistoryArtifactStats | undefined>): His
   });
 }
 
+function getLatestRound(rounds: HistoryRound[]): HistoryRound | null {
+  if (!rounds.length) {
+    return null;
+  }
+  return [...rounds].sort((left, right) => {
+    const leftTime = new Date(left.timestamp || "").getTime();
+    const rightTime = new Date(right.timestamp || "").getTime();
+    const normalizedLeft = Number.isFinite(leftTime) ? leftTime : 0;
+    const normalizedRight = Number.isFinite(rightTime) ? rightTime : 0;
+    return normalizedRight - normalizedLeft;
+  })[0] ?? null;
+}
+
+function hasExportableOutput(item: HistoryDocumentSummary, rounds: HistoryRound[]): boolean {
+  return Boolean(item.latestOutputPath || rounds.some((round) => round.outputPath));
+}
+
+function getExportStateText(item: HistoryDocumentSummary, rounds: HistoryRound[]): string {
+  return hasExportableOutput(item, rounds) ? "可导出" : "暂无输出";
+}
+
+function getCleanupStateText(stats?: HistoryArtifactStats): string {
+  const safeStats = getSafeArtifactStats(stats);
+  if (!safeStats.existing) {
+    return "很干净";
+  }
+  return formatBytes(safeStats.bytes);
+}
+
 function StatPill({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border bg-muted/40 px-3 py-2">
       <div className="text-[10px] font-semibold text-muted-foreground">{label}</div>
       <div className="mt-0.5 truncate text-sm font-semibold text-foreground">{value}</div>
-    </div>
-  );
-}
-
-function formatCandidateMode(value?: string | null): string {
-  if (value === "quality") return "质量模式";
-  if (value === "economy") return "省钱模式";
-  return "未记录";
-}
-
-function formatAuditValue(value: unknown, suffix = ""): string {
-  const numberValue = Number(value);
-  if (!Number.isFinite(numberValue)) return "-";
-  return `${numberValue}${suffix}`;
-}
-
-function getRoundAuditValue(round: HistoryRound, key: keyof NonNullable<HistoryRound["runAudit"]>): unknown {
-  return round.runAudit?.[key] ?? round.qualitySummary?.[key as keyof NonNullable<HistoryRound["qualitySummary"]>];
-}
-
-function RoundAuditStrip({ round }: { round: HistoryRound }) {
-  const candidateMode = String(getRoundAuditValue(round, "rewriteCandidateMode") ?? "");
-  const estimatedApiCalls = getRoundAuditValue(round, "estimatedApiCalls");
-  const validationRetryCount = getRoundAuditValue(round, "validationRetryCount");
-  const sourceFallbackCount = getRoundAuditValue(round, "sourceFallbackCount");
-  const model = String(round.runAudit?.model || "").trim();
-  const provider = String(round.runAudit?.providerName || "").trim();
-  return (
-    <div className="grid gap-2 rounded-lg border border-border bg-muted/30 p-2 text-xs md:grid-cols-5">
-      <StatPill label="候选策略" value={formatCandidateMode(candidateMode)} />
-      <StatPill label="预计调用" value={formatAuditValue(estimatedApiCalls, " 次")} />
-      <StatPill label="校验重试" value={formatAuditValue(validationRetryCount, " 块")} />
-      <StatPill label="安全回退" value={formatAuditValue(sourceFallbackCount, " 块")} />
-      <StatPill label="模型" value={model ? `${provider ? `${provider} · ` : ""}${model}` : "未记录"} />
     </div>
   );
 }
@@ -588,12 +706,10 @@ function HistoryGovernanceBoundary() {
   return (
     <div data-ui-section="history-governance-boundary" className="grid gap-3 lg:grid-cols-3">
       {cards.map((card) => (
-        <Card key={card.title} className="bg-muted/40 shadow-none">
-          <CardContent className="p-3">
-            <div className="text-sm font-semibold text-foreground">{card.title}</div>
-            <div className="mt-1 text-xs leading-5 text-muted-foreground">{card.text}</div>
-          </CardContent>
-        </Card>
+        <div key={card.title} className="rounded-lg border border-border bg-muted/40 p-3">
+          <div className="text-sm font-semibold text-foreground">{card.title}</div>
+          <div className="mt-1 text-xs leading-5 text-muted-foreground">{card.text}</div>
+        </div>
       ))}
     </div>
   );
@@ -606,23 +722,36 @@ export function HistoryCard({
   promptProfile,
   promptSequence,
   orphanScan,
+  artifactQuery,
+  artifactMode,
+  artifactLoading,
   open,
   busy,
   onToggle,
   onSelect,
   onPreviewDelete,
   onDelete,
+  onArtifactModeChange,
+  onRefreshArtifacts,
+  onRepairHistoryDatabase,
   onScanOrphans,
   onDeleteOrphans,
   onDownload,
 }: Props) {
   const [impactPreview, setImpactPreview] = useState<HistoryImpactPreviewState | null>(null);
   const [impactLoadingKey, setImpactLoadingKey] = useState("");
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
+  const [cleanupDocId, setCleanupDocId] = useState<string | null>(null);
   const maxRounds = getMaxRounds(promptProfile, promptSequence);
-  const promptOptions = getPromptOptions(promptProfile, promptSequence);
   const totalStats = mergeArtifactStats(items.map((item) => item.artifactStats));
-  const currentItem = items.find((item) => item.docId === currentDocId);
-  const currentStats = currentItem?.artifactStats;
+  const continuationCount = items.filter((item) => {
+    const completedRounds = getCompletedRounds(getRoundsForProfile(item.rounds, promptProfile, promptSequence), promptProfile, promptSequence);
+    return completedRounds.length < maxRounds;
+  }).length;
+  const exportableCount = items.filter((item) => hasExportableOutput(item, getRoundsForProfile(item.rounds, promptProfile, promptSequence))).length;
+  const currentCleanupOptions: DeleteHistoryOptions = { mode: "records_and_artifacts" };
+  const currentCleanupKey = currentDocId ? makeDeleteActionKey(currentDocId, currentCleanupOptions) : "";
+  const governanceImpactPreview = impactPreview?.key === currentCleanupKey ? impactPreview.impact : null;
   const handlePreviewDelete = async (docId: string, options: DeleteHistoryOptions) => {
     const key = makeDeleteActionKey(docId, options);
     setImpactLoadingKey(key);
@@ -645,8 +774,8 @@ export function HistoryCard({
               <Badge variant="secondary">历史记录</Badge>
               <Badge variant="outline">{getProfileLabel(promptProfile)}</Badge>
             </div>
-            <CardTitle className="text-xl">文档与生成物管理</CardTitle>
-            <CardDescription>历史索引、轮次链、项目导出副本和中间生成物分开处理；外部源文档默认不在清理范围内。</CardDescription>
+            <CardTitle className="text-xl">继续处理与导出</CardTitle>
+            <CardDescription>选择历史文档继续下一轮、导出最新结果；清理和修复放在高级维护里。</CardDescription>
           </div>
           <Button variant="outline" onClick={onToggle} disabled={busy}>
             <FolderClock data-icon="inline-start" />
@@ -656,31 +785,71 @@ export function HistoryCard({
       </CardHeader>
 
       <CardContent className="flex flex-col gap-5">
-        <div className="grid gap-3 lg:grid-cols-4">
+        <div data-ui-section="history-user-summary" className="grid gap-3 lg:grid-cols-3">
           <ImpactCard
-            title="项目生成物"
-            value={`${totalStats.existing} 个`}
-            text={`项目导出 ${totalStats.exports}，中间/报告 ${totalStats.intermediate + totalStats.reports}`}
+            title="可继续"
+            value={`${continuationCount} 篇`}
+            text={`当前流程最多 ${maxRounds} 轮，未完成的文档可直接接着跑。`}
           />
           <ImpactCard
-            title="占用空间"
-            value={formatBytes(totalStats.bytes)}
-            text="只统计项目内文件，不影响浏览器已下载副本。"
-            tone="amber"
-          />
-          <ImpactCard
-            title="当前文档"
-            value={currentStats ? `${currentStats.existing} 个` : "未选中"}
-            text={currentStats ? `占用 ${formatBytes(currentStats.bytes)}` : "切换到某篇后单独管理它的衍生物。"}
+            title="可导出"
+            value={`${exportableCount} 篇`}
+            text="已有输出的文档可打开后导出 Word 或 TXT。"
             tone="emerald"
           />
           <ImpactCard
-            title="源文档"
-            value="保留"
-            text="默认保留；源副本清理只作用于项目 origin。"
+            title="可释放"
+            value={formatBytes(totalStats.bytes)}
+            text={`${totalStats.existing} 个项目内生成文件；日常不用处理，需要时打开高级维护。`}
+            tone="amber"
           />
         </div>
-        <HistoryGovernanceBoundary />
+        <section data-ui-section="history-advanced-maintenance" className="rounded-lg border border-border bg-muted/20 p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline">高级维护</Badge>
+                {artifactQuery?.ok === false ? <Badge variant="warning">需要检查</Badge> : null}
+                {orphanScan?.orphanStats.existing ? <Badge variant="outline">可清理 {orphanScan.orphanStats.existing}</Badge> : null}
+              </div>
+              <div className="mt-1 text-sm leading-6 text-muted-foreground">
+                项目体检、空间清理和异常修复都收在这里；日常继续写或导出不用打开。
+              </div>
+            </div>
+            <Button variant="outline" onClick={() => setMaintenanceOpen((value) => !value)} disabled={busy}>
+              <Wrench data-icon="inline-start" />
+              {maintenanceOpen ? "收起高级工具" : "展开高级工具"}
+            </Button>
+          </div>
+          {maintenanceOpen ? (
+            <div className="mt-4 flex flex-col gap-4">
+              <HistoryGovernanceBoundary />
+              <HistoryArtifactGovernancePanel
+                query={artifactQuery}
+                mode={artifactMode}
+                loading={artifactLoading}
+                previewImpact={governanceImpactPreview}
+                previewLoading={Boolean(currentCleanupKey) && impactLoadingKey === currentCleanupKey}
+                currentDocId={currentDocId}
+                busy={busy}
+                onModeChange={onArtifactModeChange}
+                onRefresh={onRefreshArtifacts}
+                onRepairIndex={onRepairHistoryDatabase}
+                onPreviewCurrentCleanup={() => {
+                  if (currentDocId) {
+                    void handlePreviewDelete(currentDocId, currentCleanupOptions);
+                  }
+                }}
+              />
+              <OrphanGovernancePanel
+                scan={orphanScan}
+                busy={busy}
+                onScan={onScanOrphans}
+                onDelete={onDeleteOrphans}
+              />
+            </div>
+          ) : null}
+        </section>
 
         {!open ? (
           <div className="rounded-lg border border-border bg-muted/30 p-5 text-sm leading-6 text-muted-foreground">
@@ -690,10 +859,15 @@ export function HistoryCard({
           <div className="flex flex-col gap-5 pb-4">
               {items.map((item) => {
                 const isActive = currentDocId === item.docId;
+                const cleanupOpen = cleanupDocId === item.docId;
+                const shouldShowRounds = isActive || items.length === 1;
                 const profileRounds = getRoundsForProfile(item.rounds, promptProfile, promptSequence);
                 const activeRounds = isActive && currentHistory ? getRoundsForProfile(currentHistory.rounds, promptProfile, promptSequence) : profileRounds;
                 const visibleRounds = activeRounds.length ? activeRounds : item.rounds;
                 const completedRounds = getCompletedRounds(activeRounds, promptProfile, promptSequence);
+                const latestRound = getLatestRound(visibleRounds);
+                const nextStepText = getNextRoundText(completedRounds, promptProfile, promptSequence);
+                const latestResultText = latestRound?.outputPath ? `第 ${latestRound.round} 轮` : "未生成";
                 const documentDeleteActions: Array<{ title: string; options: DeleteHistoryOptions; destructive?: boolean }> = [
                   { title: "只移除记录", options: { mode: "records_only" } },
                   { title: "清理项目导出", options: { mode: "exports_only" } },
@@ -727,12 +901,20 @@ export function HistoryCard({
                               <Clock3 className="size-4" />
                               {item.lastTimestamp ? formatTimestamp(item.lastTimestamp) : "暂无时间记录"}
                             </span>
-                            <span>下一轮：{getNextRoundText(completedRounds, promptProfile, promptSequence)}</span>
+                            <span>下一步：{nextStepText}</span>
                           </div>
                           <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{formatPathScope(item.originPath || item.sourcePath || item.docId)}</p>
                         </div>
 
                         <div className="flex flex-wrap gap-2 lg:justify-end">
+                          <Button
+                            variant="outline"
+                            onClick={() => setCleanupDocId((value) => value === item.docId ? null : item.docId)}
+                            disabled={busy}
+                          >
+                            <Trash2 data-icon="inline-start" />
+                            {cleanupOpen ? "收起清理" : "清理选项"}
+                          </Button>
                           <Button variant={isActive ? "secondary" : "outline"} onClick={() => onSelect(item)} disabled={busy}>
                             <RotateCcw data-icon="inline-start" />
                             {isActive ? "重新载入" : "切到这篇"}
@@ -740,30 +922,36 @@ export function HistoryCard({
                         </div>
                       </div>
 
-                      <ArtifactStats stats={item.artifactStats} />
-                      <ArtifactGovernanceMap stats={item.artifactStats} sourcePath={item.originPath || item.sourcePath} />
-                      <div className="grid gap-3 rounded-lg border border-border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-4">
-                        {documentDeleteActions.map((action) => {
-                          const actionKey = makeDeleteActionKey(item.docId, action.options);
-                          return (
-                            <HistoryDeleteAction
-                              key={actionKey}
-                              title={action.title}
-                              options={action.options}
-                              docId={item.docId}
-                              busy={busy}
-                              loading={impactLoadingKey === actionKey}
-                              destructive={action.destructive}
-                              onPreview={handlePreviewDelete}
-                              onDelete={onDelete}
-                            />
-                          );
-                        })}
+                      <div className="grid gap-2 rounded-lg border border-border bg-muted/20 p-3 text-xs md:grid-cols-4">
+                        <StatPill label="下一步" value={nextStepText} />
+                        <StatPill label="最新结果" value={latestResultText} />
+                        <StatPill label="导出" value={getExportStateText(item, visibleRounds)} />
+                        <StatPill label="可释放" value={getCleanupStateText(item.artifactStats)} />
                       </div>
+                      {cleanupOpen ? (
+                        <div className="grid gap-3 rounded-lg border border-border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-4">
+                          {documentDeleteActions.map((action) => {
+                            const actionKey = makeDeleteActionKey(item.docId, action.options);
+                            return (
+                              <HistoryDeleteAction
+                                key={actionKey}
+                                title={action.title}
+                                options={action.options}
+                                docId={item.docId}
+                                busy={busy}
+                                loading={impactLoadingKey === actionKey}
+                                destructive={action.destructive}
+                                onPreview={handlePreviewDelete}
+                                onDelete={onDelete}
+                              />
+                            );
+                          })}
+                        </div>
+                      ) : null}
                       {documentImpactPreview ? <AssetImpactPanel impact={documentImpactPreview} /> : null}
                     </div>
 
-                    {visibleRounds.length ? (
+                    {shouldShowRounds && visibleRounds.length ? (
                       <>
                         <Separator className="my-5" />
                         {!activeRounds.length ? (
@@ -793,15 +981,7 @@ export function HistoryCard({
                                       {roundPromptProfile === "cn_custom" ? <Badge variant="outline">{formatPromptSequence(roundItem.promptSequence)}</Badge> : null}
                                       <Badge variant="outline">{formatTimestamp(roundItem.timestamp)}</Badge>
                                     </div>
-                                     <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
-                                       <span>输入分块：{roundItem.inputSegmentCount ?? "-"}</span>
-                                       <span>输出分块：{roundItem.outputSegmentCount ?? "-"}</span>
-                                       <span>分块上限：{roundItem.chunkLimit ?? "-"}</span>
-                                     </div>
-                                     <RoundAuditStrip round={roundItem} />
-                                     <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{roundItem.outputPath ? formatPathScope(roundItem.outputPath) : "暂无输出路径"}</p>
-                                     <ArtifactStats stats={roundItem.artifactStats} />
-                                     <ArtifactGovernanceMap stats={roundItem.artifactStats} sourcePath={item.originPath || item.sourcePath} compact />
+                                    <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{roundItem.outputPath ? formatPathScope(roundItem.outputPath) : "暂无输出路径"}</p>
                                   </div>
 
                                   <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
@@ -815,35 +995,37 @@ export function HistoryCard({
                                     </Button>
                                   </div>
                                 </div>
-                                <div className="mt-4 grid gap-3 md:grid-cols-2">
-                                  {roundDeleteActions.map((action) => {
-                                    const actionKey = makeDeleteActionKey(item.docId, action.options);
-                                    return (
-                                      <HistoryDeleteAction
-                                        key={actionKey}
-                                        title={action.title}
-                                        options={action.options}
-                                        docId={item.docId}
-                                        busy={busy}
-                                        loading={impactLoadingKey === actionKey}
-                                        destructive={action.destructive}
-                                        onPreview={handlePreviewDelete}
-                                        onDelete={onDelete}
-                                      />
-                                    );
-                                  })}
-                                </div>
+                                {cleanupOpen ? (
+                                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                    {roundDeleteActions.map((action) => {
+                                      const actionKey = makeDeleteActionKey(item.docId, action.options);
+                                      return (
+                                        <HistoryDeleteAction
+                                          key={actionKey}
+                                          title={action.title}
+                                          options={action.options}
+                                          docId={item.docId}
+                                          busy={busy}
+                                          loading={impactLoadingKey === actionKey}
+                                          destructive={action.destructive}
+                                          onPreview={handlePreviewDelete}
+                                          onDelete={onDelete}
+                                        />
+                                      );
+                                    })}
+                                  </div>
+                                ) : null}
                                 {roundImpactPreview ? <div className="mt-4"><AssetImpactPanel impact={roundImpactPreview} /></div> : null}
                               </div>
                             );
                           })}
                         </div>
                       </>
-                    ) : (
+                    ) : shouldShowRounds ? (
                       <div className="mt-5 rounded-lg border border-dashed border-border bg-muted/20 p-4 text-sm leading-6 text-muted-foreground">
                         这篇文档在当前模式下还没有轮次记录。可能是在别的提示词模式下处理过。
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 );
               })}
@@ -854,35 +1036,6 @@ export function HistoryCard({
             <p className="mt-2 text-sm leading-6 text-muted-foreground">跑过的文档会自动出现在这里，之后可以直接回来继续处理或导出。</p>
           </div>
         )}
-
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
-          <div className="rounded-lg border border-border bg-muted/20 p-4">
-            <div className="grid gap-3 text-sm md:grid-cols-4">
-              <div className="rounded-md border bg-card p-3">
-                <div className="font-black text-foreground">只移除记录</div>
-                <div className="mt-1 leading-6 text-muted-foreground">只隐藏索引，不删除生成文件。</div>
-              </div>
-              <div className="rounded-md border bg-card p-3">
-                <div className="font-black text-foreground">清理项目导出</div>
-                <div className="mt-1 leading-6 text-muted-foreground">只删项目内 Word/TXT 副本。</div>
-              </div>
-              <div className="rounded-md border bg-card p-3">
-                <div className="font-black text-foreground">删除生成链路</div>
-                <div className="mt-1 leading-6 text-muted-foreground">删除轮次和中间产物，源文档保留。</div>
-              </div>
-              <div className="rounded-md border bg-card p-3">
-                <div className="font-black text-foreground">清理源副本</div>
-                <div className="mt-1 leading-6 text-muted-foreground">只删除项目 origin 内源文件副本，外部路径不碰。</div>
-              </div>
-            </div>
-          </div>
-          <OrphanGovernancePanel
-            scan={orphanScan}
-            busy={busy}
-            onScan={onScanOrphans}
-            onDelete={onDeleteOrphans}
-          />
-        </div>
       </CardContent>
     </Card>
   );

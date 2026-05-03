@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Source+Serif+4:wght@600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -6,34 +6,64 @@
 
 @layer base {
   :root {
-    --background: 240 5% 96%;
-    --foreground: 240 6% 10%;
+    --background: 0 0% 100%;
+    --foreground: 0 0% 4%;
     --card: 0 0% 100%;
-    --card-foreground: 240 6% 10%;
+    --card-foreground: 0 0% 4%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 6% 10%;
-    --primary: 240 6% 10%;
+    --popover-foreground: 0 0% 4%;
+    --primary: 0 0% 4%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 240 5% 92%;
-    --secondary-foreground: 240 6% 12%;
-    --muted: 240 5% 94%;
-    --muted-foreground: 240 4% 44%;
-    --accent: 240 5% 91%;
-    --accent-foreground: 240 6% 12%;
-    --destructive: 0 72% 51%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 44%;
+    --accent: 0 0% 94%;
+    --accent-foreground: 0 0% 9%;
+    --destructive: 0 72% 45%;
     --destructive-foreground: 0 0% 100%;
-    --border: 240 6% 86%;
-    --input: 240 6% 86%;
-    --ring: 240 6% 10%;
+    --border: 0 0% 89%;
+    --input: 0 0% 89%;
+    --ring: 0 0% 4%;
     --radius: 0.5rem;
     --sidebar-background: 0 0% 100%;
-    --sidebar-foreground: 240 6% 18%;
-    --sidebar-primary: 240 6% 10%;
+    --sidebar-foreground: 0 0% 9%;
+    --sidebar-primary: 0 0% 4%;
     --sidebar-primary-foreground: 0 0% 98%;
-    --sidebar-accent: 240 5% 94%;
-    --sidebar-accent-foreground: 240 6% 10%;
-    --sidebar-border: 240 6% 88%;
-    --sidebar-ring: 240 6% 10%;
+    --sidebar-accent: 0 0% 96%;
+    --sidebar-accent-foreground: 0 0% 9%;
+    --sidebar-border: 0 0% 89%;
+    --sidebar-ring: 0 0% 4%;
+  }
+
+  .dark {
+    --background: 0 0% 0%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 4%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 4%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 4%;
+    --secondary: 0 0% 9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 8%;
+    --muted-foreground: 0 0% 64%;
+    --accent: 0 0% 12%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 45%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 16%;
+    --input: 0 0% 18%;
+    --ring: 0 0% 72%;
+    --sidebar-background: 0 0% 0%;
+    --sidebar-foreground: 0 0% 92%;
+    --sidebar-primary: 0 0% 98%;
+    --sidebar-primary-foreground: 0 0% 4%;
+    --sidebar-accent: 0 0% 12%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 0 0% 14%;
+    --sidebar-ring: 0 0% 72%;
   }
 
   * {
@@ -46,6 +76,7 @@
 
   body {
     @apply h-svh overflow-hidden bg-background font-sans text-foreground antialiased;
+    text-rendering: geometricPrecision;
   }
 
   #root {
@@ -54,20 +85,35 @@
 }
 
 @layer utilities {
+  .vercel-shell {
+    @apply bg-background;
+  }
+
+  .vercel-subbar {
+    @apply border-border bg-background;
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.035);
+  }
+
+  .vercel-surface {
+    @apply border border-border bg-card text-card-foreground;
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.035);
+  }
+
   .shadcn-control-panel {
-    @apply rounded-lg border-border bg-card shadow-sm;
+    @apply rounded-lg border border-border bg-card shadow-sm;
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.035);
   }
 
   .shadcn-choice-card {
-    @apply flex h-auto min-h-[4.25rem] w-full min-w-0 max-w-full flex-col items-stretch justify-start gap-1.5 overflow-hidden whitespace-normal rounded-md border bg-background px-3 py-2.5 text-left text-foreground transition hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-60;
+    @apply flex h-auto min-h-[4.25rem] w-full min-w-0 max-w-full flex-col items-stretch justify-start gap-1.5 overflow-hidden whitespace-normal rounded-md border bg-card px-3 py-2.5 text-left text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60;
   }
 
   .shadcn-choice-card-active {
-    @apply border-primary bg-muted shadow-sm;
+    @apply border-foreground/35 bg-accent shadow-sm;
   }
 
   .shadcn-config-sheet {
-    @apply w-[min(92vw,760px)] bg-card p-6;
+    @apply w-[min(92vw,760px)] border-l border-border bg-background p-6;
   }
 
   .shadcn-scroll-bound {
@@ -94,6 +140,14 @@
 
   .text-pretty {
     text-wrap: pretty;
+  }
+
+  ::selection {
+    background: hsl(var(--foreground) / 0.16);
+  }
+
+  * {
+    scrollbar-color: hsl(var(--border)) transparent;
   }
 
 }
