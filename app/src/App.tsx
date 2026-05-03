@@ -5904,7 +5904,7 @@ function HomeRunPanel({
                     value="cn_prewrite"
                     variant="outline"
                     disabled={busy}
-                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
+                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-ring/35 data-[state=on]:bg-muted"
                     aria-label="中文三轮预改写"
                   >
                     <span className="text-sm font-semibold">中文三轮预改写</span>
@@ -5914,7 +5914,7 @@ function HomeRunPanel({
                     value="cn"
                     variant="outline"
                     disabled={busy}
-                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
+                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-ring/35 data-[state=on]:bg-muted"
                     aria-label="中文双轮"
                   >
                     <span className="text-sm font-semibold">中文双轮</span>
@@ -5924,7 +5924,7 @@ function HomeRunPanel({
                     value="cn_custom"
                     variant="outline"
                     disabled={busy}
-                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
+                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-ring/35 data-[state=on]:bg-muted"
                     aria-label="自定义组合"
                   >
                     <span className="text-sm font-semibold">自定义组合</span>

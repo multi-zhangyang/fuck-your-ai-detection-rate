@@ -12,6 +12,9 @@ const WEB_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webService.ts")
 const GLOBAL_CSS_PATH = resolve(ROOT_DIR, "app", "src", "styles", "global.css");
 const BUTTON_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "button.tsx");
 const BADGE_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "badge.tsx");
+const INPUT_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "input.tsx");
+const SELECT_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "select.tsx");
+const TEXTAREA_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "textarea.tsx");
 const REPORT_PATH = resolve(ROOT_DIR, "finish", "regression", "frontend_ui_consistency_regression_report.json");
 
 function assertIncludes(source, pattern, message, failures) {
@@ -59,7 +62,10 @@ function runRegression() {
   const cssSource = loadSource(GLOBAL_CSS_PATH, failures);
   const buttonSource = loadSource(BUTTON_PATH, failures);
   const badgeSource = loadSource(BADGE_PATH, failures);
-  const combinedSource = [appSource, modelConfigCardSource, resultCardSource, historyCardSource, appServiceSource, webServiceSource, cssSource, buttonSource, badgeSource].join("\n");
+  const inputSource = loadSource(INPUT_PATH, failures);
+  const selectSource = loadSource(SELECT_PATH, failures);
+  const textareaSource = loadSource(TEXTAREA_PATH, failures);
+  const combinedSource = [appSource, modelConfigCardSource, resultCardSource, historyCardSource, appServiceSource, webServiceSource, cssSource, buttonSource, badgeSource, inputSource, selectSource, textareaSource].join("\n");
 
   if (cssSource) {
     assertIncludes(cssSource, "html {\n    @apply h-svh overflow-hidden", "Document root must keep the app viewport-bound.", failures);
@@ -117,6 +123,15 @@ function runRegression() {
     assertNotIncludes(appSource, "window.confirm", "App must not use native browser confirmation popups.", failures);
     assertNotIncludes(appSource, "window.alert", "App must not use native browser alert popups.", failures);
     assertNoLegacyFyClassTokens(appSource, "App must not reintroduce old fy-* UI classes.", failures);
+  }
+
+  if (inputSource && selectSource && textareaSource) {
+    const fieldControlSource = [inputSource, selectSource, textareaSource].join("\n");
+    assertIncludes(fieldControlSource, "focus-visible:shadow-[inset_0_0_0_1px_hsl(var(--ring)/0.22)]", "Form controls must use a subtle inset shadcn focus treatment that cannot be clipped by right-panel bounds.", failures);
+    assertIncludes(fieldControlSource, "focus-visible:border-ring/45", "Form controls must keep focus visible without heavy black borders.", failures);
+    assertIncludes(selectSource, "[&>span]:truncate", "Select trigger text must stay truncated without widening route cards.", failures);
+    assertNotIncludes(fieldControlSource, "focus-visible:ring-offset-2", "Form controls must not use external ring offsets that look clipped inside bounded panels.", failures);
+    assertNotIncludes(selectSource, "focus:ring-2", "Select trigger must not use an always-on external focus ring.", failures);
   }
 
   if (resultCardSource) {
