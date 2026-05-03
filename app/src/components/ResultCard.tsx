@@ -658,6 +658,7 @@ function buildRejectedCandidateDecision(candidate: RejectedCandidate): ReviewDec
     mode: "custom",
     text: candidate.outputText,
     source: "rejected_candidate",
+    confirmed: true,
     attempt: candidate.attempt,
     candidate: candidate.candidate,
     error: candidate.error,
@@ -665,7 +666,7 @@ function buildRejectedCandidateDecision(candidate: RejectedCandidate): ReviewDec
 }
 
 function isRejectedCandidateAdopted(decision: ReviewDecision, candidate: RejectedCandidate | null): boolean {
-  if (!candidate || typeof decision !== "object" || decision?.mode !== "custom") {
+  if (!candidate || typeof decision !== "object" || decision?.mode !== "custom" || decision.confirmed !== true) {
     return false;
   }
   const hasSameCandidateMeta = (
@@ -682,7 +683,7 @@ function isRejectedCandidateAdopted(decision: ReviewDecision, candidate: Rejecte
 
 function getDecisionDisplayOutput(chunk: RoundCompareData["chunks"][number], decision: ReviewDecision, previewCandidate: RejectedCandidate | null = null): { title: string; text: string } {
   const mode = getReviewDecisionMode(decision);
-  if (mode === "custom" && typeof decision === "object") {
+  if (mode === "custom" && typeof decision === "object" && isReviewDecisionConfirmed(decision)) {
     const title = decision.source === "rejected_candidate" ? `${T.rewrite}（${T.adoptedRejected}）` : `${T.rewrite}（${T.customChoice}）`;
     return { title, text: decision.text || chunk.outputText };
   }
@@ -696,7 +697,10 @@ function getDecisionDisplayOutput(chunk: RoundCompareData["chunks"][number], dec
 }
 
 function isReviewDecisionConfirmed(decision: ReviewDecision): boolean {
-  return typeof decision === "object" || decision === "rewrite_confirmed" || decision === "source_confirmed";
+  if (typeof decision === "object") {
+    return decision.source === "rejected_candidate" ? decision.confirmed === true : true;
+  }
+  return decision === "rewrite_confirmed" || decision === "source_confirmed";
 }
 
 function countMatches(text: string, pattern: RegExp): number {

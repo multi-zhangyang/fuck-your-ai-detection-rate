@@ -1152,7 +1152,11 @@ function groupDetectionMatchesByChunk(matches: DetectionReportMatch[]): Record<s
 }
 
 function isReviewDecisionResolved(decision?: ReviewDecision): boolean {
-  return Boolean(decision && (typeof decision === "object" || decision === "rewrite_confirmed" || decision === "source_confirmed"));
+  if (!decision) return false;
+  if (typeof decision === "object") {
+    return decision.source === "rejected_candidate" ? decision.confirmed === true : true;
+  }
+  return decision === "rewrite_confirmed" || decision === "source_confirmed";
 }
 
 function buildDiffDashboardStats(
@@ -1390,6 +1394,7 @@ function buildRejectedCandidateReviewDecision(candidate: RejectedCandidate): Rev
     mode: "custom",
     text: candidate.outputText,
     source: "rejected_candidate",
+    confirmed: true,
     attempt: candidate.attempt,
     candidate: candidate.candidate,
     error: candidate.error,
@@ -2307,6 +2312,15 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     () => buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions),
     [activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions],
   );
+  useEffect(() => {
+    if (!activeCompareData?.chunks.length) {
+      return;
+    }
+    setReviewDecisions((current) => {
+      const next = { ...buildDefaultReviewDecisions(activeCompareData), ...normalizeSavedReviewDecisions(current) };
+      return JSON.stringify(current) === JSON.stringify(next) ? current : next;
+    });
+  }, [activeCompareData]);
   const unreadNotificationCount = notifications.filter((item) => !item.read).length;
 
   useEffect(() => {
@@ -2653,6 +2667,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     return Object.fromEntries(
       Object.entries(decisions).map(([chunkId, decision]) => {
         if (typeof decision === "object" && decision?.mode === "custom" && decision.text.trim()) {
+          if (decision.source === "rejected_candidate" && decision.confirmed !== true) {
+            return [chunkId, "rewrite" as ReviewDecision];
+          }
           return [chunkId, decision];
         }
         if (decision === "source" || decision === "source_confirmed") return [chunkId, "source_confirmed" as ReviewDecision];
@@ -2666,6 +2683,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     return Object.fromEntries(
       Object.entries(decisions).flatMap(([chunkId, decision]) => {
         if (typeof decision === "object" && decision?.mode === "custom" && decision.text.trim()) {
+          if (decision.source === "rejected_candidate" && decision.confirmed !== true) {
+            return [];
+          }
           return [[chunkId, decision] as const];
         }
         if (decision === "source" || decision === "source_confirmed") {

@@ -440,6 +440,7 @@ def _normalize_review_decision_value(decision: Any) -> str | dict[str, Any]:
                 "mode": "custom",
                 "text": text,
                 "source": str(decision.get("source", "")).strip(),
+                "confirmed": bool(decision.get("confirmed")),
                 "attempt": decision.get("attempt"),
                 "candidate": decision.get("candidate"),
                 "error": str(decision.get("error", "")).strip(),

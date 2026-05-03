@@ -297,6 +297,7 @@ export type CustomReviewDecision = {
   mode: "custom";
   text: string;
   source?: "rejected_candidate" | "manual" | string;
+  confirmed?: boolean;
   attempt?: number;
   candidate?: number;
   error?: string;

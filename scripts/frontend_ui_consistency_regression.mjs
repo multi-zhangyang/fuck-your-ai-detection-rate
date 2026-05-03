@@ -120,7 +120,9 @@ function runRegression() {
     assertIncludes(appSource, "buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions)", "Home Diff dashboard counts must follow review decisions.", failures);
     assertIncludes(appSource, "function normalizeReviewDecisionsForSave", "Review decisions must preserve explicit confirmation state when saved.", failures);
     assertIncludes(appSource, "return [chunkId, \"rewrite\" as ReviewDecision];", "Saved legacy default rewrites must reload as unresolved defaults.", failures);
+    assertIncludes(appSource, "decision.source === \"rejected_candidate\" && decision.confirmed !== true", "Legacy rejected candidate decisions must not hide unresolved high-risk candidates.", failures);
     assertIncludes(appSource, "return [[chunkId, \"rewrite_confirmed\" as ReviewDecision] as const];", "Explicit rewrite confirmations must be persisted distinctly from default rewrites.", failures);
+    assertIncludes(appSource, "confirmed: true", "New rejected candidate adoption must carry an explicit confirmation marker.", failures);
     assertNotIncludes(appSource, "if (decision === \"rewrite\") return [chunkId, \"rewrite_confirmed\" as ReviewDecision];", "Default rewrite choices must not be promoted to confirmed on reload.", failures);
     assertIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Home must wire the all-candidate adoption action through review decisions.", failures);
     assertIncludes(appSource, "buildRejectedCandidateReviewDecision(item.candidate)", "All-candidate adoption must persist rejected candidates as custom review decisions.", failures);

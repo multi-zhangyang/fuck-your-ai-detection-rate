@@ -30,10 +30,15 @@ def run_regression() -> dict[str, Any]:
     _assert(_select_review_text("original", "rewrite", "source_confirmed") == "original", "Confirmed source must export the original text.", failures)
     _assert(_select_review_text("original", "rewrite", "rewrite_confirmed") == "rewrite", "Confirmed rewrite must export the rewrite text.", failures)
     _assert(_select_review_text("original", "rewrite", "rewrite") == "rewrite", "Default rewrite must export the rewrite text.", failures)
+    legacy_candidate = _normalize_review_decision_value({"mode": "custom", "source": "rejected_candidate", "text": "candidate"})
+    confirmed_candidate = _normalize_review_decision_value({"mode": "custom", "source": "rejected_candidate", "text": "candidate", "confirmed": True})
+    _assert(isinstance(legacy_candidate, dict) and legacy_candidate.get("confirmed") is False, "Legacy rejected candidates must remain unconfirmed.", failures)
+    _assert(isinstance(confirmed_candidate, dict) and confirmed_candidate.get("confirmed") is True, "New rejected candidate adoption must preserve confirmation.", failures)
 
     app_source = APP_SOURCE_PATH.read_text(encoding="utf-8") if APP_SOURCE_PATH.exists() else ""
     _assert("function normalizeReviewDecisionsForSave" in app_source, "Frontend must save review decisions with explicit-state semantics.", failures)
     _assert("return [chunkId, \"rewrite\" as ReviewDecision];" in app_source, "Saved plain rewrite must reload as unresolved.", failures)
+    _assert("decision.source === \"rejected_candidate\" && decision.confirmed !== true" in app_source, "Legacy rejected candidate decisions must reload as unresolved.", failures)
     _assert(
         "if (decision === \"rewrite\") return [chunkId, \"rewrite_confirmed\" as ReviewDecision];" not in app_source,
         "Frontend must not promote default rewrite to confirmed on reload.",
@@ -44,6 +49,7 @@ def run_regression() -> dict[str, Any]:
         "Frontend must persist explicit rewrite confirmations.",
         failures,
     )
+    _assert("confirmed: true" in app_source, "New rejected candidate adoption must be explicitly confirmed.", failures)
 
     report = {
         "ok": not failures,
