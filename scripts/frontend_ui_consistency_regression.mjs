@@ -112,11 +112,15 @@ function runRegression() {
     assertIncludes(appSource, "diffFocusRequest={diffFocusRequest}", "Focused Diff requests must flow into the Diff review card.", failures);
     assertIncludes(appSource, "data-ui-section=\"model-route-compact\"", "Model route Sheet must use a compact shadcn summary bar before per-round controls.", failures);
     assertIncludes(appSource, "data-ui-section=\"home-active-model-route\"", "Home model route card must show the active per-round route, not only the default model.", failures);
+    assertIncludes(appSource, "sm:grid-cols-3", "Model route Sheet actions should stay limited to the necessary three operations.", failures);
     assertNotIncludes(appSource, "sm:grid-cols-2 xl:grid-cols-5", "Model route sheet actions must not use viewport-xl columns inside the narrower right sheet.", failures);
     assertIncludes(appSource, "modelConfigRef.current", "Model route edits must save the latest selected provider/model without waiting for a React rerender.", failures);
     assertIncludes(appSource, "modelRouteLines", "Model route summary must list effective providers and models per round.", failures);
     assertNotIncludes(appSource, "默认 {modelConfig.model || \"未选\"} · {activeFlowSequence.length} 轮", "Home model route summary must not keep showing the default model after custom per-round routes are selected.", failures);
-    assertIncludes(appSource, "rotateModelRoute", "Model route batch assignment must support any enabled provider count with deterministic rotation.", failures);
+    assertNotIncludes(appSource, "rotateModelRoute", "Model route Sheet must not keep the removed provider-rotation shortcut.", failures);
+    assertNotIncludes(appSource, "轮换服务商", "Model route Sheet must not show the removed provider-rotation shortcut.", failures);
+    assertNotIncludes(appSource, "读默认", "Model route Sheet must not duplicate default-model refresh from the full model configuration page.", failures);
+    assertNotIncludes(appSource, "onRefreshDefaultModels", "Home route panel must not keep dead default-model refresh props.", failures);
     assertNotIncludes(appSource, "RouteOverviewCard", "Model route Sheet must not reintroduce verbose overview cards.", failures);
     assertIncludes(appSource, "provider.enabled !== false", "Provider selection must treat legacy providers without an enabled flag as enabled.", failures);
     assertIncludes(appSource, "beginTask(\"loading-models\"", "Model catalog refresh must enter the shared task state flow.", failures);

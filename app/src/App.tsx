@@ -4978,8 +4978,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                         busy={uiBusy}
                         pickerLabel={pickerLabel}
                         modelConfig={modelConfig}
-                        modelCatalog={modelCatalog}
-                        modelCatalogBusy={modelCatalogBusy}
                         progress={progress}
                         roundProgressStatus={roundProgressStatus}
                         pendingAutoAction={pendingAutoAction}
@@ -4989,7 +4987,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                         onPromptSequenceChange={(promptSequence) => void handlePromptSequenceChange(promptSequence)}
                         onModelConfigChange={setModelConfig}
                         onSaveModelConfig={(nextConfig) => void handleSaveModelConfig(nextConfig)}
-                        onRefreshDefaultModels={() => void refreshModelCatalog()}
                         onRefreshAllProviderModels={() => void handleRefreshAllProviderModels()}
                         onRefreshProviderModels={(providerId) => void handleRefreshProviderModels(providerId)}
                         onPickFile={handlePickFile}
@@ -5405,8 +5402,6 @@ function HomeRunPanel({
   busy,
   pickerLabel,
   modelConfig,
-  modelCatalog,
-  modelCatalogBusy,
   progress,
   roundProgressStatus,
   pendingAutoAction,
@@ -5416,7 +5411,6 @@ function HomeRunPanel({
   onPromptSequenceChange,
   onModelConfigChange,
   onSaveModelConfig,
-  onRefreshDefaultModels,
   onRefreshAllProviderModels,
   onRefreshProviderModels,
   onPickFile,
@@ -5430,8 +5424,6 @@ function HomeRunPanel({
   busy: boolean;
   pickerLabel: string;
   modelConfig: ModelConfig;
-  modelCatalog: ModelCatalogResult | null;
-  modelCatalogBusy: boolean;
   progress: RoundProgress | null;
   roundProgressStatus: RoundProgressStatus | null;
   pendingAutoAction: PendingAutoAction | null;
@@ -5441,7 +5433,6 @@ function HomeRunPanel({
   onPromptSequenceChange: (promptSequence: PromptId[]) => void;
   onModelConfigChange: (modelConfig: ModelConfig) => void;
   onSaveModelConfig: (modelConfig: ModelConfig) => void;
-  onRefreshDefaultModels: () => void;
   onRefreshAllProviderModels: () => void;
   onRefreshProviderModels: (providerId: string) => void;
   onPickFile: () => void;
@@ -5477,7 +5468,6 @@ function HomeRunPanel({
   const providers = modelConfig.modelProviders ?? [];
   const enabledProviders = providers.filter((provider) => provider.enabled !== false);
   const providerOptions = enabledProviders;
-  const defaultModels = modelCatalog?.models.map((item) => item.id) ?? [];
   const promptSummary = promptProfile === "cn_custom" ? formatPromptSequence(activeSequence) : describePromptProfile(promptProfile);
   const modelRouteSummary = activeFlowSequence.map((promptId, index) => {
     const roundKey = getRoundModelKey(promptProfile, index + 1);
@@ -5652,23 +5642,6 @@ function HomeRunPanel({
       };
     }
     const nextConfig = { ...currentConfig, roundModels: nextRoundModels, model: usableProvider ? currentConfig.model : model };
-    modelConfigRef.current = nextConfig;
-    onModelConfigChange(nextConfig);
-  };
-  const rotateModelRoute = () => {
-    const currentConfig = modelConfigRef.current;
-    const currentProviderOptions = (currentConfig.modelProviders ?? []).filter((provider) => provider.enabled !== false);
-    if (!currentProviderOptions.length) return;
-    const nextRoundModels = { ...(currentConfig.roundModels ?? {}) };
-    activeFlowSequence.forEach((_, index) => {
-      const roundKey = getRoundModelKey(promptProfile, index + 1);
-      const provider = currentProviderOptions[index % currentProviderOptions.length];
-      if (!roundKey || !provider) return;
-      const models = provider.models?.length ? provider.models : [provider.defaultModel || currentConfig.model].filter(Boolean);
-      const model = models.length ? models[index % models.length] : currentConfig.model;
-      nextRoundModels[roundKey] = buildRoundModelFromProvider(provider, model, currentConfig);
-    });
-    const nextConfig = { ...currentConfig, roundModels: nextRoundModels };
     modelConfigRef.current = nextConfig;
     onModelConfigChange(nextConfig);
   };
@@ -5975,14 +5948,10 @@ function HomeRunPanel({
                       </div>
                       <Badge variant={customizedRouteCount ? "secondary" : "outline"} className="shrink-0">{modelRouteStatus}</Badge>
                     </div>
-                    <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-3">
                       <Button type="button" variant="outline" size="sm" onClick={resetModelRouteToDefault} disabled={busy}>继承默认</Button>
-                      <Button type="button" variant="outline" size="sm" onClick={rotateModelRoute} disabled={busy || providerOptions.length === 0}>轮换服务商</Button>
                       <Button type="button" variant="outline" size="sm" onClick={onRefreshAllProviderModels} disabled={busy || modelConfig.offlineMode || providerOptions.length === 0}>
                         <RefreshCw data-icon="inline-start" />读服务商
-                      </Button>
-                      <Button type="button" variant="outline" size="sm" onClick={onRefreshDefaultModels} disabled={busy || modelCatalogBusy || modelConfig.offlineMode}>
-                        {modelCatalogBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读默认
                       </Button>
                       <Button type="button" variant="neutral" size="sm" onClick={() => onSaveModelConfig(modelConfigRef.current)} disabled={busy || unavailableRouteCount > 0}>
                         <Save data-icon="inline-start" />保存
