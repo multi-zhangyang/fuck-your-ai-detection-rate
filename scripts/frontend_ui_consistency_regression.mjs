@@ -67,6 +67,8 @@ function runRegression() {
     assertIncludes(cssSource, "#root {\n    @apply h-svh overflow-hidden;", "React root must preserve fixed workbench height.", failures);
     assertIncludes(cssSource, ".shadcn-control-panel", "Shared utilities must be shadcn-scoped.", failures);
     assertIncludes(cssSource, ".shadcn-choice-card", "Choice cards must use shared shadcn utility semantics.", failures);
+    assertIncludes(cssSource, "min-h-[4.25rem]", "Home route choice cards must stay compact and avoid blank vertical space.", failures);
+    assertNotIncludes(cssSource, "min-h-[7rem]", "Home route choice cards must not return to the oversized blank layout.", failures);
     assertIncludes(cssSource, ".shadcn-config-sheet", "Configuration sheets must use shared shadcn utility semantics.", failures);
     assertNotIncludes(cssSource, ".fy-", "Old fy-* utility classes must not return after the shadcn migration.", failures);
   }

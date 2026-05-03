@@ -5733,8 +5733,7 @@ function HomeRunPanel({
           </label>
         </div>
 
-        <div className="min-w-0 overflow-hidden rounded-lg border bg-background p-3">
-          <div className="grid gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
             <Button
               type="button"
               variant="outline"
@@ -5748,11 +5747,11 @@ function HomeRunPanel({
                 <Badge variant={setupEditor === "prompt" ? "default" : "outline"} className="shrink-0">{setupEditor === "prompt" ? "已打开" : "编辑"}</Badge>
               </div>
               <div className="mt-2 truncate text-sm font-semibold">{promptSummary}</div>
-              <div className="mt-2 flex min-h-6 min-w-0 flex-wrap gap-1">
+              <div className="flex min-w-0 flex-wrap gap-1">
                 {activeFlowSequence.map((promptId, index) => (
-                  <span key={`${promptId}-${index}-flow`} className="rounded-full border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  <Badge key={`${promptId}-${index}-flow`} variant="secondary" className="max-w-full truncate text-[10px]">
                     {index + 1}. {PROMPT_OPTIONS.find((option) => option.id === promptId)?.label ?? promptId}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             </Button>
@@ -5783,7 +5782,6 @@ function HomeRunPanel({
                 ))}
               </div>
             </Button>
-          </div>
         </div>
 
         <section className={cn("flex flex-col gap-3", running && "rounded-lg border border-destructive/30 bg-destructive/5 p-3")}>
