@@ -95,17 +95,12 @@ const T = {
   rerunChunk: "重跑此块",
   rerunRisky: "重跑需处理",
   rerunStrategy: "策略",
-  reviewFeedback: "重跑指令",
   reviewReason: "原因",
   targetedRerun: "定向重跑",
-  targetedRerunDetails: "仅重跑当前块，读取本块原因与当前轮配置；通过硬校验才替换，失败保留当前文本。",
-  feedbackPlaceholder: "可选：一句话写清本块怎么改，例如保留引用、少扩写、语气更自然。",
+  feedbackPlaceholder: "补充重跑要求（可选）",
   lastFeedback: "上次意见",
-  sourceFallback: "已安全保留原文",
-  sourceFallbackHint: "模型连续输出未通过硬校验，本块没有采用不合格改写。",
+  sourceFallback: "保留原文",
   rejectedCandidate: "候选已拦截",
-  rejectedPreview: "未采用改写",
-  rejectedPreviewHint: "右侧仅预览，默认不导出。",
   rejectedNeedsHuman: "需人工介入",
   adoptRejected: "采用此改写",
   adoptedRejected: "已采用",
@@ -115,7 +110,6 @@ const T = {
   fallback: "安全兜底",
 };
 
-const zh = (...codes: number[]) => String.fromCharCode(...codes);
 const diffScrollPositions = new Map<string, number>();
 
 type RejectedCandidate = NonNullable<RoundCompareData["chunks"][number]["rejectedCandidates"]>[number];
@@ -912,7 +906,7 @@ function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null
         <Button size="sm" variant={selectedBaseDecision === "source" && isConfirmed ? "default" : "outline"} onClick={() => onDecisionChange("source_confirmed")}>{isConfirmed && selectedBaseDecision === "source" ? `${T.confirmedChoice}${T.useSource}` : T.useSource}</Button>
         <Button size="sm" variant="outline" onClick={() => onRerun(feedback)} disabled={busy}>
           <RotateCcw data-icon="inline-start" />
-          {zh(0x5b9a, 0x5411, 0x91cd, 0x8dd1)}
+          {T.targetedRerun}
         </Button>
       </div>
       {rejectedCandidates.length ? (
@@ -926,8 +920,6 @@ function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null
                 <Badge variant={candidateAdopted ? "success" : "warning"}>{candidateAdopted ? T.adoptedRejected : T.rejectedNeedsHuman}</Badge>
               </AlertTitle>
               <AlertDescription className="mt-1 flex flex-wrap items-center gap-1 text-xs">
-                <Badge variant="outline">{T.rejectedPreview}</Badge>
-                <span className="text-muted-foreground">{candidateAdopted ? "已进入导出选择。" : T.rejectedPreviewHint}</span>
                 <span className="font-medium text-foreground">原因：</span>
                 {candidateReasons.map((reason) => (
                   <Badge key={reason} variant="outline" className="max-w-full whitespace-normal text-left">
@@ -960,24 +952,15 @@ function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null
       ) : null}
       {reviewToolsVisible ? (
         <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border bg-muted/40 p-3 text-foreground">
-          {isSourceFallback ? (
-            <Alert>
-              <AlertTitle>{T.sourceFallback}</AlertTitle>
-              <AlertDescription className="text-xs">
-                {T.sourceFallbackHint}
-                {chunk.fallbackError ? <span className="ml-1 text-muted-foreground">{compactFeedbackText(chunk.fallbackError, 120)}</span> : null}
+          {isSourceFallback && chunk.fallbackError ? (
+            <Alert className="py-2">
+              <ShieldAlert />
+              <AlertTitle>报错</AlertTitle>
+              <AlertDescription className="text-xs text-muted-foreground">
+                {compactFeedbackText(chunk.fallbackError, 180)}
               </AlertDescription>
             </Alert>
           ) : null}
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs font-semibold">{T.reviewFeedback}</div>
-            {chunk.rerunUserFeedback ? <Badge variant="outline">{T.lastFeedback}</Badge> : null}
-          </div>
-          <Alert className="py-2">
-            <RotateCcw />
-            <AlertTitle>{T.targetedRerun}</AlertTitle>
-            <AlertDescription className="text-xs">{T.targetedRerunDetails}</AlertDescription>
-          </Alert>
           <div className="flex flex-col gap-2">
             <Textarea
               value={feedback}

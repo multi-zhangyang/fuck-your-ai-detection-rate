@@ -137,7 +137,11 @@ function runRegression() {
     assertIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate cards must expose one-click adoption.", failures);
     assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must render concise visible reasons.", failures);
     assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must drive the visible quality badge.", failures);
-    assertIncludes(resultCardSource, "读取本块原因与当前轮配置", "Targeted rerun UI must explain scope and inputs.", failures);
+    assertIncludes(resultCardSource, "<AlertTitle>报错</AlertTitle>", "Fallback UI may show the concrete error.", failures);
+    assertNotIncludes(resultCardSource, "读取本块原因与当前轮配置", "Targeted rerun UI must avoid verbose helper copy.", failures);
+    assertNotIncludes(resultCardSource, "右侧仅预览，默认不导出。", "Rejected candidate UI must avoid generic preview helper copy.", failures);
+    assertNotIncludes(resultCardSource, "模型连续输出未通过硬校验，本块没有采用不合格改写。", "Fallback UI must avoid duplicate hard-check boilerplate.", failures);
+    assertNotIncludes(resultCardSource, "重跑指令", "Manual rerun panel must not render redundant headings.", failures);
     assertIncludes(resultCardSource, "onRerun(candidateFeedback)", "Rejected candidate cards must expose a direct rerun action.", failures);
     assertIncludes(resultCardSource, "原因：", "Rejected candidate UI must show the reason instead of generic helper copy.", failures);
     assertNotIncludes(resultCardSource, "候选不展示、不导出", "Rejected candidate UI must not show generic filler copy.", failures);
