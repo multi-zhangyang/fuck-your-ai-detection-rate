@@ -135,6 +135,10 @@ function runRegression() {
     assertIncludes(resultCardSource, "source: \"rejected_candidate\"", "Rejected candidate adoption must preserve its source.", failures);
     assertIncludes(resultCardSource, "未采用，需人工介入", "Rejected candidate preview must be clearly marked as not adopted.", failures);
     assertIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate cards must expose one-click adoption.", failures);
+    assertIncludes(resultCardSource, "TriangleAlert", "Rejected candidate actions must carry a visible high-risk warning icon.", failures);
+    assertIncludes(resultCardSource, "T.highRiskCandidate", "Rejected candidate surfaces must label candidates as high risk.", failures);
+    assertIncludes(resultCardSource, "variant={candidateAdoptableCount ? \"outlineDanger\" : \"outline\"}", "Bulk candidate adoption must use the dangerous outline state when active.", failures);
+    assertIncludes(resultCardSource, "variant=\"danger\"", "Rejected candidate badges must use the danger badge variant.", failures);
     assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must render concise visible reasons.", failures);
     assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must drive the visible quality badge.", failures);
     assertNotIncludes(resultCardSource, "<AlertTitle>报错</AlertTitle>", "Ordinary user UI must not expose raw fallback errors.", failures);

@@ -143,6 +143,10 @@ function checkRerunFailureVisibilityContract(appSource, resultCardSource, failur
   assertIncludes(resultCardSource, "未采用，需人工介入", "Rejected candidate text must be shown in the rewrite pane with a non-adopted warning.", failures);
   assertIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate UI must expose one-click adoption.", failures);
   assertIncludes(resultCardSource, "T.adoptAllRejected", "Output action row must expose one-click adoption for all rejected candidates.", failures);
+  assertIncludes(resultCardSource, "TriangleAlert", "Rejected candidate actions must carry a visible high-risk warning icon.", failures);
+  assertIncludes(resultCardSource, "T.highRiskCandidate", "Rejected candidate surfaces must label candidates as high risk.", failures);
+  assertIncludes(resultCardSource, "variant={candidateAdoptableCount ? \"outlineDanger\" : \"outline\"}", "Bulk candidate adoption must be styled as a dangerous action when candidates exist.", failures);
+  assertIncludes(resultCardSource, "variant=\"danger\"", "Rejected candidate badges must use the danger badge variant.", failures);
   assertIncludes(appSource, "function collectAdoptableRejectedCandidates", "Bulk candidate adoption must collect latest rejected candidates from compare and rerun failures.", failures);
   assertIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Bulk candidate adoption must be wired through the app review-decision state.", failures);
   assertIncludes(appSource, "buildRejectedCandidateReviewDecision(item.candidate)", "Bulk candidate adoption must save rejected candidates as custom review decisions.", failures);

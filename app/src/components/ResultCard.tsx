@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { CheckCircle2, Download, FileOutput, RotateCcw, ShieldAlert, SplitSquareHorizontal } from "lucide-react";
+import { CheckCircle2, Download, FileOutput, RotateCcw, SplitSquareHorizontal, TriangleAlert } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -37,9 +37,9 @@ const T = {
   failedChunks: "重跑失败",
   failedOnly: "只看失败",
   noFailedChunks: "暂无重跑失败块",
-  candidateChunks: "候选输出",
-  candidateOnly: "只看候选",
-  noCandidateChunks: "暂无候选输出块",
+  candidateChunks: "高风险候选",
+  candidateOnly: "只看高风险候选",
+  noCandidateChunks: "暂无高风险候选块",
   changedChunks: "新增/删除",
   changedOnly: "只看增删",
   noChangedChunks: "暂无新增/删除块",
@@ -54,7 +54,7 @@ const T = {
   rerunFailureHint: "该块上次重跑没有通过，可补充意见后单块重跑。",
   rerunFailureSummary: "部分块没有通过硬校验，系统已保留旧内容，不会自动污染导出。",
   viewFailedChunks: "查看失败块",
-  viewCandidateChunks: "查看候选块",
+  viewCandidateChunks: "查看高风险候选",
   source: "原文",
   rewrite: "改写",
   safety: "导出安全",
@@ -101,6 +101,8 @@ const T = {
   lastFeedback: "上次意见",
   sourceFallback: "保留原文",
   rejectedCandidate: "候选已拦截",
+  highRiskCandidate: "高风险候选",
+  highRisk: "高风险",
   rejectedNeedsHuman: "需人工介入",
   adoptRejected: "采用此改写",
   adoptedRejected: "已采用",
@@ -193,10 +195,10 @@ export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batc
                 <Download data-icon="inline-start" />
                 TXT
               </Button>
-              <Button className="h-11 justify-start px-4" variant="outline" onClick={onAdoptAllCandidates} disabled={!candidateAdoptableCount || busy}>
-                <CheckCircle2 data-icon="inline-start" />
+              <Button className="h-11 justify-start px-4" variant={candidateAdoptableCount ? "outlineDanger" : "outline"} onClick={onAdoptAllCandidates} disabled={!candidateAdoptableCount || busy}>
+                <TriangleAlert data-icon="inline-start" />
                 {T.adoptAllRejected}
-                {candidateAdoptableCount ? <Badge variant="secondary" className="ml-auto">{candidateAdoptableCount}</Badge> : null}
+                {candidateAdoptableCount ? <Badge variant="danger" className="ml-auto">{T.highRisk} {candidateAdoptableCount}</Badge> : null}
               </Button>
               <Button className="h-11 justify-start px-4" variant="outline" onClick={onRerunRiskyChunks} disabled={!result || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview) || busy}>
                 {T.rerunRisky}
@@ -437,7 +439,10 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
             <ToggleGroupItem value="all" aria-label="显示全部">全部</ToggleGroupItem>
             <ToggleGroupItem value="review" aria-label="只看需处理" disabled={!reviewChunkIds.length}>需处理 {reviewChunkIds.length}</ToggleGroupItem>
             <ToggleGroupItem value="failed" aria-label="只看失败" disabled={!failedChunkIds.length}>失败 {failedChunkIds.length}</ToggleGroupItem>
-            <ToggleGroupItem value="candidate" aria-label="只看候选" disabled={!candidateChunkIds.length}>候选 {candidateChunkIds.length}</ToggleGroupItem>
+            <ToggleGroupItem value="candidate" aria-label="只看高风险候选" disabled={!candidateChunkIds.length}>
+              <TriangleAlert />
+              {T.highRiskCandidate} {candidateChunkIds.length}
+            </ToggleGroupItem>
           </ToggleGroup>
           <Badge variant="secondary" className="ml-auto">{shownLabel}</Badge>
         </div>
@@ -910,13 +915,14 @@ function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null
         </Button>
       </div>
       {rejectedCandidates.length ? (
-        <Alert className="border-border bg-muted/40 text-foreground">
-          <ShieldAlert />
+        <Alert variant={candidateAdopted ? "default" : "destructive"} className="bg-background">
+          <TriangleAlert />
           <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <AlertTitle className="flex flex-wrap items-center gap-2">
-                {T.rejectedCandidate}
+                {T.highRiskCandidate}
                 <Badge variant="secondary">{rejectedCandidates.length}</Badge>
+                <Badge variant="danger">{T.rejectedCandidate}</Badge>
                 <Badge variant={candidateAdopted ? "success" : "warning"}>{candidateAdopted ? T.adoptedRejected : T.rejectedNeedsHuman}</Badge>
               </AlertTitle>
               <AlertDescription className="mt-1 flex flex-wrap items-center gap-1 text-xs">
@@ -931,11 +937,11 @@ function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null
             <div className="flex shrink-0 flex-wrap justify-end gap-2">
               <Button
                 size="sm"
-                variant={candidateAdopted ? "default" : "outline"}
+                variant={candidateAdopted ? "default" : "outlineDanger"}
                 onClick={() => latestRejectedCandidate && onDecisionChange(buildRejectedCandidateDecision(latestRejectedCandidate))}
                 disabled={busy || !latestRejectedCandidate || candidateAdopted}
               >
-                <CheckCircle2 data-icon="inline-start" />
+                {candidateAdopted ? <CheckCircle2 data-icon="inline-start" /> : <TriangleAlert data-icon="inline-start" />}
                 {candidateAdopted ? T.adoptedRejected : T.adoptRejected}
               </Button>
               <Button
