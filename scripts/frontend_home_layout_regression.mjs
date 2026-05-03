@@ -33,11 +33,12 @@ function runRegression() {
     assertIncludes(appSource, "<header className=\"shrink-0 border-b bg-background/95\">", "Global top status area must stay visible above every view.", failures);
     assertIncludes(appSource, "openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)", "Top status area must jump directly into focused inline Diff review.", failures);
     assertIncludes(appSource, "activeView === \"home\"", "Home route must remain the first-class workbench view.", failures);
-    assertIncludes(appSource, "grid h-full min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_440px] 2xl:grid-cols-[minmax(0,1fr)_480px]", "Home layout must keep a wide left work area and a readable right operation column.", failures);
+    assertIncludes(appSource, "grid h-full min-h-0 min-w-0 max-w-full gap-4 overflow-hidden min-[1180px]:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)] 2xl:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)]", "Home layout must keep a wide left work area and a bounded readable right operation column.", failures);
+    assertNotIncludes(appSource, "xl:grid-cols-[minmax(0,1fr)_440px]", "Home layout must not return to the fixed-width right column that caused overflow.", failures);
     assertIncludes(appSource, "flex min-h-0 min-w-0 flex-col gap-4 overflow-hidden", "Primary home work column must own its height without pushing page scroll.", failures);
     assertIncludes(appSource, "data-ui-section=\"home-operation-scroll\"", "Right operation stack must use a shadcn ScrollArea marker.", failures);
-    assertIncludes(appSource, "<ScrollArea\n                    className=\"h-full min-h-0 min-w-0 max-w-full overflow-hidden pr-1\"\n                    data-ui-section=\"home-operation-scroll\"", "Right operation stack must scroll internally through shadcn ScrollArea without horizontal clipping.", failures);
-    assertIncludes(appSource, "flex w-full min-h-0 min-w-0 max-w-full flex-col gap-4 pb-2", "Right operation stack content must keep compact shadcn gap spacing and width bounds.", failures);
+    assertIncludes(appSource, "<ScrollArea\n                    className=\"shadcn-scroll-bound h-full min-h-0 min-w-0 max-w-full overflow-x-hidden pr-1\"\n                    data-ui-section=\"home-operation-scroll\"", "Right operation stack must scroll internally through shadcn ScrollArea without horizontal overflow.", failures);
+    assertIncludes(appSource, "flex min-h-0 w-full min-w-0 max-w-full flex-col gap-4 overflow-x-hidden pb-2", "Right operation stack content must keep compact shadcn gap spacing and width bounds.", failures);
     assertIncludes(appSource, "shadcn-control-panel w-full min-w-0 max-w-full", "Right operation card must not grow beyond the fixed operation column.", failures);
     assertIncludes(appSource, "<ResultCard", "Home result/report summary must sit in the primary left work area.", failures);
     assertIncludes(appSource, "<DiffReviewCard", "Home page must embed the full Diff workbench in the primary work area.", failures);
