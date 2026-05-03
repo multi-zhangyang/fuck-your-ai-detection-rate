@@ -137,6 +137,15 @@ function checkRerunFailureVisibilityContract(appSource, resultCardSource, failur
   assertIncludes(resultCardSource, "function inspectRejectedCandidate", "Rejected candidates must be inspected for rerun feedback.", failures);
   assertIncludes(resultCardSource, "function getRejectedCandidateReasons", "Rejected candidates must expose concise visible interception reasons.", failures);
   assertIncludes(resultCardSource, "function buildRejectedCandidatesRerunFeedback", "Rejected candidates must generate reusable rerun feedback without rendering their content.", failures);
+  assertIncludes(resultCardSource, "function getLatestRejectedCandidate", "Rejected candidate preview must use the latest non-empty failed rewrite.", failures);
+  assertIncludes(resultCardSource, "function buildRejectedCandidateDecision", "Rejected candidate adoption must persist as a custom review decision.", failures);
+  assertIncludes(resultCardSource, "source: \"rejected_candidate\"", "Rejected candidate adoption must be distinguishable from manual custom text.", failures);
+  assertIncludes(resultCardSource, "未采用，需人工介入", "Rejected candidate text must be shown in the rewrite pane with a non-adopted warning.", failures);
+  assertIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate UI must expose one-click adoption.", failures);
+  assertIncludes(resultCardSource, "T.adoptAllRejected", "Output action row must expose one-click adoption for all rejected candidates.", failures);
+  assertIncludes(appSource, "function collectAdoptableRejectedCandidates", "Bulk candidate adoption must collect latest rejected candidates from compare and rerun failures.", failures);
+  assertIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Bulk candidate adoption must be wired through the app review-decision state.", failures);
+  assertIncludes(appSource, "buildRejectedCandidateReviewDecision(item.candidate)", "Bulk candidate adoption must save rejected candidates as custom review decisions.", failures);
   assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must expose visible quality reasons.", failures);
   assertIncludes(resultCardSource, "读取本块原因与当前轮配置", "Targeted rerun help must explain the exact rerun scope and inputs.", failures);
   assertIncludes(resultCardSource, "const candidateFeedback = rejectedCandidates.length ? buildRejectedCandidatesRerunFeedback", "Candidate rerun feedback must be prepared at chunk level.", failures);

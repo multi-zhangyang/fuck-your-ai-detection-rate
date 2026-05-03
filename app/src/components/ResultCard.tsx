@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Download, FileOutput, RotateCcw, ShieldAlert, SplitSquareHorizontal } from "lucide-react";
+import { CheckCircle2, Download, FileOutput, RotateCcw, ShieldAlert, SplitSquareHorizontal } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -104,6 +104,13 @@ const T = {
   sourceFallback: "已安全保留原文",
   sourceFallbackHint: "模型连续输出未通过硬校验，本块没有采用不合格改写。",
   rejectedCandidate: "候选已拦截",
+  rejectedPreview: "未采用改写",
+  rejectedPreviewHint: "右侧仅预览，默认不导出。",
+  rejectedNeedsHuman: "需人工介入",
+  adoptRejected: "采用此改写",
+  adoptedRejected: "已采用",
+  adoptAllRejected: "采用全部候选",
+  safeText: "安全文本",
   customChoice: "人工候选",
   fallback: "安全兜底",
 };
@@ -149,11 +156,13 @@ type Props = {
   batchRerunRunning?: boolean;
   batchRerunStatusText?: string;
   onCancelBatchRerun?: () => void;
+  candidateAdoptableCount?: number;
+  onAdoptAllCandidates?: () => void;
   onExportTxt: () => void;
   onExportDocx: () => void;
 };
 
-export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportTxt, onExportDocx }: Props) {
+export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, candidateAdoptableCount = 0, onAdoptAllCandidates, onExportTxt, onExportDocx }: Props) {
   const hasOutput = Boolean(result || compareData?.chunks.length);
   return (
     <Card className={cn("flex h-auto min-h-[8rem] w-full shrink-0 flex-col overflow-hidden border-border bg-card shadow-sm", hasOutput && "min-h-0")}>
@@ -181,7 +190,7 @@ export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batc
         ) : null}
         {hasOutput ? (
           <>
-            <div className="grid shrink-0 gap-2 sm:grid-cols-3">
+            <div className="grid shrink-0 gap-2 sm:grid-cols-2 xl:grid-cols-4">
               <Button className="h-11 justify-start px-4" onClick={onExportDocx} disabled={!result || busy}>
                 <Download data-icon="inline-start" />
                 导出 Word
@@ -189,6 +198,11 @@ export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batc
               <Button className="h-11 justify-start px-4" variant="outline" onClick={onExportTxt} disabled={!result || busy}>
                 <Download data-icon="inline-start" />
                 TXT
+              </Button>
+              <Button className="h-11 justify-start px-4" variant="outline" onClick={onAdoptAllCandidates} disabled={!candidateAdoptableCount || busy}>
+                <CheckCircle2 data-icon="inline-start" />
+                {T.adoptAllRejected}
+                {candidateAdoptableCount ? <Badge variant="secondary" className="ml-auto">{candidateAdoptableCount}</Badge> : null}
               </Button>
               <Button className="h-11 justify-start px-4" variant="outline" onClick={onRerunRiskyChunks} disabled={!result || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview) || busy}>
                 {T.rerunRisky}
@@ -471,7 +485,8 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
               .filter((match) => match.confidence === "strong" || match.confidence === "review")
               .map((match) => match.reason || `${match.label} ${match.segment.probability}%`);
             const decision = reviewDecisions[chunk.chunkId] ?? "rewrite";
-            const displayOutput = getDecisionDisplayOutput(chunk, decision);
+            const latestRejectedCandidate = getLatestRejectedCandidate(displayChunk.rejectedCandidates ?? []);
+            const displayOutput = getDecisionDisplayOutput(chunk, decision, latestRejectedCandidate);
             return (
               <div
                 key={chunk.chunkId}
@@ -524,7 +539,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                 <TextPane title={T.source} text={chunk.inputText} />
                 <TextPane title={displayOutput.title} text={displayOutput.text} tone="rewrite" />
                 <div className="xl:col-span-2 min-w-0">
-                  <ChunkQualityBar chunk={displayChunk} busy={busy} decision={decision} forceNeedsReview={needsReview} reviewReasonHints={reviewReasonHints} onDecisionChange={(decision) => onReviewDecisionChange(chunk.chunkId, decision)} onRerun={(userFeedback) => onRerunChunk(chunk.chunkId, userFeedback)} />
+                  <ChunkQualityBar chunk={displayChunk} busy={busy} decision={decision} latestRejectedCandidate={latestRejectedCandidate} forceNeedsReview={needsReview} reviewReasonHints={reviewReasonHints} onDecisionChange={(decision) => onReviewDecisionChange(chunk.chunkId, decision)} onRerun={(userFeedback) => onRerunChunk(chunk.chunkId, userFeedback)} />
                 </div>
               </div>
             );
@@ -630,13 +645,52 @@ function getReviewDecisionMode(decision: ReviewDecision): "rewrite" | "source" |
   return decision === "source" || decision === "source_confirmed" ? "source" : "rewrite";
 }
 
-function getDecisionDisplayOutput(chunk: RoundCompareData["chunks"][number], decision: ReviewDecision): { title: string; text: string } {
+function getLatestRejectedCandidate(candidates: RejectedCandidate[]): RejectedCandidate | null {
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const candidate = candidates[index];
+    if (candidate?.outputText?.trim()) return candidate;
+  }
+  return null;
+}
+
+function buildRejectedCandidateDecision(candidate: RejectedCandidate): ReviewDecision {
+  return {
+    mode: "custom",
+    text: candidate.outputText,
+    source: "rejected_candidate",
+    attempt: candidate.attempt,
+    candidate: candidate.candidate,
+    error: candidate.error,
+  };
+}
+
+function isRejectedCandidateAdopted(decision: ReviewDecision, candidate: RejectedCandidate | null): boolean {
+  if (!candidate || typeof decision !== "object" || decision?.mode !== "custom") {
+    return false;
+  }
+  const hasSameCandidateMeta = (
+    decision.attempt !== undefined
+    && candidate.attempt !== undefined
+    && decision.candidate !== undefined
+    && candidate.candidate !== undefined
+    && decision.attempt === candidate.attempt
+    && decision.candidate === candidate.candidate
+  );
+  if (hasSameCandidateMeta) return true;
+  return normalizeDiffText(decision.text || "") === normalizeDiffText(candidate.outputText ?? "");
+}
+
+function getDecisionDisplayOutput(chunk: RoundCompareData["chunks"][number], decision: ReviewDecision, previewCandidate: RejectedCandidate | null = null): { title: string; text: string } {
   const mode = getReviewDecisionMode(decision);
   if (mode === "custom" && typeof decision === "object") {
-    return { title: `${T.rewrite}（${T.customChoice}）`, text: decision.text || chunk.outputText };
+    const title = decision.source === "rejected_candidate" ? `${T.rewrite}（${T.adoptedRejected}）` : `${T.rewrite}（${T.customChoice}）`;
+    return { title, text: decision.text || chunk.outputText };
   }
   if (mode === "source") {
     return { title: `${T.rewrite}（${T.useSource}）`, text: chunk.inputText };
+  }
+  if (previewCandidate && decision !== "rewrite_confirmed") {
+    return { title: `${T.rewrite}（未采用，需人工介入）`, text: previewCandidate.outputText };
   }
   return { title: T.rewrite, text: chunk.outputText };
 }
@@ -811,7 +865,7 @@ function getChunkReviewReasons(chunk: RoundCompareData["chunks"][number], extraR
   return reasons.filter((item, index, list) => item && list.indexOf(item) === index).slice(0, 5);
 }
 
-function ChunkQualityBar({ chunk, busy, decision, forceNeedsReview = false, reviewReasonHints = [], onDecisionChange, onRerun }: { chunk: RoundCompareData["chunks"][number]; busy: boolean; decision: ReviewDecision; forceNeedsReview?: boolean; reviewReasonHints?: string[]; onDecisionChange: (decision: ReviewDecision) => void; onRerun: (userFeedback?: string) => void }) {
+function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null, forceNeedsReview = false, reviewReasonHints = [], onDecisionChange, onRerun }: { chunk: RoundCompareData["chunks"][number]; busy: boolean; decision: ReviewDecision; latestRejectedCandidate?: RejectedCandidate | null; forceNeedsReview?: boolean; reviewReasonHints?: string[]; onDecisionChange: (decision: ReviewDecision) => void; onRerun: (userFeedback?: string) => void }) {
   const quality = chunk.quality;
   const qualityNeedsReview = Boolean(quality?.needsReview);
   const needsReview = forceNeedsReview || qualityNeedsReview;
@@ -823,10 +877,12 @@ function ChunkQualityBar({ chunk, busy, decision, forceNeedsReview = false, revi
   const isConfirmed = isReviewDecisionConfirmed(decision);
   const rejectedCandidates = chunk.rejectedCandidates ?? [];
   const reviewToolsVisible = qualityNeedsReview || isSourceFallback;
-  const decisionLabel = selectedBaseDecision === "custom" ? T.customChoice : selectedBaseDecision === "rewrite" ? T.useRewrite : T.useSource;
   const reviewReasons = getChunkReviewReasons(chunk, reviewReasonHints);
   const candidateFeedback = rejectedCandidates.length ? buildRejectedCandidatesRerunFeedback(chunk.inputText, rejectedCandidates) : "";
   const candidateReasons = rejectedCandidates.length ? getRejectedCandidateReasons(chunk.inputText, rejectedCandidates) : [];
+  const candidateAdopted = isRejectedCandidateAdopted(decision, latestRejectedCandidate);
+  const isPreviewingRejectedCandidate = Boolean(latestRejectedCandidate && !candidateAdopted && selectedBaseDecision === "rewrite" && !isConfirmed);
+  const decisionLabel = candidateAdopted ? T.adoptedRejected : isPreviewingRejectedCandidate ? T.safeText : selectedBaseDecision === "custom" ? T.customChoice : selectedBaseDecision === "rewrite" ? T.useRewrite : T.useSource;
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-md border border-border/60 bg-background px-3 py-3 text-xs text-muted-foreground">
       <div className="flex flex-wrap items-center gap-2">
@@ -867,8 +923,11 @@ function ChunkQualityBar({ chunk, busy, decision, forceNeedsReview = false, revi
               <AlertTitle className="flex flex-wrap items-center gap-2">
                 {T.rejectedCandidate}
                 <Badge variant="secondary">{rejectedCandidates.length}</Badge>
+                <Badge variant={candidateAdopted ? "success" : "warning"}>{candidateAdopted ? T.adoptedRejected : T.rejectedNeedsHuman}</Badge>
               </AlertTitle>
               <AlertDescription className="mt-1 flex flex-wrap items-center gap-1 text-xs">
+                <Badge variant="outline">{T.rejectedPreview}</Badge>
+                <span className="text-muted-foreground">{candidateAdopted ? "已进入导出选择。" : T.rejectedPreviewHint}</span>
                 <span className="font-medium text-foreground">原因：</span>
                 {candidateReasons.map((reason) => (
                   <Badge key={reason} variant="outline" className="max-w-full whitespace-normal text-left">
@@ -877,15 +936,25 @@ function ChunkQualityBar({ chunk, busy, decision, forceNeedsReview = false, revi
                 ))}
               </AlertDescription>
             </div>
-            <Button
-              size="sm"
-              onClick={() => onRerun(candidateFeedback)}
-              disabled={busy}
-              className="shrink-0"
-            >
-              <RotateCcw data-icon="inline-start" />
-              重跑
-            </Button>
+            <div className="flex shrink-0 flex-wrap justify-end gap-2">
+              <Button
+                size="sm"
+                variant={candidateAdopted ? "default" : "outline"}
+                onClick={() => latestRejectedCandidate && onDecisionChange(buildRejectedCandidateDecision(latestRejectedCandidate))}
+                disabled={busy || !latestRejectedCandidate || candidateAdopted}
+              >
+                <CheckCircle2 data-icon="inline-start" />
+                {candidateAdopted ? T.adoptedRejected : T.adoptRejected}
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => onRerun(candidateFeedback)}
+                disabled={busy}
+              >
+                <RotateCcw data-icon="inline-start" />
+                重跑
+              </Button>
+            </div>
           </div>
         </Alert>
       ) : null}

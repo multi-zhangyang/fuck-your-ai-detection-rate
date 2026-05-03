@@ -1339,6 +1339,50 @@ type BatchRerunFailure = {
   scopeKey?: string;
 };
 
+type RejectedCandidate = NonNullable<RoundCompareData["chunks"][number]["rejectedCandidates"]>[number];
+type AdoptableRejectedCandidate = {
+  chunkId: string;
+  candidate: RejectedCandidate;
+};
+
+function getLatestRejectedCandidateForAdoption(candidates?: RejectedCandidate[]): RejectedCandidate | null {
+  if (!candidates?.length) {
+    return null;
+  }
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const candidate = candidates[index];
+    if (candidate?.outputText?.trim()) return candidate;
+  }
+  return null;
+}
+
+function collectAdoptableRejectedCandidates(
+  compareData: RoundCompareData | null,
+  failures: BatchRerunFailure[],
+): AdoptableRejectedCandidate[] {
+  if (!compareData?.chunks.length) {
+    return [];
+  }
+  const failureByChunk = new Map(failures.map((failure) => [failure.chunkId, failure]));
+  return compareData.chunks.flatMap((chunk) => {
+    const failureCandidates = failureByChunk.get(chunk.chunkId)?.rejectedCandidates;
+    const candidates = chunk.rejectedCandidates?.length ? chunk.rejectedCandidates : failureCandidates;
+    const candidate = getLatestRejectedCandidateForAdoption(candidates);
+    return candidate ? [{ chunkId: chunk.chunkId, candidate }] : [];
+  });
+}
+
+function buildRejectedCandidateReviewDecision(candidate: RejectedCandidate): ReviewDecision {
+  return {
+    mode: "custom",
+    text: candidate.outputText,
+    source: "rejected_candidate",
+    attempt: candidate.attempt,
+    candidate: candidate.candidate,
+    error: candidate.error,
+  };
+}
+
 function asPlainRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -2242,6 +2286,10 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     const activeChunkIds = new Set(activeCompareData?.chunks.map((chunk) => chunk.chunkId) ?? []);
     return rerunFailures.filter((failure) => failure.scopeKey === activeRerunFailureScopeKey && activeChunkIds.has(failure.chunkId));
   }, [activeCompareData, activeRerunFailureScopeKey, rerunFailures]);
+  const adoptableRejectedCandidates = useMemo(
+    () => collectAdoptableRejectedCandidates(activeCompareData, activeRerunFailures),
+    [activeCompareData, activeRerunFailures],
+  );
   const diffDashboardStats = useMemo(
     () => buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk),
     [activeCompareData, activeRerunFailures, detectionMatchesByChunk],
@@ -2633,6 +2681,28 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       }
       return next;
     });
+  }
+
+  function handleAdoptAllRejectedCandidates() {
+    const outputPath = roundResult?.outputPath ?? activeCompareData?.outputPath;
+    if (!outputPath) {
+      setNotice("当前没有可保存候选选择的输出结果。");
+      return;
+    }
+    if (!adoptableRejectedCandidates.length) {
+      setNotice("当前没有可采用的候选改写。");
+      return;
+    }
+    setReviewDecisions((current) => {
+      const next = { ...current };
+      for (const item of adoptableRejectedCandidates) {
+        next[item.chunkId] = buildRejectedCandidateReviewDecision(item.candidate);
+      }
+      scheduleReviewDecisionSave(outputPath, next);
+      return next;
+    });
+    setNotice(`已采用 ${adoptableRejectedCandidates.length} 个候选改写；导出会按这些选择执行。`);
+    setRuntimeStep("已采用全部候选");
   }
 
   async function releaseProgressListener() {
@@ -4832,6 +4902,8 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                       batchRerunRunning={Boolean(currentBatchRerunToken)}
                       batchRerunStatusText={runtimeLabel}
                       onCancelBatchRerun={() => void handleCancelBatchRerun()}
+                      candidateAdoptableCount={adoptableRejectedCandidates.length}
+                      onAdoptAllCandidates={handleAdoptAllRejectedCandidates}
                       onExportTxt={() => void handleExportCurrent("txt")}
                       onExportDocx={() => void handleExportCurrent("docx")}
                     />

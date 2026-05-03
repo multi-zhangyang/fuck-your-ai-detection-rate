@@ -114,7 +114,11 @@ function runRegression() {
 
   if (resultCardSource) {
     assertIncludes(resultCardSource, "export function DiffReviewCard", "ResultCard module must export the full-height Diff review surface.", failures);
-    assertIncludes(resultCardSource, "sm:grid-cols-3", "Output export actions should be compressed to three buttons above Diff.", failures);
+    assertIncludes(resultCardSource, "xl:grid-cols-4", "Output export actions should include the all-candidate adoption button above Diff.", failures);
+    assertIncludes(resultCardSource, "T.adoptAllRejected", "Output export actions must expose one-click adoption for all rejected candidates.", failures);
+    assertIncludes(appSource, "collectAdoptableRejectedCandidates(activeCompareData, activeRerunFailures)", "Home must compute all adoptable rejected candidates once for the global action.", failures);
+    assertIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Home must wire the all-candidate adoption action through review decisions.", failures);
+    assertIncludes(appSource, "buildRejectedCandidateReviewDecision(item.candidate)", "All-candidate adoption must persist rejected candidates as custom review decisions.", failures);
     assertNotIncludes(resultCardSource, "onExportReviewed", "Reviewed export props must be removed from the output card.", failures);
     assertNotIncludes(resultCardSource, "审阅 Word", "Reviewed Word export button must not return.", failures);
     assertNotIncludes(resultCardSource, "审阅 TXT", "Reviewed TXT export button must not return.", failures);
@@ -126,6 +130,11 @@ function runRegression() {
     assertIncludes(resultCardSource, "overflow-auto whitespace-pre-wrap break-words", "Diff text panes must constrain and wrap long paragraph content.", failures);
     assertIncludes(resultCardSource, "function getRejectedCandidateReasons", "Rejected candidates must render concise interception reasons.", failures);
     assertIncludes(resultCardSource, "function buildRejectedCandidatesRerunFeedback", "Rejected candidates must generate rerun feedback without rendering their content.", failures);
+    assertIncludes(resultCardSource, "function getLatestRejectedCandidate", "Rejected candidate preview must use the latest failed rewrite.", failures);
+    assertIncludes(resultCardSource, "function buildRejectedCandidateDecision", "Rejected candidate adoption must stay wired through review decisions.", failures);
+    assertIncludes(resultCardSource, "source: \"rejected_candidate\"", "Rejected candidate adoption must preserve its source.", failures);
+    assertIncludes(resultCardSource, "未采用，需人工介入", "Rejected candidate preview must be clearly marked as not adopted.", failures);
+    assertIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate cards must expose one-click adoption.", failures);
     assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must render concise visible reasons.", failures);
     assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must drive the visible quality badge.", failures);
     assertIncludes(resultCardSource, "读取本块原因与当前轮配置", "Targeted rerun UI must explain scope and inputs.", failures);
