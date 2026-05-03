@@ -161,7 +161,10 @@ function checkRerunFailureVisibilityContract(appSource, resultCardSource, failur
   assertIncludes(resultCardSource, "const candidateReasons = rejectedCandidates.length ? getRejectedCandidateReasons", "Candidate reason labels must be prepared at chunk level.", failures);
   assertIncludes(resultCardSource, "onRerun(candidateFeedback)", "Candidate cards must expose one-click rerun using generated feedback.", failures);
   assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must be passed into the chunk quality bar.", failures);
-  assertIncludes(resultCardSource, "const reviewToolsVisible = qualityNeedsReview || isSourceFallback;", "Candidate-only chunks should not open the manual feedback panel.", failures);
+  assertIncludes(resultCardSource, "const reviewToolsVisible = !isConfirmed && (qualityNeedsReview || isSourceFallback);", "Confirmed chunks and candidate-only chunks should not open the manual feedback panel.", failures);
+  assertIncludes(resultCardSource, "!isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? \"rewrite\")", "Diff review and candidate counts must only include unresolved chunks.", failures);
+  assertIncludes(appSource, "function normalizeReviewDecisionsForSave", "Review decision saves must not collapse default and confirmed choices together.", failures);
+  assertNotIncludes(appSource, "if (decision === \"rewrite\") return [chunkId, \"rewrite_confirmed\" as ReviewDecision];", "Reloading saved default rewrites must not mark review items resolved.", failures);
   assertNotIncludes(resultCardSource, "needsReview || rejectedCandidates.length", "Candidate-only chunks must stay as a compact interception notice.", failures);
   assertIncludes(resultCardSource, "原因：", "Rejected candidate UI must show the interception reason.", failures);
   assertNotIncludes(resultCardSource, "候选不展示、不导出", "Rejected candidate UI must not show generic filler copy.", failures);

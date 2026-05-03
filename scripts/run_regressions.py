@@ -81,6 +81,7 @@ def build_commands(
         {"name": "frontend home layout regression", "command": ["node", "scripts/frontend_home_layout_regression.mjs"]},
         {"name": "frontend UI consistency regression", "command": ["node", "scripts/frontend_ui_consistency_regression.mjs"]},
         {"name": "frontend history governance regression", "command": ["node", "scripts/frontend_history_governance_regression.mjs"]},
+        {"name": "review decisions regression", "command": [sys.executable, "scripts/review_decisions_regression.py"]},
         {"name": "prompt preview regression", "command": [sys.executable, "scripts/prompt_preview_regression.py"]},
         {"name": "model route regression", "command": [sys.executable, "scripts/model_route_regression.py"]},
         {"name": "factual guards regression", "command": [sys.executable, "scripts/factual_guards_regression.py"]},

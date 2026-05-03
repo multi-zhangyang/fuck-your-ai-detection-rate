@@ -158,7 +158,7 @@ type Props = {
   onExportDocx: () => void;
 };
 
-export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, candidateAdoptableCount = 0, onAdoptAllCandidates, onExportTxt, onExportDocx }: Props) {
+export function ResultCard({ result, compareData, busy, reviewDecisions, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, candidateAdoptableCount = 0, onAdoptAllCandidates, onExportTxt, onExportDocx }: Props) {
   const hasOutput = Boolean(result || compareData?.chunks.length);
   return (
     <Card className={cn("flex h-auto min-h-[8rem] w-full shrink-0 flex-col overflow-hidden border-border bg-card shadow-sm", hasOutput && "min-h-0")}>
@@ -200,7 +200,7 @@ export function ResultCard({ result, compareData, busy, onRerunRiskyChunks, batc
                 {T.adoptAllRejected}
                 {candidateAdoptableCount ? <Badge variant="danger" className="ml-auto">{T.highRisk} {candidateAdoptableCount}</Badge> : null}
               </Button>
-              <Button className="h-11 justify-start px-4" variant="outline" onClick={onRerunRiskyChunks} disabled={!result || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview) || busy}>
+              <Button className="h-11 justify-start px-4" variant="outline" onClick={onRerunRiskyChunks} disabled={!result || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? "rewrite")) || busy}>
                 {T.rerunRisky}
               </Button>
             </div>
@@ -260,9 +260,10 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   const allChunks = data?.chunks ?? [];
   const rerunFailureByChunk = new Map(rerunFailures.map((failure) => [failure.chunkId, failure]));
   const failureCandidateChunkIdSet = new Set(rerunFailures.filter((failure) => (failure.rejectedCandidates?.length ?? 0) > 0).map((failure) => failure.chunkId));
-  const failedChunkIds = allChunks.filter((chunk) => rerunFailureByChunk.has(chunk.chunkId)).map((chunk) => chunk.chunkId);
+  const allCandidateChunkIdSet = new Set(allChunks.filter((chunk) => (chunk.rejectedCandidates?.length ?? 0) > 0 || failureCandidateChunkIdSet.has(chunk.chunkId)).map((chunk) => chunk.chunkId));
+  const failedChunkIds = allChunks.filter((chunk) => rerunFailureByChunk.has(chunk.chunkId) && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? "rewrite")).map((chunk) => chunk.chunkId);
   const failedChunkIdSet = new Set(failedChunkIds);
-  const candidateChunkIds = allChunks.filter((chunk) => (chunk.rejectedCandidates?.length ?? 0) > 0 || failureCandidateChunkIdSet.has(chunk.chunkId)).map((chunk) => chunk.chunkId);
+  const candidateChunkIds = allChunks.filter((chunk) => allCandidateChunkIdSet.has(chunk.chunkId) && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? "rewrite")).map((chunk) => chunk.chunkId);
   const candidateChunkIdSet = new Set(candidateChunkIds);
   const changedChunkIds = allChunks.filter((chunk) => hasChunkTextChange(chunk, getDisplayRejectedCandidates(chunk, rerunFailureByChunk.get(chunk.chunkId)))).map((chunk) => chunk.chunkId);
   const changedChunkIdSet = new Set(changedChunkIds);
@@ -271,7 +272,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   const citationRiskChunkIds = allChunks.filter((chunk) => hasChunkCitationRisk(chunk, getDisplayRejectedCandidates(chunk, rerunFailureByChunk.get(chunk.chunkId)))).map((chunk) => chunk.chunkId);
   const citationRiskChunkIdSet = new Set(citationRiskChunkIds);
   const reviewChunkIds = allChunks
-    .filter((chunk) => isReviewChunk(chunk, detectionMatchesByChunk[chunk.chunkId] ?? []) || rerunFailureByChunk.has(chunk.chunkId) || candidateChunkIdSet.has(chunk.chunkId))
+    .filter((chunk) => !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? "rewrite") && (isReviewChunk(chunk, detectionMatchesByChunk[chunk.chunkId] ?? []) || rerunFailureByChunk.has(chunk.chunkId) || allCandidateChunkIdSet.has(chunk.chunkId)))
     .map((chunk) => chunk.chunkId);
   const reviewChunkIdSet = new Set(reviewChunkIds);
   const shownChunks = filterMode === "failed"
@@ -470,7 +471,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
             const hasChangedText = changedChunkIdSet.has(chunk.chunkId);
             const hasNumberRisk = numberRiskChunkIdSet.has(chunk.chunkId);
             const hasCitationRisk = citationRiskChunkIdSet.has(chunk.chunkId);
-            const hasRejectedCandidate = (displayChunk.rejectedCandidates?.length ?? 0) > 0;
+            const hasPendingCandidate = candidateChunkIdSet.has(chunk.chunkId);
             const strongMatches = detectionMatches.filter((match) => match.confidence === "strong");
             const reviewMatches = detectionMatches.filter((match) => match.confidence === "review");
             const matchTone = strongMatches.length ? "strong" : reviewMatches.length ? "review" : "weak";
@@ -496,7 +497,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                   "grid min-w-0 gap-4 overflow-hidden rounded-lg border p-4 transition xl:grid-cols-2",
                   rerunFailure
                     ? "border-destructive/30 bg-destructive/5"
-                    : hasRejectedCandidate || needsReview
+                    : hasPendingCandidate || needsReview
                       ? "border-primary/20 bg-muted/60"
                       : "border-border/70 bg-muted/30",
                   focusedChunkId === chunk.chunkId && "ring-2 ring-primary/25 ring-offset-2",
@@ -867,7 +868,6 @@ function getChunkReviewReasons(chunk: RoundCompareData["chunks"][number], extraR
 function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null, forceNeedsReview = false, reviewReasonHints = [], onDecisionChange, onRerun }: { chunk: RoundCompareData["chunks"][number]; busy: boolean; decision: ReviewDecision; latestRejectedCandidate?: RejectedCandidate | null; forceNeedsReview?: boolean; reviewReasonHints?: string[]; onDecisionChange: (decision: ReviewDecision) => void; onRerun: (userFeedback?: string) => void }) {
   const quality = chunk.quality;
   const qualityNeedsReview = Boolean(quality?.needsReview);
-  const needsReview = forceNeedsReview || qualityNeedsReview;
   const flags = quality?.flags ?? [];
   const advisoryFlags = quality?.advisoryFlags ?? [];
   const isSourceFallback = chunk.fallbackMode === "source" || flags.includes("source_fallback");
@@ -875,13 +875,15 @@ function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null
   const selectedBaseDecision = getReviewDecisionMode(decision);
   const isConfirmed = isReviewDecisionConfirmed(decision);
   const rejectedCandidates = chunk.rejectedCandidates ?? [];
-  const reviewToolsVisible = qualityNeedsReview || isSourceFallback;
+  const reviewToolsVisible = !isConfirmed && (qualityNeedsReview || isSourceFallback);
   const reviewReasons = getChunkReviewReasons(chunk, reviewReasonHints);
   const candidateFeedback = rejectedCandidates.length ? buildRejectedCandidatesRerunFeedback(chunk.inputText, rejectedCandidates) : "";
   const candidateReasons = rejectedCandidates.length ? getRejectedCandidateReasons(chunk.inputText, rejectedCandidates) : [];
   const candidateAdopted = isRejectedCandidateAdopted(decision, latestRejectedCandidate);
+  const candidateResolved = isConfirmed;
   const isPreviewingRejectedCandidate = Boolean(latestRejectedCandidate && !candidateAdopted && selectedBaseDecision === "rewrite" && !isConfirmed);
   const decisionLabel = candidateAdopted ? T.adoptedRejected : isPreviewingRejectedCandidate ? T.safeText : selectedBaseDecision === "custom" ? T.customChoice : selectedBaseDecision === "rewrite" ? T.useRewrite : T.useSource;
+  const needsReview = !isConfirmed && (forceNeedsReview || qualityNeedsReview);
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-md border border-border/60 bg-background px-3 py-3 text-xs text-muted-foreground">
       <div className="flex flex-wrap items-center gap-2">
@@ -915,7 +917,7 @@ function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null
         </Button>
       </div>
       {rejectedCandidates.length ? (
-        <Alert variant={candidateAdopted ? "default" : "destructive"} className="bg-background">
+        <Alert variant={candidateResolved ? "default" : "destructive"} className="bg-background">
           <TriangleAlert />
           <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
@@ -923,7 +925,7 @@ function ChunkQualityBar({ chunk, busy, decision, latestRejectedCandidate = null
                 {T.highRiskCandidate}
                 <Badge variant="secondary">{rejectedCandidates.length}</Badge>
                 <Badge variant="danger">{T.rejectedCandidate}</Badge>
-                <Badge variant={candidateAdopted ? "success" : "warning"}>{candidateAdopted ? T.adoptedRejected : T.rejectedNeedsHuman}</Badge>
+                <Badge variant={candidateResolved ? "success" : "warning"}>{candidateAdopted ? T.adoptedRejected : candidateResolved ? T.confirmedChoice : T.rejectedNeedsHuman}</Badge>
               </AlertTitle>
               <AlertDescription className="mt-1 flex flex-wrap items-center gap-1 text-xs">
                 <span className="font-medium text-foreground">原因：</span>

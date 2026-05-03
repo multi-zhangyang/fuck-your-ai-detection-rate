@@ -116,7 +116,12 @@ function runRegression() {
     assertIncludes(resultCardSource, "export function DiffReviewCard", "ResultCard module must export the full-height Diff review surface.", failures);
     assertIncludes(resultCardSource, "xl:grid-cols-4", "Output export actions should include the all-candidate adoption button above Diff.", failures);
     assertIncludes(resultCardSource, "T.adoptAllRejected", "Output export actions must expose one-click adoption for all rejected candidates.", failures);
-    assertIncludes(appSource, "collectAdoptableRejectedCandidates(activeCompareData, activeRerunFailures)", "Home must compute all adoptable rejected candidates once for the global action.", failures);
+    assertIncludes(appSource, "collectAdoptableRejectedCandidates(activeCompareData, activeRerunFailures, reviewDecisions)", "Home must compute unresolved adoptable rejected candidates once for the global action.", failures);
+    assertIncludes(appSource, "buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions)", "Home Diff dashboard counts must follow review decisions.", failures);
+    assertIncludes(appSource, "function normalizeReviewDecisionsForSave", "Review decisions must preserve explicit confirmation state when saved.", failures);
+    assertIncludes(appSource, "return [chunkId, \"rewrite\" as ReviewDecision];", "Saved legacy default rewrites must reload as unresolved defaults.", failures);
+    assertIncludes(appSource, "return [[chunkId, \"rewrite_confirmed\" as ReviewDecision] as const];", "Explicit rewrite confirmations must be persisted distinctly from default rewrites.", failures);
+    assertNotIncludes(appSource, "if (decision === \"rewrite\") return [chunkId, \"rewrite_confirmed\" as ReviewDecision];", "Default rewrite choices must not be promoted to confirmed on reload.", failures);
     assertIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Home must wire the all-candidate adoption action through review decisions.", failures);
     assertIncludes(appSource, "buildRejectedCandidateReviewDecision(item.candidate)", "All-candidate adoption must persist rejected candidates as custom review decisions.", failures);
     assertNotIncludes(resultCardSource, "onExportReviewed", "Reviewed export props must be removed from the output card.", failures);

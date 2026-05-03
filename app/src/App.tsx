@@ -1151,10 +1151,15 @@ function groupDetectionMatchesByChunk(matches: DetectionReportMatch[]): Record<s
   }, {});
 }
 
+function isReviewDecisionResolved(decision?: ReviewDecision): boolean {
+  return Boolean(decision && (typeof decision === "object" || decision === "rewrite_confirmed" || decision === "source_confirmed"));
+}
+
 function buildDiffDashboardStats(
   compareData: RoundCompareData | null,
   failures: DiffFailureLike[],
   matchesByChunk: Record<string, DetectionReportMatch[]>,
+  reviewDecisions: Record<string, ReviewDecision>,
 ): DiffDashboardStats {
   if (!compareData?.chunks.length) {
     return {
@@ -1166,22 +1171,26 @@ function buildDiffDashboardStats(
     };
   }
   const failureByChunk = new Map(failures.map((failure) => [failure.chunkId, failure]));
-  const candidateChunkIds = compareData.chunks
+  const allCandidateChunkIds = compareData.chunks
     .filter((chunk) => (chunk.rejectedCandidates?.length ?? 0) > 0 || ((failureByChunk.get(chunk.chunkId)?.rejectedCandidates?.length ?? 0) > 0))
+    .map((chunk) => chunk.chunkId);
+  const allCandidateChunkIdSet = new Set(allCandidateChunkIds);
+  const candidateChunkIds = compareData.chunks
+    .filter((chunk) => allCandidateChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]))
     .map((chunk) => chunk.chunkId);
   const reviewChunkIds = compareData.chunks
     .filter((chunk) => {
       const flags = chunk.quality?.flags ?? [];
       const reportMatches = matchesByChunk[chunk.chunkId] ?? [];
-      return Boolean(chunk.quality?.needsReview)
+      return !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]) && (Boolean(chunk.quality?.needsReview)
         || chunk.fallbackMode === "source"
         || flags.includes("source_fallback")
         || failureByChunk.has(chunk.chunkId)
-        || candidateChunkIds.includes(chunk.chunkId)
-        || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review");
+        || allCandidateChunkIdSet.has(chunk.chunkId)
+        || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review"));
     })
     .map((chunk) => chunk.chunkId);
-  const failedChunkIds = failures.map((failure) => failure.chunkId);
+  const failedChunkIds = failures.filter((failure) => !isReviewDecisionResolved(reviewDecisions[failure.chunkId])).map((failure) => failure.chunkId);
   const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : candidateChunkIds.length ? "candidate" : reviewChunkIds.length ? "review" : "all";
   return {
     chunkCount: compareData.chunkCount ?? compareData.chunks.length,
@@ -1359,12 +1368,16 @@ function getLatestRejectedCandidateForAdoption(candidates?: RejectedCandidate[])
 function collectAdoptableRejectedCandidates(
   compareData: RoundCompareData | null,
   failures: BatchRerunFailure[],
+  reviewDecisions: Record<string, ReviewDecision>,
 ): AdoptableRejectedCandidate[] {
   if (!compareData?.chunks.length) {
     return [];
   }
   const failureByChunk = new Map(failures.map((failure) => [failure.chunkId, failure]));
   return compareData.chunks.flatMap((chunk) => {
+    if (isReviewDecisionResolved(reviewDecisions[chunk.chunkId])) {
+      return [];
+    }
     const failureCandidates = failureByChunk.get(chunk.chunkId)?.rejectedCandidates;
     const candidates = chunk.rejectedCandidates?.length ? chunk.rejectedCandidates : failureCandidates;
     const candidate = getLatestRejectedCandidateForAdoption(candidates);
@@ -2287,12 +2300,12 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     return rerunFailures.filter((failure) => failure.scopeKey === activeRerunFailureScopeKey && activeChunkIds.has(failure.chunkId));
   }, [activeCompareData, activeRerunFailureScopeKey, rerunFailures]);
   const adoptableRejectedCandidates = useMemo(
-    () => collectAdoptableRejectedCandidates(activeCompareData, activeRerunFailures),
-    [activeCompareData, activeRerunFailures],
+    () => collectAdoptableRejectedCandidates(activeCompareData, activeRerunFailures, reviewDecisions),
+    [activeCompareData, activeRerunFailures, reviewDecisions],
   );
   const diffDashboardStats = useMemo(
-    () => buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk),
-    [activeCompareData, activeRerunFailures, detectionMatchesByChunk],
+    () => buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions),
+    [activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions],
   );
   const unreadNotificationCount = notifications.filter((item) => !item.read).length;
 
@@ -2642,20 +2655,26 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         if (typeof decision === "object" && decision?.mode === "custom" && decision.text.trim()) {
           return [chunkId, decision];
         }
-        if (decision === "source") return [chunkId, "source_confirmed" as ReviewDecision];
-        if (decision === "rewrite") return [chunkId, "rewrite_confirmed" as ReviewDecision];
-        return [chunkId, decision];
+        if (decision === "source" || decision === "source_confirmed") return [chunkId, "source_confirmed" as ReviewDecision];
+        if (decision === "rewrite_confirmed") return [chunkId, "rewrite_confirmed" as ReviewDecision];
+        return [chunkId, "rewrite" as ReviewDecision];
       }),
     );
   }
 
-  function normalizeReviewDecisionsForExport(decisions: Record<string, ReviewDecision>): Record<string, ReviewDecision> {
+  function normalizeReviewDecisionsForSave(decisions: Record<string, ReviewDecision>): Record<string, ReviewDecision> {
     return Object.fromEntries(
-      Object.entries(decisions).map(([chunkId, decision]) => {
+      Object.entries(decisions).flatMap(([chunkId, decision]) => {
         if (typeof decision === "object" && decision?.mode === "custom" && decision.text.trim()) {
-          return [chunkId, decision];
+          return [[chunkId, decision] as const];
         }
-        return [chunkId, decision === "source" || decision === "source_confirmed" ? "source" : "rewrite"];
+        if (decision === "source" || decision === "source_confirmed") {
+          return [[chunkId, "source_confirmed" as ReviewDecision] as const];
+        }
+        if (decision === "rewrite_confirmed") {
+          return [[chunkId, "rewrite_confirmed" as ReviewDecision] as const];
+        }
+        return [];
       }),
     );
   }
@@ -2666,7 +2685,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
     reviewSaveTimerRef.current = window.setTimeout(() => {
       reviewSaveTimerRef.current = null;
-      void service.saveReviewDecisions(outputPath, normalizeReviewDecisionsForExport(decisions)).catch((appError) => {
+      void service.saveReviewDecisions(outputPath, normalizeReviewDecisionsForSave(decisions)).catch((appError) => {
         setError(stringifyError(appError));
       });
     }, 500);
@@ -4425,7 +4444,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
 
   async function handleRerunRiskyChunks() {
     const outputPath = roundResult?.outputPath ?? activeCompareData?.outputPath;
-    const riskyChunkIds = activeCompareData?.chunks.filter((chunk) => chunk.quality?.needsReview).map((chunk) => chunk.chunkId) ?? [];
+    const riskyChunkIds = activeCompareData?.chunks.filter((chunk) => chunk.quality?.needsReview && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId])).map((chunk) => chunk.chunkId) ?? [];
     if (!outputPath || riskyChunkIds.length === 0) {
       setNotice("当前没有需要批量重跑的风险块。");
       return;
@@ -4609,30 +4628,34 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
 
     if (activeCompareData?.chunks.length) {
       const failureByChunk = new Map(activeRerunFailures.map((failure) => [failure.chunkId, failure]));
-      const candidateChunkIds = activeCompareData.chunks
+      const allCandidateChunkIds = activeCompareData.chunks
         .filter((chunk) => (chunk.rejectedCandidates?.length ?? 0) > 0 || ((failureByChunk.get(chunk.chunkId)?.rejectedCandidates?.length ?? 0) > 0))
+        .map((chunk) => chunk.chunkId);
+      const allCandidateChunkIdSet = new Set(allCandidateChunkIds);
+      const candidateChunkIds = activeCompareData.chunks
+        .filter((chunk) => allCandidateChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]))
         .map((chunk) => chunk.chunkId);
       const reviewChunkIds = activeCompareData.chunks
         .filter((chunk) => {
           const flags = chunk.quality?.flags ?? [];
           const reportMatches = detectionMatchesByChunk[chunk.chunkId] ?? [];
-          return Boolean(chunk.quality?.needsReview)
+          return !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]) && (Boolean(chunk.quality?.needsReview)
             || chunk.fallbackMode === "source"
             || flags.includes("source_fallback")
             || failureByChunk.has(chunk.chunkId)
-            || candidateChunkIds.includes(chunk.chunkId)
-            || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review");
+            || allCandidateChunkIdSet.has(chunk.chunkId)
+            || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review"));
         })
         .map((chunk) => chunk.chunkId);
-      const failedChunkIds = activeRerunFailures.map((failure) => failure.chunkId);
+      const failedChunkIds = activeRerunFailures.filter((failure) => !isReviewDecisionResolved(reviewDecisions[failure.chunkId])).map((failure) => failure.chunkId);
       const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : candidateChunkIds.length ? "candidate" : "review";
       const preferredChunkId = failedChunkIds[0] ?? candidateChunkIds[0] ?? reviewChunkIds[0];
       if (reviewChunkIds.length || failedChunkIds.length || candidateChunkIds.length) {
         items.push({
           id: `diff-action:${activeCompareData.outputPath || activeCompareData.docId}:${reviewChunkIds.length}:${failedChunkIds.length}:${candidateChunkIds.length}`,
-          title: failedChunkIds.length ? "Diff 有重跑失败" : candidateChunkIds.length ? "Diff 有候选待判断" : "Diff 有块需处理",
+          title: failedChunkIds.length ? "Diff 有重跑失败" : candidateChunkIds.length ? "Diff 有高风险候选" : "Diff 有块需处理",
           status: failedChunkIds.length ? "需处理" : "待审阅",
-          detail: `需处理 ${reviewChunkIds.length} 块 · 失败 ${failedChunkIds.length} · 候选 ${candidateChunkIds.length}`,
+          detail: `需处理 ${reviewChunkIds.length} 块 · 失败 ${failedChunkIds.length} · 高风险 ${candidateChunkIds.length}`,
           recoveryHint: failedChunkIds.length
             ? "先查看失败块和模型候选，确认可用再采用；否则补充反馈后单块重跑。"
             : candidateChunkIds.length
@@ -4640,7 +4663,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
               : "可直接跳到需处理筛选，不必在整篇 Diff 里手动翻找。",
           tone: failedChunkIds.length ? "red" : "amber",
           running: false,
-          actionLabel: preferredFilter === "failed" ? "查看失败块" : preferredFilter === "candidate" ? "查看候选块" : "只看需处理",
+          actionLabel: preferredFilter === "failed" ? "查看失败块" : preferredFilter === "candidate" ? "查看高风险候选" : "只看需处理",
           onAction: () => openDiffTaskTarget(preferredFilter, preferredChunkId),
         });
       }
@@ -4724,7 +4747,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     }
 
     return items;
-  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, roundProgressStatus, runtimeLabel, taskPhase]);
+  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, reviewDecisions, roundProgressStatus, runtimeLabel, taskPhase]);
   const activeRuntimeTaskCount = runtimeTaskItems.filter((item) => item.running).length;
   const statusAutoAction = !error && pendingAutoAction ? pendingAutoAction : null;
 

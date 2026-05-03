@@ -444,7 +444,12 @@ def _normalize_review_decision_value(decision: Any) -> str | dict[str, Any]:
                 "candidate": decision.get("candidate"),
                 "error": str(decision.get("error", "")).strip(),
             }
-    return "source" if str(decision) == "source" else "rewrite"
+    decision_text = str(decision)
+    if decision_text in {"source", "source_confirmed"}:
+        return decision_text
+    if decision_text in {"rewrite", "rewrite_confirmed"}:
+        return decision_text
+    return "rewrite"
 
 
 def _select_review_text(input_text: Any, output_text: Any, decision: Any) -> str:
@@ -453,7 +458,7 @@ def _select_review_text(input_text: Any, output_text: Any, decision: Any) -> str
     normalized_decision = _normalize_review_decision_value(decision)
     if isinstance(normalized_decision, dict):
         return str(normalized_decision.get("text", ""))
-    return source_text if normalized_decision == "source" else rewrite_text
+    return source_text if normalized_decision in {"source", "source_confirmed"} else rewrite_text
 
 
 def _restore_paragraphs_from_compare_manifest(
