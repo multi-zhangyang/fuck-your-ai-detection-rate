@@ -70,6 +70,20 @@
     @apply w-[min(92vw,760px)] bg-card p-6;
   }
 
+  .shadcn-scroll-bound {
+    @apply min-w-0 max-w-full overflow-x-hidden;
+  }
+
+  .shadcn-scroll-bound [data-radix-scroll-area-viewport] {
+    @apply min-w-0 max-w-full overflow-x-hidden;
+  }
+
+  .shadcn-scroll-bound [data-radix-scroll-area-viewport] > div {
+    display: block !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
   .shadcn-config-sheet svg {
     @apply size-4;
   }

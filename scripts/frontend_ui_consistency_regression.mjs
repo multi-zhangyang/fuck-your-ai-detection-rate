@@ -70,6 +70,7 @@ function runRegression() {
     assertIncludes(cssSource, "min-h-[4.25rem]", "Home route choice cards must stay compact and avoid blank vertical space.", failures);
     assertNotIncludes(cssSource, "min-h-[7rem]", "Home route choice cards must not return to the oversized blank layout.", failures);
     assertIncludes(cssSource, ".shadcn-config-sheet", "Configuration sheets must use shared shadcn utility semantics.", failures);
+    assertIncludes(cssSource, ".shadcn-scroll-bound [data-radix-scroll-area-viewport] > div", "Radix ScrollArea content must be width-bound inside right-side shadcn panels.", failures);
     assertNotIncludes(cssSource, ".fy-", "Old fy-* utility classes must not return after the shadcn migration.", failures);
   }
 
@@ -85,7 +86,10 @@ function runRegression() {
     assertIncludes(appSource, "openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)", "Top status area must route directly into focused Diff review.", failures);
     assertIncludes(appSource, "<ResultCard", "Home must keep output/export summary in the main work area.", failures);
     assertIncludes(appSource, "<DiffReviewCard", "Home must embed the full Diff review surface.", failures);
+    assertIncludes(appSource, "min-[1180px]:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)]", "Home operation column must use a bounded responsive track instead of a hard fixed width.", failures);
+    assertNotIncludes(appSource, "xl:grid-cols-[minmax(0,1fr)_440px]", "Home operation column must not return to the overflowing fixed 440px track.", failures);
     assertIncludes(appSource, "data-ui-section=\"home-operation-scroll\"", "Home right operation stack must use shadcn ScrollArea scrolling.", failures);
+    assertIncludes(appSource, "className=\"shadcn-scroll-bound h-full min-h-0 min-w-0 max-w-full overflow-x-hidden pr-1\"", "Home right ScrollArea must clamp horizontal overflow.", failures);
     assertIncludes(appSource, "<HomeRunPanel", "Run controls must stay in the right operation stack.", failures);
     assertIncludes(appSource, "<DetectionReportPanel", "External report controls must stay in the right operation stack.", failures);
     assertIncludes(appSource, "<Sheet open={Boolean(setupEditor)}", "Setup editors must use shadcn Sheet.", failures);
@@ -102,6 +106,7 @@ function runRegression() {
     assertIncludes(appSource, "diffFocusRequest={diffFocusRequest}", "Focused Diff requests must flow into the Diff review card.", failures);
     assertIncludes(appSource, "data-ui-section=\"model-route-compact\"", "Model route Sheet must use a compact shadcn summary bar before per-round controls.", failures);
     assertIncludes(appSource, "data-ui-section=\"home-active-model-route\"", "Home model route card must show the active per-round route, not only the default model.", failures);
+    assertNotIncludes(appSource, "sm:grid-cols-2 xl:grid-cols-5", "Model route sheet actions must not use viewport-xl columns inside the narrower right sheet.", failures);
     assertIncludes(appSource, "modelConfigRef.current", "Model route edits must save the latest selected provider/model without waiting for a React rerender.", failures);
     assertIncludes(appSource, "modelRouteLines", "Model route summary must list effective providers and models per round.", failures);
     assertNotIncludes(appSource, "默认 {modelConfig.model || \"未选\"} · {activeFlowSequence.length} 轮", "Home model route summary must not keep showing the default model after custom per-round routes are selected.", failures);

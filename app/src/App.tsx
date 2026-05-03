@@ -4927,7 +4927,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
           <section className="min-h-0 flex-1 overflow-hidden bg-muted/30 p-4">
             {activeView === "home" ? (
               <div className="h-full min-h-0 overflow-hidden">
-                <div className="grid h-full min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_440px] 2xl:grid-cols-[minmax(0,1fr)_480px]">
+                <div className="grid h-full min-h-0 min-w-0 max-w-full gap-4 overflow-hidden min-[1180px]:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)] 2xl:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)]">
                   <div className="flex min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
                     <ResultCard
                       result={roundResult}
@@ -4969,10 +4969,10 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                     </div>
                   </div>
                   <ScrollArea
-                    className="h-full min-h-0 min-w-0 max-w-full overflow-hidden pr-1"
+                    className="shadcn-scroll-bound h-full min-h-0 min-w-0 max-w-full overflow-x-hidden pr-1"
                     data-ui-section="home-operation-scroll"
                   >
-                    <div className="flex w-full min-h-0 min-w-0 max-w-full flex-col gap-4 pb-2">
+                    <div className="flex min-h-0 w-full min-w-0 max-w-full flex-col gap-4 overflow-x-hidden pb-2">
                       <HomeRunPanel
                         value={documentStatus}
                         busy={uiBusy}
@@ -5699,17 +5699,17 @@ function HomeRunPanel({
   return (
     <>
     <Card className="shadcn-control-panel w-full min-w-0 max-w-full shrink-0 overflow-hidden">
-      <CardHeader className="p-4 pb-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+      <CardHeader className="min-w-0 p-4 pb-3">
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
             <CardTitle className="truncate text-base">任务控制台</CardTitle>
-            <CardDescription>导入文档、设定路线并启动下一轮。</CardDescription>
+            <CardDescription className="line-clamp-2">导入文档、设定路线并启动下一轮。</CardDescription>
           </div>
-          <Badge variant={hasDocument ? "default" : "outline"}>{hasDocument ? "已载入" : "待上传"}</Badge>
+          <Badge variant={hasDocument ? "default" : "outline"} className="shrink-0">{hasDocument ? "已载入" : "待上传"}</Badge>
         </div>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4 p-4 pt-0">
-        <div className="min-w-0 overflow-hidden rounded-lg border bg-background p-3">
+      <CardContent className="flex min-w-0 max-w-full flex-col gap-4 overflow-hidden p-4 pt-0">
+        <div className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-background p-3">
           <div className="flex min-w-0 flex-col gap-3">
             <div className="min-w-0">
               <div className="text-sm font-semibold">文档入口</div>
@@ -5720,10 +5720,10 @@ function HomeRunPanel({
               variant={hasDocument ? "outlineWarning" : "default"}
               onClick={onPickFile}
               disabled={busy || running}
-              className="w-full min-w-0"
+              className="w-full min-w-0 overflow-hidden"
             >
               <FileText data-icon="inline-start" />
-              {hasDocument ? "更换文档" : "上传文档"}
+              <span className="min-w-0 truncate">{hasDocument ? "更换文档" : "上传文档"}</span>
             </Button>
           </div>
           <Separator className="my-3" />
@@ -5733,7 +5733,7 @@ function HomeRunPanel({
           </label>
         </div>
 
-        <div className="flex min-w-0 flex-col gap-2">
+        <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-hidden">
             <Button
               type="button"
               variant="outline"
@@ -5742,9 +5742,9 @@ function HomeRunPanel({
               aria-expanded={setupEditor === "prompt"}
               className={cn("shadcn-choice-card", setupEditor === "prompt" && "shadcn-choice-card-active")}
             >
-              <div className="flex min-w-0 items-center justify-between gap-2">
+              <div className="flex w-full min-w-0 items-center justify-between gap-2">
                 <div className="min-w-0 truncate text-xs font-semibold text-muted-foreground">改写流程</div>
-                <Badge variant={setupEditor === "prompt" ? "default" : "outline"} className="shrink-0">{setupEditor === "prompt" ? "已打开" : "编辑"}</Badge>
+                <Badge variant={setupEditor === "prompt" ? "default" : "outline"} className="max-w-[9rem] shrink-0 truncate">{setupEditor === "prompt" ? "已打开" : "编辑"}</Badge>
               </div>
               <div className="mt-2 truncate text-sm font-semibold">{promptSummary}</div>
               <div className="flex min-w-0 flex-wrap gap-1">
@@ -5767,9 +5767,9 @@ function HomeRunPanel({
                 unavailableRouteCount ? "border-destructive/40 bg-destructive/5" : setupEditor === "model" && "shadcn-choice-card-active",
               )}
             >
-              <div className="flex min-w-0 items-center justify-between gap-2">
+              <div className="flex w-full min-w-0 items-center justify-between gap-2">
                 <div className={`min-w-0 truncate text-xs font-semibold ${unavailableRouteCount ? "text-destructive" : "text-muted-foreground"}`}>模型路线</div>
-                <Badge variant={unavailableRouteCount ? "warning" : setupEditor === "model" ? "default" : "outline"} className="shrink-0">
+                <Badge variant={unavailableRouteCount ? "warning" : setupEditor === "model" ? "default" : "outline"} className="max-w-[11rem] shrink-0 truncate">
                   {setupEditor === "model" ? "已打开" : modelRouteStatus}
                 </Badge>
               </div>
@@ -5784,8 +5784,8 @@ function HomeRunPanel({
             </Button>
         </div>
 
-        <section className={cn("flex flex-col gap-3", running && "rounded-lg border border-destructive/30 bg-destructive/5 p-3")}>
-          <div className="flex items-start justify-between gap-3">
+        <section className={cn("flex min-w-0 max-w-full flex-col gap-3 overflow-hidden", running && "rounded-lg border border-destructive/30 bg-destructive/5 p-3")}>
+          <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-sm font-semibold">{running ? "正在运行" : "执行动作"}</div>
               {!runRecoveryState ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{runHelperText}</p> : null}
@@ -5798,10 +5798,10 @@ function HomeRunPanel({
           </div>
           {hasDocument ? (
             <>
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-col gap-2 overflow-hidden">
+                <div className="flex min-w-0 items-center justify-between gap-3">
                   <div className="text-xs font-medium text-muted-foreground">候选策略</div>
-                  <Badge variant="secondary">{candidateMaxPerChunk} 候选/块</Badge>
+                  <Badge variant="secondary" className="shrink-0">{candidateMaxPerChunk} 候选/块</Badge>
                 </div>
                 <ToggleGroup
                   type="single"
@@ -5811,23 +5811,23 @@ function HomeRunPanel({
                       setRewriteCandidateMode(mode);
                     }
                   }}
-                  className="!grid w-full grid-cols-2 rounded-lg border bg-background p-1"
+                  className="!grid w-full min-w-0 grid-cols-2 overflow-hidden rounded-lg border bg-background p-1"
                 >
                   <ToggleGroupItem
                     value="economy"
                     variant="outline"
                     disabled={busy || running}
-                    className="h-10 w-full rounded-md border-0 px-3 text-xs data-[state=on]:bg-muted data-[state=on]:shadow-sm"
+                    className="h-10 w-full min-w-0 overflow-hidden rounded-md border-0 px-2 text-xs data-[state=on]:bg-muted data-[state=on]:shadow-sm"
                   >
-                    省钱模式
+                    <span className="min-w-0 truncate">省钱模式</span>
                   </ToggleGroupItem>
                   <ToggleGroupItem
                     value="quality"
                     variant="outline"
                     disabled={busy || running}
-                    className="h-10 w-full rounded-md border-0 px-3 text-xs data-[state=on]:bg-muted data-[state=on]:shadow-sm"
+                    className="h-10 w-full min-w-0 overflow-hidden rounded-md border-0 px-2 text-xs data-[state=on]:bg-muted data-[state=on]:shadow-sm"
                   >
-                    质量模式
+                    <span className="min-w-0 truncate">质量模式</span>
                   </ToggleGroupItem>
                 </ToggleGroup>
               </div>
@@ -5845,26 +5845,26 @@ function HomeRunPanel({
               <div className="grid gap-2">
                 <Button
                   variant={canRunNextRound ? "default" : "secondary"}
-                  className="h-11 w-full"
+                  className="h-11 w-full min-w-0 overflow-hidden"
                   onClick={onRunRound}
                   disabled={!canRunNextRound}
                 >
                   {running ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Wand2 data-icon="inline-start" />}
-                  {runButtonText}
+                  <span className="min-w-0 truncate">{runButtonText}</span>
                 </Button>
                 {running ? (
-                  <Button className="h-10" variant="destructive" onClick={onCancelRun}>中断当前轮</Button>
+                  <Button className="h-10 min-w-0 overflow-hidden" variant="destructive" onClick={onCancelRun}><span className="min-w-0 truncate">中断当前轮</span></Button>
                 ) : value?.hasNextRound ? (
-                  <Button className="h-10" variant="outline" onClick={onResetRound} disabled={busy}>
-                    放弃本轮进度
+                  <Button className="h-10 min-w-0 overflow-hidden" variant="outline" onClick={onResetRound} disabled={busy}>
+                    <span className="min-w-0 truncate">放弃本轮进度</span>
                   </Button>
                 ) : null}
               </div>
             </>
           ) : (
-              <Button variant="default" className="h-11 w-full" onClick={onPickFile} disabled={busy}>
+              <Button variant="default" className="h-11 w-full min-w-0 overflow-hidden" onClick={onPickFile} disabled={busy}>
               <FileText data-icon="inline-start" />
-              {uploadButtonText}
+              <span className="min-w-0 truncate">{uploadButtonText}</span>
             </Button>
           )}
         </section>
@@ -5874,7 +5874,7 @@ function HomeRunPanel({
       <Sheet open={Boolean(setupEditor)} onOpenChange={(open) => {
         if (!open) setSetupEditor(null);
       }}>
-        <SheetContent side="right" className={`shadcn-config-sheet ${setupEditor === "model" ? "sm:max-w-[680px]" : "sm:max-w-[520px]"}`}>
+        <SheetContent side="right" className={`shadcn-config-sheet min-w-0 overflow-hidden ${setupEditor === "model" ? "sm:max-w-[680px]" : "sm:max-w-[520px]"}`}>
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2">
               {setupEditor === "prompt" ? <Wand2 /> : <Settings />}
@@ -5886,10 +5886,10 @@ function HomeRunPanel({
           </SheetHeader>
           <Separator />
 
-          <ScrollArea className="min-h-0 flex-1 pr-3">
-            <div className="flex flex-col gap-4 pb-4">
+          <ScrollArea className="shadcn-scroll-bound min-h-0 min-w-0 flex-1 overflow-x-hidden pr-3">
+            <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-x-hidden pb-4">
             {setupEditor === "prompt" ? (
-              <div className="flex flex-col gap-4">
+              <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-hidden">
                 <ToggleGroup
                   type="single"
                   value={promptProfile}
@@ -5898,37 +5898,37 @@ function HomeRunPanel({
                       onPromptProfileChange(nextProfile);
                     }
                   }}
-                  className="!grid w-full grid-cols-1 items-stretch justify-stretch gap-2"
+                  className="!grid w-full min-w-0 grid-cols-1 items-stretch justify-stretch gap-2 overflow-hidden"
                 >
                   <ToggleGroupItem
                     value="cn_prewrite"
                     variant="outline"
                     disabled={busy}
-                    className="h-auto min-h-[4.25rem] w-full flex-col items-start justify-center gap-1 px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
+                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
                     aria-label="中文三轮预改写"
                   >
                     <span className="text-sm font-semibold">中文三轮预改写</span>
-                    <span className="text-xs text-muted-foreground">预改写 → 一轮 → 二轮</span>
+                    <span className="max-w-full truncate text-xs text-muted-foreground">预改写 → 一轮 → 二轮</span>
                   </ToggleGroupItem>
                   <ToggleGroupItem
                     value="cn"
                     variant="outline"
                     disabled={busy}
-                    className="h-auto min-h-[4.25rem] w-full flex-col items-start justify-center gap-1 px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
+                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
                     aria-label="中文双轮"
                   >
                     <span className="text-sm font-semibold">中文双轮</span>
-                    <span className="text-xs text-muted-foreground">一轮 → 二轮</span>
+                    <span className="max-w-full truncate text-xs text-muted-foreground">一轮 → 二轮</span>
                   </ToggleGroupItem>
                   <ToggleGroupItem
                     value="cn_custom"
                     variant="outline"
                     disabled={busy}
-                    className="h-auto min-h-[4.25rem] w-full flex-col items-start justify-center gap-1 px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
+                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-primary data-[state=on]:bg-muted"
                     aria-label="自定义组合"
                   >
                     <span className="text-sm font-semibold">自定义组合</span>
-                    <span className="text-xs text-muted-foreground">{formatPromptSequence(activeSequence)}</span>
+                    <span className="max-w-full truncate text-xs text-muted-foreground">{formatPromptSequence(activeSequence)}</span>
                   </ToggleGroupItem>
                 </ToggleGroup>
                 <div className="grid gap-2">
@@ -5936,8 +5936,8 @@ function HomeRunPanel({
                   <Textarea value={formatPromptSequence(activeFlowSequence)} readOnly className="min-h-20 resize-none" />
                 </div>
                 {promptProfile === "cn_custom" ? (
-                  <div className="rounded-lg border bg-background p-4">
-                    <div className="grid grid-cols-4 gap-2">
+                  <div className="min-w-0 overflow-hidden rounded-lg border bg-background p-4">
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                       {[1, 2, 3].map((length) => (
                         <Button key={length} type="button" variant={activeSequence.length === length ? "default" : "outline"} size="sm" onClick={() => updateSequenceLength(length)} disabled={busy}>{length} 轮</Button>
                       ))}
@@ -5962,20 +5962,20 @@ function HomeRunPanel({
                 ) : null}
               </div>
             ) : (
-              <div className="flex flex-col gap-4">
-                <Card data-ui-section="model-route-compact" className="shadow-none">
-                  <CardContent className="flex flex-col gap-3 p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-hidden">
+                <Card data-ui-section="model-route-compact" className="min-w-0 overflow-hidden shadow-none">
+                  <CardContent className="flex min-w-0 flex-col gap-3 overflow-hidden p-3">
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                       <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
-                        <Badge variant={unavailableRouteCount ? "warning" : activeModelRouteReady ? "success" : "outline"}>{modelRouteHealthLabel}</Badge>
-                        <span className="truncate font-medium">{modelRouteTitle}</span>
+                        <Badge variant={unavailableRouteCount ? "warning" : activeModelRouteReady ? "success" : "outline"} className="shrink-0">{modelRouteHealthLabel}</Badge>
+                        <span className="min-w-0 truncate font-medium">{modelRouteTitle}</span>
                         <Separator orientation="vertical" className="h-4" />
                         <span className="text-muted-foreground">服务商 {providerOptions.length}/{providers.length}</span>
                         <span className="text-muted-foreground">轮次 {activeFlowSequence.length}</span>
                       </div>
-                      <Badge variant={customizedRouteCount ? "secondary" : "outline"}>{modelRouteStatus}</Badge>
+                      <Badge variant={customizedRouteCount ? "secondary" : "outline"} className="shrink-0">{modelRouteStatus}</Badge>
                     </div>
-                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-2">
                       <Button type="button" variant="outline" size="sm" onClick={resetModelRouteToDefault} disabled={busy}>继承默认</Button>
                       <Button type="button" variant="outline" size="sm" onClick={rotateModelRoute} disabled={busy || providerOptions.length === 0}>轮换服务商</Button>
                       <Button type="button" variant="outline" size="sm" onClick={onRefreshAllProviderModels} disabled={busy || modelConfig.offlineMode || providerOptions.length === 0}>
@@ -5997,7 +5997,7 @@ function HomeRunPanel({
                     ) : null}
                   </CardContent>
                 </Card>
-                <div className="grid gap-3">
+                <div className="grid min-w-0 gap-3">
                   {activeFlowSequence.map((promptId, index) => {
                     const promptOption = PROMPT_OPTIONS.find((option) => option.id === promptId);
                     const roundKey = getRoundModelKey(promptProfile, index + 1);
@@ -6018,13 +6018,13 @@ function HomeRunPanel({
                         !String(selectedModelValue ?? "").trim() ? "本轮模型未选" : "",
                       ].filter(Boolean);
                     return (
-                      <Card key={`${promptId}-${index}-model`} className={cn("shadow-none", routeIssues.length && "border-destructive/40 bg-destructive/5")}>
-                        <CardHeader className="flex flex-row items-center justify-between gap-3 p-3 pb-2">
-                          <CardTitle className="truncate text-sm">第 {index + 1} 轮 · {promptOption?.label ?? promptId}</CardTitle>
-                          <Badge variant={selectedProviderId === "__default" ? "outline" : "secondary"}>{selectedProviderId === "__default" ? "默认" : "专属"}</Badge>
+                      <Card key={`${promptId}-${index}-model`} className={cn("min-w-0 overflow-hidden shadow-none", routeIssues.length && "border-destructive/40 bg-destructive/5")}>
+                        <CardHeader className="flex min-w-0 flex-row items-center justify-between gap-3 p-3 pb-2">
+                          <CardTitle className="min-w-0 truncate text-sm">第 {index + 1} 轮 · {promptOption?.label ?? promptId}</CardTitle>
+                          <Badge variant={selectedProviderId === "__default" ? "outline" : "secondary"} className="shrink-0">{selectedProviderId === "__default" ? "默认" : "专属"}</Badge>
                         </CardHeader>
-                        <CardContent className="grid gap-3 p-3 pt-0">
-                          <FieldGroup className="grid gap-2 md:grid-cols-2">
+                        <CardContent className="grid min-w-0 gap-3 overflow-hidden p-3 pt-0">
+                          <FieldGroup className="grid min-w-0 gap-2 md:grid-cols-2">
                             <Field>
                               <FieldLabel className="sr-only">第 {index + 1} 轮服务商</FieldLabel>
                             <Select value={selectedProviderId || "__default"} onValueChange={(providerId) => updateRoundProvider(index, providerId)} disabled={busy}>
@@ -6061,7 +6061,7 @@ function HomeRunPanel({
                             </Field>
                           </FieldGroup>
                           {selectedProviderId !== "__default" && provider && selectedModels.length === 0 ? (
-                            <Button type="button" variant="outline" size="sm" className="w-fit" onClick={() => onRefreshProviderModels(provider.id)} disabled={busy || modelConfig.offlineMode}>
+                            <Button type="button" variant="outline" size="sm" className="w-fit max-w-full" onClick={() => onRefreshProviderModels(provider.id)} disabled={busy || modelConfig.offlineMode}>
                               <RefreshCw data-icon="inline-start" />读取模型
                             </Button>
                           ) : null}
@@ -6095,24 +6095,24 @@ function AutoRunSignal({ action, onReject }: { action: PendingAutoAction | null;
   const percent = getPendingAutoActionPercent(action);
   const countdown = isCountdownAutoAction(action);
   return (
-    <Alert variant={action.kind === "manual-intervention" ? "destructive" : "default"} className="bg-background">
+    <Alert variant={action.kind === "manual-intervention" ? "destructive" : "default"} className="min-w-0 overflow-hidden bg-background">
       <Signal />
-      <AlertTitle className="flex items-center justify-between gap-2">
-        <span>{getPendingAutoActionTitle(action)}</span>
-        <Badge variant={action.kind === "manual-intervention" ? "danger" : action.kind === "retry" ? "warning" : "secondary"}>
+      <AlertTitle className="flex min-w-0 items-center justify-between gap-2">
+        <span className="min-w-0 truncate">{getPendingAutoActionTitle(action)}</span>
+        <Badge variant={action.kind === "manual-intervention" ? "danger" : action.kind === "retry" ? "warning" : "secondary"} className="shrink-0">
           {countdown ? `${action.secondsRemaining}s` : "人工处理"}
         </Badge>
       </AlertTitle>
       <AlertDescription>
-        <div className="flex flex-col gap-3">
-          <p>{formatPendingAutoActionStatus(action)}</p>
-          <p className="text-xs text-muted-foreground">{formatPendingAutoActionDetail(action)}</p>
+        <div className="flex min-w-0 flex-col gap-3 overflow-hidden">
+          <p className="min-w-0 break-words">{formatPendingAutoActionStatus(action)}</p>
+          <p className="min-w-0 break-words text-xs text-muted-foreground">{formatPendingAutoActionDetail(action)}</p>
           {typeof percent === "number" ? (
             <Progress value={percent} className="h-2" />
           ) : null}
-          <Button type="button" variant={action.kind === "manual-intervention" ? "outline" : "outlineWarning"} size="sm" onClick={onReject}>
+          <Button type="button" variant={action.kind === "manual-intervention" ? "outline" : "outlineWarning"} size="sm" className="min-w-0 overflow-hidden" onClick={onReject}>
             <X data-icon="inline-start" />
-            {action.kind === "manual-intervention" ? "我来处理" : "拒绝自动执行"}
+            <span className="min-w-0 truncate">{action.kind === "manual-intervention" ? "我来处理" : "拒绝自动执行"}</span>
           </Button>
         </div>
       </AlertDescription>
@@ -6130,13 +6130,13 @@ function RunRecoveryPanel({ state }: { state: RunRecoveryPanelState | null }) {
     <Alert
       variant={state.tone === "red" ? "destructive" : "default"}
       className={cn(
-        "border-0 bg-muted/50 p-3 shadow-none [&>svg]:left-3 [&>svg]:top-3",
+        "min-w-0 overflow-hidden border-0 bg-muted/50 p-3 shadow-none [&>svg]:left-3 [&>svg]:top-3",
         state.tone === "amber" && "border-primary/25 bg-muted/50",
       )}
     >
       <AlertCircle />
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 flex-col gap-2 overflow-hidden">
+        <div className="flex min-w-0 items-center justify-between gap-3">
           <div className="min-w-0">
             <AlertTitle className="mb-0 truncate text-sm">{recoveryLabel}</AlertTitle>
           </div>
@@ -6712,14 +6712,14 @@ function DetectionReportPanel({
     }
   }, [report, strongMatchedRisky.length, reviewMatches.length, unmatchedRisky.length, weakMatches.length, matchFilter]);
   return (
-    <Card className="min-h-0 overflow-hidden">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
+    <Card className="min-h-0 w-full min-w-0 max-w-full overflow-hidden">
+      <CardHeader className="min-w-0 pb-3">
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
               <Badge variant="secondary">检测反馈</Badge>
               {report
-                ? <Badge variant={hasParsedSegments ? (highSegments.length ? "warning" : "success") : "warning"}>{hasParsedSegments ? `${providerLabel} ${overallRisk ?? "-"}%` : "未解析到片段"}</Badge>
+                ? <Badge variant={hasParsedSegments ? (highSegments.length ? "warning" : "success") : "warning"} className="max-w-full truncate">{hasParsedSegments ? `${providerLabel} ${overallRisk ?? "-"}%` : "未解析到片段"}</Badge>
                 : <Badge variant="outline">未接入</Badge>}
             </div>
             <CardTitle className="text-lg">外部报告</CardTitle>
@@ -6728,34 +6728,34 @@ function DetectionReportPanel({
             </CardDescription>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
             <Button
               type="button"
               variant="outline"
               onClick={() => onPickReport("speedai")}
               disabled={busy || !documentLabel}
-              className={cn(report?.provider === "speedai" && "ring-2 ring-primary/25")}
+              className={cn("min-w-0 overflow-hidden", report?.provider === "speedai" && "ring-2 ring-primary/25")}
             >
               <FileText data-icon="inline-start" />
-              上传 SpeedAI
+              <span className="min-w-0 truncate">上传 SpeedAI</span>
             </Button>
             <Button
               type="button"
               variant="outline"
               onClick={() => onPickReport("paperpass")}
               disabled={busy || !documentLabel}
-              className={cn(report?.provider === "paperpass" && "ring-2 ring-primary/25")}
+              className={cn("min-w-0 overflow-hidden", report?.provider === "paperpass" && "ring-2 ring-primary/25")}
             >
               <FileText data-icon="inline-start" />
-              上传 PaperPass
+              <span className="min-w-0 truncate">上传 PaperPass</span>
             </Button>
           </div>
       </CardHeader>
 
-      <CardContent className="flex min-h-0 flex-col gap-3">
+      <CardContent className="flex min-h-0 min-w-0 max-w-full flex-col gap-3 overflow-hidden">
         {report ? (
-          <div className="flex flex-col gap-2">
-            <div className="grid grid-cols-4 gap-2 text-center text-xs">
+          <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-hidden">
+            <div className="grid min-w-0 grid-cols-2 gap-2 text-center text-xs">
               <div className="rounded-md border bg-muted/50 p-3 text-foreground">
                 <div className="text-lg font-black">{report.segments.length}</div>
                 <div>报告片段</div>
@@ -6774,24 +6774,24 @@ function DetectionReportPanel({
               </div>
             </div>
 
-            <div className="rounded-md border bg-muted/50 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span className="truncate">来源：<b className="text-foreground">{providerLabel}</b>{reportSourceLabel ? ` · ${reportSourceLabel}` : ""}</span>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <div className="min-w-0 overflow-hidden rounded-md border bg-muted/50 p-3">
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span className="min-w-0 flex-1 truncate">来源：<b className="text-foreground">{providerLabel}</b>{reportSourceLabel ? ` · ${reportSourceLabel}` : ""}</span>
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                   {hasParsedSegments ? (
-                    <Button size="sm" onClick={onRerunMatchedChunks} disabled={busy || strongMatchedRisky.length === 0}>
+                    <Button size="sm" className="min-w-0 overflow-hidden" onClick={onRerunMatchedChunks} disabled={busy || strongMatchedRisky.length === 0}>
                       <RefreshCw data-icon="inline-start" />
-                      重跑强命中 {strongMatchedRisky.length}
+                      <span className="min-w-0 truncate">重跑强命中 {strongMatchedRisky.length}</span>
                     </Button>
                   ) : null}
-                  <Button variant="ghost" size="sm" onClick={onClearReport} disabled={busy}>
+                  <Button variant="ghost" size="sm" className="min-w-0 overflow-hidden" onClick={onClearReport} disabled={busy}>
                     <Trash2 data-icon="inline-start" />
-                    清除
+                    <span className="min-w-0 truncate">清除</span>
                   </Button>
                 </div>
               </div>
               {report.summary.checkedScopeNotes?.length ? (
-                <div className="mt-2 rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">
+                <div className="mt-2 min-w-0 break-words rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">
                   {report.summary.checkedScopeNotes.join("；")}
                 </div>
               ) : null}
@@ -6804,16 +6804,16 @@ function DetectionReportPanel({
                 <AlertDescription>请确认报告格式或重新上传。</AlertDescription>
               </Alert>
             ) : (
-              <div className="flex min-h-0 flex-col gap-3 rounded-md border bg-muted/40 p-3">
-                <div className="flex items-center justify-between gap-3">
+              <div className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden rounded-md border bg-muted/40 p-3">
+                <div className="flex min-w-0 items-center justify-between gap-3">
                   <div className="text-sm font-semibold text-foreground">报告片段</div>
-                  <Badge variant="outline">{visibleSegmentSummaries.length} 条</Badge>
+                  <Badge variant="outline" className="shrink-0">{visibleSegmentSummaries.length} 条</Badge>
                 </div>
                 <ToggleGroup
                   type="single"
                   value={matchFilter}
                   onValueChange={(value) => value && setMatchFilter(value as typeof matchFilter)}
-                  className="grid grid-cols-4"
+                  className="!grid min-w-0 grid-cols-2 overflow-hidden"
                 >
                   {[
                     { key: "strong" as const, label: `强命中 ${strongMatchedRisky.length}` },
@@ -6824,21 +6824,21 @@ function DetectionReportPanel({
                     <ToggleGroupItem
                       key={item.key}
                       value={item.key}
-                      className="h-9 px-2 text-xs"
+                      className="h-9 min-w-0 overflow-hidden px-2 text-xs"
                     >
-                      {item.label}
+                      <span className="min-w-0 truncate">{item.label}</span>
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
 
                 {visibleSegmentSummaries.length ? (
-                  <ScrollArea className="h-72 pr-1">
-                    <div className="flex flex-col gap-2">
+                  <ScrollArea className="shadcn-scroll-bound h-72 min-w-0 overflow-x-hidden pr-1">
+                    <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-x-hidden">
                       {visibleSegmentSummaries.map(({ segment, matchedItems, strongCount, reviewCount, weakCount, bestMatch, matchState }) => (
-                    <Alert key={segment.index} className={cn(matchState === "review" && "border-primary/25 bg-muted/60")}>
+                    <Alert key={segment.index} className={cn("min-w-0 overflow-hidden", matchState === "review" && "border-primary/25 bg-muted/60")}>
                       <AlertCircle />
-                      <AlertTitle>
-                      <div className="mb-1 flex flex-wrap items-center gap-2">
+                      <AlertTitle className="min-w-0">
+                      <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2">
                         <Badge variant={isDetectionHighRisk(segment) ? "warning" : "outline"}>#{segment.index} {segment.probability}%</Badge>
                         {segment.page ? <Badge variant="outline">第 {segment.page} 页</Badge> : null}
                         <Badge variant="outline">{segment.riskLevel || "未知风险"}</Badge>
@@ -6846,16 +6846,16 @@ function DetectionReportPanel({
                         {bestMatch ? <Badge variant="secondary">最高 {Math.round(bestMatch.score * 100)}%</Badge> : null}
                       </div>
                       </AlertTitle>
-                      <AlertDescription className="grid gap-2">
-                        <span className="line-clamp-3 text-foreground">{segment.content}</span>
-                        {bestMatch ? <span className="rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground">{bestMatch.reason}</span> : null}
+                      <AlertDescription className="grid min-w-0 gap-2">
+                        <span className="line-clamp-3 min-w-0 break-words text-foreground">{segment.content}</span>
+                        {bestMatch ? <span className="min-w-0 break-words rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground">{bestMatch.reason}</span> : null}
                         {bestMatch?.evidence.matchedFragments?.[0] ? (
                           <span className="break-all rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground">
                             命中句段：{bestMatch.evidence.matchedFragments[0]}
                           </span>
                         ) : null}
                         {matchedItems.length > 1 ? (
-                          <span className="text-[11px] font-semibold text-muted-foreground">候选匹配：{matchedItems.map((item) => `${item.chunkId} ${Math.round(item.score * 100)}%`).join(" / ")}</span>
+                          <span className="min-w-0 break-words text-[11px] font-semibold text-muted-foreground">候选匹配：{matchedItems.map((item) => `${item.chunkId} ${Math.round(item.score * 100)}%`).join(" / ")}</span>
                         ) : null}
                       </AlertDescription>
                     </Alert>
