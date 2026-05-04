@@ -10,7 +10,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldContent, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
@@ -600,86 +599,91 @@ export function SchoolFormatCard({
   ].filter(Boolean)));
   return (
     <Card className="overflow-hidden">
-      <CardHeader className="border-b px-5 py-4">
+      <CardHeader className="border-b px-5 py-3">
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
-            <CardTitle className="text-2xl">学校排版规范</CardTitle>
+            <CardTitle className="text-xl">学校排版规范</CardTitle>
           </div>
           <Badge variant={pendingFormatRules ? "warning" : usingDefault ? "outline" : "success"}>{pendingFormatRules ? "待确认" : usingDefault ? "默认" : "已启用"}</Badge>
         </div>
       </CardHeader>
 
-      <CardContent className="flex flex-col gap-4 p-5">
-        <div className="rounded-lg border border-border/70 bg-muted/30 p-4">
-          <FieldGroup className="grid gap-4 md:grid-cols-2">
-            <Field>
-              <FieldLabel>模型来源</FieldLabel>
-              <Select value={parserProviderValue} onValueChange={onParserProviderChange} disabled={busy}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value={FORMAT_PARSER_DEFAULT_PROVIDER_ID}>默认连接</SelectItem>
-                    {providers.map((provider) => (
-                      <SelectItem key={provider.id} value={provider.id}>
-                        {provider.name || "未命名服务商"}{provider.enabled === false ? "（已关闭）" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </Field>
-
-            <Field>
-              <FieldLabel>解析模型</FieldLabel>
-              {parserModelOptions.length > 0 ? (
-                <Select value={effectiveParserModel || undefined} onValueChange={onParserModelChange} disabled={busy}>
+      <CardContent className="flex flex-col gap-4 p-4">
+        <div className="rounded-lg border border-border bg-card p-3">
+          <div className="grid gap-3 xl:grid-cols-[minmax(15rem,18rem)_minmax(0,1fr)]">
+            <FieldGroup className="gap-3">
+              <Field>
+                <FieldLabel>模型来源</FieldLabel>
+                <Select value={parserProviderValue} onValueChange={onParserProviderChange} disabled={busy}>
                   <SelectTrigger>
-                    <SelectValue placeholder="选择模型" />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      {parserModelOptions.map((model) => (
-                        <SelectItem key={model} value={model}>{model}</SelectItem>
+                      <SelectItem value={FORMAT_PARSER_DEFAULT_PROVIDER_ID}>默认连接</SelectItem>
+                      {providers.map((provider) => (
+                        <SelectItem key={provider.id} value={provider.id}>
+                          {provider.name || "未命名服务商"}{provider.enabled === false ? "（已关闭）" : ""}
+                        </SelectItem>
                       ))}
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-              ) : (
-                <Input value={parserModel} onChange={(event) => onParserModelChange(event.target.value)} placeholder="填写模型名称" disabled={busy} />
-              )}
-            </Field>
-          </FieldGroup>
-        </div>
+              </Field>
 
-        <div className="flex flex-col gap-4 rounded-lg border border-border/70 bg-background/70 p-4">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <Label htmlFor="formatRuleText">学校格式要求</Label>
-            <Badge variant={hasInput ? "default" : "outline"}>{hasInput ? `${formatRuleText.trim().length} 字` : "未填写"}</Badge>
-          </div>
-          <Textarea
-            id="formatRuleText"
-            value={formatRuleText}
-            onChange={(event) => onFormatRuleTextChange(event.target.value)}
-            placeholder="粘贴学校格式要求"
-            disabled={busy}
-            className="h-[190px] min-h-[180px] resize-y"
-          />
-          <div className="flex flex-wrap gap-3">
-            <Button type="button" onClick={() => onParseFormatRules(formatRuleText)} disabled={busy}>
-              {formatParsing ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <SlidersHorizontal data-icon="inline-start" />}
-              {hasInput ? "解析规范" : "使用默认规范"}
-            </Button>
-            {formatParsing ? (
-              <Button type="button" variant="destructive" onClick={onCancelParseFormatRules}>
-                <X data-icon="inline-start" />
-                停止解析
-              </Button>
-            ) : null}
-            <Button type="button" variant="outline" onClick={onResetFormatRules} disabled={busy}>
-              恢复默认规范
-            </Button>
+              <Field>
+                <FieldLabel>解析模型</FieldLabel>
+                {parserModelOptions.length > 0 ? (
+                  <Select value={effectiveParserModel || undefined} onValueChange={onParserModelChange} disabled={busy}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择模型" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {parserModelOptions.map((model) => (
+                          <SelectItem key={model} value={model}>{model}</SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input value={parserModel} onChange={(event) => onParserModelChange(event.target.value)} placeholder="填写模型名称" disabled={busy} />
+                )}
+              </Field>
+            </FieldGroup>
+
+            <FieldGroup className="gap-3">
+              <Field>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <FieldLabel htmlFor="formatRuleText">学校格式要求</FieldLabel>
+                  <Badge variant={hasInput ? "default" : "outline"}>{hasInput ? `${formatRuleText.trim().length} 字` : "未填写"}</Badge>
+                </div>
+                <Textarea
+                  id="formatRuleText"
+                  value={formatRuleText}
+                  onChange={(event) => onFormatRuleTextChange(event.target.value)}
+                  placeholder="粘贴学校格式要求"
+                  disabled={busy}
+                  className="h-[150px] min-h-[150px] resize-y"
+                />
+              </Field>
+
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" size="sm" onClick={() => onParseFormatRules(formatRuleText)} disabled={busy}>
+                  {formatParsing ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <SlidersHorizontal data-icon="inline-start" />}
+                  {hasInput ? "解析规范" : "使用默认规范"}
+                </Button>
+                {formatParsing ? (
+                  <Button type="button" size="sm" variant="destructive" onClick={onCancelParseFormatRules}>
+                    <X data-icon="inline-start" />
+                    停止解析
+                  </Button>
+                ) : null}
+                <Button type="button" size="sm" variant="outline" onClick={onResetFormatRules} disabled={busy}>
+                  恢复默认
+                </Button>
+              </div>
+            </FieldGroup>
           </div>
         </div>
 
@@ -745,31 +749,31 @@ function FormatRulesPreview({
 }) {
   const styles = rules.styles ?? {};
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-border bg-muted/50 p-5 md:flex-row md:items-center md:justify-between">
-        <h3 className="text-lg font-semibold text-foreground">解析结果</h3>
+    <div className="overflow-hidden rounded-lg border border-border bg-card">
+      <div className="flex flex-col gap-3 border-b border-border px-4 py-3 md:flex-row md:items-center md:justify-between">
+        <h3 className="text-base font-semibold text-foreground">解析结果</h3>
         {isPending ? (
-          <div className="flex flex-wrap gap-3">
-            <Button type="button" onClick={onConfirm} disabled={busy}>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" onClick={onConfirm} disabled={busy}>
               <CheckCircle2 data-icon="inline-start" />
               {zh(0x786e, 0x8ba4, 0x542f, 0x7528)}
             </Button>
-            <Button type="button" variant="outline" onClick={onDiscard} disabled={busy}>
+            <Button type="button" size="sm" variant="outline" onClick={onDiscard} disabled={busy}>
               {zh(0x653e, 0x5f03, 0x672c, 0x6b21, 0x89e3, 0x6790)}
             </Button>
           </div>
         ) : null}
       </div>
-      <div className="flex flex-col gap-4 p-5">
+      <div className="divide-y">
         {ROLE_GROUPS.map((group) => (
-          <div key={group.title} className="rounded-md border border-border/70 bg-background p-4">
-            <div className="mb-3 text-sm font-semibold text-foreground">{group.title}</div>
-            <div className="grid gap-3 xl:grid-cols-2">
+          <section key={group.title} className="grid gap-3 px-4 py-3 xl:grid-cols-[9rem_minmax(0,1fr)]">
+            <div className="text-sm font-semibold text-foreground">{group.title}</div>
+            <div className="grid overflow-hidden rounded-lg border bg-background xl:grid-cols-2">
               {group.roles.map((role) => (
                 <RuleRow key={role} role={role} style={styles[role]} meta={rules.styleMeta?.[role]} />
               ))}
             </div>
-          </div>
+          </section>
         ))}
       </div>
     </div>
@@ -778,12 +782,12 @@ function FormatRulesPreview({
 
 function RuleRow({ role, style, meta }: { role: string; style?: Record<string, unknown>; meta?: { sourceText?: string; confidence?: number; isInferred?: boolean } }) {
   return (
-    <div className="rounded-xl border border-border/60 bg-background/80 p-3">
+    <div className="min-w-0 border-b border-border/70 p-3 last:border-b-0 xl:border-r xl:[&:nth-child(even)]:border-r-0">
       <div className="flex items-center justify-between gap-3">
-        <div className="font-medium text-foreground">{ROLE_LABELS[role] ?? role}</div>
+        <div className="min-w-0 truncate font-medium text-foreground">{ROLE_LABELS[role] ?? role}</div>
         <Badge variant={meta?.isInferred ? "warning" : meta ? "success" : "outline"}>{meta?.isInferred ? "继承" : meta ? `${Math.round((meta.confidence ?? 0.7) * 100)}%` : "默认"}</Badge>
       </div>
-      <div className="mt-2 text-sm text-muted-foreground">{styleSummary(style)} · {styleSpacing(style)} · {formatAlignment(style?.alignment)}</div>
+      <div className="mt-1 truncate text-sm text-muted-foreground">{styleSummary(style)} · {styleSpacing(style)} · {formatAlignment(style?.alignment)}</div>
     </div>
   );
 }
