@@ -590,6 +590,7 @@ async function exportResponseToResult(response: Response, targetFormat: "txt" | 
     response.headers.get("Content-Disposition"),
     `current-round.${targetFormat}`,
   );
+  const exportPath = decodeHeaderValue(response.headers.get("X-Export-Path")) || filename;
   const layoutMode = response.headers.get("X-Export-Layout-Mode") || "";
   const paragraphSource = response.headers.get("X-Export-Paragraph-Source") || "";
   const formatMode = response.headers.get("X-Export-Format-Mode") || "";
@@ -613,7 +614,7 @@ async function exportResponseToResult(response: Response, targetFormat: "txt" | 
   downloadBlob(blob, filename);
   return {
     format: targetFormat,
-    path: filename,
+    path: exportPath,
     layoutMode,
     paragraphSource,
     formatMode,

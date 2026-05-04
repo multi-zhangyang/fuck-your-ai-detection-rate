@@ -65,6 +65,7 @@ function runRegression() {
     assertIncludes(appSource, "function beginRunSession(", "Run start/attach must create a session.", failures);
     assertIncludes(appSource, "function isActiveRunSession(", "Async run callbacks must be able to reject stale sessions.", failures);
     assertIncludes(appSource, "function clearRunSession(", "Run finalization must clear only the matching active session.", failures);
+    assertIncludes(appSource, "const roundProgressRequestRef = useRef(0);", "Checkpoint status refreshes must be sequenced so stale history requests cannot overwrite the current document.", failures);
     assertIncludes(appSource, "type PendingAutoAction", "Frontend must model pending auto retry/next-round actions explicitly.", failures);
     assertIncludes(appSource, "AUTO_RUN_RETRY_DELAY_SECONDS = 10", "Interrupted runs must use the requested 10 second retry countdown.", failures);
     assertIncludes(appSource, "AUTO_RUN_RETRY_MAX_ATTEMPTS = 3", "Interrupted runs must stop after three automatic retry attempts.", failures);
@@ -98,6 +99,7 @@ function runRegression() {
     assertIncludes(appSource, "!promptSequencesEqual(loadedSequence, nextConfig.promptSequence)", "Auto-restore must sync custom prompt sequence changes, not only profile changes.", failures);
     assertIncludes(appSource, "const statusPromptProfile = status.promptProfile ?? config.promptProfile;", "Checkpoint status refresh must use the document status route.", failures);
     assertIncludes(appSource, "const statusPromptSequence = normalizePromptSequence(status.promptSequence ?? config.promptSequence);", "Checkpoint status refresh must use the document status prompt sequence.", failures);
+    assertIncludes(appSource, "requestId === roundProgressRequestRef.current", "Checkpoint status refresh must ignore stale responses.", failures);
 
     const handleRunRoundSource = extractFunctionSource(appSource, "handleRunRound");
     assertIncludes(handleRunRoundSource, "const statusPromptSequence = normalizePromptSequence(documentStatus.promptSequence ?? modelConfig.promptSequence);", "Starting a round must bind to the loaded document route.", failures);
@@ -116,6 +118,8 @@ function runRegression() {
     const attachActiveRunSource = extractFunctionSource(appSource, "attachActiveRun");
     assertIncludes(attachActiveRunSource, "mode: \"attach\"", "Attached backend runs must use attach-mode sessions.", failures);
     assertIncludes(attachActiveRunSource, "if (!isActiveRunSession(runSession))", "Attached progress/result callbacks must ignore stale sessions.", failures);
+
+    assertIncludes(appSource, "sameWorkspacePath(roundProgressStatus.sourcePath, value?.sourcePath)", "Home run panel must not show a resume checkpoint from another history document.", failures);
 
     const cancelSource = extractFunctionSource(appSource, "handleCancelRunRound");
     assertIncludes(cancelSource, "const runSession = runSessionRef.current;", "Cancel must target the current run session.", failures);

@@ -186,6 +186,8 @@ function checkRequestErrorPayloadContract(webServiceSource, failures) {
 
 function checkExportIssueSampleContract(webServiceSource, failures) {
   assertIncludes(webServiceSource, "function parseExportIssueSamples", "Export response parser must decode issue samples from response headers.", failures);
+  assertIncludes(webServiceSource, "X-Export-Path", "Export response parser must preserve the backend export artifact path.", failures);
+  assertIncludes(webServiceSource, "path: exportPath,", "Export result path must be the backend artifact path, not only the download name.", failures);
   assertIncludes(webServiceSource, "X-Export-Guard-Issue-Samples", "Export response parser must read guard issue samples.", failures);
   assertIncludes(webServiceSource, "X-Export-Audit-Issue-Samples", "Export response parser must read audit issue samples.", failures);
   assertIncludes(webServiceSource, "X-Export-Preflight-Issue-Samples", "Export response parser must read preflight issue samples.", failures);

@@ -1571,6 +1571,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   const runSessionRef = useRef<RunSession | null>(null);
   const batchRerunSessionRef = useRef<BatchRerunSession | null>(null);
   const runSessionSequenceRef = useRef(0);
+  const roundProgressRequestRef = useRef(0);
   const autoRetryCountsRef = useRef<Record<string, number>>({});
   const latestDocumentStatusRef = useRef<DocumentStatus | null>(null);
   const latestModelConfigRef = useRef<ModelConfig | null>(null);
@@ -2592,8 +2593,12 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   }
 
   async function refreshRoundProgressStatus(status = documentStatus, config = modelConfig) {
+    const requestId = roundProgressRequestRef.current + 1;
+    roundProgressRequestRef.current = requestId;
     if (!status?.sourcePath || !status.hasNextRound || !status.nextRound) {
-      setRoundProgressStatus(null);
+      if (requestId === roundProgressRequestRef.current) {
+        setRoundProgressStatus(null);
+      }
       return null;
     }
     const statusPromptProfile = status.promptProfile ?? config.promptProfile;
@@ -2605,10 +2610,14 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         status.nextRound,
         statusPromptSequence,
       );
-      setRoundProgressStatus(nextStatus);
+      if (requestId === roundProgressRequestRef.current) {
+        setRoundProgressStatus(nextStatus);
+      }
       return nextStatus;
     } catch {
-      setRoundProgressStatus(null);
+      if (requestId === roundProgressRequestRef.current) {
+        setRoundProgressStatus(null);
+      }
       return null;
     }
   }
@@ -5092,6 +5101,7 @@ function HomeRunPanel({
   const modelRouteLines = modelRouteSummary.map((item) => `${item.index + 1}. ${item.providerLabel} · ${item.modelLabel}`);
   const activeRunStatus = roundProgressStatus?.activeRun && !roundProgressStatus.activeRun.completed ? roundProgressStatus.activeRun : null;
   const resumableCheckpoint = roundProgressStatus?.canResume
+    && sameWorkspacePath(roundProgressStatus.sourcePath, value?.sourcePath)
     && roundProgressStatus.round === value?.nextRound
     && roundProgressStatus.promptProfile === value?.promptProfile
     && promptSequencesEqual(roundProgressStatus.promptSequence, value?.promptSequence)

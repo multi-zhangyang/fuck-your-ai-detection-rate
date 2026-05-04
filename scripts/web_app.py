@@ -1747,7 +1747,7 @@ def add_cors_headers(response: Response) -> Response:
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     response.headers["Access-Control-Expose-Headers"] = (
-        "Content-Disposition, X-Export-Format, X-Export-Layout-Mode, "
+        "Content-Disposition, X-Export-Path, X-Export-Format, X-Export-Layout-Mode, "
         "X-Export-Paragraph-Source, X-Export-Format-Mode, X-Export-Format-Scope, "
         "X-Export-Content-Locked-Style-Count, X-Export-Table-Style-Count, X-Export-Table-Border-Count, "
         "X-Export-Validation-Path, X-Export-Audit-Path, X-Export-Audit-Issue-Count, "
@@ -2429,6 +2429,7 @@ def get_export_round() -> tuple[Response, int] | Response:
         if target_format == "txt":
             mimetype = "text/plain; charset=utf-8"
         response = send_file(file_path, mimetype=mimetype, as_attachment=True, download_name=file_path.name)
+        response.headers["X-Export-Path"] = make_ascii_header_value(file_path)
         response.headers["X-Export-Format"] = str(result.get("format", target_format))
         response.headers["X-Export-Layout-Mode"] = str(result.get("layoutMode", ""))
         response.headers["X-Export-Paragraph-Source"] = str(result.get("paragraphSource", ""))

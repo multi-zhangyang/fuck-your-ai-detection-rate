@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from app_config import SAVED_SECRET_PLACEHOLDER, save_app_config
 
@@ -28,6 +28,7 @@ def run_regression() -> dict[str, object]:
             os.environ["APPDATA"] = temp_dir
             os.environ["FYADR_MAX_REQUEST_BYTES"] = "not-a-number"
             os.environ["FYADR_MAX_UPLOAD_BYTES"] = "not-a-number"
+            import web_app
             from web_app import DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_UPLOAD_BYTES, ORIGIN_DIR, _max_upload_bytes, app
 
             _assert(app.config["MAX_CONTENT_LENGTH"] == DEFAULT_MAX_REQUEST_BYTES, "invalid request limit env should fall back to the default")
@@ -64,6 +65,7 @@ def run_regression() -> dict[str, object]:
 
             allowed = client.get("/api/ping", headers={"Origin": "http://127.0.0.1:1420"})
             _assert(allowed.headers.get("Access-Control-Allow-Origin") == "http://127.0.0.1:1420", "local frontend origin should be allowed")
+            _assert("X-Export-Path" in allowed.headers.get("Access-Control-Expose-Headers", ""), "export artifact path should be CORS-exposed")
             checks.append("local frontend origin is allowed")
 
             denied = client.get("/api/ping", headers={"Origin": "http://evil.example"})
@@ -77,6 +79,24 @@ def run_regression() -> dict[str, object]:
             _assert("sk-secret" not in config_response.get_data(as_text=True), "raw default secret must not be present in model-config response")
             _assert("provider-secret" not in config_response.get_data(as_text=True), "raw provider secret must not be present in model-config response")
             checks.append("model config response redacts secrets")
+
+            original_export_round_output = web_app.export_round_output
+            try:
+                def fake_export_round_output(_output_path: str, export_path: str, target_format: str) -> dict[str, object]:
+                    export_file = Path(export_path)
+                    export_file.parent.mkdir(parents=True, exist_ok=True)
+                    export_file.write_text("export body", encoding="utf-8")
+                    return {"path": str(export_file), "format": target_format}
+
+                web_app.export_round_output = fake_export_round_output
+                export_response = client.get("/api/export-round?outputPath=finish/regression/export-source.txt&targetFormat=txt")
+            finally:
+                web_app.export_round_output = original_export_round_output
+            _assert(export_response.status_code == 200, "export-round should return the generated artifact")
+            export_path_header = export_response.headers.get("X-Export-Path", "")
+            _assert(export_path_header, "export-round should expose the generated artifact path")
+            _assert(unquote(export_path_header).endswith("export-source.txt"), "export path header should carry the generated artifact path")
+            checks.append("export-round exposes the generated artifact path")
 
             with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
                 handle.write("outside workspace")

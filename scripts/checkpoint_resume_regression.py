@@ -16,19 +16,53 @@ def main() -> int:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     source_path = work_dir / "source.txt"
-    output_path = work_dir / "round1.txt"
-    manifest_path = work_dir / "round1_manifest.json"
+    sentence_bank = [
+        "断点续跑测试会记录已经完成的正文分块，并在异常恢复时优先复用这些稳定结果。",
+        "本段材料刻意使用自然叙述，避免把测试文本写成高度重复的机械句式。",
+        "前端历史切换之后，后端需要确认断点确实属于当前文档和当前改写流程。",
+        "如果分块清单、Prompt 或正文摘要发生变化，状态接口应提前阻止假续跑提示。",
+        "真实运行时仍然由轮次服务负责合并文本、生成 Diff，并清理完成后的断点文件。",
+        "这些约束共同保证用户点击继续时，不会看到已经完成的部分被无故重跑。",
+        "为了覆盖多分块场景，回归样例保留了足够长的正文，同时不依赖任何外部模型。",
+        "每个片段都保持原文信息密度，便于校验长度、术语和语言稳定性。",
+    ]
+
+    def build_paragraph(offset: int) -> str:
+        sentences: list[str] = []
+        for index in range(34):
+            first = sentence_bank[(index + offset) % len(sentence_bank)]
+            second = sentence_bank[(index * 3 + offset + 1) % len(sentence_bank)]
+            if index % 3 == 0:
+                sentences.append(f"{first}同时，{second}")
+            elif index % 3 == 1:
+                sentences.append(f"{first}这能帮助系统在第 {index + 1} 个检查点保持判断一致。")
+            else:
+                sentences.append(f"{first}{second}")
+        return "".join(sentences)
+
     source_path.write_text(
-        "\n\n".join(
-            [
-                "第一段用于断点续跑测试，内容保持稳定，避免模型调用和外部服务参与。",
-                "第二段用于确认已经完成的分块不会因为后续报错而丢失。",
-                "第三段用于模拟网络或模型异常后重新点击继续执行。",
-                "第四段用于确认更换模型配置后仍然复用已完成分块。",
-            ]
-        ),
+        "\n\n".join(build_paragraph(offset) for offset in range(4)),
         encoding="utf-8",
     )
+    status_context = build_round_context(
+        source_path,
+        round_number=1,
+        prompt_profile="cn_custom",
+        prompt_sequence=["classical"],
+    )
+    output_path = status_context.output_text_path
+    manifest_path = status_context.manifest_path
+    for stale_path in (
+        output_path,
+        manifest_path,
+        get_round_checkpoint_path(output_path),
+        output_path.with_name(f"{output_path.stem}_compare.json"),
+        output_path.with_name(f"{output_path.stem}_quality.json"),
+    ):
+        try:
+            stale_path.unlink(missing_ok=True)
+        except PermissionError:
+            pass
 
     first_calls: list[str] = []
 
@@ -40,7 +74,7 @@ def main() -> int:
 
     try:
         run_round(
-            doc_id="checkpoint-resume-regression",
+            doc_id=status_context.doc_id,
             round_number=1,
             input_path=source_path,
             output_path=output_path,
@@ -48,7 +82,6 @@ def main() -> int:
             transform=failing_transform,
             prompt_profile="cn_custom",
             prompt_sequence=["classical"],
-            chunk_limit=38,
             checkpoint_metadata={"model": "provider-a/model-1"},
         )
     except RuntimeError as exc:
@@ -63,15 +96,7 @@ def main() -> int:
     if len(completed_before) != 1:
         raise AssertionError(f"expected 1 checkpointed chunk, got {len(completed_before)}")
 
-    status_context = build_round_context(
-        source_path,
-        round_number=1,
-        prompt_profile="cn_custom",
-        prompt_sequence=["classical"],
-    )
     status_checkpoint_path = get_round_checkpoint_path(status_context.output_text_path)
-    status_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(checkpoint_path, status_checkpoint_path)
     progress_status = get_round_progress_status(
         str(source_path),
         "cn_custom",
@@ -97,6 +122,21 @@ def main() -> int:
     if "不会从第一块重跑" not in str(progress_status.get("resumeExplanation", "")):
         raise AssertionError("progress status must explain non-destructive checkpoint resume")
 
+    mismatched_payload = dict(checkpoint_payload)
+    mismatched_payload["input_sha256"] = "mismatched-input"
+    status_checkpoint_path.write_text(json.dumps(mismatched_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    mismatched_status = get_round_progress_status(
+        str(source_path),
+        "cn_custom",
+        round_number=1,
+        prompt_sequence=["classical"],
+    )
+    if mismatched_status.get("canResume"):
+        raise AssertionError("incompatible checkpoint status must not be advertised as resumable")
+    if "假续跑" not in str(mismatched_status.get("message", "")):
+        raise AssertionError("incompatible checkpoint status must explain that false resume was blocked")
+    status_checkpoint_path.write_text(json.dumps(checkpoint_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
     all_done_payload = dict(checkpoint_payload)
     chunk_ids = all_done_payload.get("chunk_ids", [])
     if not isinstance(chunk_ids, list) or not chunk_ids:
@@ -114,10 +154,7 @@ def main() -> int:
         raise AssertionError(f"expected finalize_output resume stage, got {finalizing_status.get('resumeStage')}")
     if "不会重跑 100%" not in str(finalizing_status.get("resumeExplanation", "")):
         raise AssertionError("100% checkpoint status must explain that only finalization is pending")
-    try:
-        status_checkpoint_path.unlink(missing_ok=True)
-    except PermissionError:
-        pass
+    status_checkpoint_path.write_text(json.dumps(checkpoint_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     resumed_calls: list[str] = []
 
@@ -126,7 +163,7 @@ def main() -> int:
         return chunk_text
 
     result = run_round(
-        doc_id="checkpoint-resume-regression",
+        doc_id=status_context.doc_id,
         round_number=1,
         input_path=source_path,
         output_path=output_path,
@@ -134,7 +171,6 @@ def main() -> int:
         transform=resumed_transform,
         prompt_profile="cn_custom",
         prompt_sequence=["classical"],
-        chunk_limit=38,
         checkpoint_metadata={"model": "provider-b/model-2"},
     )
 

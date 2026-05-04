@@ -22,7 +22,7 @@ from fyadr_records import (
     normalize_doc_id,
     preview_delete_document,
 )
-from chunking import load_manifest, restore_text_from_chunks, split_text_to_paragraphs
+from chunking import DEFAULT_CHUNK_LIMIT, build_manifest, load_manifest, restore_text_from_chunks, split_text_to_paragraphs
 from detection_matching import build_detection_matches
 from fyadr_round_service import (
     build_global_style_profile_from_texts,
@@ -33,6 +33,7 @@ from fyadr_round_service import (
     get_max_rounds,
     get_round_checkpoint_path,
     get_round_compare_path,
+    get_chunk_metric,
     load_prompt,
     normalize_chunk_output,
     normalize_path,
@@ -44,10 +45,13 @@ from fyadr_round_service import (
     validate_chunk_output,
     validate_structure_placeholders,
     _build_chunk_quality,
+    _build_checkpoint_signature,
     _build_validation_repair_steps,
     _extract_required_terms,
+    _is_checkpoint_compatible,
     _score_rewrite_candidate,
     _serialize_rejected_candidate_output,
+    _sha256_text,
 )
 from docx_bodymap import load_docx_body_map, save_docx_body_map, update_docx_body_map_texts
 from docx_audit import audit_docx_export, get_docx_audit_report_path
@@ -1742,6 +1746,66 @@ def get_round_progress_status(
             "updatedAt": str(payload.get("updated_at", "") or ""),
             "validationEventCount": 0,
             "message": "当前轮次已完成；残留断点标记无需处理。",
+        }
+    try:
+        input_text = context.input_text_path.read_text(encoding="utf-8")
+        chunk_metric = get_chunk_metric(normalized_profile, normalized_prompt_sequence)
+        manifest = build_manifest(input_text, chunk_limit=DEFAULT_CHUNK_LIMIT, chunk_metric=chunk_metric)
+        prompt_text = load_prompt(normalized_profile, effective_round, normalized_prompt_sequence)
+        checkpoint_signature = _build_checkpoint_signature(
+            doc_id=context.doc_id,
+            round_number=effective_round,
+            prompt_profile=normalized_profile,
+            prompt_sequence=normalized_prompt_sequence,
+            input_path=context.input_text_path,
+            output_path=context.output_text_path,
+            manifest_path=context.manifest_path,
+            manifest_chunk_ids=[chunk.chunk_id for chunk in manifest.chunks],
+            input_sha256=_sha256_text(input_text),
+            prompt_sha256=_sha256_text(prompt_text),
+            chunk_limit=DEFAULT_CHUNK_LIMIT,
+            chunk_metric=chunk_metric,
+            checkpoint_metadata=None,
+        )
+    except Exception as exc:
+        return {
+            "sourcePath": str(normalized_source),
+            "promptProfile": normalized_profile,
+            "promptSequence": normalized_prompt_sequence,
+            "round": effective_round,
+            "checkpointExists": True,
+            "canResume": False,
+            "completedChunks": 0,
+            "totalChunks": 0,
+            "progressPercent": 0,
+            "checkpointPath": str(checkpoint_path),
+            "lastError": f"Checkpoint compatibility check failed: {exc}",
+            "updatedAt": str(payload.get("updated_at", "") or ""),
+            "validationEventCount": 0,
+            "resumeStage": "inspect_checkpoint",
+            "resumeActionLabel": "检查断点",
+            "resumeExplanation": "断点存在，但当前正文状态无法校验；为避免误续跑，请刷新历史文档后再继续。",
+            "message": "断点存在，但无法确认是否属于当前正文。",
+        }
+    if not _is_checkpoint_compatible(payload, checkpoint_signature):
+        return {
+            "sourcePath": str(normalized_source),
+            "promptProfile": normalized_profile,
+            "promptSequence": normalized_prompt_sequence,
+            "round": effective_round,
+            "checkpointExists": True,
+            "canResume": False,
+            "completedChunks": int(payload.get("completed_chunk_count", 0) or 0),
+            "totalChunks": len(payload.get("chunk_ids", [])) if isinstance(payload.get("chunk_ids"), list) else 0,
+            "progressPercent": 0,
+            "checkpointPath": str(checkpoint_path),
+            "lastError": str(payload.get("last_error", "") or "").strip(),
+            "updatedAt": str(payload.get("updated_at", "") or ""),
+            "validationEventCount": 0,
+            "resumeStage": "inspect_checkpoint",
+            "resumeActionLabel": "断点不匹配",
+            "resumeExplanation": "该断点与当前正文、Prompt 或分块清单不一致，继续会重新生成；请确认历史文档和自定义流程一致。",
+            "message": "断点与当前正文不匹配，已阻止假续跑提示。",
         }
     chunk_outputs = payload.get("chunk_outputs")
     chunk_ids = payload.get("chunk_ids")
