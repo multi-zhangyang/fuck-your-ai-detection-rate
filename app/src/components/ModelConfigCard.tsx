@@ -85,7 +85,6 @@ function createModelProvider(value: ModelConfig): ModelProviderConfig {
 function providerToModelConfig(value: ModelConfig, provider: ModelProviderConfig, model?: string): ModelConfig {
   return {
     ...value,
-    offlineMode: false,
     baseUrl: provider.baseUrl.trim() || value.baseUrl,
     apiKey: provider.apiKey.trim() || value.apiKey,
     model: (model ?? provider.defaultModel ?? "").trim() || value.model,
@@ -245,7 +244,6 @@ export function ModelConfigCard({
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0] ?? null;
   const providerCatalogRunning = Object.values(providerCatalogBusy).some(Boolean);
   const enabledProviderCount = providers.filter((provider) => provider.enabled !== false).length;
-  const onlineValue = { ...value, offlineMode: false };
 
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden border-border bg-card shadow-sm">
@@ -336,7 +334,7 @@ export function ModelConfigCard({
                     <Button variant="outline" onClick={onRefreshModels} disabled={busy || modelCatalogBusy}>
                       {modelCatalogBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读取模型列表
                     </Button>
-                    <Button onClick={() => onSave(onlineValue, onlineValue)} disabled={busy}>
+                    <Button onClick={() => onSave(value, value)} disabled={busy}>
                       <Save data-icon="inline-start" />保存默认配置
                     </Button>
                   </CardContent>

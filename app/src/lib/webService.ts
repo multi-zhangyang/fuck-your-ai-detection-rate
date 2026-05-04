@@ -64,10 +64,8 @@ const defaultModelConfig: ModelConfig = {
   model: "",
   apiType: "chat_completions",
   temperature: 0.7,
-  offlineMode: false,
   promptProfile: "cn_custom",
   promptSequence: ["prewrite", "round1", "round2"],
-  rewriteCandidateMode: "economy",
   requestTimeoutSeconds: 600,
   maxRetries: 3,
 };

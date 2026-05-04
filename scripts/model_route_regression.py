@@ -16,7 +16,6 @@ def _base_config() -> dict:
         "model": "default-model",
         "apiType": "chat_completions",
         "temperature": 0.7,
-        "offlineMode": False,
         "promptProfile": "cn_prewrite",
         "promptSequence": ["prewrite", "round1", "round2"],
         "requestTimeoutSeconds": 600,

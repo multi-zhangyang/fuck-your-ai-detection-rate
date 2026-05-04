@@ -154,7 +154,6 @@ class WebRunStateRegressionTest(unittest.TestCase):
                 "inputSegmentCount": 1,
                 "outputSegmentCount": 1,
                 "paragraphCount": 1,
-                "offlineMode": False,
                 "roundModel": {
                     "providerName": "private-provider",
                     "baseUrl": "https://private.example/v1",

@@ -135,9 +135,6 @@ GENERIC_CLOSING_RE = re.compile(
     r"(综上所述|总而言之|总的来说|由此可见|整体来看|in conclusion|to sum up|overall|it can be seen that)",
     re.IGNORECASE,
 )
-SUPPORTED_REWRITE_CANDIDATE_MODES = {"economy"}
-
-
 class ProtectedText(NamedTuple):
     text: str
     tokens: dict[str, str]
@@ -301,25 +298,10 @@ def should_freeze_chunk(prompt_profile: str, chunk_text: str) -> bool:
     return False
 
 
-def normalize_rewrite_candidate_mode(value: object) -> str:
-    candidate = str(value or "economy").strip().lower() or "economy"
-    return candidate if candidate in SUPPORTED_REWRITE_CANDIDATE_MODES else "economy"
-
-
-def _candidate_count_for_chunk(prompt_profile: str, chunk_text: str, candidate_mode: str = "economy") -> int:
-    return 1
-
-
-def _estimate_candidate_calls(manifest: ChunkManifest, prompt_profile: str, candidate_mode: str) -> dict[str, int]:
+def _estimate_api_calls(manifest: ChunkManifest) -> dict[str, int]:
     return {
         "estimatedApiCalls": manifest.chunk_count,
-        "candidateMaxPerChunk": 1,
-        "twoCandidateChunkCount": 0,
     }
-
-
-def _build_candidate_note(candidate_index: int) -> str | None:
-    return None
 
 
 def _count_matches(pattern: re.Pattern[str], text: str) -> dict[str, int]:
@@ -1690,7 +1672,6 @@ def _build_quality_summary(
     chunk_outputs: dict[str, str],
     validation_events: list[dict[str, object]],
     global_style_profile: dict[str, object] | None = None,
-    candidate_mode: str = "economy",
     prompt_profile: str = "cn_custom",
 ) -> dict[str, object]:
     restored_preview = restore_text_from_chunks(manifest, chunk_outputs) if len(chunk_outputs) == manifest.chunk_count else ""
@@ -1704,7 +1685,7 @@ def _build_quality_summary(
     introduced_template_phrases: list[str] = []
     style_validation_issues: list[dict[str, object]] = []
     frozen_chunk_ids = sorted({str(event.get("chunkId", "")) for event in validation_events if event.get("event") == "chunk-frozen"})
-    candidate_call_estimate = _estimate_candidate_calls(manifest, prompt_profile, candidate_mode)
+    api_call_estimate = _estimate_api_calls(manifest)
     effective_style_profile = global_style_profile or _build_global_style_profile(manifest)
     style_card_chunk_ids = [
         chunk.chunk_id
@@ -1744,9 +1725,7 @@ def _build_quality_summary(
             "template-phrase-drift",
         ],
         "frozenChunkCount": len(frozen_chunk_ids),
-        "candidateSelectionCount": 0,
-        "rewriteCandidateMode": normalize_rewrite_candidate_mode(candidate_mode),
-        **candidate_call_estimate,
+        **api_call_estimate,
         "styleCardVersion": STYLE_CARD_VERSION,
         "styleCardChunkCount": len(style_card_chunk_ids),
         "styleCardChunkIds": style_card_chunk_ids[:24],
@@ -1790,17 +1769,13 @@ def _build_run_audit(
         "model": str(checkpoint_metadata.get("model", "") or ""),
         "apiType": str(checkpoint_metadata.get("api_type", "") or ""),
         "temperature": checkpoint_metadata.get("temperature"),
-        "offlineMode": bool(checkpoint_metadata.get("offline_mode", False)),
         "requestTimeoutSeconds": checkpoint_metadata.get("request_timeout_seconds"),
         "maxRetries": checkpoint_metadata.get("max_retries"),
         "rateLimitWindowMinutes": checkpoint_metadata.get("rate_limit_window_minutes"),
         "rateLimitMaxRequests": checkpoint_metadata.get("rate_limit_max_requests"),
         "promptProfile": prompt_profile,
         "promptSequence": prompt_sequence,
-        "rewriteCandidateMode": quality_summary.get("rewriteCandidateMode"),
-        "candidateMaxPerChunk": quality_summary.get("candidateMaxPerChunk"),
         "estimatedApiCalls": quality_summary.get("estimatedApiCalls"),
-        "twoCandidateChunkCount": quality_summary.get("twoCandidateChunkCount"),
         "chunkCount": manifest.chunk_count,
         "paragraphCount": manifest.paragraph_count,
         "splitParagraphCount": split_count,
@@ -1826,20 +1801,18 @@ def run_round(
     progress_callback: ProgressCallback | None = None,
     checkpoint_metadata: dict[str, object] | None = None,
     cancel_check: CancelCheck | None = None,
-    rewrite_candidate_mode: str = "economy",
 ) -> dict:
     normalized_input_path = normalize_path(input_path)
     normalized_output_path = normalize_path(output_path)
     normalized_manifest_path = normalize_path(manifest_path)
     normalized_prompt_profile = normalize_prompt_profile(prompt_profile)
     normalized_prompt_sequence = normalize_prompt_sequence(normalized_prompt_profile, prompt_sequence)
-    normalized_candidate_mode = normalize_rewrite_candidate_mode(rewrite_candidate_mode)
     chunk_metric = get_chunk_metric(normalized_prompt_profile, normalized_prompt_sequence)
 
     text = normalized_input_path.read_text(encoding="utf-8")
     manifest = build_manifest(text, chunk_limit=chunk_limit, chunk_metric=chunk_metric)
     save_manifest(manifest, normalized_manifest_path)
-    candidate_call_estimate = _estimate_candidate_calls(manifest, normalized_prompt_profile, normalized_candidate_mode)
+    api_call_estimate = _estimate_api_calls(manifest)
     global_style_profile = _build_global_style_profile(manifest)
     effective_checkpoint_metadata = {
         **(checkpoint_metadata or {}),
@@ -1882,8 +1855,7 @@ def run_round(
                 "paragraphCount": manifest.paragraph_count,
                 "inputPath": str(normalized_input_path),
                 "outputPath": str(normalized_output_path),
-                "rewriteCandidateMode": normalized_candidate_mode,
-                **candidate_call_estimate,
+                **api_call_estimate,
             }
         )
         if chunk_outputs:
@@ -1913,8 +1885,7 @@ def run_round(
                         "outputPath": str(normalized_output_path),
                         "compareInputText": resumed_chunk.text,
                         "compareOutputText": resumed_output,
-                        "rewriteCandidateMode": normalized_candidate_mode,
-                        **candidate_call_estimate,
+                        **api_call_estimate,
                     }
                 )
 
@@ -1942,8 +1913,7 @@ def run_round(
                     "paragraphIndex": chunk.paragraph_index,
                     "chunkIndex": chunk.chunk_index,
                     "outputPath": str(normalized_output_path),
-                    "rewriteCandidateMode": normalized_candidate_mode,
-                    **candidate_call_estimate,
+                    **api_call_estimate,
                 }
             )
         try:
@@ -1981,12 +1951,10 @@ def run_round(
                             "paragraphIndex": chunk.paragraph_index,
                             "chunkIndex": chunk.chunk_index,
                             "outputPath": str(normalized_output_path),
-                            "rewriteCandidateMode": normalized_candidate_mode,
-                            **candidate_call_estimate,
+                            **api_call_estimate,
                         }
                     )
-            else:
-                candidate_count = _candidate_count_for_chunk(normalized_prompt_profile, chunk.text, normalized_candidate_mode)
+                continue
             for validation_attempt in range(1, MAX_VALIDATION_ATTEMPTS + 1):
                 if chunk.chunk_id in chunk_outputs:
                     break
@@ -1995,45 +1963,44 @@ def run_round(
                     retry_note = _build_retry_note(chunk.text, str(validation_error))
                 effective_prompt_text = prompt_text
                 valid_candidates: list[tuple[float, str, int]] = []
-                for candidate_index in range(1, candidate_count + 1):
-                    raw_chunk_output = transform(
+                raw_chunk_output = transform(
+                    protected_chunk.text,
+                    build_prompt_input(
+                        effective_prompt_text,
                         protected_chunk.text,
-                        build_prompt_input(
-                            effective_prompt_text,
-                            protected_chunk.text,
-                            round_number,
-                            chunk.chunk_id,
-                            retry_note=_merge_generation_notes(retry_note, _build_candidate_note(candidate_index)),
-                            relation_guard=build_factual_relation_guard(chunk.text),
-                            style_card=_build_local_style_card(chunk.text, global_style_profile),
-                        ),
                         round_number,
                         chunk.chunk_id,
+                        retry_note=retry_note,
+                        relation_guard=build_factual_relation_guard(chunk.text),
+                        style_card=_build_local_style_card(chunk.text, global_style_profile),
+                    ),
+                    round_number,
+                    chunk.chunk_id,
+                )
+                candidate_output_for_review = raw_chunk_output
+                protected_output = normalize_chunk_output(protected_chunk.text, raw_chunk_output)
+                try:
+                    validate_structure_placeholders(protected_output, protected_chunk.tokens, chunk.chunk_id)
+                    candidate_output = restore_structure_tokens(protected_output, protected_chunk.tokens)
+                    candidate_output_for_review = candidate_output
+                    validate_chunk_output(chunk.text, candidate_output, chunk.chunk_id)
+                    valid_candidates.append((_score_rewrite_candidate(chunk.text, candidate_output), candidate_output, 1))
+                except ValueError as exc:
+                    validation_error = exc
+                    rejected_candidate_payload = _serialize_rejected_candidate_output(candidate_output_for_review)
+                    validation_events.append(
+                        {
+                            "event": "validation-retry",
+                            "round": round_number,
+                            "chunkId": chunk.chunk_id,
+                            "paragraphIndex": chunk.paragraph_index,
+                            "chunkIndex": chunk.chunk_index,
+                            "attempt": validation_attempt,
+                            "candidate": 1,
+                            "error": str(exc),
+                            **rejected_candidate_payload,
+                        }
                     )
-                    candidate_output_for_review = raw_chunk_output
-                    protected_output = normalize_chunk_output(protected_chunk.text, raw_chunk_output)
-                    try:
-                        validate_structure_placeholders(protected_output, protected_chunk.tokens, chunk.chunk_id)
-                        candidate_output = restore_structure_tokens(protected_output, protected_chunk.tokens)
-                        candidate_output_for_review = candidate_output
-                        validate_chunk_output(chunk.text, candidate_output, chunk.chunk_id)
-                        valid_candidates.append((_score_rewrite_candidate(chunk.text, candidate_output), candidate_output, candidate_index))
-                    except ValueError as exc:
-                        validation_error = exc
-                        rejected_candidate_payload = _serialize_rejected_candidate_output(candidate_output_for_review)
-                        validation_events.append(
-                            {
-                                "event": "validation-retry",
-                                "round": round_number,
-                                "chunkId": chunk.chunk_id,
-                                "paragraphIndex": chunk.paragraph_index,
-                                "chunkIndex": chunk.chunk_index,
-                                "attempt": validation_attempt,
-                                "candidate": candidate_index,
-                                "error": str(exc),
-                                **rejected_candidate_payload,
-                            }
-                        )
 
                 if valid_candidates:
                     _selected_score, chunk_output, _selected_candidate = min(valid_candidates, key=lambda item: item[0])
@@ -2049,7 +2016,6 @@ def run_round(
                             "paragraphIndex": chunk.paragraph_index,
                             "chunkIndex": chunk.chunk_index,
                             "attempts": validation_attempt,
-                            "candidateCount": candidate_count,
                             "reason": "validation-exhausted",
                             "error": str(validation_error),
                             "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -2066,8 +2032,7 @@ def run_round(
                                 "paragraphIndex": chunk.paragraph_index,
                                 "chunkIndex": chunk.chunk_index,
                                 "error": str(validation_error),
-                                "rewriteCandidateMode": normalized_candidate_mode,
-                                **candidate_call_estimate,
+                                **api_call_estimate,
                             }
                         )
                     validation_error = None
@@ -2097,8 +2062,7 @@ def run_round(
                         "totalChunks": manifest.chunk_count,
                         "chunkId": chunk.chunk_id,
                         "error": str(exc),
-                        "rewriteCandidateMode": normalized_candidate_mode,
-                        **candidate_call_estimate,
+                        **api_call_estimate,
                     }
                 )
             raise
@@ -2116,8 +2080,7 @@ def run_round(
                     "outputPath": str(normalized_output_path),
                     "compareInputText": chunk.text,
                     "compareOutputText": chunk_output,
-                    "rewriteCandidateMode": normalized_candidate_mode,
-                    **candidate_call_estimate,
+                    **api_call_estimate,
                 }
             )
 
@@ -2129,8 +2092,7 @@ def run_round(
                 "phase": "restoring-output",
                 "round": round_number,
                 "totalChunks": manifest.chunk_count,
-                "rewriteCandidateMode": normalized_candidate_mode,
-                **candidate_call_estimate,
+                **api_call_estimate,
             }
         )
 
@@ -2141,7 +2103,6 @@ def run_round(
         chunk_outputs,
         validation_events,
         global_style_profile,
-        normalized_candidate_mode,
         normalized_prompt_profile,
     )
     run_audit = _build_run_audit(

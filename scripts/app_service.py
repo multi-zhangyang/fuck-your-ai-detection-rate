@@ -39,7 +39,6 @@ from fyadr_round_service import (
     normalize_path,
     normalize_prompt_profile,
     normalize_prompt_sequence,
-    normalize_rewrite_candidate_mode,
     protect_structure_tokens,
     restore_structure_tokens,
     validate_chunk_output,
@@ -327,12 +326,11 @@ def _load_history_quality_summary(item: dict[str, Any]) -> dict[str, Any]:
 def _build_history_run_audit(item: dict[str, Any], quality_summary: dict[str, Any]) -> dict[str, Any]:
     stored_audit = item.get("run_audit")
     audit = dict(stored_audit) if isinstance(stored_audit, dict) else {}
+    for legacy_key in ("offlineMode", "rewriteCandidateMode", "candidateMaxPerChunk", "twoCandidateChunkCount"):
+        audit.pop(legacy_key, None)
     if quality_summary:
         split_summary = quality_summary.get("paragraphSplitSummary")
-        audit.setdefault("rewriteCandidateMode", quality_summary.get("rewriteCandidateMode"))
-        audit.setdefault("candidateMaxPerChunk", quality_summary.get("candidateMaxPerChunk"))
         audit.setdefault("estimatedApiCalls", quality_summary.get("estimatedApiCalls"))
-        audit.setdefault("twoCandidateChunkCount", quality_summary.get("twoCandidateChunkCount"))
         audit.setdefault("validationRetryCount", quality_summary.get("validationRetryCount"))
         audit.setdefault("sourceFallbackCount", quality_summary.get("sourceFallbackCount"))
         audit.setdefault("validationEventCount", quality_summary.get("validationEventCount"))
@@ -1909,8 +1907,6 @@ def run_round_for_app(
     model = str(effective_model_config.get("model", "")).strip()
     api_type = str(effective_model_config.get("apiType", "chat_completions")).strip()
     temperature = float(effective_model_config.get("temperature", model_config.get("temperature", 0.7)) or 0.7)
-    offline_mode = False
-    rewrite_candidate_mode = normalize_rewrite_candidate_mode(model_config.get("rewriteCandidateMode", "economy"))
     request_timeout_seconds = _coerce_int_config(
         effective_model_config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
         default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -1940,7 +1936,6 @@ def run_round_for_app(
                 "temperature": temperature,
                 "rateLimitWindowMinutes": _coerce_rate_window_minutes(effective_model_config),
                 "rateLimitMaxRequests": _coerce_rate_max_requests(effective_model_config),
-                "rewriteCandidateMode": rewrite_candidate_mode,
                 "routeSource": str(effective_model_config.get("routeSource", "default")),
             },
         })
@@ -1971,7 +1966,6 @@ def run_round_for_app(
         "model": model,
         "api_type": api_type,
         "temperature": temperature,
-        "offline_mode": offline_mode,
         "prompt_profile": prompt_profile,
         "prompt_sequence": prompt_sequence,
         "round_model_key": _round_model_key(prompt_profile, effective_round),
@@ -1993,7 +1987,6 @@ def run_round_for_app(
         progress_callback=progress_callback or emit_progress_event,
         checkpoint_metadata=checkpoint_metadata,
         cancel_check=cancel_check,
-        rewrite_candidate_mode=rewrite_candidate_mode,
     )
     return {
         "round": int(result["round"]),
@@ -2007,7 +2000,6 @@ def run_round_for_app(
         "inputSegmentCount": int(result["input_segment_count"]),
         "outputSegmentCount": int(result["output_segment_count"]),
         "paragraphCount": int(result["paragraph_count"]),
-        "offlineMode": offline_mode,
         "roundModel": {
             "round": effective_round,
             "providerId": str(effective_model_config.get("providerId", "")),
@@ -2018,7 +2010,6 @@ def run_round_for_app(
             "temperature": temperature,
             "rateLimitWindowMinutes": _coerce_rate_window_minutes(effective_model_config),
             "rateLimitMaxRequests": _coerce_rate_max_requests(effective_model_config),
-            "rewriteCandidateMode": rewrite_candidate_mode,
             "routeSource": str(effective_model_config.get("routeSource", "default")),
         },
         "promptSequence": prompt_sequence,
@@ -2060,7 +2051,6 @@ def test_model_connection(model_config: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "ok": True,
-        "offlineMode": False,
         "message": "接口连通性测试成功。",
         **result,
     }
@@ -2093,7 +2083,6 @@ def list_available_models(model_config: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "ok": True,
-        "offlineMode": False,
         "message": "Model catalog loaded successfully.",
         **result,
     }

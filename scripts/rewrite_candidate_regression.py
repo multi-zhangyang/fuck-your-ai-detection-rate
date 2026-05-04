@@ -7,36 +7,20 @@ import app_service
 from chunking import build_manifest
 from fyadr_records import ROOT_DIR
 from fyadr_round_service import (
-    _build_candidate_note,
     _build_chunk_quality,
-    _candidate_count_for_chunk,
-    _estimate_candidate_calls,
     get_round_compare_path,
-    normalize_rewrite_candidate_mode,
     run_round,
 )
 
 
 def main() -> int:
-    if normalize_rewrite_candidate_mode("quality") != "economy":
-        raise AssertionError("legacy quality candidate mode must normalize to single-pass economy mode")
-    if _candidate_count_for_chunk("cn_custom", "long local paragraph " * 40, "quality") != 1:
-        raise AssertionError("full-round rewrite must never generate a second API candidate")
-    if _build_candidate_note(2) is not None:
-        raise AssertionError("second candidate prompt direction must be disabled")
-
     manifest = build_manifest(
         "First paragraph has enough local content for one chunk.\n\nSecond paragraph has enough local content for another chunk.",
         chunk_limit=48,
         chunk_metric="char",
     )
-    estimate = _estimate_candidate_calls(manifest, "cn_custom", "quality")
-    if estimate != {
-        "estimatedApiCalls": manifest.chunk_count,
-        "candidateMaxPerChunk": 1,
-        "twoCandidateChunkCount": 0,
-    }:
-        raise AssertionError(f"candidate call estimate should be one call per chunk, got {estimate}")
+    if manifest.chunk_count < 1:
+        raise AssertionError("regression manifest should contain at least one chunk")
 
     work_dir = ROOT_DIR / "finish" / "regression" / "rewrite_candidate"
     shutil.rmtree(work_dir, ignore_errors=True)
@@ -66,17 +50,17 @@ def main() -> int:
         prompt_profile="cn_custom",
         prompt_sequence=["classical"],
         chunk_limit=1000,
-        rewrite_candidate_mode="quality",
     )
     quality_summary = result.get("quality_summary") or {}
     if len(prompts) != 1:
-        raise AssertionError(f"quality mode should still call the model once per valid chunk, got {len(prompts)} calls")
+        raise AssertionError(f"full-round rewrite should call the model once per valid chunk, got {len(prompts)} calls")
     if "[CANDIDATE DIRECTION]" in prompts[0]:
         raise AssertionError("full-round prompt must not include candidate direction text")
-    if quality_summary.get("rewriteCandidateMode") != "economy":
-        raise AssertionError("quality summary should expose the effective single-pass mode")
-    if quality_summary.get("candidateMaxPerChunk") != 1 or quality_summary.get("twoCandidateChunkCount") != 0:
-        raise AssertionError("quality summary must not report two-candidate generation")
+    for legacy_key in ("rewriteCandidateMode", "candidateMaxPerChunk", "twoCandidateChunkCount", "candidateSelectionCount"):
+        if legacy_key in quality_summary:
+            raise AssertionError(f"quality summary should not expose removed candidate field {legacy_key}")
+    if quality_summary.get("estimatedApiCalls") != 1:
+        raise AssertionError("quality summary should estimate one API call for one chunk")
 
     structured_output_path = work_dir / "structured_round1.txt"
     structured_manifest_path = work_dir / "structured_round1_manifest.json"
@@ -96,7 +80,6 @@ def main() -> int:
         prompt_profile="cn_custom",
         prompt_sequence=["classical"],
         chunk_limit=1000,
-        rewrite_candidate_mode="economy",
     )
     if structured_output_path.read_text(encoding="utf-8") != source_text:
         raise AssertionError("structured rewrite JSON output should be unwrapped before validation and restore")
@@ -139,7 +122,6 @@ def main() -> int:
         prompt_profile="cn_custom",
         prompt_sequence=["classical"],
         chunk_limit=1000,
-        rewrite_candidate_mode="economy",
     )
     if len(style_prompts) != 2:
         raise AssertionError(f"machine-style drift should trigger exactly one validation retry, got {len(style_prompts)} calls")
@@ -207,7 +189,7 @@ def main() -> int:
         targeted_result = app_service.rerun_compare_chunk(
             str(targeted_output_path),
             "p0_c0",
-            {"offlineMode": False, "baseUrl": "http://localhost", "apiKey": "x", "model": "local"},
+            {"baseUrl": "http://localhost", "apiKey": "x", "model": "local"},
             (
                 "外部检测报告反馈：来源 PaperPass，当前 Diff 块 p0_c0 被强命中。\n"
                 "#2，70% 高风险，匹配度 91%，摘录：Firstly, the local rewrite service keeps citations [1], "

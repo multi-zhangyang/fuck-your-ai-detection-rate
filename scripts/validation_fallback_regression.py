@@ -39,7 +39,6 @@ def main() -> int:
         prompt_profile="cn_custom",
         prompt_sequence=["classical"],
         chunk_limit=1000,
-        rewrite_candidate_mode="economy",
     )
 
     if output_path.read_text(encoding="utf-8") != source_text:

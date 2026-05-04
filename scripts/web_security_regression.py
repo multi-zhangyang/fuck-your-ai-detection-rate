@@ -42,7 +42,6 @@ def run_regression() -> dict[str, object]:
                     "model": "demo-model",
                     "apiType": "chat_completions",
                     "temperature": 0.7,
-                    "offlineMode": False,
                     "promptProfile": "cn_prewrite",
                     "promptSequence": ["prewrite", "round1", "round2"],
                     "requestTimeoutSeconds": 600,

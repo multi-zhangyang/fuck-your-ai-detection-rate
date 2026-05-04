@@ -61,10 +61,8 @@ export type ModelConfig = {
   model: string;
   apiType: "chat_completions" | "responses";
   temperature: number;
-  offlineMode: boolean;
   promptProfile: PromptProfile;
   promptSequence: PromptId[];
-  rewriteCandidateMode?: "economy";
   requestTimeoutSeconds: number;
   maxRetries: number;
   modelProviders?: ModelProviderConfig[];
@@ -79,7 +77,6 @@ export type ModelCatalogItem = {
 
 export type ModelCatalogResult = {
   ok: boolean;
-  offlineMode: boolean;
   message: string;
   endpoint: string;
   status?: number;
@@ -185,14 +182,12 @@ export type EnvironmentDiagnostics = {
   config: {
     path: string;
     exists: boolean;
-    offlineMode: boolean;
     hasBaseUrl: boolean;
     hasApiKey: boolean;
     model: string;
     apiType: string;
     promptProfile: string;
     promptSequence: string[];
-    rewriteCandidateMode?: "economy" | "quality" | string;
     requestTimeoutSeconds?: number;
     maxRetries?: number;
     providerCount: number;
@@ -213,10 +208,7 @@ export type RoundProgress = {
   currentChunk?: number;
   totalChunks?: number;
   completedChunks?: number;
-  rewriteCandidateMode?: "economy";
-  candidateMaxPerChunk?: number;
   estimatedApiCalls?: number;
-  twoCandidateChunkCount?: number;
   chunkId?: string;
   nextChunkId?: string;
   nextChunkIndex?: number;
@@ -404,10 +396,7 @@ export type RoundQualitySummary = {
   styleCardVersion?: number;
   styleCardChunkCount?: number;
   styleCardChunkIds?: string[];
-  rewriteCandidateMode?: "economy";
-  candidateMaxPerChunk?: number;
   estimatedApiCalls?: number;
-  twoCandidateChunkCount?: number;
   globalStyleProfile?: GlobalStyleProfile;
   machineLikeRiskCount?: number;
   machineLikeRisks?: MachineLikeRisk[];
@@ -420,17 +409,13 @@ export type RunAuditSummary = {
   model?: string;
   apiType?: "chat_completions" | "responses" | string;
   temperature?: number | null;
-  offlineMode?: boolean;
   requestTimeoutSeconds?: number | null;
   maxRetries?: number | null;
   rateLimitWindowMinutes?: number | null;
   rateLimitMaxRequests?: number | null;
   promptProfile?: PromptProfile | string;
   promptSequence?: PromptId[] | string[];
-  rewriteCandidateMode?: "economy" | "quality" | string;
-  candidateMaxPerChunk?: number | null;
   estimatedApiCalls?: number | null;
-  twoCandidateChunkCount?: number | null;
   chunkCount?: number | null;
   paragraphCount?: number | null;
   splitParagraphCount?: number | null;
@@ -523,7 +508,6 @@ export type BatchRerunStatus = {
 
 export type TestConnectionResult = {
   ok: boolean;
-  offlineMode: boolean;
   message: string;
   endpoint: string;
   model: string;
@@ -669,7 +653,6 @@ export type RoundResult = {
   inputSegmentCount: number;
   outputSegmentCount: number;
   paragraphCount: number;
-  offlineMode: boolean;
   roundModel?: {
     round: number;
     providerId?: string;
@@ -680,7 +663,6 @@ export type RoundResult = {
     temperature?: number;
     rateLimitWindowMinutes?: number;
     rateLimitMaxRequests?: number;
-    rewriteCandidateMode?: "economy";
     routeSource?: "default" | "provider" | "round_snapshot" | string;
   };
   docEntry: Record<string, unknown>;

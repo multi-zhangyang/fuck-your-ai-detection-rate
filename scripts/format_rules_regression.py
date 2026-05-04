@@ -108,7 +108,7 @@ def run_regression(spec_path: Path, report_path: Path) -> dict[str, Any]:
 
     fallback_rules = parse_format_rules_from_text(
         instruction_text,
-        model_config={"baseUrl": "", "apiKey": "", "model": "", "offlineMode": False},
+        model_config={"baseUrl": "", "apiKey": "", "model": ""},
     )
     fallback_quality = fallback_rules.get("quality", {})
     fallback_warnings = fallback_quality.get("warnings", [])
@@ -131,7 +131,7 @@ def run_regression(spec_path: Path, report_path: Path) -> dict[str, Any]:
             },
             ensure_ascii=False,
         ),
-        model_config={"baseUrl": "", "apiKey": "", "model": "", "offlineMode": False},
+        model_config={"baseUrl": "", "apiKey": "", "model": ""},
     )
     direct_body = direct_json_rules.get("styles", {}).get("body_text", {})
     checks.append({"role": "direct_json", "key": "body_text.cnFont", "actual": direct_body.get("cnFont"), "expected": "仿宋"})
@@ -164,7 +164,7 @@ def run_regression(spec_path: Path, report_path: Path) -> dict[str, Any]:
         format_rules.llm_completion = fake_messy_llm_completion
         ai_wrapped_rules = parse_format_rules_from_text(
             "学校要求正文小四号宋体，一级标题三号黑体。",
-            model_config={"baseUrl": "http://localhost/v1", "apiKey": "x", "model": "local", "offlineMode": False},
+        model_config={"baseUrl": "http://localhost/v1", "apiKey": "x", "model": "local"},
         )
     finally:
         format_rules.llm_completion = original_llm_completion

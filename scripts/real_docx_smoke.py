@@ -240,7 +240,7 @@ def _run_detection_rerun_chain_smoke(report: dict[str, Any], export_path: Path) 
         rerun_result = app_service.rerun_compare_chunk(
             str(output_path),
             target_chunk_id,
-            {"offlineMode": False, "baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
+        {"baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
             _build_smoke_detection_feedback(best_match),
         )
     finally:

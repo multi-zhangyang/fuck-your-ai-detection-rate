@@ -12,7 +12,6 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_PROMPT_PROFILE = "cn_custom"
 SUPPORTED_PROMPT_PROFILES = {"cn", "cn_prewrite", "cn_custom"}
 SUPPORTED_PROMPT_IDS = {"prewrite", "classical", "round1", "round2"}
-SUPPORTED_REWRITE_CANDIDATE_MODES = {"economy"}
 ROUND_MODEL_KEYS = {
     "cn_prewrite:1",
     "cn_prewrite:2",
@@ -66,11 +65,6 @@ def _normalize_prompt_sequence(value: Any) -> list[str]:
 def _normalize_api_type(value: Any) -> str:
     candidate = str(value or "chat_completions").strip() or "chat_completions"
     return "responses" if candidate == "responses" else "chat_completions"
-
-
-def _normalize_rewrite_candidate_mode(value: Any) -> str:
-    candidate = str(value or "economy").strip().lower() or "economy"
-    return candidate if candidate in SUPPORTED_REWRITE_CANDIDATE_MODES else "economy"
 
 
 def _normalize_rate_limit(value: Any) -> int:
@@ -312,10 +306,8 @@ def load_app_config() -> dict[str, Any]:
             "model": "",
             "apiType": "chat_completions",
             "temperature": 0.7,
-            "offlineMode": False,
             "promptProfile": DEFAULT_PROMPT_PROFILE,
             "promptSequence": ["prewrite", "round1", "round2"],
-            "rewriteCandidateMode": "economy",
             "requestTimeoutSeconds": DEFAULT_REQUEST_TIMEOUT_SECONDS,
             "maxRetries": DEFAULT_MAX_RETRIES,
             "modelProviders": [],
@@ -328,10 +320,8 @@ def load_app_config() -> dict[str, Any]:
         "model": str(data.get("model", "")),
         "apiType": _normalize_api_type(data.get("apiType", "chat_completions")),
         "temperature": float(data.get("temperature", 0.7)),
-        "offlineMode": False,
         "promptProfile": _normalize_prompt_profile(data.get("promptProfile", DEFAULT_PROMPT_PROFILE)),
         "promptSequence": _normalize_prompt_sequence(data.get("promptSequence")),
-        "rewriteCandidateMode": _normalize_rewrite_candidate_mode(data.get("rewriteCandidateMode", "economy")),
         "requestTimeoutSeconds": _clamp_int(
             data.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
             default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -371,10 +361,8 @@ def save_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "model": str(config.get("model", "")).strip(),
         "apiType": _normalize_api_type(config.get("apiType", "chat_completions")),
         "temperature": float(config.get("temperature", 0.7)),
-        "offlineMode": False,
         "promptProfile": _normalize_prompt_profile(config.get("promptProfile", DEFAULT_PROMPT_PROFILE)),
         "promptSequence": _normalize_prompt_sequence(config.get("promptSequence", existing.get("promptSequence", []))),
-        "rewriteCandidateMode": _normalize_rewrite_candidate_mode(config.get("rewriteCandidateMode", existing.get("rewriteCandidateMode", "economy"))),
         "requestTimeoutSeconds": _clamp_int(
             config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
             default=DEFAULT_REQUEST_TIMEOUT_SECONDS,

@@ -253,7 +253,6 @@ def run_document_round(
     progress_callback: ProgressCallback | None = None,
     checkpoint_metadata: dict[str, object] | None = None,
     cancel_check: Callable[[], bool] | None = None,
-    rewrite_candidate_mode: str = "economy",
 ) -> dict:
     context = build_round_context(
         source_path,
@@ -279,7 +278,6 @@ def run_document_round(
         progress_callback=progress_callback,
         checkpoint_metadata=checkpoint_metadata,
         cancel_check=cancel_check,
-        rewrite_candidate_mode=rewrite_candidate_mode,
     )
 
     if body_map is not None and context.body_map_path is not None:

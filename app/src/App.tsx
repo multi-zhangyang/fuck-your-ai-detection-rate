@@ -274,12 +274,11 @@ function normalizeActiveModelConfig(config: ModelConfig): ModelConfig {
   const promptSequence = normalizePromptSequence(config.promptSequence);
   if (
     config.promptProfile === ACTIVE_PROMPT_PROFILE
-    && config.offlineMode === false
     && promptSequencesEqual(config.promptSequence, promptSequence)
   ) {
     return config;
   }
-  return { ...config, offlineMode: false, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence };
+  return { ...config, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence };
 }
 
 function formatPromptSequence(sequence: PromptId[] | undefined): string {
@@ -365,17 +364,12 @@ function buildQualityStats(compareData: RoundCompareData | null, exportResult: E
 function buildCurrentRunAudit(roundResult: RoundResult | null, compareData: RoundCompareData | null, modelConfig: ModelConfig): RunAuditSummary {
   const qualitySummary = (roundResult?.qualitySummary ?? compareData?.qualitySummary ?? {}) as NonNullable<RoundResult["qualitySummary"]>;
   const paragraphSplitSummary = compareData?.paragraphSplitSummary ?? qualitySummary.paragraphSplitSummary;
-  const candidateMode = "economy";
-  const candidateMaxPerChunk = qualitySummary.candidateMaxPerChunk ?? 1;
   const chunkCount = compareData?.chunkCount ?? qualitySummary.paragraphSplitSummary?.chunkCount ?? roundResult?.inputSegmentCount ?? null;
   return {
     ...(roundResult?.runAudit ?? {}),
     promptProfile: compareData?.promptProfile ?? modelConfig.promptProfile,
     promptSequence: normalizePromptSequence(compareData?.promptSequence ?? modelConfig.promptSequence),
-    rewriteCandidateMode: candidateMode,
-    candidateMaxPerChunk,
-    estimatedApiCalls: qualitySummary.estimatedApiCalls ?? (chunkCount ? chunkCount * candidateMaxPerChunk : null),
-    twoCandidateChunkCount: qualitySummary.twoCandidateChunkCount ?? 0,
+    estimatedApiCalls: qualitySummary.estimatedApiCalls ?? chunkCount,
     chunkCount,
     paragraphCount: compareData?.paragraphCount ?? qualitySummary.paragraphSplitSummary?.paragraphCount ?? roundResult?.paragraphCount ?? null,
     splitParagraphCount: paragraphSplitSummary?.splitParagraphCount ?? null,
@@ -784,7 +778,6 @@ function buildRoundResultFromHistoryRound(roundItem: HistoryRound, compareData: 
     inputSegmentCount: roundItem.inputSegmentCount ?? compareData.chunkCount,
     outputSegmentCount: roundItem.outputSegmentCount ?? compareData.chunks.length,
     paragraphCount: compareData.paragraphCount,
-    offlineMode: false,
     docEntry: {},
     roundContext: {},
     qualitySummary: compareData.qualitySummary,
@@ -801,7 +794,6 @@ function buildRoundResultFromCompareData(compareData: RoundCompareData): RoundRe
     inputSegmentCount: compareData.chunkCount,
     outputSegmentCount: compareData.chunks.length,
     paragraphCount: compareData.paragraphCount,
-    offlineMode: false,
     docEntry: {},
     roundContext: {},
     qualitySummary: compareData.qualitySummary,
@@ -1085,15 +1077,10 @@ function mergeVisibleProgress(current: RoundProgress | null, next: RoundProgress
   return next;
 }
 
-function createCheckpointProgress(
-  status: RoundProgressStatus | null,
-  rewriteCandidateMode: ModelConfig["rewriteCandidateMode"],
-): RoundProgress | null {
+function createCheckpointProgress(status: RoundProgressStatus | null): RoundProgress | null {
   if (!status?.canResume || !status.round) {
     return null;
   }
-  const candidateMode = "economy";
-  const candidateMaxPerChunk = 1;
   return {
     phase: "resuming-from-checkpoint",
     round: status.round,
@@ -1108,9 +1095,7 @@ function createCheckpointProgress(
     resumeStage: status.resumeStage,
     resumeActionLabel: status.resumeActionLabel,
     resumeExplanation: status.resumeExplanation,
-    rewriteCandidateMode: candidateMode,
-    candidateMaxPerChunk,
-    estimatedApiCalls: status.totalChunks ? status.totalChunks * candidateMaxPerChunk : undefined,
+    estimatedApiCalls: status.totalChunks || undefined,
   };
 }
 
@@ -3728,7 +3713,7 @@ export function App({ service }: Props) {
         && promptSequencesEqual(roundProgressStatus.promptSequence, runConfig.promptSequence)
         ? roundProgressStatus
         : await refreshRoundProgressStatus(documentStatus, runConfig);
-      const checkpointProgress = createCheckpointProgress(checkpointStatus, modelConfig.rewriteCandidateMode);
+      const checkpointProgress = createCheckpointProgress(checkpointStatus);
       visibleProgressRef.current = checkpointProgress;
       setProgress(checkpointProgress);
       setRerunFailures([]);
@@ -5673,7 +5658,6 @@ function buildShareableDiagnostics(value: EnvironmentDiagnostics) {
       model: value.config.model ? "<configured>" : "",
       promptProfile: value.config.promptProfile,
       promptSequence: value.config.promptSequence,
-      rewriteCandidateMode: value.config.rewriteCandidateMode,
       requestTimeoutSeconds: value.config.requestTimeoutSeconds,
       maxRetries: value.config.maxRetries,
       providerCount: value.config.providerCount,

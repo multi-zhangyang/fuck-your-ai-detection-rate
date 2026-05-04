@@ -487,7 +487,7 @@ def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Pat
         rerun_result = app_service.rerun_compare_chunk(
             str(output_path),
             target_chunk_id,
-            {"offlineMode": False, "baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
+        {"baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
             _build_auto_numbered_detection_feedback(best_match),
         )
     finally:
