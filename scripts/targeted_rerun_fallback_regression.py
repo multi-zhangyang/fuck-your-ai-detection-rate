@@ -70,7 +70,7 @@ def main() -> int:
         result = app_service.rerun_compare_chunk(
             str(output_path),
             "p0_c0",
-            {"offlineMode": True},
+            {"baseUrl": "http://localhost/v1", "apiKey": "regression", "model": "regression-model"},
             "人工反馈：请保留事实、数值和引用，只做必要的局部修复。",
         )
     finally:

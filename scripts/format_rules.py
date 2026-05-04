@@ -1273,8 +1273,6 @@ def parse_format_rules_from_text(document_text: str, *, model_config: dict[str, 
         except Exception:
             pass
     config = model_config or load_app_config()
-    if bool(config.get("offlineMode", False)):
-        return _fallback_format_rules(text, "当前处于离线模式。")
     if not str(config.get("baseUrl", "")).strip() or not str(config.get("model", "")).strip():
         return _fallback_format_rules(text, "解析模型配置不完整。")
 

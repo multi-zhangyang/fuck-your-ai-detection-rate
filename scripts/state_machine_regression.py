@@ -361,7 +361,7 @@ class WebRunStateRegressionTest(unittest.TestCase):
 
         response = self.client.post(
             "/api/run-round",
-            json={"sourcePath": str(self.sample_path), "modelConfig": {"offlineMode": True}},
+            json={"sourcePath": str(self.sample_path), "modelConfig": {"baseUrl": "http://localhost/v1", "apiKey": "regression", "model": "regression-model"}},
         )
 
         self.assertEqual(response.status_code, 202)

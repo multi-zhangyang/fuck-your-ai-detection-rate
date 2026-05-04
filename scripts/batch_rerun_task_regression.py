@@ -13,6 +13,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 REPORT_PATH = ROOT_DIR / "finish" / "regression" / "batch_rerun_task_regression_report.json"
 OUTPUT_PATH = ROOT_DIR / "finish" / "regression" / "batch_rerun_task_output.txt"
 TASK_STATE_TEST_DIR = ROOT_DIR / "finish" / "regression" / "batch_rerun_task_states"
+ONLINE_TEST_MODEL_CONFIG = {"baseUrl": "http://localhost/v1", "apiKey": "regression", "model": "regression-model"}
 
 web_app.TASK_STATE_DIR = TASK_STATE_TEST_DIR
 
@@ -93,7 +94,7 @@ def check_partial_failure_continues(failures: list[str]) -> None:
             run_id,
             str(OUTPUT_PATH),
             [{"chunkId": "p1"}, {"chunkId": "p2"}, {"chunkId": "p3"}],
-            {"offlineMode": True},
+            ONLINE_TEST_MODEL_CONFIG,
         )
         _assert(state.completed, "Batch rerun should complete after isolated per-chunk failures.", failures)
         _assert(state.status == "completed", f"Expected completed status, got {state.status!r}.", failures)
@@ -136,7 +137,7 @@ def check_cancel_stops_before_next_chunk(failures: list[str]) -> None:
             run_id,
             str(OUTPUT_PATH),
             [{"chunkId": "p1"}, {"chunkId": "p2"}, {"chunkId": "p3"}],
-            {"offlineMode": True},
+            ONLINE_TEST_MODEL_CONFIG,
         )
         _assert(calls == ["p1"], f"Cancel should stop before the next chunk, got calls {calls!r}.", failures)
         _assert(state.completed, "Canceled batch rerun should still reach a terminal state.", failures)
@@ -253,7 +254,7 @@ def check_single_rerun_error_exposes_failure_candidates(failures: list[str]) -> 
         web_app.read_round_compare = compare_with_rejected_candidate
         response = client.post(
             "/api/rerun-chunk",
-            json={"outputPath": str(OUTPUT_PATH), "chunkId": "p1", "modelConfig": {"offlineMode": True}},
+            json={"outputPath": str(OUTPUT_PATH), "chunkId": "p1", "modelConfig": ONLINE_TEST_MODEL_CONFIG},
         )
         payload = response.get_json() or {}
         _assert(response.status_code == 400, f"Single rerun failure should return 400, got {response.status_code}.", failures)

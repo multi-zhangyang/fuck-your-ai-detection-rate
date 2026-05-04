@@ -1480,9 +1480,9 @@ def build_environment_diagnostics() -> dict[str, Any]:
         {
             "key": "config",
             "label": "模型配置",
-            "ok": bool(config.get("offlineMode")) or (bool(config.get("baseUrl")) and bool(config.get("apiKey")) and bool(config.get("model"))),
-            "level": "success" if bool(config.get("offlineMode")) or (bool(config.get("baseUrl")) and bool(config.get("apiKey")) and bool(config.get("model"))) else "warning",
-            "message": "离线模式已启用。" if bool(config.get("offlineMode")) else "默认模型连接已配置。" if (bool(config.get("baseUrl")) and bool(config.get("apiKey")) and bool(config.get("model"))) else "默认模型连接未完整配置，可到模型配置页填写。",
+            "ok": bool(config.get("baseUrl")) and bool(config.get("apiKey")) and bool(config.get("model")),
+            "level": "success" if (bool(config.get("baseUrl")) and bool(config.get("apiKey")) and bool(config.get("model"))) else "warning",
+            "message": "默认模型连接已配置。" if (bool(config.get("baseUrl")) and bool(config.get("apiKey")) and bool(config.get("model"))) else "默认模型连接未完整配置，可到模型配置页填写。",
         },
         {
             "key": "providers",
@@ -1543,7 +1543,7 @@ def build_environment_diagnostics() -> dict[str, Any]:
         "config": {
             "path": str(config_path),
             "exists": config_path.exists(),
-            "offlineMode": bool(config.get("offlineMode")),
+            "offlineMode": False,
             "hasBaseUrl": bool(config.get("baseUrl")),
             "hasApiKey": bool(config.get("apiKey")),
             "model": str(config.get("model", "")),

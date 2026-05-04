@@ -281,10 +281,14 @@ function promptSequencesEqual(left: PromptId[] | undefined, right: PromptId[] | 
 
 function normalizeActiveModelConfig(config: ModelConfig): ModelConfig {
   const promptSequence = normalizePromptSequence(config.promptSequence);
-  if (config.promptProfile === ACTIVE_PROMPT_PROFILE && promptSequencesEqual(config.promptSequence, promptSequence)) {
+  if (
+    config.promptProfile === ACTIVE_PROMPT_PROFILE
+    && config.offlineMode === false
+    && promptSequencesEqual(config.promptSequence, promptSequence)
+  ) {
     return config;
   }
-  return { ...config, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence };
+  return { ...config, offlineMode: false, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence };
 }
 
 function formatPromptSequence(sequence: PromptId[] | undefined): string {
@@ -1637,7 +1641,7 @@ function stringifyError(error: unknown): string {
     return "当前文档已经有任务在运行。等这一轮结束后再继续，避免把状态冲乱。";
   }
   if (rawMessage.includes("Model configuration is incomplete")) {
-    return "模型配置还没填完整。请补全接口地址、API Key 和模型名称，或者启用离线模式。";
+    return "模型配置还没填完整。请补全接口地址、API Key 和模型名称。";
   }
   if (rawMessage.includes("baseUrl is required before loading models")) {
     return "先填写接口地址，再去读取远程模型列表。";
@@ -2407,24 +2411,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   async function refreshModelCatalog(config = modelConfig, options: { silent?: boolean } = {}) {
     const { silent = false } = options;
 
-    if (config.offlineMode) {
-      const offlinePayload: ModelCatalogResult = {
-        ok: true,
-        offlineMode: true,
-        message: "离线模式下不会请求远程模型列表。",
-        endpoint: "",
-        models: [],
-        total: 0,
-      };
-      setModelCatalog(offlinePayload);
-      setModelCatalogError("");
-      if (!silent) {
-        setNotice(offlinePayload.message);
-        setRuntimeStep("离线模式已就绪");
-      }
-      return offlinePayload;
-    }
-
     if (!config.baseUrl.trim() || !config.apiKey.trim()) {
       const message = "先填写接口地址和 API Key，再去读取远程模型列表。";
       setModelCatalog(null);
@@ -2482,17 +2468,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   }
 
   async function listModelsForConfig(config: ModelConfig, signal?: AbortSignal): Promise<ModelCatalogResult | null> {
-    if (config.offlineMode) {
-      return {
-        ok: true,
-        offlineMode: true,
-        message: "offline mode",
-        endpoint: "",
-        models: [],
-        total: 0,
-      };
-    }
-
     if (!config.baseUrl.trim() || !config.apiKey.trim()) {
       throw new Error("Please fill Base URL and API Key first.");
     }
@@ -2510,7 +2485,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
           return;
         }
         setModelConfig(config);
-        if (config.baseUrl && config.apiKey && !config.offlineMode) {
+        if (config.baseUrl && config.apiKey) {
           void refreshModelCatalog(config, { silent: true });
         }
       } catch (appError) {
@@ -3405,9 +3380,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     try {
       setRuntimeStep("正在保存模型配置。");
       const configToSave = normalizeActiveModelConfig(nextConfig ?? modelConfig);
-      if (testConfig && !testConfig.offlineMode) {
+      if (testConfig) {
         setRuntimeStep("正在测试模型连接，测试通过后保存。");
-        await service.testModelConnection(testConfig);
+        await service.testModelConnection(normalizeActiveModelConfig(testConfig));
       }
       const saved = await service.saveModelConfig(configToSave);
       const mergedSaved = normalizeActiveModelConfig({ ...saved, ...configToSave, roundModels: { ...(saved.roundModels ?? {}), ...(configToSave.roundModels ?? {}) } });
@@ -3415,7 +3390,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       if (documentStatus) {
         await refreshDocumentState(documentStatus.sourcePath, mergedSaved);
       }
-      if (mergedSaved.baseUrl && mergedSaved.apiKey && !mergedSaved.offlineMode) {
+      if (mergedSaved.baseUrl && mergedSaved.apiKey) {
         await refreshModelCatalog(mergedSaved, { silent: true });
       }
       setNotice(`模型配置已保存，当前模式为 ${describePromptProfile(mergedSaved.promptProfile)}。`);
@@ -3431,18 +3406,17 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   async function handleTestConnection() {
     const taskTicket = beginTask("testing-config");
     try {
-      setRuntimeStep(modelConfig.offlineMode ? "离线模式无需测试远程接口。" : "正在测试接口连通性。");
-      const result = await service.testModelConnection(modelConfig);
+      const onlineConfig = normalizeActiveModelConfig(modelConfig);
+      setRuntimeStep("正在测试接口连通性。");
+      const result = await service.testModelConnection(onlineConfig);
       const detailParts = [
-        result.offlineMode ? "当前为离线模式，无需测试远程接口。" : "接口连通性测试成功。",
+        "接口连通性测试成功。",
         result.apiType ? `接口类型：${result.apiType}` : "",
         result.endpoint ? `请求地址：${result.endpoint}` : "",
       ].filter(Boolean);
       setNotice(detailParts.join(" "));
-      setRuntimeStep(result.offlineMode ? "离线模式已确认" : "接口连通性测试成功");
-      if (!result.offlineMode) {
-        await refreshModelCatalog(modelConfig, { silent: true });
-      }
+      setRuntimeStep("接口连通性测试成功");
+      await refreshModelCatalog(onlineConfig, { silent: true });
     } catch (appError) {
       setError(stringifyError(appError));
       setRuntimeStep("接口连通性测试失败");
@@ -5284,22 +5258,19 @@ function HomeRunPanel({
     const customRoute = Boolean(roundModel?.enabled);
     const effectiveCustomModel = roundModel?.model || provider?.defaultModel || provider?.models?.[0] || "";
     const providerUnavailable = Boolean(
-      !modelConfig.offlineMode
-      && (
-        customRoute
-          ? (
-            !provider
-            || provider.enabled === false
-            || !provider.baseUrl?.trim()
-            || !provider.apiKey?.trim()
-            || !effectiveCustomModel.trim()
-          )
-          : (
-            !modelConfig.baseUrl?.trim()
-            || !modelConfig.apiKey?.trim()
-            || !modelConfig.model?.trim()
-          )
-      ),
+      customRoute
+        ? (
+          !provider
+          || provider.enabled === false
+          || !provider.baseUrl?.trim()
+          || !provider.apiKey?.trim()
+          || !effectiveCustomModel.trim()
+        )
+        : (
+          !modelConfig.baseUrl?.trim()
+          || !modelConfig.apiKey?.trim()
+          || !modelConfig.model?.trim()
+        ),
     );
     return {
       index,
@@ -5317,7 +5288,7 @@ function HomeRunPanel({
     : customizedRouteCount
       ? `混用 ${customizedRouteCount}/${activeFlowSequence.length}`
       : "全部继承默认";
-  const activeModelRouteReady = modelConfig.offlineMode || unavailableRouteCount === 0;
+  const activeModelRouteReady = unavailableRouteCount === 0;
   const modelRouteHealthLabel = unavailableRouteCount
     ? "路线不可启动"
     : activeModelRouteReady
@@ -5682,7 +5653,7 @@ function HomeRunPanel({
                     </div>
                     <div className="grid min-w-0 gap-2 sm:grid-cols-3">
                       <Button type="button" variant="outline" size="sm" onClick={resetModelRouteToDefault} disabled={busy}>继承默认</Button>
-                      <Button type="button" variant="outline" size="sm" onClick={onRefreshAllProviderModels} disabled={busy || modelConfig.offlineMode || providerOptions.length === 0}>
+                      <Button type="button" variant="outline" size="sm" onClick={onRefreshAllProviderModels} disabled={busy || providerOptions.length === 0}>
                         <RefreshCw data-icon="inline-start" />读服务商
                       </Button>
                       <Button type="button" variant="neutral" size="sm" onClick={() => onSaveModelConfig(modelConfigRef.current)} disabled={busy || unavailableRouteCount > 0}>
@@ -5707,7 +5678,7 @@ function HomeRunPanel({
                     const selectedProviderId = roundModel?.enabled && provider && provider.enabled !== false ? provider.id : "__default";
                     const selectedModels = selectedProviderId === "__default" ? [] : provider?.models?.length ? provider.models : [];
                     const selectedModelValue = selectedProviderId === "__default" ? "" : roundModel?.model || provider?.defaultModel || selectedModels[0];
-                    const routeIssues = modelConfig.offlineMode ? [] : selectedProviderId === "__default"
+                    const routeIssues = selectedProviderId === "__default"
                       ? [
                         !modelConfig.baseUrl?.trim() ? "默认 API 地址未填" : "",
                         !modelConfig.apiKey?.trim() ? "默认 API Key 未填" : "",
@@ -5762,7 +5733,7 @@ function HomeRunPanel({
                             </Field>
                           </FieldGroup>
                           {selectedProviderId !== "__default" && provider && selectedModels.length === 0 ? (
-                            <Button type="button" variant="outline" size="sm" className="w-fit max-w-full" onClick={() => onRefreshProviderModels(provider.id)} disabled={busy || modelConfig.offlineMode}>
+                            <Button type="button" variant="outline" size="sm" className="w-fit max-w-full" onClick={() => onRefreshProviderModels(provider.id)} disabled={busy}>
                               <RefreshCw data-icon="inline-start" />读取模型
                             </Button>
                           ) : null}
@@ -5901,7 +5872,6 @@ function buildShareableDiagnostics(value: EnvironmentDiagnostics) {
     })),
     config: {
       exists: value.config.exists,
-      offlineMode: value.config.offlineMode,
       hasBaseUrl: value.config.hasBaseUrl,
       hasApiKey: value.config.hasApiKey,
       apiType: value.config.apiType,
@@ -6051,7 +6021,7 @@ function DiagnosticsPage({
   const activeTaskCount = value?.tasks?.length ? taskItems.filter(isDiagnosticTaskActive).length : (value?.activeRunCount ?? 0) + activeBatchRerunCount;
   const recentTaskCount = value?.recentTaskCount ?? value?.recentTasks?.length ?? recentRunCount + recentBatchRerunCount;
   const taskStateStore = value?.taskStateStore;
-  const configReady = value ? value.config.offlineMode || Boolean(value.config.hasBaseUrl && value.config.hasApiKey && value.config.model) : false;
+  const configReady = value ? Boolean(value.config.hasBaseUrl && value.config.hasApiKey && value.config.model) : false;
   const [copied, setCopied] = useState(false);
   const copyDiagnostics = async () => {
     if (!value) return;
@@ -6091,7 +6061,7 @@ function DiagnosticsPage({
         {value ? (
           <CardContent className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
             <DiagnosticSummaryTile label="自检项" value={`${passedCount}/${checks.length}`} detail={errorCount || warningCount ? "有项目需要确认" : "全部可用"} />
-            <DiagnosticSummaryTile label="模型连接" value={configReady ? "可启动" : "待补全"} detail={value.config.offlineMode ? "离线模式" : value.config.model || "未选择模型"} />
+            <DiagnosticSummaryTile label="模型连接" value={configReady ? "可启动" : "待补全"} detail={value.config.model || "未选择模型"} />
             <DiagnosticSummaryTile label="后台任务" value={`${activeTaskCount} 运行中`} detail={`${recentTaskCount} 条近期记录`} />
             <DiagnosticSummaryTile label="快照" value={taskStateStore ? `${taskStateStore.fileCount} 个` : "未返回"} detail={taskStateStore ? `${taskStateStore.staleCount} 个可清理` : "等待后端状态"} />
           </CardContent>
@@ -6189,10 +6159,10 @@ function DiagnosticsPage({
                     <CardTitle className="text-lg">模型配置</CardTitle>
                   </CardHeader>
                   <CardContent className="grid gap-2 text-xs">
-                    <DiagnosticRow label="运行模式" value={value.config.offlineMode ? "离线" : "远程模型"} />
+                    <DiagnosticRow label="运行模式" value="远程模型" />
                     <DiagnosticRow label="默认模型" value={value.config.model || "未填写"} />
-                    <DiagnosticRow label="接口" value={value.config.offlineMode ? "不请求远程" : value.config.hasBaseUrl ? "已填写" : "缺少 Base URL"} />
-                    <DiagnosticRow label="密钥" value={value.config.offlineMode ? "不需要" : value.config.hasApiKey ? "已填写" : "缺少 API Key"} />
+                    <DiagnosticRow label="接口" value={value.config.hasBaseUrl ? "已填写" : "缺少 Base URL"} />
+                    <DiagnosticRow label="密钥" value={value.config.hasApiKey ? "已填写" : "缺少 API Key"} />
                     <DiagnosticRow label="服务商仓库" value={`保存 ${value.config.providerCount} · 启用 ${value.config.enabledProviderCount}`} />
                     <DiagnosticRow label="轮次专属配置" value={`${value.config.customRoundCount} 轮`} />
                     <DiagnosticRow label="超时/重试" value={`${value.config.requestTimeoutSeconds ?? "-"}s / ${value.config.maxRetries ?? "-"} 次`} />

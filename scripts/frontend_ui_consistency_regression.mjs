@@ -274,9 +274,13 @@ function runRegression() {
 
   if (modelConfigCardSource) {
     assertIncludes(modelConfigCardSource, "Tabs defaultValue=\"default\"", "Model config must use shadcn Tabs for major panes.", failures);
+    assertIncludes(modelConfigCardSource, "<Tabs defaultValue=\"default\" className=\"flex h-full min-h-0 flex-col\">", "Model config tabs must wrap the full card so tab controls can live in the header.", failures);
+    assertIncludes(modelConfigCardSource, "<CardHeader className=\"shrink-0 border-b px-5 py-3\">", "Model config header must stay compact after moving tab controls into the title row.", failures);
+    assertIncludes(modelConfigCardSource, "TabsList className=\"grid h-9 w-full shrink-0 grid-cols-2 lg:w-[360px]\"", "Model config tabs must be compact and aligned with the card title.", failures);
     assertIncludes(modelConfigCardSource, "TabsTrigger value=\"default\"", "Model config must expose default connection as the first pane.", failures);
     assertIncludes(modelConfigCardSource, "TabsTrigger value=\"providers\"", "Model config must expose provider repository as the second pane.", failures);
     assertIncludes(modelConfigCardSource, "ScrollArea className=\"min-h-0 flex-1\"", "Model config panes must delegate scrolling to inner panes.", failures);
+    assertNotIncludes(modelConfigCardSource, "onCheckedChange={(offlineMode)", "Model config UI must not expose the removed offline-mode switch.", failures);
     assertIncludes(modelConfigCardSource, "refreshAllProviderCatalogs", "Model provider repository must support batch model catalog refresh.", failures);
     assertIncludes(modelConfigCardSource, "获取全部", "Model provider repository must expose batch model catalog refresh in the UI.", failures);
     assertIncludes(modelConfigCardSource, "providerCatalogAbortRef", "Provider model catalog loading must be cancellable.", failures);

@@ -1845,7 +1845,7 @@ def run_round_for_app(
     model = str(effective_model_config.get("model", "")).strip()
     api_type = str(effective_model_config.get("apiType", "chat_completions")).strip()
     temperature = float(effective_model_config.get("temperature", model_config.get("temperature", 0.7)) or 0.7)
-    offline_mode = bool(model_config.get("offlineMode", False))
+    offline_mode = False
     rewrite_candidate_mode = normalize_rewrite_candidate_mode(model_config.get("rewriteCandidateMode", "economy"))
     request_timeout_seconds = _coerce_int_config(
         effective_model_config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
@@ -1860,7 +1860,7 @@ def run_round_for_app(
         maximum=10,
     )
 
-    if not offline_mode and (not base_url or not api_key or not model):
+    if not base_url or not api_key or not model:
         raise ValueError("Model configuration is incomplete.")
 
     if progress_callback is not None:
@@ -1887,25 +1887,20 @@ def run_round_for_app(
 
     rate_limiter = _build_provider_rate_limiter(effective_model_config)
 
-    if offline_mode:
-        def transform(chunk_text: str, _: str, __: int, ___: str) -> str:
-            ensure_not_cancelled()
-            return chunk_text
-    else:
-        def transform(_: str, prompt_input: str, __: int, ___: str) -> str:
-            ensure_not_cancelled()
-            rate_limiter()
-            ensure_not_cancelled()
-            return llm_completion(
-                prompt_input,
-                model=model,
-                api_key=api_key,
-                base_url=base_url,
-                api_type=api_type,
-                temperature=temperature,
-                timeout=request_timeout_seconds,
-                max_retries=max_retries,
-            )
+    def transform(_: str, prompt_input: str, __: int, ___: str) -> str:
+        ensure_not_cancelled()
+        rate_limiter()
+        ensure_not_cancelled()
+        return llm_completion(
+            prompt_input,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            api_type=api_type,
+            temperature=temperature,
+            timeout=request_timeout_seconds,
+            max_retries=max_retries,
+        )
 
     checkpoint_metadata = {
         "base_url": base_url,
@@ -1975,7 +1970,6 @@ def test_model_connection(model_config: dict[str, Any]) -> dict[str, Any]:
     api_key = str(model_config.get("apiKey", "")).strip()
     model = str(model_config.get("model", "")).strip()
     api_type = str(model_config.get("apiType", "chat_completions")).strip()
-    offline_mode = bool(model_config.get("offlineMode", False))
     request_timeout_seconds = _coerce_int_config(
         model_config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
         default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -1988,15 +1982,6 @@ def test_model_connection(model_config: dict[str, Any]) -> dict[str, Any]:
         minimum=0,
         maximum=10,
     )
-
-    if offline_mode:
-        return {
-            "ok": True,
-            "offlineMode": True,
-            "message": "当前为离线模式，无需测试远程连通性。",
-            "endpoint": "",
-            "model": model,
-        }
 
     if not base_url or not api_key or not model:
         raise ValueError("Model configuration is incomplete.")
@@ -2018,7 +2003,6 @@ def test_model_connection(model_config: dict[str, Any]) -> dict[str, Any]:
 def list_available_models(model_config: dict[str, Any]) -> dict[str, Any]:
     base_url = str(model_config.get("baseUrl", "")).strip()
     api_key = str(model_config.get("apiKey", "")).strip()
-    offline_mode = bool(model_config.get("offlineMode", False))
     request_timeout_seconds = _coerce_int_config(
         model_config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
         default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -2031,16 +2015,6 @@ def list_available_models(model_config: dict[str, Any]) -> dict[str, Any]:
         minimum=0,
         maximum=10,
     )
-
-    if offline_mode:
-        return {
-            "ok": True,
-            "offlineMode": True,
-            "endpoint": "",
-            "models": [],
-            "total": 0,
-            "message": "Offline mode is enabled, so remote model discovery is skipped.",
-        }
 
     if not base_url:
         raise ValueError("baseUrl is required before loading models.")
@@ -2294,7 +2268,6 @@ def _build_transform_from_model_config(model_config: dict[str, Any]) -> tuple[Ca
     model = str(model_config.get("model", "")).strip()
     api_type = str(model_config.get("apiType", "chat_completions")).strip()
     temperature = float(model_config.get("temperature", 0.7) or 0.7)
-    offline_mode = bool(model_config.get("offlineMode", False))
     request_timeout_seconds = _coerce_int_config(
         model_config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
         default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -2308,11 +2281,8 @@ def _build_transform_from_model_config(model_config: dict[str, Any]) -> tuple[Ca
         maximum=10,
     )
 
-    if not offline_mode and (not base_url or not api_key or not model):
+    if not base_url or not api_key or not model:
         raise ValueError("Model configuration is incomplete.")
-
-    if offline_mode:
-        return (lambda chunk_text, _prompt_input, _round, _chunk_id: chunk_text), "offline"
 
     rate_limiter = _build_provider_rate_limiter(model_config)
 

@@ -87,6 +87,7 @@ function createModelProvider(value: ModelConfig): ModelProviderConfig {
 function providerToModelConfig(value: ModelConfig, provider: ModelProviderConfig, model?: string): ModelConfig {
   return {
     ...value,
+    offlineMode: false,
     baseUrl: provider.baseUrl.trim() || value.baseUrl,
     apiKey: provider.apiKey.trim() || value.apiKey,
     model: (model ?? provider.defaultModel ?? "").trim() || value.model,
@@ -246,23 +247,28 @@ export function ModelConfigCard({
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0] ?? null;
   const providerCatalogRunning = Object.values(providerCatalogBusy).some(Boolean);
   const enabledProviderCount = providers.filter((provider) => provider.enabled !== false).length;
+  const onlineValue = { ...value, offlineMode: false };
 
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden border-border bg-card shadow-sm">
-      <CardHeader className="shrink-0 border-b px-5 py-4">
-        <CardTitle className="text-xl">模型配置</CardTitle>
-        <CardDescription className="mt-1">管理默认连接和服务商仓库。</CardDescription>
-      </CardHeader>
+      <Tabs defaultValue="default" className="flex h-full min-h-0 flex-col">
+        <CardHeader className="shrink-0 border-b px-5 py-3">
+          <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <CardTitle className="text-xl">模型配置</CardTitle>
+              <CardDescription className="mt-1">管理默认连接和服务商仓库。</CardDescription>
+            </div>
+            <TabsList className="grid h-9 w-full shrink-0 grid-cols-2 lg:w-[360px]">
+              <TabsTrigger value="default">默认连接</TabsTrigger>
+              <TabsTrigger value="providers">服务商仓库</TabsTrigger>
+            </TabsList>
+          </div>
+        </CardHeader>
 
-      <CardContent className="min-h-0 flex-1 overflow-hidden p-5">
-        <Tabs defaultValue="default" className="flex h-full min-h-0 flex-col gap-4">
-          <TabsList className="grid h-auto w-full grid-cols-2 xl:w-[360px]">
-            <TabsTrigger value="default">默认连接</TabsTrigger>
-            <TabsTrigger value="providers">服务商仓库</TabsTrigger>
-          </TabsList>
+        <CardContent className="min-h-0 flex-1 overflow-hidden p-4">
 
-          <TabsContent value="default" className="min-h-0 flex-1 overflow-hidden">
-            <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <TabsContent value="default" className="m-0 h-full min-h-0 overflow-hidden">
+            <div className="grid h-full min-h-0 gap-4 2xl:grid-cols-[minmax(0,1fr)_320px]">
               <Card className="flex min-h-0 flex-col overflow-hidden shadow-none">
                 <CardHeader className="border-b px-4 py-3">
                   <CardTitle className="text-base">默认连接</CardTitle>
@@ -317,13 +323,6 @@ export function ModelConfigCard({
                         <FieldLabel htmlFor="maxRetries">最大重试</FieldLabel>
                         <Input id="maxRetries" type="number" min="0" max="10" value={value.maxRetries} onChange={handleFieldChange("maxRetries")} />
                       </Field>
-                      <Field orientation="horizontal" className="rounded-lg border bg-muted/40 px-4 py-3 md:col-span-2">
-                        <FieldContent>
-                          <FieldTitle>离线模式</FieldTitle>
-                          <FieldDescription>开启后不请求远程模型。</FieldDescription>
-                        </FieldContent>
-                        <Switch checked={value.offlineMode} onCheckedChange={(offlineMode) => onChange({ ...value, offlineMode })} />
-                      </Field>
                     </FieldGroup>
                   </CardContent>
                 </ScrollArea>
@@ -339,10 +338,10 @@ export function ModelConfigCard({
                     <Button variant="outline" onClick={onTestConnection} disabled={busy}>
                       <ShieldCheck data-icon="inline-start" />测试连接
                     </Button>
-                    <Button variant="outline" onClick={onRefreshModels} disabled={busy || modelCatalogBusy || value.offlineMode}>
+                    <Button variant="outline" onClick={onRefreshModels} disabled={busy || modelCatalogBusy}>
                       {modelCatalogBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读取模型列表
                     </Button>
-                    <Button onClick={() => onSave(value, value)} disabled={busy}>
+                    <Button onClick={() => onSave(onlineValue, onlineValue)} disabled={busy}>
                       <Save data-icon="inline-start" />保存默认配置
                     </Button>
                   </CardContent>
@@ -364,7 +363,7 @@ export function ModelConfigCard({
             </div>
           </TabsContent>
 
-          <TabsContent value="providers" className="min-h-0 flex-1 overflow-hidden">
+          <TabsContent value="providers" className="m-0 h-full min-h-0 overflow-hidden">
             <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
               <Card className="flex min-h-0 flex-col overflow-hidden shadow-none">
                 <CardHeader className="border-b p-4">
@@ -374,7 +373,7 @@ export function ModelConfigCard({
                       <CardDescription>连接、模型与限速策略</CardDescription>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || value.offlineMode || enabledProviderCount === 0}>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || enabledProviderCount === 0}>
                         {providerCatalogRunning ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取全部
                       </Button>
                       <Button type="button" size="sm" onClick={addProvider} disabled={busy}>
@@ -439,7 +438,7 @@ export function ModelConfigCard({
                         </CardDescription>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <Button type="button" size="sm" variant="outline" disabled={busy || providerCatalogRunning || value.offlineMode} onClick={() => void refreshProviderCatalog(selectedProvider)}>
+                        <Button type="button" size="sm" variant="outline" disabled={busy || providerCatalogRunning} onClick={() => void refreshProviderCatalog(selectedProvider)}>
                           {providerCatalogBusy[selectedProvider.id] ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取模型
                         </Button>
                         {providerCatalogRunning ? (
@@ -566,8 +565,8 @@ export function ModelConfigCard({
             </div>
           </TabsContent>
 
-        </Tabs>
-      </CardContent>
+        </CardContent>
+      </Tabs>
     </Card>
   );
 }
