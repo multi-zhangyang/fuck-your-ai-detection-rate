@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { Fragment, startTransition, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import {
   AlertCircle,
   AlertTriangle,
@@ -6534,14 +6534,16 @@ function NotificationCenter({
   const unreadCount = items.filter((item) => !item.read).length;
   const errorCount = items.filter((item) => item.kind === "error").length;
   const runningTaskCount = taskItems.filter((item) => item.running).length;
+  const taskCountText = taskItems.length ? `${taskItems.length} 任务` : "无任务";
 
   return (
     <Sheet open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
       <SheetContent
+        aria-modal={true}
         side="right"
-        className="flex w-[min(92vw,440px)] flex-col p-0 sm:max-w-none [&>button]:hidden"
+        className="flex w-[min(92vw,420px)] flex-col p-0 sm:max-w-none [&>button]:hidden"
       >
-        <SheetHeader className="border-b px-5 py-4 text-left">
+        <SheetHeader className="border-b px-4 py-4 text-left">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <SheetTitle className="flex items-center gap-2">
@@ -6554,11 +6556,11 @@ function NotificationCenter({
               <X data-icon="inline-start" />
             </Button>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/50 px-3 py-2">
-            <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant={runningTaskCount ? "warning" : "outline"}>{runningTaskCount} 运行中</Badge>
-              {taskItems.length ? <Badge variant="outline">{taskItems.length} 任务</Badge> : null}
-              <Badge variant="outline">{items.length} 条</Badge>
+              <Badge variant="outline">{taskCountText}</Badge>
+              <Badge variant="outline">{items.length} 通知</Badge>
               {unreadCount ? <Badge variant="secondary">{unreadCount} 未读</Badge> : null}
               {errorCount ? <Badge variant="warning">{errorCount} 错误</Badge> : null}
             </div>
@@ -6582,33 +6584,30 @@ function NotificationCenter({
               </div>
 
               {taskItems.length ? (
-                <div className="flex flex-col gap-3">
-                  {taskItems.map((item) => (
-                    <Card key={item.id} className={cn("shadow-sm", item.tone === "red" && "border-destructive/30 bg-destructive/5")}>
-                      <CardHeader className="px-4 py-3">
+                <div className="overflow-hidden rounded-lg border bg-card">
+                  {taskItems.map((item, index) => (
+                    <Fragment key={item.id}>
+                      {index ? <Separator /> : null}
+                      <div className={cn("flex flex-col gap-3 p-3", item.tone === "red" && "bg-destructive/5")}>
                         <div className="flex items-start gap-3">
-                          <div className="mt-0.5 rounded-md border bg-background p-1.5 text-muted-foreground">
+                          <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">
                             {item.running ? <Loader2 className="animate-spin" /> : <Clock3 />}
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <CardTitle className="truncate text-sm">{item.title}</CardTitle>
-                              </div>
-                              <Badge className="shrink-0" variant="outline">{item.status}</Badge>
+                              <div className="min-w-0 truncate text-sm font-semibold">{item.title}</div>
+                              <Badge className="shrink-0" variant={item.tone === "red" ? "danger" : "outline"}>{item.status}</Badge>
                             </div>
+                            {typeof item.percent === "number" ? (
+                              <div className="mt-2 flex items-center gap-2">
+                                <Progress value={clampPercent(item.percent)} className="h-1.5 flex-1" />
+                                <span className="w-10 shrink-0 text-right text-xs font-medium text-muted-foreground">{clampPercent(item.percent)}%</span>
+                              </div>
+                            ) : null}
                           </div>
                         </div>
-                      </CardHeader>
-                      <CardContent className="flex flex-col gap-3 px-4 pb-4 pt-0">
-                        {typeof item.percent === "number" ? (
-                          <div className="flex flex-col gap-1">
-                            <Progress value={clampPercent(item.percent)} className="h-2" />
-                            <div className="text-xs font-medium text-muted-foreground">{clampPercent(item.percent)}%</div>
-                          </div>
-                        ) : null}
                         {item.onAction || item.onCancel ? (
-                          <div className="flex flex-wrap gap-2">
+                          <div className="flex flex-wrap justify-end gap-2">
                             {item.onAction && item.actionLabel ? (
                               <Button type="button" variant="outline" size="sm" onClick={item.onAction}>
                                 {item.actionLabel}
@@ -6621,8 +6620,8 @@ function NotificationCenter({
                             ) : null}
                           </div>
                         ) : null}
-                      </CardContent>
-                    </Card>
+                      </div>
+                    </Fragment>
                   ))}
                 </div>
               ) : (
@@ -6645,14 +6644,15 @@ function NotificationCenter({
               </div>
 
               {items.length ? (
-                <div className="flex flex-col gap-3">
-                  {items.map((item) => {
+                <div className="overflow-hidden rounded-lg border bg-card">
+                  {items.map((item, index) => {
                     const isError = item.kind === "error";
                     return (
-                      <Card key={item.id} className={cn("shadow-sm", isError && "border-destructive/30 bg-destructive/5")}>
-                        <CardContent className="p-3">
+                      <Fragment key={item.id}>
+                        {index ? <Separator /> : null}
+                        <div className={cn("p-3", isError && "bg-destructive/5")}>
                           <div className="flex items-start gap-3">
-                            <div className="mt-0.5 rounded-md border bg-background p-1.5 text-muted-foreground">
+                            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">
                               {isError ? <AlertCircle /> : <CheckCircle2 />}
                             </div>
                             <div className="min-w-0 flex-1">
@@ -6666,8 +6666,8 @@ function NotificationCenter({
                               <p className="mt-1 line-clamp-3 text-sm leading-6 text-muted-foreground">{item.text}</p>
                             </div>
                           </div>
-                        </CardContent>
-                      </Card>
+                        </div>
+                      </Fragment>
                     );
                   })}
                 </div>

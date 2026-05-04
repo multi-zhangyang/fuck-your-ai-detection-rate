@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { cn } from "@/lib/utils";
 import type {
   DeleteHistoryOptions,
   DocumentHistory,
@@ -701,8 +702,8 @@ export function HistoryCard({
 
   return (
     <Card className="min-h-full overflow-visible">
-      <CardHeader className="flex flex-col gap-3 pb-4">
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+      <CardHeader className="flex flex-col gap-3 pb-3">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2">
               <Badge variant="secondary">历史记录</Badge>
@@ -710,20 +711,20 @@ export function HistoryCard({
             </div>
             <CardTitle className="text-xl">继续处理与导出</CardTitle>
           </div>
-          <Button variant="outline" onClick={onToggle} disabled={busy}>
+          <Button variant="outline" size="sm" onClick={onToggle} disabled={busy}>
             <FolderClock data-icon="inline-start" />
-            {open ? "收起列表" : `展开列表（${items.length}）`}
+            {open ? "收起" : `展开（${items.length}）`}
           </Button>
         </div>
       </CardHeader>
 
-      <CardContent className="flex flex-col gap-5">
+      <CardContent className="flex flex-col gap-4">
         <div data-ui-section="history-user-summary" className="grid gap-3 lg:grid-cols-3">
           <StatPill label="可继续" value={`${continuationCount} 篇`} />
           <StatPill label="可导出" value={`${exportableCount} 篇`} />
           <StatPill label="可释放" value={formatBytes(totalStats.bytes)} />
         </div>
-        <section data-ui-section="history-advanced-maintenance" className="rounded-lg border border-border bg-muted/20 p-4">
+        <section data-ui-section="history-advanced-maintenance" className="rounded-lg border border-border bg-muted/20 p-3">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -731,7 +732,7 @@ export function HistoryCard({
                 <Badge variant={artifactQuery?.ok === false || missingDocumentCount ? "warning" : orphanScan?.orphanStats.existing ? "secondary" : "outline"}>{maintenanceStateLabel}</Badge>
               </div>
             </div>
-            <Button variant="outline" onClick={() => setMaintenanceOpen((value) => !value)} disabled={busy}>
+            <Button variant="outline" size="sm" onClick={() => setMaintenanceOpen((value) => !value)} disabled={busy}>
               <Wrench data-icon="inline-start" />
               {maintenanceOpen ? "收起" : "维护"}
             </Button>
@@ -766,7 +767,7 @@ export function HistoryCard({
         </section>
 
         {!open ? null : items.length ? (
-          <div className="flex flex-col gap-5 pb-4">
+          <div className="flex flex-col gap-3 pb-4">
               {items.map((item) => {
                 const isActive = currentDocId === item.docId;
                 const cleanupOpen = cleanupDocId === item.docId;
@@ -778,6 +779,9 @@ export function HistoryCard({
                 const latestRound = getLatestRound(visibleRounds);
                 const nextStepText = getNextRoundText(completedRounds, promptProfile, promptSequence);
                 const latestResultText = latestRound?.outputPath ? `第 ${latestRound.round} 轮` : "未生成";
+                const exportStateText = getExportStateText(item, visibleRounds);
+                const cleanupStateText = getCleanupStateText(item.artifactStats);
+                const missingAssets = getSafeArtifactStats(item.artifactStats).missing > 0;
                 const documentDeleteActions: Array<{ title: string; options: DeleteHistoryOptions; destructive?: boolean }> = [
                   { title: "只移除记录", options: { mode: "records_only" } },
                   { title: "清理项目导出", options: { mode: "exports_only" } },
@@ -792,55 +796,51 @@ export function HistoryCard({
                 return (
                   <div
                     key={`${item.docId}-${promptProfile}-${formatPromptSequence(promptSequence)}`}
-                    className={`relative rounded-lg border p-5 shadow-sm transition-colors ${
-                      isActive
-                        ? "border-primary/30 bg-card"
-                        : "border-border bg-card hover:bg-muted/20"
-                    }`}
+                    className={cn(
+                      "relative rounded-lg border bg-card p-4 transition-colors",
+                      isActive ? "border-primary/30" : "border-border hover:bg-muted/20",
+                    )}
                   >
-                    <div className="flex flex-col gap-4">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="flex min-w-0 flex-col gap-3">
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="min-w-0 truncate text-lg font-semibold">{formatDocName(item)}</h3>
+                            <h3 className="min-w-0 truncate text-base font-semibold">{formatDocName(item)}</h3>
                             {isActive ? <Badge variant="neutral">当前选用</Badge> : null}
                             <Badge variant="outline">{completedRounds.length}/{maxRounds} 轮</Badge>
-                            {getSafeArtifactStats(item.artifactStats).missing ? <Badge variant="warning">资产需检查</Badge> : null}
+                            {missingAssets ? <Badge variant="warning">资产需检查</Badge> : null}
                           </div>
-                          <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
+                          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                             <span className="inline-flex items-center gap-1.5">
-                              <Clock3 className="size-4" />
+                              <Clock3 />
                               {item.lastTimestamp ? formatTimestamp(item.lastTimestamp) : "暂无时间记录"}
                             </span>
-                            <span>下一步：{nextStepText}</span>
+                            <span>下一步 {nextStepText}</span>
+                            <span>最新 {latestResultText}</span>
+                            <span>导出 {exportStateText}</span>
+                            <span>可释放 {cleanupStateText}</span>
                           </div>
-                          <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{formatPathScope(item.originPath || item.sourcePath || item.docId)}</p>
+                          <p className="mt-2 truncate text-xs text-muted-foreground">{formatPathScope(item.originPath || item.sourcePath || item.docId)}</p>
                         </div>
 
-                        <div className="flex flex-wrap gap-2 lg:justify-end">
+                        <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
                           <Button
                             variant="outline"
+                            size="sm"
                             onClick={() => setCleanupDocId((value) => value === item.docId ? null : item.docId)}
                             disabled={busy}
                           >
                             <Trash2 data-icon="inline-start" />
-                            {cleanupOpen ? "收起清理" : "清理选项"}
+                            {cleanupOpen ? "收起" : "清理"}
                           </Button>
-                          <Button variant={isActive ? "secondary" : "outline"} onClick={() => onSelect(item)} disabled={busy}>
+                          <Button variant={isActive ? "secondary" : "outline"} size="sm" onClick={() => onSelect(item)} disabled={busy}>
                             <RotateCcw data-icon="inline-start" />
-                            {isActive ? "重新载入" : "切到这篇"}
+                            {isActive ? "载入" : "切换"}
                           </Button>
                         </div>
                       </div>
-
-                      <div className="grid gap-2 rounded-lg border border-border bg-muted/20 p-3 text-xs md:grid-cols-4">
-                        <StatPill label="下一步" value={nextStepText} />
-                        <StatPill label="最新结果" value={latestResultText} />
-                        <StatPill label="导出" value={getExportStateText(item, visibleRounds)} />
-                        <StatPill label="可释放" value={getCleanupStateText(item.artifactStats)} />
-                      </div>
                       {cleanupOpen ? (
-                        <div className="grid gap-3 rounded-lg border border-border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="grid gap-3 rounded-lg border border-border bg-muted/20 p-3 md:grid-cols-2 xl:grid-cols-4">
                           {documentDeleteActions.map((action) => {
                             const actionKey = makeDeleteActionKey(item.docId, action.options);
                             return (
@@ -864,11 +864,11 @@ export function HistoryCard({
 
                     {shouldShowRounds && visibleRounds.length ? (
                       <>
-                        <Separator className="my-5" />
+                        <Separator className="my-4" />
                         {!activeRounds.length ? (
                           <Badge variant="outline" className="mb-3 w-fit">其他模式</Badge>
                         ) : null}
-                        <div className="grid gap-3">
+                        <div className="grid gap-2">
                           {visibleRounds.map((roundItem) => {
                             const roundPromptProfile = (roundItem.promptProfile || "cn") as ModelConfig["promptProfile"];
                             const roundPromptOptions = getPromptOptions(roundPromptProfile, roundItem.promptSequence ?? promptSequence);
@@ -881,7 +881,7 @@ export function HistoryCard({
                               ? impactPreview.impact
                               : null;
                             return (
-                              <div key={`${item.docId}-${roundItem.promptProfile}-${roundItem.round}-${formatPromptSequence(roundItem.promptSequence)}`} className="rounded-lg border border-border bg-muted/20 p-4">
+                              <div key={`${item.docId}-${roundItem.promptProfile}-${roundItem.round}-${formatPromptSequence(roundItem.promptSequence)}`} className="rounded-lg border border-border bg-muted/20 p-3">
                                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                                   <div className="flex min-w-0 flex-col gap-2">
                                     <div className="flex flex-wrap items-center gap-2">
@@ -891,7 +891,7 @@ export function HistoryCard({
                                       {getSafeArtifactStats(roundItem.artifactStats).missing ? <Badge variant="warning">资产需检查</Badge> : null}
                                       <Badge variant="outline">{formatTimestamp(roundItem.timestamp)}</Badge>
                                     </div>
-                                    <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{roundItem.outputPath ? formatPathScope(roundItem.outputPath) : "暂无输出路径"}</p>
+                                    <p className="truncate text-xs text-muted-foreground">{roundItem.outputPath ? formatPathScope(roundItem.outputPath) : "暂无输出路径"}</p>
                                   </div>
 
                                   <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">

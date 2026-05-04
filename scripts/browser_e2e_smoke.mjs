@@ -259,6 +259,17 @@ async function waitForTextGone(client, text, timeoutMs = 10_000) {
   throw new Error(`Timed out waiting for text to disappear: ${text}`);
 }
 
+async function waitForExpression(client, expression, label, timeoutMs = 10_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const found = await evaluate(client, expression, 3000);
+    if (found) return;
+    await wait(250);
+  }
+  const body = await evaluate(client, "document.body?.innerText?.slice(0, 1200) ?? ''", 3000);
+  throw new Error(`Timed out waiting for ${label}\nCurrent page text:\n${body}`);
+}
+
 async function findClickablePointByText(client, text) {
   return evaluate(client, `(() => {
     const needle = ${JSON.stringify(text)};
@@ -440,13 +451,13 @@ async function runSmoke() {
     checks.push("home controls remain visible beside inline Diff workbench");
 
     await clickByText(browserClient, "学校规范");
-    await waitForText(browserClient, "学校模板说明文档", 12_000);
+    await waitForText(browserClient, "学校排版规范", 12_000);
     await clickByText(browserClient, "历史记录");
-    await waitForText(browserClient, "文档与轮次归档", 12_000);
+    await waitForText(browserClient, "继续处理与导出", 12_000);
     await clickByText(browserClient, "启动诊断");
     await waitForText(browserClient, "重新自检", 12_000);
     await clickByText(browserClient, "提示词预览");
-    await waitForText(browserClient, "文件位置：", 12_000);
+    await waitForExpression(browserClient, "Boolean(document.querySelector('pre code'))", "prompt preview code block", 12_000);
     const promptPageUsesFixedBoundary = await evaluate(browserClient, "Boolean(document.querySelector('pre code') && getComputedStyle(document.documentElement).overflow === 'hidden' && getComputedStyle(document.body).overflow === 'hidden')", 3000);
     if (!promptPageUsesFixedBoundary) {
       throw new Error("Prompt preview page did not render inside the fixed page boundary.");
