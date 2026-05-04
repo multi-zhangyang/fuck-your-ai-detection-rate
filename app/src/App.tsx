@@ -5831,26 +5831,26 @@ function DiagnosticsPage({
   };
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden">
+    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
       <Card className="overflow-hidden">
-        <CardHeader className="border-b pb-4">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <CardHeader className="border-b px-4 py-3">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <Badge variant={statusVariant}>{statusText}</Badge>
                 {value ? <Badge variant="outline">{formatDateTime(value.createdAt)}</Badge> : null}
               </div>
-              <CardTitle className="flex items-center gap-2 text-xl">
+              <CardTitle className="flex items-center gap-2 text-lg">
                 <Activity />
                 启动诊断
               </CardTitle>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" onClick={() => void copyDiagnostics()} disabled={!value}>
+              <Button variant="outline" size="sm" onClick={() => void copyDiagnostics()} disabled={!value}>
                 {copied ? <CheckCircle2 data-icon="inline-start" /> : <FileText data-icon="inline-start" />}
                 {copied ? "已复制" : "复制诊断"}
               </Button>
-              <Button onClick={onRefresh} disabled={busy}>
+              <Button size="sm" onClick={onRefresh} disabled={busy}>
                 {busy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
                 重新自检
               </Button>
@@ -5858,7 +5858,7 @@ function DiagnosticsPage({
           </div>
         </CardHeader>
         {value ? (
-          <CardContent className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
+          <CardContent className="grid gap-2 p-3 md:grid-cols-2 xl:grid-cols-4">
             <DiagnosticSummaryTile label="自检项" value={`${passedCount}/${checks.length}`} detail={errorCount || warningCount ? "有项目需要确认" : "全部可用"} />
             <DiagnosticSummaryTile label="模型连接" value={configReady ? "可启动" : "待补全"} detail={value.config.model || "未选择模型"} />
             <DiagnosticSummaryTile label="后台任务" value={`${activeTaskCount} 运行中`} detail={`${recentTaskCount} 条近期记录`} />
@@ -5869,22 +5869,20 @@ function DiagnosticsPage({
 
       {value ? (
         <ScrollArea className="min-h-0 pr-1">
-          <div className="flex flex-col gap-4 pb-2">
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+          <div className="flex flex-col gap-3 pb-2">
+            <div className="grid gap-3 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
               <Card>
-                <CardHeader className="pb-3">
+                <CardHeader className="px-4 py-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <CardTitle className="text-lg">需要处理</CardTitle>
-                    </div>
+                    <CardTitle className="text-base">需要处理</CardTitle>
                     <Badge variant={problemChecks.length ? "warning" : "success"}>{problemChecks.length ? `${problemChecks.length} 项` : "干净"}</Badge>
                   </div>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="px-4 pb-4 pt-0">
                   {problemChecks.length ? (
                     <div className="grid gap-2">
                       {problemChecks.map((item) => (
-                        <Alert key={item.key} variant={item.level === "error" ? "destructive" : undefined} className={item.level === "warning" ? "border-primary/25 bg-muted/60" : undefined}>
+                        <Alert key={item.key} variant={item.level === "error" ? "destructive" : undefined} className={cn("py-3", item.level === "warning" && "border-primary/25 bg-muted/60")}>
                           {item.level === "error" ? <AlertCircle /> : <AlertTriangle />}
                           <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
                             <span>{item.label}</span>
@@ -5895,7 +5893,7 @@ function DiagnosticsPage({
                       ))}
                     </div>
                   ) : (
-                    <Empty className="min-h-[12rem] border">
+                    <Empty className="min-h-[8rem] border">
                       <EmptyHeader>
                         <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
                         <EmptyTitle>没有待处理项</EmptyTitle>
@@ -5906,15 +5904,13 @@ function DiagnosticsPage({
               </Card>
 
               <Card>
-                <CardHeader className="pb-3">
+                <CardHeader className="px-4 py-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <CardTitle className="text-lg">自检明细</CardTitle>
-                    </div>
+                    <CardTitle className="text-base">自检明细</CardTitle>
                     <Badge variant="outline">{healthPercent}%</Badge>
                   </div>
                 </CardHeader>
-                <CardContent className="flex flex-col gap-3">
+                <CardContent className="flex flex-col gap-3 px-4 pb-4 pt-0">
                   <Progress value={healthPercent} className="h-2" />
                   <div className="grid gap-2 sm:grid-cols-2">
                     {checks.map((item) => (
@@ -5925,35 +5921,38 @@ function DiagnosticsPage({
               </Card>
             </div>
 
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
+            <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_390px]">
               <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg">工作目录</CardTitle>
+                <CardHeader className="px-4 py-3">
+                  <CardTitle className="text-base">工作目录</CardTitle>
                 </CardHeader>
-                <CardContent className="grid gap-2">
-                  {value.paths.map((item) => (
-                    <Card key={item.key} className="shadow-none">
-                      <CardContent className="grid gap-3 p-3 text-xs md:grid-cols-[150px_minmax(0,1fr)_140px] md:items-center">
-                        <div>
-                          <div className="font-semibold text-foreground">{item.label}</div>
-                          <Badge className="mt-1" variant={item.exists && item.writable ? "success" : item.exists ? "warning" : "danger"}>
-                            {item.exists ? item.writable ? "可写" : "不可写" : "不存在"}
-                          </Badge>
+                <CardContent className="px-4 pb-4 pt-0">
+                  <div className="overflow-hidden rounded-lg border bg-card">
+                    {value.paths.map((item, index) => (
+                      <Fragment key={item.key}>
+                        {index ? <Separator /> : null}
+                        <div className="grid gap-2 p-3 text-xs md:grid-cols-[150px_minmax(0,1fr)_140px] md:items-center">
+                          <div>
+                            <div className="font-semibold text-foreground">{item.label}</div>
+                            <Badge className="mt-1" variant={item.exists && item.writable ? "success" : item.exists ? "warning" : "danger"}>
+                              {item.exists ? item.writable ? "可写" : "不可写" : "不存在"}
+                            </Badge>
+                          </div>
+                          <div className="min-w-0 truncate text-muted-foreground">{item.path}</div>
+                          <div className="font-semibold text-foreground md:text-right">{item.fileCount} 文件 · {formatBytes(item.sizeBytes)}</div>
                         </div>
-                        <div className="min-w-0 truncate text-muted-foreground">{item.path}</div>
-                        <div className="font-semibold text-foreground md:text-right">{item.fileCount} 文件 · {formatBytes(item.sizeBytes)}</div>
-                      </CardContent>
-                    </Card>
-                  ))}
+                      </Fragment>
+                    ))}
+                  </div>
                 </CardContent>
               </Card>
 
-              <div className="grid gap-4">
+              <div className="grid gap-3">
                 <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-lg">模型配置</CardTitle>
+                  <CardHeader className="px-4 py-3">
+                    <CardTitle className="text-base">模型配置</CardTitle>
                   </CardHeader>
-                  <CardContent className="grid gap-2 text-xs">
+                  <CardContent className="grid gap-2 px-4 pb-4 pt-0 text-xs">
                     <DiagnosticRow label="运行模式" value="远程模型" />
                     <DiagnosticRow label="默认模型" value={value.config.model || "未填写"} />
                     <DiagnosticRow label="接口" value={value.config.hasBaseUrl ? "已填写" : "缺少 Base URL"} />
@@ -5965,10 +5964,10 @@ function DiagnosticsPage({
                 </Card>
 
                 <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-lg">运行时</CardTitle>
+                  <CardHeader className="px-4 py-3">
+                    <CardTitle className="text-base">运行时</CardTitle>
                   </CardHeader>
-                  <CardContent className="grid gap-2 text-xs">
+                  <CardContent className="grid gap-2 px-4 pb-4 pt-0 text-xs">
                     <DiagnosticRow label="Python" value={value.runtime.pythonVersion || "未返回"} />
                     <DiagnosticRow label="解释器" value={value.runtime.pythonExecutable || "未返回"} />
                     <DiagnosticRow label="平台" value={value.runtime.platform || "未返回"} />
@@ -5979,23 +5978,21 @@ function DiagnosticsPage({
 
             {taskStateStore ? (
               <Card>
-                <CardHeader className="pb-3">
+                <CardHeader className="px-4 py-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <CardTitle className="text-lg">任务快照治理</CardTitle>
-                    </div>
-                    <Button variant="outline" onClick={onCleanupTaskSnapshots} disabled={busy || taskStateStore.staleCount <= 0}>
+                    <CardTitle className="text-base">任务快照治理</CardTitle>
+                    <Button variant="outline" size="sm" onClick={onCleanupTaskSnapshots} disabled={busy || taskStateStore.staleCount <= 0}>
                       <Trash2 data-icon="inline-start" />
                       清理过期快照
                     </Button>
                   </div>
                 </CardHeader>
-                <CardContent className="flex flex-col gap-3">
+                <CardContent className="flex flex-col gap-3 px-4 pb-4 pt-0">
                   <div className="grid gap-2 md:grid-cols-4">
-                    <ReportStat label="文件" value={`${taskStateStore.fileCount} · ${formatBytes(taskStateStore.sizeBytes)}`} />
-                    <ReportStat label="快照分布" value={`${taskStateStore.runRoundCount} / ${taskStateStore.batchRerunCount}`} />
-                    <ReportStat label="保护中" value={`${taskStateStore.activeSnapshotCount}`} />
-                    <ReportStat label="可清理" value={`${taskStateStore.staleCount}`} />
+                    <DiagnosticSummaryTile label="文件" value={`${taskStateStore.fileCount} · ${formatBytes(taskStateStore.sizeBytes)}`} detail="本地快照" />
+                    <DiagnosticSummaryTile label="快照分布" value={`${taskStateStore.runRoundCount} / ${taskStateStore.batchRerunCount}`} detail="改写 / 局部优化" />
+                    <DiagnosticSummaryTile label="保护中" value={`${taskStateStore.activeSnapshotCount}`} detail="运行态保留" />
+                    <DiagnosticSummaryTile label="可清理" value={`${taskStateStore.staleCount}`} detail="过期快照" />
                   </div>
                   <div className="truncate text-[11px] font-medium text-muted-foreground">{taskStateStore.path}</div>
                 </CardContent>
@@ -6003,21 +6000,24 @@ function DiagnosticsPage({
             ) : null}
 
             <Card>
-              <CardHeader className="pb-3">
+              <CardHeader className="px-4 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <CardTitle className="text-lg">后台任务</CardTitle>
-                  </div>
+                  <CardTitle className="text-base">后台任务</CardTitle>
                   <Badge variant={activeTaskCount ? "warning" : "outline"}>{activeTaskCount ? "有任务运行" : "空闲"}</Badge>
                 </div>
               </CardHeader>
-              <CardContent className="grid gap-2">
+              <CardContent className="px-4 pb-4 pt-0">
                 {taskItems.length ? (
-                  taskItems.map((item) => (
-                    <DiagnosticTaskAlert key={`${item.taskType}-${item.runId}`} item={item} />
-                  ))
+                  <div className="overflow-hidden rounded-lg border bg-card">
+                    {taskItems.map((item, index) => (
+                      <Fragment key={`${item.taskType}-${item.runId}`}>
+                        {index ? <Separator /> : null}
+                        <DiagnosticTaskAlert item={item} />
+                      </Fragment>
+                    ))}
+                  </div>
                 ) : (
-                  <Empty className="min-h-[10rem] border">
+                  <Empty className="min-h-[8rem] border">
                     <EmptyHeader>
                       <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
                       <EmptyTitle>暂无后台任务</EmptyTitle>
@@ -6042,27 +6042,23 @@ function DiagnosticsPage({
 
 function DiagnosticSummaryTile({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
-    <Card className="bg-muted/40 shadow-none">
-      <CardContent className="p-4">
-        <div className="text-xs font-medium text-muted-foreground">{label}</div>
-        <div className="mt-2 truncate text-xl font-semibold text-foreground">{value}</div>
-        <div className="mt-1 truncate text-xs text-muted-foreground">{detail}</div>
-      </CardContent>
-    </Card>
+    <div className="flex min-w-0 flex-col gap-1 rounded-lg border bg-background px-3 py-2">
+      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      <div className="truncate text-lg font-semibold text-foreground">{value}</div>
+      <div className="truncate text-xs text-muted-foreground">{detail}</div>
+    </div>
   );
 }
 
 function DiagnosticCheckCard({ item }: { item: EnvironmentDiagnostics["checks"][number] }) {
   return (
-    <Card className={cn("shadow-none", item.level === "error" && "border-destructive/30 bg-destructive/5", item.level === "warning" && "border-primary/25 bg-muted/60")}>
-      <CardContent className="p-3">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 font-semibold text-foreground">{item.label}</div>
-          <Badge variant={getDiagnosticBadgeVariant(item.level)}>{item.level === "success" ? "通过" : item.level === "error" ? "错误" : item.level === "warning" ? "提示" : "信息"}</Badge>
-        </div>
-        <div className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.message}</div>
-      </CardContent>
-    </Card>
+    <div className={cn("flex min-w-0 flex-col gap-2 rounded-md border bg-card px-3 py-2", item.level === "error" && "border-destructive/30 bg-destructive/5", item.level === "warning" && "border-primary/25 bg-muted/60")}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 font-semibold text-foreground">{item.label}</div>
+        <Badge className="shrink-0" variant={getDiagnosticBadgeVariant(item.level)}>{item.level === "success" ? "通过" : item.level === "error" ? "错误" : item.level === "warning" ? "提示" : "信息"}</Badge>
+      </div>
+      <div className="line-clamp-2 text-xs leading-5 text-muted-foreground">{item.message}</div>
+    </div>
   );
 }
 
@@ -6190,33 +6186,37 @@ function DiagnosticTaskAlert({ item }: { item: DiagnosticTaskItem }) {
   const error = getTaskItemString(item, "error");
 
   return (
-    <Alert className={cn((getTaskItemString(item, "status") === "interrupted" || active) && "border-primary/25 bg-muted/60")}>
-      {active ? <Activity /> : <Clock3 />}
-      <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
-        <span>后台任务 · {formatShortTaskId(item.runId) ?? item.runId}</span>
-        <span className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">{isBatch ? "局部优化" : "全文改写"}</Badge>
-          <Badge variant={getDiagnosticTaskBadgeVariant(item)}>{status}</Badge>
-        </span>
-      </AlertTitle>
-      <AlertDescription className="grid gap-1 text-xs">
-        <span className="truncate">{targetPath || "未返回路径"}</span>
-        {isBatch && totalCount !== null ? (
-          <span>
-            {completedCount ?? 0}/{totalCount} 段 · 成功 {successCount ?? 0} · 失败 {failureCount ?? 0}
-            {chunkId ? ` · 当前 ${chunkId}` : ""}
+    <div className={cn("flex gap-3 p-3", (getTaskItemString(item, "status") === "interrupted" || active) && "bg-muted/60")}>
+      <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">
+        {active ? <Activity /> : <Clock3 />}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold text-foreground">
+          <span className="min-w-0 truncate">后台任务 · {formatShortTaskId(item.runId) ?? item.runId}</span>
+          <span className="flex shrink-0 flex-wrap items-center gap-2">
+            <Badge variant="outline">{isBatch ? "局部优化" : "全文改写"}</Badge>
+            <Badge variant={getDiagnosticTaskBadgeVariant(item)}>{status}</Badge>
           </span>
-        ) : (
-          <span>
-            事件 {eventCount ?? 0} 个
-            {phase ? ` · 阶段 ${phase}` : ""}
-            {chunkId ? ` · 块 ${chunkId}` : ""}
-          </span>
-        )}
-        {error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{error}</span> : null}
-        <span>{active ? "更新" : "落盘"} {formatDateTime(updatedAt)}</span>
-      </AlertDescription>
-    </Alert>
+        </div>
+        <div className="grid gap-1 pt-1 text-xs text-muted-foreground">
+          <span className="truncate font-medium">{targetPath || "未返回路径"}</span>
+          {isBatch && totalCount !== null ? (
+            <span>
+              {completedCount ?? 0}/{totalCount} 段 · 成功 {successCount ?? 0} · 失败 {failureCount ?? 0}
+              {chunkId ? ` · 当前 ${chunkId}` : ""}
+            </span>
+          ) : (
+            <span>
+              事件 {eventCount ?? 0} 个
+              {phase ? ` · 阶段 ${phase}` : ""}
+              {chunkId ? ` · 块 ${chunkId}` : ""}
+            </span>
+          )}
+          {error ? <span className="rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">{error}</span> : null}
+          <span>{active ? "更新" : "落盘"} {formatDateTime(updatedAt)}</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
