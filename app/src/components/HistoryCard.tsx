@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { AlertTriangle, Clock3, Database, Download, FolderClock, RotateCcw, Search, ShieldCheck, Trash2, Wrench } from "lucide-react";
+import { AlertTriangle, Clock3, Database, Download, FolderClock, RotateCcw, Search, Trash2, Wrench } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
@@ -231,16 +232,6 @@ function getOrphanKindLabel(kind: string): string {
   return "其他";
 }
 
-function getArtifactModeLabel(mode: HistoryArtifactGovernanceMode): string {
-  if (mode === "current") {
-    return "当前文档";
-  }
-  if (mode === "large") {
-    return "大文件";
-  }
-  return "缺失资产";
-}
-
 function getArtifactQueryStateLabel(query: HistoryArtifactQueryResponse | null, loading: boolean): string {
   if (loading) return "读取中";
   if (!query) return "未读取";
@@ -250,7 +241,7 @@ function getArtifactQueryStateLabel(query: HistoryArtifactQueryResponse | null, 
 
 function HistoryArtifactRow({ item }: { item: HistoryArtifactQueryItem }) {
   return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs md:flex-row md:items-center md:justify-between">
+    <div className="grid min-w-0 gap-2 border-b px-3 py-2 text-xs last:border-b-0 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
       <div className="min-w-0">
         <div className="truncate font-semibold text-foreground">{item.path}</div>
         <div className="mt-0.5 flex flex-wrap gap-2 text-muted-foreground">
@@ -292,19 +283,17 @@ function HistoryArtifactGovernancePanel({
   onRepairIndex: () => void;
   onPreviewCurrentCleanup: () => void;
 }) {
-  const modeLabel = getArtifactModeLabel(mode);
   const stats = getSafeArtifactStats(query?.stats);
   const previewItems = query?.items.slice(0, 6) ?? [];
   const shouldSuggestRepair = mode === "missing" && (stats.missing > 0 || query?.ok === false);
   const shouldSuggestPreview = (mode === "current" || mode === "large") && Boolean(currentDocId);
   return (
-    <section data-ui-section="history-asset-governance" className="rounded-lg border border-border bg-muted/20 p-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+    <section data-ui-section="history-asset-governance" className="rounded-lg border border-border bg-card p-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">资产治理</Badge>
             <Badge variant={query?.ok === false ? "warning" : "outline"}>{getArtifactQueryStateLabel(query, loading)}</Badge>
-            <Badge variant="outline">{modeLabel}</Badge>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -332,6 +321,14 @@ function HistoryArtifactGovernancePanel({
         </div>
       </div>
 
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Badge variant="outline">索引 {stats.total}</Badge>
+        <Badge variant="outline">存在 {stats.existing}</Badge>
+        <Badge variant={stats.missing ? "warning" : "outline"}>缺失 {stats.missing}</Badge>
+        <Badge variant="outline">占用 {formatBytes(stats.bytes)}</Badge>
+        <Badge variant="outline">外部 {stats.external}</Badge>
+      </div>
+
       <ToggleGroup
         type="single"
         value={mode}
@@ -340,7 +337,7 @@ function HistoryArtifactGovernancePanel({
             onModeChange(value);
           }
         }}
-        className="mt-4 grid gap-2 md:grid-cols-3"
+        className="mt-3 grid gap-2 md:grid-cols-3"
       >
         <ToggleGroupItem value="missing" variant="outline" className="h-10 justify-center px-3">
           <span className="text-sm font-semibold">缺失资产</span>
@@ -353,32 +350,28 @@ function HistoryArtifactGovernancePanel({
         </ToggleGroupItem>
       </ToggleGroup>
 
-      <div className="mt-4 grid gap-2 md:grid-cols-5">
-        <StatPill label="索引资产" value={`${stats.total}`} />
-        <StatPill label="仍存在" value={`${stats.existing}`} />
-        <StatPill label="缺失" value={`${stats.missing}`} />
-        <StatPill label="占用空间" value={formatBytes(stats.bytes)} />
-        <StatPill label="外部引用" value={`${stats.external}`} />
-      </div>
-
       {query?.ok === false ? (
-        <Alert className="mt-4" variant="destructive">
+        <Alert className="mt-3" variant="destructive">
           <AlertTriangle />
           <AlertTitle>索引读取失败</AlertTitle>
           <AlertDescription>{query.error || "SQLite 历史索引暂时不可用，请先刷新或运行历史库修复。"}</AlertDescription>
         </Alert>
       ) : previewItems.length ? (
-        <div className="mt-4 flex flex-col gap-2">
+        <div className="mt-3 overflow-hidden rounded-lg border bg-background">
           {previewItems.map((item) => <HistoryArtifactRow key={`${item.path}-${item.kind}`} item={item} />)}
-          {query?.hasMore ? <div className="text-xs font-semibold text-muted-foreground">还有更多</div> : null}
+          {query?.hasMore ? <div className="px-3 py-2 text-xs font-semibold text-muted-foreground">还有更多</div> : null}
         </div>
       ) : (
-        <div className="mt-4 flex items-start gap-3 rounded-lg border border-border bg-card px-3 py-3 text-sm text-muted-foreground">
-          <Database className="shrink-0" />
-          <div>{loading ? "读取中" : "无资产"}</div>
-        </div>
+        <Empty className="mt-3 min-h-[6rem] border bg-background">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Database />
+            </EmptyMedia>
+            <EmptyTitle>{loading ? "读取中" : "无资产"}</EmptyTitle>
+          </EmptyHeader>
+        </Empty>
       )}
-      {previewImpact ? <div className="mt-4"><AssetImpactPanel impact={previewImpact} /></div> : null}
+      {previewImpact ? <div className="mt-3"><AssetImpactPanel impact={previewImpact} /></div> : null}
     </section>
   );
 }
@@ -397,7 +390,7 @@ function OrphanGovernancePanel({
   const stats = scan?.orphanStats ?? getSafeArtifactStats();
   const previewFiles = scan?.orphanFiles.slice(0, 6) ?? [];
   return (
-    <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+    <div className="rounded-lg border border-border bg-card p-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -406,12 +399,13 @@ function OrphanGovernancePanel({
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={onScan} disabled={busy}>
+          <Button variant="outline" size="sm" onClick={onScan} disabled={busy}>
             <Search data-icon="inline-start" />
             扫描
           </Button>
           <Button
             variant="outline"
+            size="sm"
             onClick={onDelete}
             disabled={busy || !scan || !stats.existing}
           >
@@ -421,37 +415,47 @@ function OrphanGovernancePanel({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-2 md:grid-cols-5">
-        <StatPill label="可清理文件" value={`${stats.existing}`} />
-        <StatPill label="占用空间" value={formatBytes(stats.bytes)} />
-        <StatPill label="源文档副本" value={`${scan?.orphanKindStats.sources.files ?? 0}`} />
-        <StatPill label="项目导出" value={`${scan?.orphanKindStats.exports.files ?? 0}`} />
-        <StatPill label="报告文件" value={`${scan?.orphanKindStats.reports.files ?? 0}`} />
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Badge variant={stats.existing ? "secondary" : "outline"}>可清理 {stats.existing}</Badge>
+        <Badge variant="outline">占用 {formatBytes(stats.bytes)}</Badge>
+        <Badge variant="outline">源副本 {scan?.orphanKindStats.sources.files ?? 0}</Badge>
+        <Badge variant="outline">导出 {scan?.orphanKindStats.exports.files ?? 0}</Badge>
+        <Badge variant="outline">报告 {scan?.orphanKindStats.reports.files ?? 0}</Badge>
       </div>
 
       {scan ? (
         previewFiles.length ? (
-          <div className="mt-4 flex flex-col gap-2">
+          <div className="mt-3 overflow-hidden rounded-lg border bg-background">
             {previewFiles.map((file) => (
-              <div key={file.relativePath} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2 text-xs">
+              <div key={file.relativePath} className="grid min-w-0 gap-2 border-b px-3 py-2 text-xs last:border-b-0 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                 <div className="min-w-0">
                   <div className="truncate font-semibold text-foreground">{file.relativePath}</div>
                   <div className="mt-0.5 text-muted-foreground">{getOrphanKindLabel(file.kind)} · {formatBytes(file.bytes)}</div>
                 </div>
-                <ShieldCheck className="shrink-0 text-muted-foreground" />
+                <Badge variant="outline">可清理</Badge>
               </div>
             ))}
-            {scan.hasMore ? <div className="text-xs font-semibold text-muted-foreground">还有更多</div> : null}
+            {scan.hasMore ? <div className="px-3 py-2 text-xs font-semibold text-muted-foreground">还有更多</div> : null}
           </div>
         ) : (
-          <div className="mt-4 rounded-lg border border-border bg-muted/40 p-3 text-sm font-semibold text-foreground">
-            未发现未归属文件
-          </div>
+          <Empty className="mt-3 min-h-[6rem] border bg-background">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Trash2 />
+              </EmptyMedia>
+              <EmptyTitle>未发现未归属文件</EmptyTitle>
+            </EmptyHeader>
+          </Empty>
         )
       ) : (
-        <div className="mt-4 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
-          未扫描
-        </div>
+        <Empty className="mt-3 min-h-[6rem] border bg-background">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Search />
+            </EmptyMedia>
+            <EmptyTitle>未扫描</EmptyTitle>
+          </EmptyHeader>
+        </Empty>
       )}
     </div>
   );
@@ -550,8 +554,8 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
   const previewFiles = impact.files.filter((file) => file.exists).slice(0, 8);
   const sourceState = impact.willDeleteSource ? "含源副本" : impact.sourceOwnedByProject ? "保留源副本" : "外部源文件";
   return (
-    <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+    <div className="rounded-lg border border-border bg-card p-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">删除影响预览</Badge>
@@ -564,12 +568,12 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
         </Badge>
       </div>
 
-      <div className="mt-4 grid gap-2 md:grid-cols-5">
-        <StatPill label="源文档副本" value={`${stats.sources ?? 0}`} />
-        <StatPill label="中间产物" value={`${stats.intermediate}`} />
-        <StatPill label="项目导出" value={`${stats.exports}`} />
-        <StatPill label="报告/审计" value={`${stats.reports}`} />
-        <StatPill label="源文件" value={sourceState} />
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Badge variant="outline">源副本 {stats.sources ?? 0}</Badge>
+        <Badge variant="outline">中间 {stats.intermediate}</Badge>
+        <Badge variant="outline">导出 {stats.exports}</Badge>
+        <Badge variant="outline">报告 {stats.reports}</Badge>
+        <Badge variant="outline">{sourceState}</Badge>
       </div>
 
       {impact.affectedRounds.length ? (
@@ -579,9 +583,9 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
       ) : null}
 
       {previewFiles.length ? (
-        <div className="mt-4 flex flex-col gap-2">
+        <div className="mt-3 overflow-hidden rounded-lg border bg-background">
           {previewFiles.map((file) => (
-            <div key={`${file.relativePath}-${file.kind}`} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2 text-xs">
+            <div key={`${file.relativePath}-${file.kind}`} className="grid min-w-0 gap-2 border-b px-3 py-2 text-xs last:border-b-0 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
               <div className="min-w-0">
                 <div className="truncate font-semibold text-foreground">{file.relativePath}</div>
                 <div className="mt-0.5 text-muted-foreground">{getOrphanKindLabel(file.kind)} · {formatBytes(file.bytes)}</div>
@@ -589,12 +593,17 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
               <Badge variant="outline">将删除</Badge>
             </div>
           ))}
-          {impact.hasMoreFiles ? <div className="text-xs font-semibold text-muted-foreground">还有更多</div> : null}
+          {impact.hasMoreFiles ? <div className="px-3 py-2 text-xs font-semibold text-muted-foreground">还有更多</div> : null}
         </div>
       ) : (
-          <div className="mt-4 rounded-lg border border-border bg-muted/40 p-3 text-sm font-semibold">
-          无项目文件删除
-        </div>
+        <Empty className="mt-3 min-h-[6rem] border bg-background">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Trash2 />
+            </EmptyMedia>
+            <EmptyTitle>无项目文件删除</EmptyTitle>
+          </EmptyHeader>
+        </Empty>
       )}
 
       {impact.warnings.length ? (
@@ -628,7 +637,7 @@ function HistoryDeleteAction({
   return (
     <div className="rounded-lg border border-border bg-card p-3">
       <div className={destructive ? "text-sm font-semibold text-destructive" : "text-sm font-semibold text-foreground"}>{title}</div>
-      <div className="mt-1 text-xs leading-5 text-muted-foreground">{getDeleteModeScope(options.fromRound)}</div>
+      <div className="mt-1 truncate text-xs text-muted-foreground">{getDeleteModeScope(options.fromRound)}</div>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <Button type="button" variant="outline" size="sm" onClick={() => onPreview(docId, options)} disabled={busy || loading}>
           <Search data-icon="inline-start" />
