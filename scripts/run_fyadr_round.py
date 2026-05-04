@@ -38,7 +38,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("output_path", type=Path, help="Output text file path")
     parser.add_argument("manifest_path", type=Path, help="Manifest json output path")
     parser.add_argument("--chunk-limit", type=int, default=DEFAULT_CHUNK_LIMIT)
-    parser.add_argument("--prompt-profile", default="cn_prewrite", help="Prompt profile: cn, cn_prewrite, or cn_custom.")
+    parser.add_argument("--prompt-profile", default="cn_custom", help="Prompt profile: cn_custom by default; legacy cn and cn_prewrite remain supported.")
     parser.add_argument("--prompt-sequence", default="", help="Comma-separated custom prompt ids for cn_custom.")
     parser.add_argument("--score-total", type=int, default=None)
     parser.add_argument("--api-key", default=None, help="LLM API key. Defaults to FYADR_API_KEY or OPENAI_API_KEY.")

@@ -19,6 +19,7 @@ const BADGE_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "badge.ts
 const INPUT_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "input.tsx");
 const SELECT_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "select.tsx");
 const TEXTAREA_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "textarea.tsx");
+const DIALOG_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "dialog.tsx");
 const REPORT_PATH = resolve(ROOT_DIR, "finish", "regression", "frontend_ui_consistency_regression_report.json");
 
 function assertIncludes(source, pattern, message, failures) {
@@ -73,7 +74,8 @@ function runRegression() {
   const inputSource = loadSource(INPUT_PATH, failures);
   const selectSource = loadSource(SELECT_PATH, failures);
   const textareaSource = loadSource(TEXTAREA_PATH, failures);
-  const combinedSource = [appSource, appIndexSource, modelConfigCardSource, resultCardSource, historyCardSource, protectionMapCardSource, themeModeMenuSource, themeModeHookSource, appServiceSource, webServiceSource, cssSource, buttonSource, badgeSource, inputSource, selectSource, textareaSource].join("\n");
+  const dialogSource = loadSource(DIALOG_PATH, failures);
+  const combinedSource = [appSource, appIndexSource, modelConfigCardSource, resultCardSource, historyCardSource, protectionMapCardSource, themeModeMenuSource, themeModeHookSource, appServiceSource, webServiceSource, cssSource, buttonSource, badgeSource, inputSource, selectSource, textareaSource, dialogSource].join("\n");
 
   if (cssSource) {
     assertIncludes(cssSource, "html {\n    @apply h-svh overflow-hidden", "Document root must keep the app viewport-bound.", failures);
@@ -83,8 +85,8 @@ function runRegression() {
     assertIncludes(cssSource, ".shadcn-choice-card", "Choice cards must use shared shadcn utility semantics.", failures);
     assertIncludes(cssSource, "min-h-[4.25rem]", "Home route choice cards must stay compact and avoid blank vertical space.", failures);
     assertNotIncludes(cssSource, "min-h-[7rem]", "Home route choice cards must not return to the oversized blank layout.", failures);
-    assertIncludes(cssSource, ".shadcn-config-sheet", "Configuration sheets must use shared shadcn utility semantics.", failures);
-    assertIncludes(cssSource, ".shadcn-scroll-bound [data-radix-scroll-area-viewport] > div", "Radix ScrollArea content must be width-bound inside right-side shadcn panels.", failures);
+    assertIncludes(cssSource, ".shadcn-config-dialog", "Home setup dialogs must use shared shadcn utility semantics.", failures);
+    assertIncludes(cssSource, ".shadcn-scroll-bound [data-radix-scroll-area-viewport] > div", "Radix ScrollArea content must be width-bound inside shadcn overlays.", failures);
     assertNotIncludes(cssSource, ".fy-", "Old fy-* utility classes must not return after the shadcn migration.", failures);
   }
 
@@ -107,8 +109,13 @@ function runRegression() {
     assertIncludes(appSource, "className=\"shadcn-scroll-bound h-full min-h-0 min-w-0 max-w-full overflow-x-hidden pr-1\"", "Home right ScrollArea must clamp horizontal overflow.", failures);
     assertIncludes(appSource, "<HomeRunPanel", "Run controls must stay in the right operation stack.", failures);
     assertIncludes(appSource, "<DetectionReportPanel", "External report controls must stay in the right operation stack.", failures);
-    assertIncludes(appSource, "<Sheet open={Boolean(setupEditor)}", "Setup editors must use shadcn Sheet.", failures);
-    assertIncludes(appSource, "<SheetContent side=\"right\" className={`shadcn-config-sheet", "Setup editors must share the shadcn sheet utility.", failures);
+    assertIncludes(appSource, "<Dialog open={Boolean(setupEditor)}", "Setup editors must use centered shadcn Dialog.", failures);
+    assertIncludes(appSource, "className={cn(\"shadcn-config-dialog", "Setup editors must share the shadcn dialog utility.", failures);
+    assertNotIncludes(appSource, "<Sheet open={Boolean(setupEditor)}", "Setup editors must not reopen as right-side Sheets.", failures);
+    assertNotIncludes(appSource, "shadcn-config-sheet", "Setup editors must not use the removed config Sheet utility.", failures);
+    assertIncludes(appSource, "onPromptProfileChange(ACTIVE_PROMPT_PROFILE)", "Rewrite workflow action must force the custom profile before editing.", failures);
+    assertNotIncludes(appSource, "ToggleGroupItem value=\"cn_prewrite\"", "Rewrite workflow editor must not expose the legacy three-round preset.", failures);
+    assertNotIncludes(appSource, "ToggleGroupItem value=\"cn\"", "Rewrite workflow editor must not expose the legacy two-round preset.", failures);
     assertIncludes(appSource, "<AlertDialog open", "Risky actions must use the shadcn AlertDialog confirmation flow.", failures);
     assertIncludes(appSource, "function UnifiedConfirmDialog", "Native confirms must stay replaced by the unified app dialog.", failures);
     assertIncludes(appSource, "requestConfirm", "Risky actions must route through the async confirmation flow.", failures);
@@ -123,10 +130,10 @@ function runRegression() {
     assertIncludes(appSource, "function openTaskTargetView", "Task-center navigation must be centralized.", failures);
     assertIncludes(appSource, "function openDiffTaskTarget", "Task center must support direct navigation into focused Diff filters.", failures);
     assertIncludes(appSource, "diffFocusRequest={diffFocusRequest}", "Focused Diff requests must flow into the Diff review card.", failures);
-    assertIncludes(appSource, "data-ui-section=\"model-route-compact\"", "Model route Sheet must use a compact shadcn summary bar before per-round controls.", failures);
+    assertIncludes(appSource, "data-ui-section=\"model-route-compact\"", "Model route Dialog must use a compact shadcn summary bar before per-round controls.", failures);
     assertIncludes(appSource, "data-ui-section=\"home-active-model-route\"", "Home model route card must show the active per-round route, not only the default model.", failures);
-    assertIncludes(appSource, "sm:grid-cols-3", "Model route Sheet actions should stay limited to the necessary three operations.", failures);
-    assertNotIncludes(appSource, "sm:grid-cols-2 xl:grid-cols-5", "Model route sheet actions must not use viewport-xl columns inside the narrower right sheet.", failures);
+    assertIncludes(appSource, "sm:grid-cols-3", "Model route Dialog actions should stay limited to the necessary three operations.", failures);
+    assertNotIncludes(appSource, "sm:grid-cols-2 xl:grid-cols-5", "Model route Dialog actions must not use viewport-xl columns inside the bounded overlay.", failures);
     assertIncludes(appSource, "modelConfigRef.current", "Model route edits must save the latest selected provider/model without waiting for a React rerender.", failures);
     assertIncludes(appSource, "modelRouteLines", "Model route summary must list effective providers and models per round.", failures);
     assertIncludes(appSource, "scopeDiagnostics", "Protection view must keep DOCX body-scope diagnostics in app state.", failures);
@@ -329,12 +336,13 @@ function runRegression() {
     cssPath: GLOBAL_CSS_PATH,
     buttonPath: BUTTON_PATH,
     badgePath: BADGE_PATH,
+    dialogPath: DIALOG_PATH,
     reportPath: REPORT_PATH,
     failures,
     checks: [
       "shadcn shell and primitives are used",
       "home embeds output and Diff review together",
-      "drawers and confirmations use shadcn overlays",
+      "dialogs, drawers, and confirmations use shadcn overlays",
       "model/history/result surfaces use shadcn composition",
       "old fy utilities and stale layout classes are absent",
     ],

@@ -52,6 +52,7 @@ def run_docx_pre_export_guard(
         "bodyMapPresent": body_map is not None,
         "comparePayloadPresent": compare_payload is not None,
         "expectedEditableUnitCount": 0,
+        "bodyMapUnitCount": len(body_map.units) if body_map is not None else 0,
         "actualParagraphCount": len(rewritten_paragraphs),
         "blockingIssues": blocking_issues,
         "warnings": warnings,
@@ -69,6 +70,7 @@ def run_docx_pre_export_guard(
         report["expectedEditableUnitCount"] = len(editable_units)
         report["totalTextUnitCount"] = snapshot.total_text_unit_count
         report["protectedUnitCount"] = snapshot.total_text_unit_count - len(editable_units)
+        body_map_export_count_matches = body_map is not None and len(rewritten_paragraphs) == len(body_map.units)
 
         if not _is_snapshot_current(snapshot, normalized_source_path):
             _add_issue(
@@ -78,13 +80,23 @@ def run_docx_pre_export_guard(
             )
 
         if len(rewritten_paragraphs) != len(editable_units):
-            _add_issue(
-                blocking_issues,
-                "paragraph_count_mismatch",
-                f"导出段落数与 Word 可编辑正文数不一致：预期 {len(editable_units)} 段，实际 {len(rewritten_paragraphs)} 段。",
-                expected=len(editable_units),
-                actual=len(rewritten_paragraphs),
-            )
+            if body_map_export_count_matches:
+                _add_issue(
+                    warnings,
+                    "body_map_scope_drift",
+                    "\u5f53\u524d Word \u4fdd\u62a4\u533a\u7b97\u6cd5\u8bc6\u522b\u51fa\u7684\u6b63\u6587\u6570\u91cf\u4e0e\u6b64\u8f6e\u51bb\u7ed3\u7684 body map \u4e0d\u4e00\u81f4\uff0c\u5df2\u6309\u5f53\u8f6e body map \u76ee\u6807\u6bb5\u843d\u517c\u5bb9\u5bfc\u51fa\u3002",
+                    snapshotEditableUnitCount=len(editable_units),
+                    bodyMapUnitCount=len(body_map.units) if body_map is not None else 0,
+                    actual=len(rewritten_paragraphs),
+                )
+            else:
+                _add_issue(
+                    blocking_issues,
+                    "paragraph_count_mismatch",
+                    f"\u5bfc\u51fa\u6bb5\u843d\u6570\u4e0e Word \u53ef\u7f16\u8f91\u6b63\u6587\u6570\u4e0d\u4e00\u81f4\uff1a\u9884\u671f {len(editable_units)} \u6bb5\uff0c\u5b9e\u9645 {len(rewritten_paragraphs)} \u6bb5\u3002",
+                    expected=len(editable_units),
+                    actual=len(rewritten_paragraphs),
+                )
 
         _check_rewritten_paragraphs(
             rewritten_paragraphs,
@@ -102,6 +114,7 @@ def run_docx_pre_export_guard(
                 snapshot_path=normalized_snapshot_path,
                 blocking_issues=blocking_issues,
                 warnings=warnings,
+                allow_snapshot_scope_drift=body_map_export_count_matches,
             )
         if compare_payload is not None:
             _check_compare_payload(
@@ -147,6 +160,7 @@ def _check_body_map(
     snapshot_path: Path,
     blocking_issues: list[dict[str, Any]],
     warnings: list[dict[str, Any]],
+    allow_snapshot_scope_drift: bool = False,
 ) -> None:
     if body_map.editable_unit_count != len(body_map.units):
         _add_issue(
@@ -232,10 +246,19 @@ def _check_body_map(
     validation_report = validate_docx_body_map(body_map, source_path=source_path, snapshot_path=snapshot_path)
     for issue in validation_report.get("blockingIssues", []) if isinstance(validation_report, dict) else []:
         if isinstance(issue, dict):
+            issue_code = str(issue.get("code", "validation_failed"))
+            if allow_snapshot_scope_drift and issue_code == "editable_unit_count_mismatch":
+                _add_issue(
+                    warnings,
+                    "body_map_editable_unit_count_drift",
+                    "\u5f53\u524d\u5feb\u7167\u6b63\u6587\u6570\u91cf\u5df2\u53d8\u5316\uff0c\u4f46 body map \u76ee\u6807\u6bb5\u843d\u4ecd\u53ef\u5b9a\u4f4d\uff0c\u5bfc\u51fa\u5c06\u91c7\u7528\u5f53\u8f6e\u51bb\u7ed3\u7684\u6b63\u6587\u6620\u5c04\u3002",
+                    **{key: value for key, value in issue.items() if key not in {"code", "message"}},
+                )
+                continue
             _add_issue(
                 blocking_issues,
-                f"body_map_{issue.get('code', 'validation_failed')}",
-                str(issue.get("message", "body map 校验失败。")),
+                f"body_map_{issue_code}",
+                str(issue.get("message", "body map \u6821\u9a8c\u5931\u8d25\u3002")),
                 **{key: value for key, value in issue.items() if key not in {"code", "message"}},
             )
     for warning in validation_report.get("warnings", []) if isinstance(validation_report, dict) else []:
@@ -256,7 +279,9 @@ def _check_rewritten_paragraphs(
     blocking_issues: list[dict[str, Any]],
     warnings: list[dict[str, Any]],
 ) -> None:
-    if len(rewritten_paragraphs) != len(editable_units):
+    if len(rewritten_paragraphs) != len(editable_units) and not (
+        body_map is not None and len(rewritten_paragraphs) == len(body_map.units)
+    ):
         return
     for paragraph_index, rewritten_text in enumerate(rewritten_paragraphs):
         original_text = _original_text_for_index(paragraph_index, editable_units=editable_units, body_map=body_map)

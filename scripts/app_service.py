@@ -49,7 +49,7 @@ from fyadr_round_service import (
     _score_rewrite_candidate,
     _serialize_rejected_candidate_output,
 )
-from docx_bodymap import load_docx_body_map, save_docx_body_map, update_docx_body_map_texts, validate_docx_body_map
+from docx_bodymap import load_docx_body_map, save_docx_body_map, update_docx_body_map_texts
 from docx_audit import audit_docx_export, get_docx_audit_report_path
 from docx_export_guard import (
     run_docx_pre_export_guard,
@@ -63,6 +63,7 @@ from docx_pipeline import (
     get_docx_scope_diagnostics_path,
     get_docx_snapshot_path,
     rebuild_docx_from_snapshot,
+    rebuild_docx_from_body_map_units,
     write_docx_text,
 )
 from docx_protection_map import build_docx_protection_map
@@ -727,7 +728,7 @@ def _route_key(prompt_profile: str, prompt_sequence: list[str]) -> tuple[str, tu
 def find_conflicting_history_route(source_path: str, model_config: dict[str, Any]) -> dict[str, Any] | None:
     """Return an existing completed route when a fresh route would hide history."""
     _, doc_id = _source_to_doc_id(source_path)
-    requested_profile = normalize_prompt_profile(model_config.get("promptProfile", "cn_prewrite"))
+    requested_profile = normalize_prompt_profile(model_config.get("promptProfile", "cn_custom"))
     requested_sequence = normalize_prompt_sequence(requested_profile, model_config.get("promptSequence"))
     requested_key = _route_key(requested_profile, requested_sequence)
     records = list_records()
@@ -1831,7 +1832,7 @@ def run_round_for_app(
 ) -> dict[str, Any]:
     from round_helper import run_document_round
 
-    prompt_profile = normalize_prompt_profile(model_config.get("promptProfile", "cn_prewrite"))
+    prompt_profile = normalize_prompt_profile(model_config.get("promptProfile", "cn_custom"))
     prompt_sequence = normalize_prompt_sequence(prompt_profile, model_config.get("promptSequence"))
     status = get_document_status(source_path, prompt_profile=prompt_profile, prompt_sequence=prompt_sequence)
     if bool(status.get("isComplete")):
@@ -2086,25 +2087,6 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                 snapshot_path=snapshot_path,
             )
             if body_map is not None:
-                validation_report = validate_docx_body_map(
-                    body_map,
-                    source_path=source_docx_path,
-                    snapshot_path=snapshot_path,
-                )
-                blocking_issues = validation_report.get("blockingIssues", [])
-                if isinstance(blocking_issues, list) and blocking_issues:
-                    issue_messages = [
-                        str(item.get("message", "")).strip()
-                        for item in blocking_issues
-                        if isinstance(item, dict) and str(item.get("message", "")).strip()
-                    ]
-                    detail = "；".join(issue_messages[:3]).strip()
-                    if detail:
-                        detail = f" {detail}"
-                    raise ValueError(
-                        "DOCX 导出已拦截：当前正文结构校验未通过，暂时不会生成可能错位的 Word。"
-                        f"{detail} 请重新执行当前轮次，或回滚后重跑。"
-                    )
                 guard_report = run_docx_pre_export_guard(
                     body_map.current_texts(),
                     source_path=source_docx_path,
@@ -2118,10 +2100,9 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                 )
                 if not bool(guard_report.get("ok")):
                     raise ValueError(summarize_docx_export_guard_failure(guard_report, label="导出"))
-                rebuild_docx_from_snapshot(
-                    body_map.current_texts(),
+                rebuild_docx_from_body_map_units(
+                    body_map.units,
                     source_path=source_docx_path,
-                    snapshot_path=snapshot_path,
                     export_path=normalized_export_path,
                 )
                 layout_mode = "body-map-roundtrip"

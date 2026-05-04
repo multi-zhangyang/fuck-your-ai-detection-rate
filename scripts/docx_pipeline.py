@@ -409,6 +409,33 @@ def rebuild_docx_from_snapshot(
     document.save(str(export_path))
 
 
+def rebuild_docx_from_body_map_units(
+    body_map_units: Sequence[Any],
+    *,
+    source_path: Path,
+    export_path: Path,
+) -> None:
+    if not body_map_units:
+        raise ValueError("DOCX body map has no editable units to export.")
+
+    document = Document(str(source_path.resolve()))
+    seen_targets: set[str] = set()
+    for unit in body_map_units:
+        target = getattr(unit, "target", None)
+        if not isinstance(target, dict):
+            raise ValueError("DOCX body map contains an invalid target.")
+        target_key = json.dumps(target, ensure_ascii=False, sort_keys=True)
+        if target_key in seen_targets:
+            raise ValueError(f"DOCX body map contains a duplicate target: {target}")
+        seen_targets.add(target_key)
+        paragraph = _resolve_target_paragraph(document, target)
+        _replace_paragraph_text(paragraph, str(getattr(unit, "current_text", "")))
+        _polish_rewritten_paragraph(paragraph)
+
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    document.save(str(export_path))
+
+
 def _split_text_into_blocks(text: str) -> list[str]:
     blocks: list[str] = []
     current: list[str] = []

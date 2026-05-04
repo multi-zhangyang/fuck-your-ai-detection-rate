@@ -9,6 +9,7 @@ APP_DIR_NAME = "FYADR"
 CONFIG_FILE_NAME = "config.json"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_RETRIES = 3
+DEFAULT_PROMPT_PROFILE = "cn_custom"
 SUPPORTED_PROMPT_PROFILES = {"cn", "cn_prewrite", "cn_custom"}
 SUPPORTED_PROMPT_IDS = {"prewrite", "classical", "round1", "round2"}
 SUPPORTED_REWRITE_CANDIDATE_MODES = {"economy"}
@@ -46,9 +47,9 @@ def get_app_config_path() -> Path:
 
 
 def _normalize_prompt_profile(value: Any) -> str:
-    candidate = str(value or "cn_prewrite").strip().lower() or "cn_prewrite"
+    candidate = str(value or DEFAULT_PROMPT_PROFILE).strip().lower() or DEFAULT_PROMPT_PROFILE
     if candidate not in SUPPORTED_PROMPT_PROFILES:
-        return "cn_prewrite"
+        return DEFAULT_PROMPT_PROFILE
     return candidate
 
 
@@ -312,7 +313,7 @@ def load_app_config() -> dict[str, Any]:
             "apiType": "chat_completions",
             "temperature": 0.7,
             "offlineMode": False,
-            "promptProfile": "cn_prewrite",
+            "promptProfile": DEFAULT_PROMPT_PROFILE,
             "promptSequence": ["prewrite", "round1", "round2"],
             "rewriteCandidateMode": "economy",
             "requestTimeoutSeconds": DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -328,7 +329,7 @@ def load_app_config() -> dict[str, Any]:
         "apiType": _normalize_api_type(data.get("apiType", "chat_completions")),
         "temperature": float(data.get("temperature", 0.7)),
         "offlineMode": bool(data.get("offlineMode", False)),
-        "promptProfile": _normalize_prompt_profile(data.get("promptProfile", "cn_prewrite")),
+        "promptProfile": _normalize_prompt_profile(data.get("promptProfile", DEFAULT_PROMPT_PROFILE)),
         "promptSequence": _normalize_prompt_sequence(data.get("promptSequence")),
         "rewriteCandidateMode": _normalize_rewrite_candidate_mode(data.get("rewriteCandidateMode", "economy")),
         "requestTimeoutSeconds": _clamp_int(
@@ -371,7 +372,7 @@ def save_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "apiType": _normalize_api_type(config.get("apiType", "chat_completions")),
         "temperature": float(config.get("temperature", 0.7)),
         "offlineMode": bool(config.get("offlineMode", False)),
-        "promptProfile": _normalize_prompt_profile(config.get("promptProfile", "cn_prewrite")),
+        "promptProfile": _normalize_prompt_profile(config.get("promptProfile", DEFAULT_PROMPT_PROFILE)),
         "promptSequence": _normalize_prompt_sequence(config.get("promptSequence", existing.get("promptSequence", []))),
         "rewriteCandidateMode": _normalize_rewrite_candidate_mode(config.get("rewriteCandidateMode", existing.get("rewriteCandidateMode", "economy"))),
         "requestTimeoutSeconds": _clamp_int(

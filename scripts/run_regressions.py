@@ -96,6 +96,7 @@ def build_commands(
         {"name": "real DOCX smoke", "command": [sys.executable, "scripts/real_docx_smoke.py", *(("--strict-missing",) if strict_samples else ())]},
         {"name": "state machine regression", "command": [sys.executable, "scripts/state_machine_regression.py"]},
         {"name": "DOCX export regression", "command": [sys.executable, "scripts/docx_export_regression.py", "--rebuild-sample"]},
+        {"name": "legacy body-map DOCX export regression", "command": [sys.executable, "scripts/docx_legacy_body_map_export_regression.py"]},
         {"name": "Python compile", "command": [sys.executable, "-m", "py_compile", *_all_python_files()]},
         {"name": "open-source audit regression", "command": [sys.executable, "scripts/open_source_audit_regression.py"]},
         {"name": "pre-release check regression", "command": [sys.executable, "scripts/pre_release_check_regression.py"]},

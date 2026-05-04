@@ -1914,7 +1914,7 @@ def post_detection_report() -> tuple[Response, int] | Response:
 @app.route("/api/document-status", methods=["GET"])
 def get_status() -> tuple[Response, int] | Response:
     try:
-        prompt_profile = request.args.get("promptProfile", "cn_prewrite")
+        prompt_profile = request.args.get("promptProfile", "cn_custom")
         prompt_sequence = parse_prompt_sequence_value(request.args.get("promptSequence"))
         return jsonify(
             get_document_status(
@@ -2373,7 +2373,7 @@ def get_run_round_status(run_id: str) -> tuple[Response, int] | Response:
 def get_round_progress_status_route() -> tuple[Response, int] | Response:
     try:
         source_path = normalize_api_source_path(require_query_value("sourcePath"))
-        prompt_profile = request.args.get("promptProfile", "cn_prewrite")
+        prompt_profile = request.args.get("promptProfile", "cn_custom")
         prompt_sequence = parse_prompt_sequence_value(request.args.get("promptSequence"))
         round_number = optional_int_query_value("roundNumber")
         status = get_round_progress_status(
@@ -2398,7 +2398,7 @@ def delete_round_progress_route() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
         source_path = str(payload.get("sourcePath", "")).strip()
-        prompt_profile = str(payload.get("promptProfile", "cn_prewrite")).strip()
+        prompt_profile = str(payload.get("promptProfile", "cn_custom")).strip()
         prompt_sequence = parse_prompt_sequence_value(payload.get("promptSequence"))
         round_number = int(payload.get("roundNumber", 0) or 0)
         if not source_path or round_number <= 0:

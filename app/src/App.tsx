@@ -41,6 +41,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -256,6 +257,7 @@ const PROMPT_OPTIONS: Array<{ id: PromptId; label: string; desc: string }> = [
 ];
 
 const DEFAULT_PROMPT_SEQUENCE: PromptId[] = ["prewrite", "round1", "round2"];
+const ACTIVE_PROMPT_PROFILE: ModelConfig["promptProfile"] = "cn_custom";
 
 function normalizePromptSequence(value: unknown): PromptId[] {
   const rawItems = Array.isArray(value) ? value : [];
@@ -275,6 +277,14 @@ function promptSequencesEqual(left: PromptId[] | undefined, right: PromptId[] | 
   const a = normalizePromptSequence(left);
   const b = normalizePromptSequence(right);
   return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+function normalizeActiveModelConfig(config: ModelConfig): ModelConfig {
+  const promptSequence = normalizePromptSequence(config.promptSequence);
+  if (config.promptProfile === ACTIVE_PROMPT_PROFILE && promptSequencesEqual(config.promptSequence, promptSequence)) {
+    return config;
+  }
+  return { ...config, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence };
 }
 
 function formatPromptSequence(sequence: PromptId[] | undefined): string {
@@ -1107,7 +1117,10 @@ function resolveRestoredPromptProfile(
   fallbackProfile: ModelConfig["promptProfile"],
 ): ModelConfig["promptProfile"] {
   if (isPromptProfile(storedPromptProfile)) {
-    if (!matchedItem || matchedItem.rounds.some((roundItem) => (roundItem.promptProfile || "cn") === storedPromptProfile)) {
+    if (storedPromptProfile === ACTIVE_PROMPT_PROFILE) {
+      return ACTIVE_PROMPT_PROFILE;
+    }
+    if (matchedItem?.rounds.some((roundItem) => (roundItem.promptProfile || "cn") === storedPromptProfile)) {
       return storedPromptProfile;
     }
   }
@@ -2492,7 +2505,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
 
     async function bootstrapConfig() {
       try {
-        const config = await service.loadModelConfig();
+        const config = normalizeActiveModelConfig(await service.loadModelConfig());
         if (cancelled) {
           return;
         }
@@ -3064,11 +3077,11 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     return nextCompareData;
   }
 
-  async function handlePromptProfileChange(promptProfile: ModelConfig["promptProfile"]) {
-    const nextConfig = { ...modelConfig, promptProfile, promptSequence: normalizePromptSequence(modelConfig.promptSequence) };
+  async function handlePromptProfileChange(_promptProfile: ModelConfig["promptProfile"]) {
+    const nextConfig = { ...modelConfig, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence: normalizePromptSequence(modelConfig.promptSequence) };
     setModelConfig(nextConfig);
     clearAutoSnapshotSuppression();
-    localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, promptProfile);
+    localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, nextConfig.promptProfile);
     localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(nextConfig.promptSequence));
     if (!documentStatus?.sourcePath) {
       return;
@@ -3090,7 +3103,7 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
   }
 
   async function handlePromptSequenceChange(promptSequence: PromptId[]) {
-    const nextConfig = { ...modelConfig, promptProfile: "cn_custom" as const, promptSequence: normalizePromptSequence(promptSequence) };
+    const nextConfig = { ...modelConfig, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence: normalizePromptSequence(promptSequence) };
     setModelConfig(nextConfig);
     clearAutoSnapshotSuppression();
     localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, nextConfig.promptProfile);
@@ -3391,13 +3404,13 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     const taskTicket = beginTask("saving-config");
     try {
       setRuntimeStep("正在保存模型配置。");
-      const configToSave = nextConfig ?? modelConfig;
+      const configToSave = normalizeActiveModelConfig(nextConfig ?? modelConfig);
       if (testConfig && !testConfig.offlineMode) {
         setRuntimeStep("正在测试模型连接，测试通过后保存。");
         await service.testModelConnection(testConfig);
       }
       const saved = await service.saveModelConfig(configToSave);
-      const mergedSaved = { ...saved, ...configToSave, roundModels: { ...(saved.roundModels ?? {}), ...(configToSave.roundModels ?? {}) } };
+      const mergedSaved = normalizeActiveModelConfig({ ...saved, ...configToSave, roundModels: { ...(saved.roundModels ?? {}), ...(configToSave.roundModels ?? {}) } });
       setModelConfig(mergedSaved);
       if (documentStatus) {
         await refreshDocumentState(documentStatus.sourcePath, mergedSaved);
@@ -5500,7 +5513,12 @@ function HomeRunPanel({
             <Button
               type="button"
               variant="outline"
-              onClick={() => setSetupEditor(setupEditor === "prompt" ? null : "prompt")}
+              onClick={() => {
+                if (promptProfile !== ACTIVE_PROMPT_PROFILE) {
+                  onPromptProfileChange(ACTIVE_PROMPT_PROFILE);
+                }
+                setSetupEditor(setupEditor === "prompt" ? null : "prompt");
+              }}
               disabled={busy}
               aria-expanded={setupEditor === "prompt"}
               className={cn("shadcn-choice-card", setupEditor === "prompt" && "shadcn-choice-card-active")}
@@ -5601,72 +5619,30 @@ function HomeRunPanel({
       </CardContent>
     </Card>
     {setupEditor ? (
-      <Sheet open={Boolean(setupEditor)} onOpenChange={(open) => {
+      <Dialog open={Boolean(setupEditor)} onOpenChange={(open) => {
         if (!open) setSetupEditor(null);
       }}>
-        <SheetContent side="right" className={`shadcn-config-sheet min-w-0 overflow-hidden ${setupEditor === "model" ? "sm:max-w-[680px]" : "sm:max-w-[520px]"}`}>
-          <SheetHeader>
-            <SheetTitle className="flex items-center gap-2">
+        <DialogContent className={cn("shadcn-config-dialog grid max-h-[min(88svh,52rem)] min-w-0 grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden p-0", setupEditor === "model" ? "sm:max-w-[720px]" : "sm:max-w-[560px]")}>
+          <DialogHeader className="px-6 pt-6">
+            <DialogTitle className="flex items-center gap-2">
               {setupEditor === "prompt" ? <Wand2 /> : <Settings />}
               {setupEditor === "prompt" ? "改写流程" : "模型路线"}
-            </SheetTitle>
-            <SheetDescription>
+            </DialogTitle>
+            <DialogDescription>
               {setupEditor === "prompt" ? "只调整本次任务的轮次顺序。" : "默认连接，可按轮覆盖。"}
-            </SheetDescription>
-          </SheetHeader>
+            </DialogDescription>
+          </DialogHeader>
           <Separator />
 
-          <ScrollArea className="shadcn-scroll-bound min-h-0 min-w-0 flex-1 overflow-x-hidden pr-3">
-            <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-x-hidden pb-4">
+          <ScrollArea className="shadcn-scroll-bound min-h-0 min-w-0 overflow-x-hidden px-6 pb-6">
+            <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-x-hidden">
             {setupEditor === "prompt" ? (
               <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-hidden">
-                <ToggleGroup
-                  type="single"
-                  value={promptProfile}
-                  onValueChange={(nextProfile) => {
-                    if (nextProfile === "cn_prewrite" || nextProfile === "cn" || nextProfile === "cn_custom") {
-                      onPromptProfileChange(nextProfile);
-                    }
-                  }}
-                  className="!grid w-full min-w-0 grid-cols-1 items-stretch justify-stretch gap-2 overflow-hidden"
-                >
-                  <ToggleGroupItem
-                    value="cn_prewrite"
-                    variant="outline"
-                    disabled={busy}
-                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-ring/35 data-[state=on]:bg-muted"
-                    aria-label="中文三轮预改写"
-                  >
-                    <span className="text-sm font-semibold">中文三轮预改写</span>
-                    <span className="max-w-full truncate text-xs text-muted-foreground">预改写 → 一轮 → 二轮</span>
-                  </ToggleGroupItem>
-                  <ToggleGroupItem
-                    value="cn"
-                    variant="outline"
-                    disabled={busy}
-                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-ring/35 data-[state=on]:bg-muted"
-                    aria-label="中文双轮"
-                  >
-                    <span className="text-sm font-semibold">中文双轮</span>
-                    <span className="max-w-full truncate text-xs text-muted-foreground">一轮 → 二轮</span>
-                  </ToggleGroupItem>
-                  <ToggleGroupItem
-                    value="cn_custom"
-                    variant="outline"
-                    disabled={busy}
-                    className="h-auto min-h-[4.25rem] w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden px-3 py-2 text-left data-[state=on]:border-ring/35 data-[state=on]:bg-muted"
-                    aria-label="自定义组合"
-                  >
-                    <span className="text-sm font-semibold">自定义组合</span>
-                    <span className="max-w-full truncate text-xs text-muted-foreground">{formatPromptSequence(activeSequence)}</span>
-                  </ToggleGroupItem>
-                </ToggleGroup>
                 <div className="grid gap-2">
                   <label className="text-xs font-medium text-muted-foreground">当前流程摘要</label>
                   <Textarea value={formatPromptSequence(activeFlowSequence)} readOnly className="min-h-20 resize-none" />
                 </div>
-                {promptProfile === "cn_custom" ? (
-                  <div className="min-w-0 overflow-hidden rounded-lg border bg-background p-4">
+                <div className="min-w-0 overflow-hidden rounded-lg border bg-background p-4">
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                       {[1, 2, 3].map((length) => (
                         <Button key={length} type="button" variant={activeSequence.length === length ? "default" : "outline"} size="sm" onClick={() => updateSequenceLength(length)} disabled={busy}>{length} 轮</Button>
@@ -5688,8 +5664,7 @@ function HomeRunPanel({
                         </div>
                       ))}
                     </div>
-                  </div>
-                ) : null}
+                </div>
               </div>
             ) : (
               <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-hidden">
@@ -5807,8 +5782,8 @@ function HomeRunPanel({
             )}
             </div>
           </ScrollArea>
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
     ) : null}
     </>
   );

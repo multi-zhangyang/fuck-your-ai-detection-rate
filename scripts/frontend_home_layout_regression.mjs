@@ -44,6 +44,8 @@ function runRegression() {
     assertIncludes(appSource, "<DiffReviewCard", "Home page must embed the full Diff workbench in the primary work area.", failures);
     assertIncludes(appSource, "<HomeRunPanel", "Home run controls must stay in the right operation stack.", failures);
     assertIncludes(appSource, "<DetectionReportPanel", "External report controls must stay in the right operation stack.", failures);
+    assertIncludes(appSource, "<Dialog open={Boolean(setupEditor)}", "Home setup editors must open as centered shadcn Dialogs.", failures);
+    assertNotIncludes(appSource, "<Sheet open={Boolean(setupEditor)}", "Home setup editors must not reopen as right-side Sheets.", failures);
     assertNotIncludes(appSource, "onOpenDiffWorkbench", "Home must not keep a redundant open-Diff entry now that Diff is embedded.", failures);
     assertNotIncludes(appSource, "HOME_TOOLS_COLLAPSED_KEY", "Home page must not persist a separate right-side panel state.", failures);
     assertNotIncludes(appSource, "homeToolsCollapsed", "Home page must not keep the old right-side tool panel model.", failures);
@@ -58,7 +60,7 @@ function runRegression() {
     assertIncludes(cssSource, "#root {\n    @apply h-svh overflow-hidden;", "React root must keep the workbench height constrained.", failures);
     assertIncludes(cssSource, ".shadcn-control-panel", "Shared custom utilities must be shadcn-scoped, not legacy fy-scoped.", failures);
     assertIncludes(cssSource, ".shadcn-choice-card", "Option cards must use the shadcn utility namespace.", failures);
-    assertIncludes(cssSource, ".shadcn-config-sheet", "Configuration overlays must use the shadcn utility namespace.", failures);
+    assertIncludes(cssSource, ".shadcn-config-dialog", "Configuration overlays must use the shadcn utility namespace.", failures);
     assertNotIncludes(cssSource, ".fy-home-", "CSS must not reintroduce old fy-home layout utilities.", failures);
     assertNotIncludes(cssSource, ".fy-global-", "CSS must not reintroduce old fy-global status utilities.", failures);
     assertNotIncludes(cssSource, "grid-template-rows: auto minmax(0, 1fr);", "Home side stack must not force the detection report to stretch into a blank card.", failures);

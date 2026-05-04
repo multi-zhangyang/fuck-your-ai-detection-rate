@@ -112,8 +112,8 @@
     @apply border-foreground/35 bg-accent shadow-sm;
   }
 
-  .shadcn-config-sheet {
-    @apply w-[min(92vw,760px)] border-l border-border bg-background p-6;
+  .shadcn-config-dialog {
+    @apply border-border bg-background shadow-[0_18px_56px_hsl(var(--foreground)/0.16)];
   }
 
   .shadcn-scroll-bound {
@@ -130,7 +130,7 @@
     max-width: 100% !important;
   }
 
-  .shadcn-config-sheet svg {
+  .shadcn-config-dialog svg {
     @apply size-4;
   }
 
