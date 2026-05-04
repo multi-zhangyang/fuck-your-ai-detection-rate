@@ -23,7 +23,6 @@ import {
   X,
 } from "lucide-react";
 
-import { DocumentCard } from "@/components/DocumentCard";
 import { HistoryCard } from "@/components/HistoryCard";
 import { ModelConfigCard, SchoolFormatCard } from "@/components/ModelConfigCard";
 import { ProtectionMapCard } from "@/components/ProtectionMapCard";
@@ -39,11 +38,11 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -68,7 +67,6 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useAppState } from "@/hooks/useAppState";
 import type { AppService } from "@/lib/appService";
@@ -111,18 +109,17 @@ type Props = {
 type WorkbenchView = "home" | "quality" | "model" | "prompts" | "format" | "protection" | "history" | "diagnostics";
 
 const WORKBENCH_NAV_ITEMS = [
-  { view: "home", label: "工作台", description: "文档、导出、任务控制", icon: Home },
-  { view: "quality", label: "改写检查", description: "风险与质量统计", icon: BarChart3 },
-  { view: "model", label: "模型配置", description: "连接、服务商、路线", icon: Settings },
-  { view: "prompts", label: "提示词预览", description: "只读模板", icon: FileText },
-  { view: "format", label: "学校规范", description: "Word 导出规则", icon: SlidersHorizontal },
-  { view: "protection", label: "保护区地图", description: "结构锁定", icon: ShieldCheck },
-  { view: "history", label: "历史记录", description: "文档与轮次归档", icon: History },
-  { view: "diagnostics", label: "启动诊断", description: "运行环境状态", icon: Activity },
+  { view: "home", label: "工作台", icon: Home },
+  { view: "quality", label: "改写检查", icon: BarChart3 },
+  { view: "model", label: "模型配置", icon: Settings },
+  { view: "prompts", label: "提示词预览", icon: FileText },
+  { view: "format", label: "学校规范", icon: SlidersHorizontal },
+  { view: "protection", label: "保护区地图", icon: ShieldCheck },
+  { view: "history", label: "历史记录", icon: History },
+  { view: "diagnostics", label: "启动诊断", icon: Activity },
 ] satisfies Array<{
   view: WorkbenchView;
   label: string;
-  description: string;
   icon: typeof Home;
 }>;
 type NotificationKind = "success" | "error";
@@ -207,12 +204,9 @@ type RuntimeTaskCenterItem = {
   id: string;
   title: string;
   status: string;
-  detail: string;
-  recoveryHint?: string;
   tone: RuntimeTaskTone;
   running: boolean;
   percent?: number;
-  meta?: string;
   actionLabel?: string;
   onAction?: () => void;
   cancelLabel?: string;
@@ -240,20 +234,18 @@ type DiffDashboardStats = {
   chunkCount: number;
   reviewCount: number;
   failedCount: number;
-  candidateCount: number;
   preferredFilter: DiffFilterMode;
   preferredChunkId?: string;
 };
 type DiffFailureLike = {
   chunkId: string;
-  rejectedCandidates?: unknown[];
 };
 
-const PROMPT_OPTIONS: Array<{ id: PromptId; label: string; desc: string }> = [
-  { id: "prewrite", label: "预改写", desc: "保守自然化" },
-  { id: "classical", label: "经典改写", desc: "解释性慢节奏" },
-  { id: "round1", label: "一轮", desc: "主体改写" },
-  { id: "round2", label: "二轮", desc: "最终降痕" },
+const PROMPT_OPTIONS: Array<{ id: PromptId; label: string }> = [
+  { id: "prewrite", label: "预改写" },
+  { id: "classical", label: "经典改写" },
+  { id: "round1", label: "一轮" },
+  { id: "round2", label: "二轮" },
 ];
 
 const DEFAULT_PROMPT_SEQUENCE: PromptId[] = ["prewrite", "round1", "round2"];
@@ -312,11 +304,6 @@ function getPromptFlowSequence(promptProfile: ModelConfig["promptProfile"], prom
   return normalizePromptSequence(promptSequence);
 }
 
-function getPromptOptionLabel(promptId: PromptId): string {
-  const option = PROMPT_OPTIONS.find((item) => item.id === promptId);
-  return option ? `${option.label} · ${option.desc}` : promptId;
-}
-
 function buildRoundModelFromProvider(provider: ModelProviderConfig, model: string, fallback: ModelConfig): RoundModelConfig {
   return {
     enabled: true,
@@ -364,18 +351,11 @@ function buildQualityStats(compareData: RoundCompareData | null, exportResult: E
   const missingCitationCount = chunks.reduce((total, chunk) => total + (chunk.quality?.missingCitationCount ?? 0), 0);
   const protectedTokenCount = chunks.reduce((total, chunk) => total + (chunk.quality?.protectedTokenCount ?? 0), 0);
   const machineLikeRiskCount = chunks.reduce((total, chunk) => total + (chunk.quality?.machineLikeRiskCount ?? 0), 0);
-  const protectedTypes: Record<string, number> = {};
-  for (const chunk of chunks) {
-    for (const [key, count] of Object.entries(chunk.quality?.protectedTokenTypes ?? {})) {
-      protectedTypes[key] = (protectedTypes[key] ?? 0) + count;
-    }
-  }
   return {
     chunkCount: chunks.length,
     reviewChunkCount: reviewChunks.length,
     missingCitationCount,
     protectedTokenCount,
-    protectedTypes,
     machineLikeRiskCount,
     guardIssueCount: exportResult?.guardIssueCount ?? 0,
     preflightIssueCount: exportResult?.preflightIssueCount ?? 0,
@@ -514,16 +494,6 @@ function formatPendingAutoActionStatus(action: PendingAutoAction): string {
     return `将在 ${action.secondsRemaining} 秒后自动进入第 ${action.round} 轮`;
   }
   return `自动重跑 ${action.attempts}/${action.maxAttempts} 次仍中断，等待人工处理`;
-}
-
-function formatPendingAutoActionDetail(action: PendingAutoAction): string {
-  if (action.kind === "retry") {
-    return `${formatFileScopeLabel(action.sourcePath)} · ${action.reason || "运行通道被迫中断，已保留断点"}`;
-  }
-  if (action.kind === "next-round") {
-    return `${formatFileScopeLabel(action.sourcePath)} · 第 ${action.completedRound} 轮完成后自动续跑`;
-  }
-  return `${formatFileScopeLabel(action.sourcePath)} · ${action.reason || "连续中断，需要检查模型、网络或断点状态"}`;
 }
 
 function isInterruptedRunMessage(message: string): boolean {
@@ -713,18 +683,10 @@ function buildDiffDashboardStats(
       chunkCount: 0,
       reviewCount: 0,
       failedCount: 0,
-      candidateCount: 0,
       preferredFilter: "all",
     };
   }
   const failureByChunk = new Map(failures.map((failure) => [failure.chunkId, failure]));
-  const allCandidateChunkIds = compareData.chunks
-    .filter((chunk) => (chunk.rejectedCandidates?.length ?? 0) > 0 || ((failureByChunk.get(chunk.chunkId)?.rejectedCandidates?.length ?? 0) > 0))
-    .map((chunk) => chunk.chunkId);
-  const allCandidateChunkIdSet = new Set(allCandidateChunkIds);
-  const candidateChunkIds = compareData.chunks
-    .filter((chunk) => allCandidateChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]))
-    .map((chunk) => chunk.chunkId);
   const reviewChunkIds = compareData.chunks
     .filter((chunk) => {
       const flags = chunk.quality?.flags ?? [];
@@ -733,19 +695,17 @@ function buildDiffDashboardStats(
         || chunk.fallbackMode === "source"
         || flags.includes("source_fallback")
         || failureByChunk.has(chunk.chunkId)
-        || allCandidateChunkIdSet.has(chunk.chunkId)
         || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review"));
     })
     .map((chunk) => chunk.chunkId);
   const failedChunkIds = failures.filter((failure) => !isReviewDecisionResolved(reviewDecisions[failure.chunkId])).map((failure) => failure.chunkId);
-  const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : candidateChunkIds.length ? "candidate" : reviewChunkIds.length ? "review" : "all";
+  const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : reviewChunkIds.length ? "review" : "all";
   return {
     chunkCount: compareData.chunkCount ?? compareData.chunks.length,
     reviewCount: reviewChunkIds.length,
     failedCount: failedChunkIds.length,
-    candidateCount: candidateChunkIds.length,
     preferredFilter,
-    preferredChunkId: failedChunkIds[0] ?? candidateChunkIds[0] ?? reviewChunkIds[0],
+    preferredChunkId: failedChunkIds[0] ?? reviewChunkIds[0],
   };
 }
 
@@ -887,7 +847,6 @@ function buildRoundResultFromBatchRerunResult(result: BatchRerunResult, current:
 type BatchRerunFailure = {
   chunkId: string;
   error: string;
-  rejectedCandidates?: NonNullable<RoundCompareData["chunks"][number]["rejectedCandidates"]>;
   rerunStatus?: string;
   rerunFallbackMode?: string;
   rerunFallbackError?: string;
@@ -895,76 +854,8 @@ type BatchRerunFailure = {
   scopeKey?: string;
 };
 
-type RejectedCandidate = NonNullable<RoundCompareData["chunks"][number]["rejectedCandidates"]>[number];
-type AdoptableRejectedCandidate = {
-  chunkId: string;
-  candidate: RejectedCandidate;
-};
-
-function getLatestRejectedCandidateForAdoption(candidates?: RejectedCandidate[]): RejectedCandidate | null {
-  if (!candidates?.length) {
-    return null;
-  }
-  for (let index = candidates.length - 1; index >= 0; index -= 1) {
-    const candidate = candidates[index];
-    if (candidate?.outputText?.trim()) return candidate;
-  }
-  return null;
-}
-
-function collectAdoptableRejectedCandidates(
-  compareData: RoundCompareData | null,
-  failures: BatchRerunFailure[],
-  reviewDecisions: Record<string, ReviewDecision>,
-): AdoptableRejectedCandidate[] {
-  if (!compareData?.chunks.length) {
-    return [];
-  }
-  const failureByChunk = new Map(failures.map((failure) => [failure.chunkId, failure]));
-  return compareData.chunks.flatMap((chunk) => {
-    if (isReviewDecisionResolved(reviewDecisions[chunk.chunkId])) {
-      return [];
-    }
-    const failureCandidates = failureByChunk.get(chunk.chunkId)?.rejectedCandidates;
-    const candidates = chunk.rejectedCandidates?.length ? chunk.rejectedCandidates : failureCandidates;
-    const candidate = getLatestRejectedCandidateForAdoption(candidates);
-    return candidate ? [{ chunkId: chunk.chunkId, candidate }] : [];
-  });
-}
-
-function buildRejectedCandidateReviewDecision(candidate: RejectedCandidate): ReviewDecision {
-  return {
-    mode: "custom",
-    text: candidate.outputText,
-    source: "rejected_candidate",
-    confirmed: true,
-    attempt: candidate.attempt,
-    candidate: candidate.candidate,
-    error: candidate.error,
-  };
-}
-
 function asPlainRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function normalizeFailureRejectedCandidates(value: unknown): NonNullable<BatchRerunFailure["rejectedCandidates"]> | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const candidates = value
-    .map((item) => asPlainRecord(item))
-    .filter((item): item is Record<string, unknown> => Boolean(item))
-    .map((item, index) => ({
-      attempt: typeof item.attempt === "number" ? item.attempt : undefined,
-      candidate: typeof item.candidate === "number" ? item.candidate : index + 1,
-      outputText: String(item.outputText ?? ""),
-      outputCharCount: typeof item.outputCharCount === "number" ? item.outputCharCount : undefined,
-      truncated: Boolean(item.truncated),
-      error: typeof item.error === "string" ? item.error : undefined,
-    }))
-    .filter((item) => item.outputText.trim());
-  return candidates.length ? candidates : undefined;
 }
 
 function extractRerunFailureExtras(error: unknown): Partial<BatchRerunFailure> {
@@ -973,10 +864,8 @@ function extractRerunFailureExtras(error: unknown): Partial<BatchRerunFailure> {
   if (!failure) {
     return {};
   }
-  const rejectedCandidates = normalizeFailureRejectedCandidates(failure.rejectedCandidates);
   const quality = asPlainRecord(failure.quality) as BatchRerunFailure["quality"] | null;
   return {
-    ...(rejectedCandidates ? { rejectedCandidates } : {}),
     ...(typeof failure.rerunStatus === "string" ? { rerunStatus: failure.rerunStatus } : {}),
     ...(typeof failure.rerunFallbackMode === "string" ? { rerunFallbackMode: failure.rerunFallbackMode } : {}),
     ...(typeof failure.rerunFallbackError === "string" ? { rerunFallbackError: failure.rerunFallbackError } : {}),
@@ -1559,30 +1448,10 @@ function getPhaseTaskTone(phase: TaskPhase): RuntimeTaskTone {
   return "slate";
 }
 
-function getTaskPhaseRecoveryHint(phase: TaskPhase): string {
-  const hints: Partial<Record<TaskPhase, string>> = {
-    "running-round": "可中断；再次开始会优先读取断点，不会从头覆盖已完成分块。",
-    "canceling-run": "等待后端到安全点落盘；完成后回主页继续当前轮。",
-    "batch-rerunning": "可停止；已完成的内容会保留，失败内容会留在 Diff 的失败筛选里。",
-    "canceling-batch-rerun": "停止请求已送达；当前块结束后释放任务。",
-    "parsing-format": "耗时过长可停止解析，换更快模型或修改说明后重新解析。",
-    "loading-models": "模型目录读取可停止；停止只取消本次读取，不会清空已有服务商配置。",
-    "picking-document": "取消文件选择后应自动回到待命，不需要刷新页面。",
-    "picking-report": "取消报告选择后应自动回到待命，已绑定文档不会被清除。",
-    "parsing-report": "报告只用于定位风险段；解析失败不会影响现有改写结果。",
-    exporting: "导出失败不会影响已有改写结果；修正问题后可重新导出。",
-    "saving-config": "保存失败不会清空表单；修正连接信息后再次保存。",
-    "testing-config": "测试失败只说明当前连接不可用，不会覆盖已有配置。",
-    "restoring-document": "恢复失败时可从历史记录手动切换，不会删除源文件。",
-  };
-  return hints[phase] ?? "任务结束后会释放按钮；如失败，请查看错误通知里的下一步说明。";
-}
-
-function getErrorRecoveryPlan(message: string): { hint: string; target: WorkbenchView; actionLabel: string; tone: RuntimeTaskTone } {
+function getErrorRecoveryPlan(message: string): { target: WorkbenchView; actionLabel: string; tone: RuntimeTaskTone } {
   const lowered = message.toLowerCase();
   if (message.includes("中断") || message.includes("断点") || message.includes("Unknown run id") || message.includes("运行通道")) {
     return {
-      hint: "回主页点击开始/继续，系统会先检查断点和后台任务，避免从头重跑。",
       target: "home",
       actionLabel: "回主页续跑",
       tone: "blue",
@@ -1590,7 +1459,6 @@ function getErrorRecoveryPlan(message: string): { hint: string; target: Workbenc
   }
   if (message.includes("模型配置") || message.includes("接口") || message.includes("API Key") || message.includes("Base URL") || lowered.includes("model")) {
     return {
-      hint: "先检查默认连接或服务商配置；保存前建议测试连接，再回主页继续。",
       target: "model",
       actionLabel: "检查模型配置",
       tone: "amber",
@@ -1598,7 +1466,6 @@ function getErrorRecoveryPlan(message: string): { hint: string; target: Workbenc
   }
   if (message.includes("学校") || message.includes("规范") || message.includes("解析")) {
     return {
-      hint: "保留当前文本，换用更稳定的 JSON 输出模型后重新解析；必要时使用默认规范兜底。",
       target: "format",
       actionLabel: "查看学校规范",
       tone: "amber",
@@ -1606,7 +1473,6 @@ function getErrorRecoveryPlan(message: string): { hint: string; target: Workbenc
   }
   if (message.includes("报告") || message.includes("PDF") || message.includes("PaperPass") || message.includes("SpeedAI")) {
     return {
-      hint: "确认报告来源选对；报告匹配只做定位，不会自动覆盖原文。",
       target: "home",
       actionLabel: "回主页看报告",
       tone: "amber",
@@ -1614,14 +1480,12 @@ function getErrorRecoveryPlan(message: string): { hint: string; target: Workbenc
   }
   if (message.includes("导出") || message.includes("Word") || message.includes("审计")) {
     return {
-      hint: "改写结果仍在；先查看改写检查和导出审计，再重新导出。",
       target: "quality",
       actionLabel: "查看改写检查",
       tone: "red",
     };
   }
   return {
-    hint: "不要盲目刷新或重复启动；先打开任务中心确认是否有后台任务或可续跑断点。",
     target: "diagnostics",
     actionLabel: "查看诊断",
     tone: "red",
@@ -1932,10 +1796,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     const activeChunkIds = new Set(activeCompareData?.chunks.map((chunk) => chunk.chunkId) ?? []);
     return rerunFailures.filter((failure) => failure.scopeKey === activeRerunFailureScopeKey && activeChunkIds.has(failure.chunkId));
   }, [activeCompareData, activeRerunFailureScopeKey, rerunFailures]);
-  const adoptableRejectedCandidates = useMemo(
-    () => collectAdoptableRejectedCandidates(activeCompareData, activeRerunFailures, reviewDecisions),
-    [activeCompareData, activeRerunFailures, reviewDecisions],
-  );
   const diffDashboardStats = useMemo(
     () => buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions),
     [activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions],
@@ -2353,28 +2213,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       }
       return next;
     });
-  }
-
-  function handleAdoptAllRejectedCandidates() {
-    const outputPath = roundResult?.outputPath ?? activeCompareData?.outputPath;
-    if (!outputPath) {
-      setNotice("当前没有可保存候选选择的输出结果。");
-      return;
-    }
-    if (!adoptableRejectedCandidates.length) {
-      setNotice("当前没有可采用的候选改写。");
-      return;
-    }
-    setReviewDecisions((current) => {
-      const next = { ...current };
-      for (const item of adoptableRejectedCandidates) {
-        next[item.chunkId] = buildRejectedCandidateReviewDecision(item.candidate);
-      }
-      scheduleReviewDecisionSave(outputPath, next);
-      return next;
-    });
-    setNotice(`已采用 ${adoptableRejectedCandidates.length} 个候选改写；导出会按这些选择执行。`);
-    setRuntimeStep("已采用全部候选");
   }
 
   async function releaseProgressListener() {
@@ -4326,12 +4164,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         id: `auto:${pendingAutoAction.id}`,
         title: getPendingAutoActionTitle(pendingAutoAction),
         status: pendingAutoAction.kind === "manual-intervention" ? "等待人工" : "倒计时",
-        detail: formatPendingAutoActionStatus(pendingAutoAction),
-        recoveryHint: formatPendingAutoActionDetail(pendingAutoAction),
         tone: pendingAutoAction.kind === "manual-intervention" ? "red" : pendingAutoAction.kind === "retry" ? "amber" : "blue",
         running: false,
         percent: getPendingAutoActionPercent(pendingAutoAction),
-        meta: formatFileScopeLabel(pendingAutoAction.sourcePath),
         actionLabel: "查看主页",
         onAction: () => openTaskTargetView("home"),
         cancelLabel: pendingAutoAction.kind === "manual-intervention" ? "我来处理" : "拒绝自动执行",
@@ -4346,12 +4181,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         id: `run:${currentRunToken}`,
         title: session?.round ? `第 ${session.round} 轮改写` : "轮次改写",
         status: cancelRequested ? "中断中" : "运行中",
-        detail: formatRuntimeStep(activeProgress, runtimeLabel || "轮次运行中"),
-        recoveryHint: getTaskPhaseRecoveryHint(cancelRequested ? "canceling-run" : "running-round"),
         tone: cancelRequested ? "red" : "blue",
         running: true,
         percent: getRoundTaskPercent(activeProgress, progressPercent),
-        meta: formatShortTaskId(currentRunToken),
         actionLabel: "查看主页",
         onAction: () => openTaskTargetView("home"),
         cancelLabel: cancelRequested ? undefined : "中断当前轮",
@@ -4363,19 +4195,13 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
     if (currentBatchRerunToken) {
       const session = batchRerunSessionRef.current;
       const cancelRequested = Boolean(session?.cancelRequested || activeBatchStatus?.cancelRequested);
-      const batchDetail = activeBatchStatus
-        ? `已处理 ${activeBatchStatus.completedCount}/${activeBatchStatus.totalCount} · 成功 ${activeBatchStatus.successCount} · 失败 ${activeBatchStatus.failureCount}`
-        : runtimeLabel || "局部优化运行中";
       items.push({
         id: `batch:${currentBatchRerunToken}`,
         title: session?.label || "局部优化",
         status: cancelRequested ? "停止中" : "运行中",
-        detail: batchDetail,
-        recoveryHint: getTaskPhaseRecoveryHint(cancelRequested ? "canceling-batch-rerun" : "batch-rerunning"),
         tone: cancelRequested ? "red" : "amber",
         running: true,
         percent: getBatchTaskPercent(activeBatchStatus),
-        meta: formatShortTaskId(currentBatchRerunToken),
         actionLabel: "查看主页",
         onAction: () => openTaskTargetView("home"),
         cancelLabel: cancelRequested ? undefined : "停止重跑",
@@ -4402,8 +4228,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         id: `phase:${taskPhase}`,
         title: getTaskPhaseLabel(taskPhase),
         status: canStopFormatParse || canStopModelCatalog ? "可停止" : isBlockingPhase ? "处理中" : "等待操作",
-        detail: runtimeLabel || getTaskPhaseLabel(taskPhase),
-        recoveryHint: getTaskPhaseRecoveryHint(taskPhase),
         tone: getPhaseTaskTone(taskPhase),
         running: isBlockingPhase || busy,
         percent: progressPercent > 0 ? progressPercent : undefined,
@@ -4416,13 +4240,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
 
     if (activeCompareData?.chunks.length) {
       const failureByChunk = new Map(activeRerunFailures.map((failure) => [failure.chunkId, failure]));
-      const allCandidateChunkIds = activeCompareData.chunks
-        .filter((chunk) => (chunk.rejectedCandidates?.length ?? 0) > 0 || ((failureByChunk.get(chunk.chunkId)?.rejectedCandidates?.length ?? 0) > 0))
-        .map((chunk) => chunk.chunkId);
-      const allCandidateChunkIdSet = new Set(allCandidateChunkIds);
-      const candidateChunkIds = activeCompareData.chunks
-        .filter((chunk) => allCandidateChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]))
-        .map((chunk) => chunk.chunkId);
       const reviewChunkIds = activeCompareData.chunks
         .filter((chunk) => {
           const flags = chunk.quality?.flags ?? [];
@@ -4431,27 +4248,20 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
             || chunk.fallbackMode === "source"
             || flags.includes("source_fallback")
             || failureByChunk.has(chunk.chunkId)
-            || allCandidateChunkIdSet.has(chunk.chunkId)
             || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review"));
         })
         .map((chunk) => chunk.chunkId);
       const failedChunkIds = activeRerunFailures.filter((failure) => !isReviewDecisionResolved(reviewDecisions[failure.chunkId])).map((failure) => failure.chunkId);
-      const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : candidateChunkIds.length ? "candidate" : "review";
-      const preferredChunkId = failedChunkIds[0] ?? candidateChunkIds[0] ?? reviewChunkIds[0];
-      if (reviewChunkIds.length || failedChunkIds.length || candidateChunkIds.length) {
+      const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : "review";
+      const preferredChunkId = failedChunkIds[0] ?? reviewChunkIds[0];
+      if (reviewChunkIds.length || failedChunkIds.length) {
         items.push({
-          id: `diff-action:${activeCompareData.outputPath || activeCompareData.docId}:${reviewChunkIds.length}:${failedChunkIds.length}:${candidateChunkIds.length}`,
-          title: failedChunkIds.length ? "Diff 有优化失败" : candidateChunkIds.length ? "Diff 有高风险内容" : "Diff 有内容需确认",
+          id: `diff-action:${activeCompareData.outputPath || activeCompareData.docId}:${reviewChunkIds.length}:${failedChunkIds.length}`,
+          title: failedChunkIds.length ? "Diff 有优化失败" : "Diff 有内容需确认",
           status: failedChunkIds.length ? "需处理" : "待审阅",
-          detail: `待确认 ${reviewChunkIds.length} 处 · 失败 ${failedChunkIds.length} · 高风险 ${candidateChunkIds.length}`,
-          recoveryHint: failedChunkIds.length
-            ? "先查看失败内容，确认可用再采用；否则补充反馈后局部优化。"
-            : candidateChunkIds.length
-              ? "这些内容不会自动导出；先人工确认，再决定采用或重新优化。"
-              : "可直接跳到待确认内容，不必在整篇 Diff 里手动翻找。",
           tone: failedChunkIds.length ? "red" : "amber",
           running: false,
-          actionLabel: preferredFilter === "failed" ? "查看失败内容" : preferredFilter === "candidate" ? "查看高风险内容" : "只看待确认",
+          actionLabel: preferredFilter === "failed" ? "查看失败内容" : "只看待确认",
           onAction: () => openDiffTaskTarget(preferredFilter, preferredChunkId),
         });
       }
@@ -4463,8 +4273,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         id: `error:${error.slice(0, 80)}`,
         title: "最近失败",
         status: "需要处理",
-        detail: error,
-        recoveryHint: recoveryPlan.hint,
         tone: recoveryPlan.tone,
         running: false,
         actionLabel: recoveryPlan.actionLabel,
@@ -4482,12 +4290,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         id: `diagnostics-run:${item.runId}`,
         title: "后台轮次任务",
         status: item.cancelRequested ? "中断中" : item.status || "运行中",
-        detail: `${formatFileScopeLabel(item.sourcePath)} · ${formatRuntimeStep(itemProgress, item.status || "运行中")}`,
-        recoveryHint: getTaskPhaseRecoveryHint(item.cancelRequested ? "canceling-run" : "running-round"),
         tone: item.cancelRequested ? "red" : "blue",
         running: true,
         percent: getRoundTaskPercent(itemProgress),
-        meta: formatShortTaskId(item.runId),
         actionLabel: "查看诊断",
         onAction: () => openTaskTargetView("diagnostics"),
       });
@@ -4502,12 +4307,9 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         id: `diagnostics-batch:${item.runId}`,
         title: "后台局部优化",
         status: item.cancelRequested ? "停止中" : item.status || "运行中",
-        detail: `已处理 ${item.completedCount}/${item.totalCount} · 成功 ${item.successCount} · 失败 ${item.failureCount}`,
-        recoveryHint: getTaskPhaseRecoveryHint(item.cancelRequested ? "canceling-batch-rerun" : "batch-rerunning"),
         tone: item.cancelRequested ? "red" : "amber",
         running: true,
         percent: getBatchTaskPercent(item),
-        meta: formatShortTaskId(item.runId),
         actionLabel: "查看诊断",
         onAction: () => openTaskTargetView("diagnostics"),
       });
@@ -4530,19 +4332,16 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
         id: `checkpoint:${roundProgressStatus.sourcePath}:${roundProgressStatus.round ?? "unknown"}`,
         title: allChunksDone ? `第 ${roundProgressStatus.round ?? ""} 轮等待收尾` : `第 ${roundProgressStatus.round ?? ""} 轮可续跑`,
         status: "可继续",
-        detail: roundProgressStatus.resumeExplanation || "断点内已完成分块会复用，继续执行不会从头覆盖。",
-        recoveryHint: allChunksDone ? "继续只补做合并、Diff 和记录写入，不会重跑已完成分块。" : "回主页继续当前轮；只有放弃本轮进度才会清空断点。",
         tone: roundProgressStatus.lastError ? "amber" : "blue",
         running: false,
         percent: roundProgressStatus.progressPercent,
-        meta: roundProgressStatus.remainingChunks !== undefined ? `剩余 ${roundProgressStatus.remainingChunks} 块` : undefined,
         actionLabel: "回主页继续",
         onAction: () => openTaskTargetView("home"),
       });
     }
 
     return items;
-  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.promptProfile, documentStatus?.promptSequence, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, reviewDecisions, roundProgressStatus, runtimeLabel, taskPhase]);
+  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.promptProfile, documentStatus?.promptSequence, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, reviewDecisions, roundProgressStatus, taskPhase]);
   const activeRuntimeTaskCount = runtimeTaskItems.filter((item) => item.running).length;
   const statusAutoAction = !error && pendingAutoAction ? pendingAutoAction : null;
 
@@ -4576,7 +4375,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
       onCancelParseFormatRules={handleCancelFormatRulesParse}
       onParserProviderChange={handleFormatParserProviderChange}
       onParserModelChange={(model) => setFormatParserModelRoute({ ...formatParserRoute, model })}
-      onRefreshParserProviderModels={(providerId) => void handleRefreshProviderModels(providerId)}
       pendingFormatRules={pendingFormatRules}
       onConfirmFormatRules={() => void handleConfirmFormatRules()}
       onDiscardFormatRules={() => {
@@ -4653,37 +4451,34 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                     </BreadcrumbItem>
                   </BreadcrumbList>
                 </Breadcrumb>
-                <Badge variant="outline" className="hidden max-w-[240px] truncate md:inline-flex">
-                  {activeViewMeta.description}
-                </Badge>
               </div>
               <ThemeModeMenu />
             </div>
-            <div className="vercel-subbar flex h-10 items-center gap-2 overflow-x-auto border-t px-4 text-xs">
-              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" onClick={() => setActiveView("home")}>
+            <div className="vercel-subbar flex h-10 min-w-0 items-center gap-2 overflow-hidden border-t px-4 text-xs md:overflow-x-auto">
+              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 flex-1 justify-start px-2 text-xs md:flex-none md:shrink-0" onClick={() => setActiveView("home")}>
                 <FileText data-icon="inline-start" />
                 <span className="text-muted-foreground">当前文件</span>
-                <span className="max-w-[240px] truncate text-foreground">{documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : "未选择"}</span>
+                <span className="min-w-0 max-w-[240px] truncate text-foreground">{documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : "未选择"}</span>
               </Button>
-              <Separator orientation="vertical" className="h-4" />
-              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" onClick={() => setActiveView("model")}>
+              <Separator orientation="vertical" className="hidden h-4 md:block" />
+              <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs md:inline-flex" onClick={() => setActiveView("model")}>
                 <Route data-icon="inline-start" />
                 <span className="text-muted-foreground">路线</span>
                 <span className="max-w-[260px] truncate text-foreground">{describePromptProfile(modelConfig.promptProfile)} · {formatPromptSequence(modelConfig.promptSequence)}</span>
               </Button>
-              <Separator orientation="vertical" className="h-4" />
-              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 shrink-0 px-2 text-xs" onClick={() => openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)}>
+              <Separator orientation="vertical" className="hidden h-4 md:block" />
+              <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs md:inline-flex" onClick={() => openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)}>
                 <Wand2 data-icon="inline-start" />
                 <span className="text-muted-foreground">Diff</span>
                 <span className="text-foreground">{diffDashboardStats.chunkCount ? `${diffDashboardStats.chunkCount} 块 · ${diffDashboardStats.reviewCount} 待处理` : "未生成"}</span>
               </Button>
-              <Separator orientation="vertical" className="h-4" />
+              <Separator orientation="vertical" className="hidden h-4 md:block" />
               <Button
                 type="button"
                 variant={notificationStatusKind === "error" ? "outlineDanger" : hasStatusFeedback ? "outlineSuccess" : unreadNotificationCount || activeRuntimeTaskCount ? "outline" : "ghost"}
                 size="sm"
                 className={cn(
-                  "h-8 min-w-[220px] max-w-[min(48vw,560px)] shrink-0 justify-start px-3 text-xs",
+                  "h-8 min-w-0 flex-1 max-w-full justify-start px-3 text-xs md:min-w-[220px] md:max-w-[min(48vw,560px)] md:flex-none md:shrink-0",
                   hasStatusFeedback && "border-primary/35 bg-primary/10 shadow-sm",
                   notificationStatusKind === "error" && "border-destructive/40 bg-destructive/10",
                 )}
@@ -4721,8 +4516,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                       batchRerunRunning={Boolean(currentBatchRerunToken)}
                       batchRerunStatusText={runtimeLabel}
                       onCancelBatchRerun={() => void handleCancelBatchRerun()}
-                      candidateAdoptableCount={adoptableRejectedCandidates.length}
-                      onAdoptAllCandidates={handleAdoptAllRejectedCandidates}
                       onExportTxt={() => void handleExportCurrent("txt")}
                       onExportDocx={() => void handleExportCurrent("docx")}
                     />
@@ -5013,17 +4806,21 @@ function UnifiedConfirmDialog({
             </span>
             <div className="min-w-0 flex-1">
               <AlertDialogTitle>{value.title}</AlertDialogTitle>
-              {value.description ? <AlertDialogDescription>{value.description}</AlertDialogDescription> : null}
+              {value.description ? (
+                <AlertDialogDescription>{value.description}</AlertDialogDescription>
+              ) : (
+                <AlertDialogDescription className="sr-only">确认当前操作。</AlertDialogDescription>
+              )}
             </div>
           </div>
         </AlertDialogHeader>
         {value.details?.length ? (
           <div className="flex flex-col gap-2">
-              {value.details.map((detail, index) => (
-                <div key={`${value.id}-${index}-${detail}`} className="rounded-md border bg-muted/40 px-3 py-2 text-sm font-medium leading-6 text-muted-foreground">
-                  {detail}
-                </div>
-              ))}
+            {value.details.map((detail, index) => (
+              <div key={`${value.id}-${index}-${detail}`} className="rounded-md border bg-muted/40 px-3 py-2 text-sm font-medium leading-6 text-muted-foreground">
+                {detail}
+              </div>
+            ))}
           </div>
         ) : null}
         <AlertDialogFooter>
@@ -5076,7 +4873,6 @@ function PromptPreviewPage({
                 <Badge variant="outline">Prompt</Badge>
               </div>
               <CardTitle className="text-lg">提示词预览</CardTitle>
-              <CardDescription className="mt-1">查看内置提示词和仓库路径。</CardDescription>
             </div>
             <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={busy}>
               {busy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
@@ -5112,7 +4908,6 @@ function PromptPreviewPage({
                           <span className="truncate font-semibold">{item.label}</span>
                           <Badge variant={active ? "brand" : "outline"}>{item.id}</Badge>
                         </span>
-                        <span className="line-clamp-2 text-xs font-normal leading-5 text-muted-foreground">{item.description}</span>
                         <span className="truncate text-[11px] font-medium text-muted-foreground">{item.relativePath}</span>
                       </span>
                     </Button>
@@ -5127,7 +4922,6 @@ function PromptPreviewPage({
                   {busy ? <Loader2 className="animate-spin" /> : <FileText />}
                 </EmptyMedia>
                 <EmptyTitle>{busy ? "正在读取提示词文件" : "暂无可预览的提示词"}</EmptyTitle>
-                <EmptyDescription>提示词文件来自 prompts 目录，页面只读展示。</EmptyDescription>
               </EmptyHeader>
             </Empty>
           )}
@@ -5146,7 +4940,6 @@ function PromptPreviewPage({
                     <Badge variant="outline">{contentLineCount} 行</Badge>
                   </div>
                   <CardTitle className="mt-2 text-xl">{activeItem.label}</CardTitle>
-                  <CardDescription className="mt-1 break-all">文件位置：{activeItem.relativePath}</CardDescription>
                 </div>
                 <Badge variant="secondary">{formatDateTime(activeItem.updatedAt)}</Badge>
               </div>
@@ -5167,9 +4960,6 @@ function PromptPreviewPage({
                   {busy ? <Loader2 className="animate-spin" /> : <FileText />}
                 </EmptyMedia>
                 <EmptyTitle>{busy ? "正在读取提示词内容" : error ? "提示词读取失败" : "选择左侧提示词后查看内容"}</EmptyTitle>
-                <EmptyDescription>
-                  {busy ? "如果长时间停留在这里，请确认后端已经重启到最新版本。" : error || "提示词文件来自 prompts 目录，页面只读展示。"}
-                </EmptyDescription>
               </EmptyHeader>
             </Empty>
           </CardContent>
@@ -5355,12 +5145,6 @@ function HomeRunPanel({
     const nextSequence = Array.from({ length }, (_, index) => activeSequence[index] ?? DEFAULT_PROMPT_SEQUENCE[index] ?? "round2");
     onPromptSequenceChange(nextSequence);
   };
-  const randomizeSequence = () => {
-    const length = 1 + Math.floor(Math.random() * 3);
-    const promptIds = PROMPT_OPTIONS.map((option) => option.id);
-    const nextSequence = Array.from({ length }, (_, index) => promptIds[(Math.floor(Math.random() * promptIds.length) + index) % promptIds.length]);
-    onPromptSequenceChange(nextSequence);
-  };
   const updateRoundProvider = (roundIndex: number, providerId: string) => {
     const currentConfig = modelConfigRef.current;
     const roundKey = getRoundModelKey(promptProfile, roundIndex + 1);
@@ -5450,7 +5234,6 @@ function HomeRunPanel({
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <CardTitle className="truncate text-base">任务控制台</CardTitle>
-            <CardDescription className="line-clamp-2">导入文档、设定路线并启动下一轮。</CardDescription>
           </div>
           <Badge variant={hasDocument ? "default" : "outline"} className="shrink-0">{hasDocument ? "已载入" : "待上传"}</Badge>
         </div>
@@ -5599,9 +5382,7 @@ function HomeRunPanel({
               {setupEditor === "prompt" ? <Wand2 /> : <Settings />}
               {setupEditor === "prompt" ? "改写流程" : "模型路线"}
             </DialogTitle>
-            <DialogDescription>
-              {setupEditor === "prompt" ? "只调整本次任务的轮次顺序。" : "默认连接，可按轮覆盖。"}
-            </DialogDescription>
+            <DialogDescription className="sr-only">{setupEditor === "prompt" ? "编辑改写流程配置。" : "编辑模型路线配置。"}</DialogDescription>
           </DialogHeader>
           <Separator />
 
@@ -5609,16 +5390,11 @@ function HomeRunPanel({
             <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-x-hidden">
             {setupEditor === "prompt" ? (
               <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-hidden">
-                <div className="grid gap-2">
-                  <label className="text-xs font-medium text-muted-foreground">当前流程摘要</label>
-                  <Textarea value={formatPromptSequence(activeFlowSequence)} readOnly className="min-h-20 resize-none" />
-                </div>
                 <div className="min-w-0 overflow-hidden rounded-lg border bg-background p-4">
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div className="grid grid-cols-3 gap-2">
                       {[1, 2, 3].map((length) => (
                         <Button key={length} type="button" variant={activeSequence.length === length ? "default" : "outline"} size="sm" onClick={() => updateSequenceLength(length)} disabled={busy}>{length} 轮</Button>
                       ))}
-                      <Button type="button" variant="outline" size="sm" onClick={randomizeSequence} disabled={busy}>随机</Button>
                     </div>
                     <div className="mt-4 grid gap-3">
                       {activeSequence.map((promptId, index) => (
@@ -5628,7 +5404,7 @@ function HomeRunPanel({
                             <SelectTrigger><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectGroup>
-                                {PROMPT_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label} · {option.desc}</SelectItem>)}
+                                {PROMPT_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}
                               </SelectGroup>
                             </SelectContent>
                           </Select>
@@ -5778,7 +5554,6 @@ function AutoRunSignal({ action, onReject }: { action: PendingAutoAction | null;
       <AlertDescription>
         <div className="flex min-w-0 flex-col gap-3 overflow-hidden">
           <p className="min-w-0 break-words">{formatPendingAutoActionStatus(action)}</p>
-          <p className="min-w-0 break-words text-xs text-muted-foreground">{formatPendingAutoActionDetail(action)}</p>
           {typeof percent === "number" ? (
             <Progress value={percent} className="h-2" />
           ) : null}
@@ -6044,7 +5819,6 @@ function DiagnosticsPage({
                 <Activity />
                 启动诊断
               </CardTitle>
-              <CardDescription className="mt-1 truncate">{value?.workspace || "读取当前后端、任务和目录状态"}</CardDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" onClick={() => void copyDiagnostics()} disabled={!value}>
@@ -6077,7 +5851,6 @@ function DiagnosticsPage({
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <CardTitle className="text-lg">需要处理</CardTitle>
-                      <CardDescription className="mt-1">只列出 warning 和 error。</CardDescription>
                     </div>
                     <Badge variant={problemChecks.length ? "warning" : "success"}>{problemChecks.length ? `${problemChecks.length} 项` : "干净"}</Badge>
                   </div>
@@ -6101,7 +5874,6 @@ function DiagnosticsPage({
                       <EmptyHeader>
                         <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
                         <EmptyTitle>没有待处理项</EmptyTitle>
-                        <EmptyDescription>当前后端检查没有返回错误或提示。</EmptyDescription>
                       </EmptyHeader>
                     </Empty>
                   )}
@@ -6113,7 +5885,6 @@ function DiagnosticsPage({
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <CardTitle className="text-lg">自检明细</CardTitle>
-                      <CardDescription className="mt-1">来自后端健康检查。</CardDescription>
                     </div>
                     <Badge variant="outline">{healthPercent}%</Badge>
                   </div>
@@ -6133,7 +5904,6 @@ function DiagnosticsPage({
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-lg">工作目录</CardTitle>
-                  <CardDescription className="mt-1">权限、文件数量和占用空间。</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-2">
                   {value.paths.map((item) => (
@@ -6188,7 +5958,6 @@ function DiagnosticsPage({
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <CardTitle className="text-lg">任务快照治理</CardTitle>
-                      <CardDescription className="mt-1">用于断点恢复，清理不会删除运行中的快照。</CardDescription>
                     </div>
                     <Button variant="outline" onClick={onCleanupTaskSnapshots} disabled={busy || taskStateStore.staleCount <= 0}>
                       <Trash2 data-icon="inline-start" />
@@ -6213,7 +5982,6 @@ function DiagnosticsPage({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <CardTitle className="text-lg">后台任务</CardTitle>
-                    <CardDescription className="mt-1">{activeTaskCount} 个运行中 · {recentTaskCount} 条近期记录</CardDescription>
                   </div>
                   <Badge variant={activeTaskCount ? "warning" : "outline"}>{activeTaskCount ? "有任务运行" : "空闲"}</Badge>
                 </div>
@@ -6228,7 +5996,6 @@ function DiagnosticsPage({
                     <EmptyHeader>
                       <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
                       <EmptyTitle>暂无后台任务</EmptyTitle>
-                      <EmptyDescription>最近没有需要恢复或继续的任务。</EmptyDescription>
                     </EmptyHeader>
                   </Empty>
                 )}
@@ -6241,7 +6008,6 @@ function DiagnosticsPage({
           <EmptyHeader>
             <EmptyMedia variant="icon"><Activity /></EmptyMedia>
             <EmptyTitle>等待自检</EmptyTitle>
-            <EmptyDescription>点击“重新自检”读取当前环境状态。</EmptyDescription>
           </EmptyHeader>
         </Empty>
       )}
@@ -6475,7 +6241,6 @@ function DetectionReportPanel({
     const matchState = strongItems.length ? "strong" : reviewItems.length ? "review" : matchedItems.length ? "weak" : "unmatched";
     return {
       segment,
-      matchedItems,
       strongCount: strongItems.length,
       reviewCount: reviewItems.length,
       weakCount: weakItems.length,
@@ -6505,9 +6270,6 @@ function DetectionReportPanel({
                 : <Badge variant="outline">未接入</Badge>}
             </div>
             <CardTitle className="text-lg">外部报告</CardTitle>
-            <CardDescription className="mt-1 truncate">
-              {documentLabel ? `文档：${documentLabel}` : "上传文档后可接入报告"}
-            </CardDescription>
           </div>
         </div>
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
@@ -6572,11 +6334,6 @@ function DetectionReportPanel({
                   </Button>
                 </div>
               </div>
-              {report.summary.checkedScopeNotes?.length ? (
-                <div className="mt-2 min-w-0 break-words rounded-md border bg-card px-3 py-2 text-[11px] text-muted-foreground">
-                  {report.summary.checkedScopeNotes.join("；")}
-                </div>
-              ) : null}
             </div>
 
             {!hasParsedSegments ? (
@@ -6616,7 +6373,7 @@ function DetectionReportPanel({
                 {visibleSegmentSummaries.length ? (
                   <ScrollArea className="shadcn-scroll-bound h-72 min-w-0 overflow-x-hidden pr-1">
                     <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-x-hidden">
-                      {visibleSegmentSummaries.map(({ segment, matchedItems, strongCount, reviewCount, weakCount, bestMatch, matchState }) => (
+                      {visibleSegmentSummaries.map(({ segment, strongCount, reviewCount, weakCount, bestMatch, matchState }) => (
                     <Alert key={segment.index} className={cn("min-w-0 overflow-hidden", matchState === "review" && "border-primary/25 bg-muted/60")}>
                       <AlertCircle />
                       <AlertTitle className="min-w-0">
@@ -6630,15 +6387,6 @@ function DetectionReportPanel({
                       </AlertTitle>
                       <AlertDescription className="grid min-w-0 gap-2">
                         <span className="line-clamp-3 min-w-0 break-words text-foreground">{segment.content}</span>
-                        {bestMatch ? <span className="min-w-0 break-words rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground">{bestMatch.reason}</span> : null}
-                        {bestMatch?.evidence.matchedFragments?.[0] ? (
-                          <span className="break-all rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground">
-                            命中句段：{bestMatch.evidence.matchedFragments[0]}
-                          </span>
-                        ) : null}
-                        {matchedItems.length > 1 ? (
-                          <span className="min-w-0 break-words text-[11px] font-semibold text-muted-foreground">候选匹配：{matchedItems.map((item) => `${item.chunkId} ${Math.round(item.score * 100)}%`).join(" / ")}</span>
-                        ) : null}
                       </AlertDescription>
                     </Alert>
                       ))}
@@ -6651,9 +6399,6 @@ function DetectionReportPanel({
                         <FileText />
                       </EmptyMedia>
                       <EmptyTitle>当前分层为空</EmptyTitle>
-                      <EmptyDescription>
-                      当前分层下没有可显示片段。
-                      </EmptyDescription>
                     </EmptyHeader>
                   </Empty>
                 )}
@@ -6667,7 +6412,6 @@ function DetectionReportPanel({
                 <FileText />
               </EmptyMedia>
               <EmptyTitle>未接入外部报告</EmptyTitle>
-              <EmptyDescription>上传 SpeedAI 或 PaperPass 报告后，这里会显示命中片段和重跑入口。</EmptyDescription>
             </EmptyHeader>
           </Empty>
         )}
@@ -6679,10 +6423,6 @@ function DetectionReportPanel({
 function QualityReportPage({ compareData, exportResult }: { compareData: RoundCompareData | null; exportResult: ExportResult | null }) {
   const stats = buildQualityStats(compareData, exportResult);
   const riskMessages = buildExportRiskMessages(compareData, exportResult);
-  const protectedTypeText = Object.entries(stats.protectedTypes)
-    .filter(([, count]) => count > 0)
-    .map(([key, count]) => `${formatProtectedTypeLabel(key)} ${count}`)
-    .join(" / ") || "暂无结构锁定";
 
   return (
     <div className="grid gap-5">
@@ -6691,7 +6431,6 @@ function QualityReportPage({ compareData, exportResult }: { compareData: RoundCo
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div className="min-w-0">
               <CardTitle>改写检查</CardTitle>
-              <CardDescription>展示结构、引用、排版与表达提示。</CardDescription>
             </div>
             <Badge variant={riskMessages.length ? "warning" : "success"}>
               {riskMessages.length ? `${riskMessages.length} 类风险` : "当前稳定"}
@@ -6722,7 +6461,6 @@ function QualityReportPage({ compareData, exportResult }: { compareData: RoundCo
             )) : (
               <Alert>
                 <AlertTitle>当前稳定</AlertTitle>
-                <AlertDescription>当前没有发现需要阻止导出的显著风险。</AlertDescription>
               </Alert>
             )}
           </CardContent>
@@ -6731,7 +6469,6 @@ function QualityReportPage({ compareData, exportResult }: { compareData: RoundCo
         <Card className="border-border bg-card shadow-sm">
           <CardHeader>
             <CardTitle className="text-base">结构保护</CardTitle>
-            <CardDescription>{protectedTypeText}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -6756,11 +6493,6 @@ function ReportStat({ label, value }: { label: string; value: string }) {
     </Card>
   );
 }
-
-function formatProtectedTypeLabel(key: string): string {
-  const labels: Record<string, string> = { REF: "引用", CAP: "图表", EQN: "公式", NUM: "数值", TOK: "结构" };
-  return labels[key] ?? key;
-}
 function NotificationCenter({
   open,
   items,
@@ -6782,19 +6514,16 @@ function NotificationCenter({
     <Sheet open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
       <SheetContent
         side="right"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="notification-center-title"
         className="flex w-[min(92vw,440px)] flex-col p-0 sm:max-w-none [&>button]:hidden"
       >
         <SheetHeader className="border-b px-5 py-4 text-left">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <SheetTitle id="notification-center-title" className="flex items-center gap-2">
+              <SheetTitle className="flex items-center gap-2">
                 <Bell />
                 通知与任务中心
               </SheetTitle>
-              <SheetDescription>运行任务、恢复提示和历史通知。</SheetDescription>
+              <SheetDescription className="sr-only">查看运行任务和最近通知。</SheetDescription>
             </div>
             <Button variant="ghost" size="icon" onClick={onClose} aria-label="关闭通知与任务中心">
               <X data-icon="inline-start" />
@@ -6840,7 +6569,6 @@ function NotificationCenter({
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
                                 <CardTitle className="truncate text-sm">{item.title}</CardTitle>
-                                {item.meta ? <CardDescription className="truncate text-xs">{item.meta}</CardDescription> : null}
                               </div>
                               <Badge className="shrink-0" variant="outline">{item.status}</Badge>
                             </div>
@@ -6848,12 +6576,6 @@ function NotificationCenter({
                         </div>
                       </CardHeader>
                       <CardContent className="flex flex-col gap-3 px-4 pb-4 pt-0">
-                        <p className="line-clamp-3 text-sm leading-6 text-muted-foreground">{item.detail}</p>
-                        {item.recoveryHint ? (
-                          <div className="rounded-md border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
-                            下一步：{item.recoveryHint}
-                          </div>
-                        ) : null}
                         {typeof item.percent === "number" ? (
                           <div className="flex flex-col gap-1">
                             <Progress value={clampPercent(item.percent)} className="h-2" />
@@ -6883,7 +6605,6 @@ function NotificationCenter({
                   <EmptyHeader>
                     <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
                     <EmptyTitle>当前没有运行或待继续的任务</EmptyTitle>
-                    <EmptyDescription>任务恢复信息会出现在这里。</EmptyDescription>
                   </EmptyHeader>
                 </Empty>
               )}
@@ -6930,7 +6651,6 @@ function NotificationCenter({
                   <EmptyHeader>
                     <EmptyMedia variant="icon"><Bell /></EmptyMedia>
                     <EmptyTitle>暂无通知</EmptyTitle>
-                    <EmptyDescription>完成、失败和提醒会沉淀到这里。</EmptyDescription>
                   </EmptyHeader>
                 </Empty>
               )}

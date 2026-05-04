@@ -4,7 +4,7 @@ import { AlertTriangle, Clock3, Database, Download, FolderClock, RotateCcw, Sear
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type {
@@ -204,12 +204,8 @@ function getDeleteModeLabel(mode: DeleteHistoryOptions["mode"]): string {
   return "删除生成链路";
 }
 
-function getDeleteModeDescription(mode: DeleteHistoryOptions["mode"], fromRound?: number): string {
-  const scope = fromRound ? `第 ${fromRound} 轮及之后` : "整篇文档";
-  if (mode === "records_only") return `${scope}只从界面索引移除，文件会留在项目中。`;
-  if (mode === "exports_only") return `${scope}只删除项目 web_exports 内导出副本和审计文件。`;
-  if (mode === "records_artifacts_and_source") return `${scope}删除记录、生成物，并仅删除项目 origin 内源副本。`;
-  return `${scope}删除轮次记录、Diff、中间产物、检查报告和项目导出副本。`;
+function getDeleteModeScope(fromRound?: number): string {
+  return fromRound ? `第 ${fromRound} 轮起` : "整篇文档";
 }
 
 function getSafeArtifactStats(stats?: HistoryArtifactStats): HistoryArtifactStats {
@@ -234,23 +230,14 @@ function getOrphanKindLabel(kind: string): string {
   return "其他";
 }
 
-function getArtifactModeCopy(mode: HistoryArtifactGovernanceMode): { title: string; detail: string } {
+function getArtifactModeLabel(mode: HistoryArtifactGovernanceMode): string {
   if (mode === "current") {
-    return {
-      title: "当前文档资产",
-      detail: "只看正在选中的文档，适合判断这一篇还能清理或追溯哪些生成物。",
-    };
+    return "当前文档";
   }
   if (mode === "large") {
-    return {
-      title: "占用空间较大",
-      detail: "只看仍存在且体积较大的项目生成物，适合优先释放空间。",
-    };
+    return "大文件";
   }
-  return {
-    title: "缺失资产",
-    detail: "索引里有记录但磁盘上已不存在，通常来自旧导出、中间文件或手动删除。",
-  };
+  return "缺失资产";
 }
 
 function getArtifactQueryStateLabel(query: HistoryArtifactQueryResponse | null, loading: boolean): string {
@@ -304,7 +291,7 @@ function HistoryArtifactGovernancePanel({
   onRepairIndex: () => void;
   onPreviewCurrentCleanup: () => void;
 }) {
-  const copy = getArtifactModeCopy(mode);
+  const modeLabel = getArtifactModeLabel(mode);
   const stats = getSafeArtifactStats(query?.stats);
   const previewItems = query?.items.slice(0, 6) ?? [];
   const shouldSuggestRepair = mode === "missing" && (stats.missing > 0 || query?.ok === false);
@@ -316,9 +303,8 @@ function HistoryArtifactGovernancePanel({
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">资产治理</Badge>
             <Badge variant={query?.ok === false ? "warning" : "outline"}>{getArtifactQueryStateLabel(query, loading)}</Badge>
+            <Badge variant="outline">{modeLabel}</Badge>
           </div>
-          <h3 className="mt-2 text-base font-semibold text-foreground">{copy.title}</h3>
-          <p className="mt-1 line-clamp-2 text-sm leading-6 text-muted-foreground">{copy.detail}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy || loading}>
@@ -355,17 +341,14 @@ function HistoryArtifactGovernancePanel({
         }}
         className="mt-4 grid gap-2 md:grid-cols-3"
       >
-        <ToggleGroupItem value="missing" variant="outline" className="h-auto min-h-16 flex-col items-start justify-center gap-1 px-3 py-2 text-left">
+        <ToggleGroupItem value="missing" variant="outline" className="h-10 justify-center px-3">
           <span className="text-sm font-semibold">缺失资产</span>
-          <span className="text-xs text-muted-foreground">索引仍在，文件已不在</span>
         </ToggleGroupItem>
-        <ToggleGroupItem value="current" variant="outline" disabled={!currentDocId} className="h-auto min-h-16 flex-col items-start justify-center gap-1 px-3 py-2 text-left">
+        <ToggleGroupItem value="current" variant="outline" disabled={!currentDocId} className="h-10 justify-center px-3">
           <span className="text-sm font-semibold">当前文档</span>
-          <span className="text-xs text-muted-foreground">只看这一篇的生成物</span>
         </ToggleGroupItem>
-        <ToggleGroupItem value="large" variant="outline" className="h-auto min-h-16 flex-col items-start justify-center gap-1 px-3 py-2 text-left">
+        <ToggleGroupItem value="large" variant="outline" className="h-10 justify-center px-3">
           <span className="text-sm font-semibold">大文件</span>
-          <span className="text-xs text-muted-foreground">优先定位占用空间</span>
         </ToggleGroupItem>
       </ToggleGroup>
 
@@ -377,26 +360,6 @@ function HistoryArtifactGovernancePanel({
         <StatPill label="外部引用" value={`${stats.external}`} />
       </div>
 
-      {shouldSuggestRepair ? (
-        <Alert className="mt-4">
-          <Wrench />
-          <AlertTitle>建议先修复索引</AlertTitle>
-          <AlertDescription>
-            缺失资产说明记录与磁盘状态可能已经不同步。修复只会重建 SQLite 索引和兼容记录，不会删除正文、导出文件或用户保存的副本。
-          </AlertDescription>
-        </Alert>
-      ) : null}
-
-      {shouldSuggestPreview && stats.existing > 0 ? (
-        <Alert className="mt-4">
-          <Search />
-          <AlertTitle>先预览再清理</AlertTitle>
-          <AlertDescription>
-            这里先查看当前文档会受影响的项目生成物，不直接执行删除；真正清理仍需要在下方确认。
-          </AlertDescription>
-        </Alert>
-      ) : null}
-
       {query?.ok === false ? (
         <Alert className="mt-4" variant="destructive">
           <AlertTriangle />
@@ -406,12 +369,12 @@ function HistoryArtifactGovernancePanel({
       ) : previewItems.length ? (
         <div className="mt-4 flex flex-col gap-2">
           {previewItems.map((item) => <HistoryArtifactRow key={`${item.path}-${item.kind}`} item={item} />)}
-          {query?.hasMore ? <div className="text-xs font-semibold text-muted-foreground">这里只展示前 {previewItems.length} 条，后端索引中还有更多匹配项。</div> : null}
+          {query?.hasMore ? <div className="text-xs font-semibold text-muted-foreground">还有更多</div> : null}
         </div>
       ) : (
         <div className="mt-4 flex items-start gap-3 rounded-lg border border-border bg-card px-3 py-3 text-sm text-muted-foreground">
           <Database className="shrink-0" />
-          <div>{loading ? "正在读取 SQLite 历史索引。" : "当前视图没有需要处理的资产。"}</div>
+          <div>{loading ? "读取中" : "无资产"}</div>
         </div>
       )}
       {previewImpact ? <div className="mt-4"><AssetImpactPanel impact={previewImpact} /></div> : null}
@@ -439,9 +402,6 @@ function OrphanGovernancePanel({
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline">未归属产物</Badge>
             {scan ? <Badge variant={stats.existing ? "secondary" : "outline"}>{stats.existing} 个</Badge> : null}
-          </div>
-          <div className="mt-2 text-sm leading-6 text-muted-foreground">
-            扫描项目目录中不再被历史、当前文档或复盘记录引用的源文档副本和生成物；外部路径与浏览器下载文件不会被清理。
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -480,16 +440,16 @@ function OrphanGovernancePanel({
                 <ShieldCheck className="shrink-0 text-muted-foreground" />
               </div>
             ))}
-            {scan.hasMore ? <div className="text-xs font-semibold text-muted-foreground">仅预览前 200 个，清理时会按后端安全规则处理全部未归属文件。</div> : null}
+            {scan.hasMore ? <div className="text-xs font-semibold text-muted-foreground">还有更多</div> : null}
           </div>
         ) : (
           <div className="mt-4 rounded-lg border border-border bg-muted/40 p-3 text-sm font-semibold text-foreground">
-            当前没有发现未归属生成文件。
+            未发现未归属文件
           </div>
         )
       ) : (
         <div className="mt-4 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
-          点击扫描后再决定是否清理，清理动作会二次确认。
+          未扫描
         </div>
       )}
     </div>
@@ -558,29 +518,10 @@ function StatPill({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ImpactCard({ title, value, text, tone = "slate" }: { title: string; value: string; text: string; tone?: "slate" | "amber" | "red" | "emerald" }) {
-  const toneClass = {
-    slate: "border-border bg-muted/40 text-foreground",
-    amber: "border-border bg-muted/40 text-foreground",
-    red: "border-destructive/30 bg-destructive/5 text-destructive",
-    emerald: "border-border bg-muted/40 text-foreground",
-  }[tone];
-  return (
-    <div className={`rounded-lg border p-3 ${toneClass}`}>
-      <div className="text-[10px] font-black opacity-70">{title}</div>
-      <div className="mt-1 text-lg font-black">{value}</div>
-      <div className="mt-1 text-xs leading-5 opacity-80">{text}</div>
-    </div>
-  );
-}
-
 function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
   const stats = impact.fileStats;
-  const candidateStats = impact.candidateStats;
   const previewFiles = impact.files.filter((file) => file.exists).slice(0, 8);
-  const sourceTone = impact.willDeleteSource
-    ? "border-destructive/30 bg-destructive/5 text-destructive"
-    : "border-border bg-muted/40 text-foreground";
+  const sourceState = impact.willDeleteSource ? "含源副本" : impact.sourceOwnedByProject ? "保留源副本" : "外部源文件";
   return (
     <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -589,9 +530,6 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
             <Badge variant="secondary">删除影响预览</Badge>
             <Badge variant="outline">{getDeleteModeLabel(impact.mode)}</Badge>
             {impact.fromRound ? <Badge variant="outline">从第 {impact.fromRound} 轮开始</Badge> : null}
-          </div>
-          <div className="mt-2 text-sm leading-6 text-muted-foreground">
-            这是执行前的资产审计结果；预览不会删除任何文件。
           </div>
         </div>
         <Badge variant={stats.existing ? "warning" : "success"}>
@@ -604,17 +542,7 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
         <StatPill label="中间产物" value={`${stats.intermediate}`} />
         <StatPill label="项目导出" value={`${stats.exports}`} />
         <StatPill label="报告/审计" value={`${stats.reports}`} />
-        <StatPill label="候选文件" value={`${candidateStats.existing}`} />
-      </div>
-
-      <div className={`rounded-lg border px-3 py-2 text-xs leading-5 mt-4 ${sourceTone}`}>
-        <span className="font-black">源文档策略：</span>
-        {impact.willDeleteSource
-          ? "会删除项目 origin 目录下的源文档副本；不会删除浏览器下载目录或外部路径文件。"
-          : impact.sourceOwnedByProject
-            ? "源文档副本会保留；只处理记录或生成产物。"
-            : "源文档位于外部路径，系统不会删除。"}
-        {impact.sourcePath ? <span className="ml-1 opacity-80">{formatPathScope(impact.sourcePath)}</span> : null}
+        <StatPill label="源文件" value={sourceState} />
       </div>
 
       {impact.affectedRounds.length ? (
@@ -634,11 +562,11 @@ function AssetImpactPanel({ impact }: { impact: HistoryDeleteImpact }) {
               <Badge variant="outline">将删除</Badge>
             </div>
           ))}
-          {impact.hasMoreFiles ? <div className="text-xs font-semibold text-muted-foreground">仅展示前 80 个候选文件中的一部分，执行时按同一安全规则处理。</div> : null}
+          {impact.hasMoreFiles ? <div className="text-xs font-semibold text-muted-foreground">还有更多</div> : null}
         </div>
       ) : (
           <div className="mt-4 rounded-lg border border-border bg-muted/40 p-3 text-sm font-semibold">
-          此操作不会删除项目文件，只会改变历史索引或没有匹配到文件。
+          无项目文件删除
         </div>
       )}
 
@@ -673,7 +601,7 @@ function HistoryDeleteAction({
   return (
     <div className="rounded-lg border border-border bg-card p-3">
       <div className={destructive ? "text-sm font-semibold text-destructive" : "text-sm font-semibold text-foreground"}>{title}</div>
-      <div className="mt-1 min-h-10 text-xs leading-5 text-muted-foreground">{getDeleteModeDescription(options.mode, options.fromRound)}</div>
+      <div className="mt-1 text-xs leading-5 text-muted-foreground">{getDeleteModeScope(options.fromRound)}</div>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <Button type="button" variant="outline" size="sm" onClick={() => onPreview(docId, options)} disabled={busy || loading}>
           <Search data-icon="inline-start" />
@@ -684,33 +612,6 @@ function HistoryDeleteAction({
           执行
         </Button>
       </div>
-    </div>
-  );
-}
-
-function HistoryGovernanceBoundary() {
-  const cards = [
-    {
-      title: "先预览再执行",
-      text: "删除、回滚、清理前先生成影响预览；预览不会改动任何文件。",
-    },
-    {
-      title: "只治理项目内文件",
-      text: "清理对象限定在项目记录、origin、finish、审计报告和运行中间产物。",
-    },
-    {
-      title: "外部文件不碰",
-      text: "浏览器下载目录、外部原始路径和用户自己保存的 Word/PDF 不会被删除。",
-    },
-  ];
-  return (
-    <div data-ui-section="history-governance-boundary" className="grid gap-3 lg:grid-cols-3">
-      {cards.map((card) => (
-        <div key={card.title} className="rounded-lg border border-border bg-muted/40 p-3">
-          <div className="text-sm font-semibold text-foreground">{card.title}</div>
-          <div className="mt-1 text-xs leading-5 text-muted-foreground">{card.text}</div>
-        </div>
-      ))}
     </div>
   );
 }
@@ -775,7 +676,6 @@ export function HistoryCard({
               <Badge variant="outline">{getProfileLabel(promptProfile)}</Badge>
             </div>
             <CardTitle className="text-xl">继续处理与导出</CardTitle>
-            <CardDescription>选择历史文档继续下一轮、导出最新结果；清理和修复放在高级维护里。</CardDescription>
           </div>
           <Button variant="outline" onClick={onToggle} disabled={busy}>
             <FolderClock data-icon="inline-start" />
@@ -786,23 +686,9 @@ export function HistoryCard({
 
       <CardContent className="flex flex-col gap-5">
         <div data-ui-section="history-user-summary" className="grid gap-3 lg:grid-cols-3">
-          <ImpactCard
-            title="可继续"
-            value={`${continuationCount} 篇`}
-            text={`当前流程最多 ${maxRounds} 轮，未完成的文档可直接接着跑。`}
-          />
-          <ImpactCard
-            title="可导出"
-            value={`${exportableCount} 篇`}
-            text="已有输出的文档可打开后导出 Word 或 TXT。"
-            tone="emerald"
-          />
-          <ImpactCard
-            title="可释放"
-            value={formatBytes(totalStats.bytes)}
-            text={`${totalStats.existing} 个项目内生成文件；日常不用处理，需要时打开高级维护。`}
-            tone="amber"
-          />
+          <StatPill label="可继续" value={`${continuationCount} 篇`} />
+          <StatPill label="可导出" value={`${exportableCount} 篇`} />
+          <StatPill label="可释放" value={formatBytes(totalStats.bytes)} />
         </div>
         <section data-ui-section="history-advanced-maintenance" className="rounded-lg border border-border bg-muted/20 p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -812,9 +698,6 @@ export function HistoryCard({
                 {artifactQuery?.ok === false ? <Badge variant="warning">需要检查</Badge> : null}
                 {orphanScan?.orphanStats.existing ? <Badge variant="outline">可清理 {orphanScan.orphanStats.existing}</Badge> : null}
               </div>
-              <div className="mt-1 text-sm leading-6 text-muted-foreground">
-                项目体检、空间清理和异常修复都收在这里；日常继续写或导出不用打开。
-              </div>
             </div>
             <Button variant="outline" onClick={() => setMaintenanceOpen((value) => !value)} disabled={busy}>
               <Wrench data-icon="inline-start" />
@@ -823,7 +706,6 @@ export function HistoryCard({
           </div>
           {maintenanceOpen ? (
             <div className="mt-4 flex flex-col gap-4">
-              <HistoryGovernanceBoundary />
               <HistoryArtifactGovernancePanel
                 query={artifactQuery}
                 mode={artifactMode}
@@ -851,11 +733,7 @@ export function HistoryCard({
           ) : null}
         </section>
 
-        {!open ? (
-          <div className="rounded-lg border border-border bg-muted/30 p-5 text-sm leading-6 text-muted-foreground">
-            历史面板已收起。这里按当前提示词模式展示匹配轮次，不把不同模式的结果混在一起。
-          </div>
-        ) : items.length ? (
+        {!open ? null : items.length ? (
           <div className="flex flex-col gap-5 pb-4">
               {items.map((item) => {
                 const isActive = currentDocId === item.docId;
@@ -955,9 +833,7 @@ export function HistoryCard({
                       <>
                         <Separator className="my-5" />
                         {!activeRounds.length ? (
-                          <div className="mb-3 rounded-lg border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
-                            当前模式没有轮次，下面展示这篇文档在其他模式下的历史轮次。
-                          </div>
+                          <Badge variant="outline" className="mb-3 w-fit">其他模式</Badge>
                         ) : null}
                         <div className="grid gap-3">
                           {visibleRounds.map((roundItem) => {
@@ -1022,9 +898,7 @@ export function HistoryCard({
                         </div>
                       </>
                     ) : shouldShowRounds ? (
-                      <div className="mt-5 rounded-lg border border-dashed border-border bg-muted/20 p-4 text-sm leading-6 text-muted-foreground">
-                        这篇文档在当前模式下还没有轮次记录。可能是在别的提示词模式下处理过。
-                      </div>
+                      <div className="mt-5 rounded-lg border border-dashed border-border bg-muted/20 p-4 text-sm leading-6 text-muted-foreground">暂无轮次</div>
                     ) : null}
                   </div>
                 );
@@ -1033,7 +907,6 @@ export function HistoryCard({
         ) : (
           <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center">
             <h3 className="text-base font-semibold">还没有历史记录</h3>
-            <p className="mt-2 text-sm leading-6 text-muted-foreground">跑过的文档会自动出现在这里，之后可以直接回来继续处理或导出。</p>
           </div>
         )}
       </CardContent>

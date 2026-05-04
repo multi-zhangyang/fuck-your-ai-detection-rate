@@ -119,8 +119,9 @@ function runRegression() {
     assertIncludes(appSource, "<AlertDialog open", "Risky actions must use the shadcn AlertDialog confirmation flow.", failures);
     assertIncludes(appSource, "function UnifiedConfirmDialog", "Native confirms must stay replaced by the unified app dialog.", failures);
     assertIncludes(appSource, "requestConfirm", "Risky actions must route through the async confirmation flow.", failures);
-    assertIncludes(appSource, "role=\"dialog\"", "Notification center Sheet must expose dialog semantics.", failures);
-    assertIncludes(appSource, "aria-labelledby=\"notification-center-title\"", "Notification center must expose an accessible title.", failures);
+    assertIncludes(appSource, "<SheetTitle className=\"flex items-center gap-2\">", "Notification center must expose an accessible shadcn SheetTitle.", failures);
+    assertIncludes(appSource, "<SheetDescription className=\"sr-only\">查看运行任务和最近通知。</SheetDescription>", "Notification center must expose a non-visual accessible description.", failures);
+    assertNotIncludes(appSource, "aria-labelledby=\"notification-center-title\"", "Notification center must not override the Radix-generated title id.", failures);
     assertIncludes(appSource, "data-ui-section=\"runtime-task-center\"", "Notification center must separate active runtime tasks from notification history.", failures);
     assertIncludes(appSource, "taskItems={runtimeTaskItems}", "Runtime task center items must be passed into the notification center.", failures);
     assertIncludes(appSource, "function isRawHtmlErrorText", "Notification history must detect stale raw backend HTML error pages.", failures);
@@ -166,18 +167,17 @@ function runRegression() {
 
   if (resultCardSource) {
     assertIncludes(resultCardSource, "export function DiffReviewCard", "ResultCard module must export the full-height Diff review surface.", failures);
-    assertIncludes(resultCardSource, "xl:grid-cols-4", "Output export actions should include the all-candidate adoption button above Diff.", failures);
-    assertIncludes(resultCardSource, "T.adoptAllRejected", "Output export actions must expose one-click adoption for all rejected candidates.", failures);
-    assertIncludes(appSource, "collectAdoptableRejectedCandidates(activeCompareData, activeRerunFailures, reviewDecisions)", "Home must compute unresolved adoptable rejected candidates once for the global action.", failures);
+    assertIncludes(resultCardSource, "xl:grid-cols-3", "Output export actions should stay limited to Word, TXT, and risky-rerun actions.", failures);
+    assertNotIncludes(resultCardSource, "T.adoptAllRejected", "Output export actions must not expose removed candidate adoption.", failures);
+    assertNotIncludes(appSource, "collectAdoptableRejectedCandidates", "Home must not compute removed candidate adoption state.", failures);
     assertIncludes(appSource, "buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions)", "Home Diff dashboard counts must follow review decisions.", failures);
     assertIncludes(appSource, "function normalizeReviewDecisionsForSave", "Review decisions must preserve explicit confirmation state when saved.", failures);
     assertIncludes(appSource, "return [chunkId, \"rewrite\" as ReviewDecision];", "Saved legacy default rewrites must reload as unresolved defaults.", failures);
     assertIncludes(appSource, "decision.source === \"rejected_candidate\" && decision.confirmed !== true", "Legacy rejected candidate decisions must not hide unresolved high-risk candidates.", failures);
     assertIncludes(appSource, "return [[chunkId, \"rewrite_confirmed\" as ReviewDecision] as const];", "Explicit rewrite confirmations must be persisted distinctly from default rewrites.", failures);
-    assertIncludes(appSource, "confirmed: true", "New rejected candidate adoption must carry an explicit confirmation marker.", failures);
+    assertNotIncludes(appSource, "buildRejectedCandidateReviewDecision", "Candidate adoption decision builders must stay removed from the frontend.", failures);
     assertNotIncludes(appSource, "if (decision === \"rewrite\") return [chunkId, \"rewrite_confirmed\" as ReviewDecision];", "Default rewrite choices must not be promoted to confirmed on reload.", failures);
-    assertIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Home must wire the all-candidate adoption action through review decisions.", failures);
-    assertIncludes(appSource, "buildRejectedCandidateReviewDecision(item.candidate)", "All-candidate adoption must persist rejected candidates as custom review decisions.", failures);
+    assertNotIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Home must not wire removed all-candidate adoption actions.", failures);
     assertNotIncludes(resultCardSource, "onExportReviewed", "Reviewed export props must be removed from the output card.", failures);
     assertNotIncludes(resultCardSource, "审阅 Word", "Reviewed Word export button must not return.", failures);
     assertNotIncludes(resultCardSource, "审阅 TXT", "Reviewed TXT export button must not return.", failures);
@@ -185,19 +185,17 @@ function runRegression() {
     assertIncludes(resultCardSource, "Card className=\"flex h-full min-h-0", "Diff review card must use a fixed-height shadcn Card shell.", failures);
     assertIncludes(resultCardSource, "sticky top-0 z-20", "Inline Diff toolbar must stay pinned while chunks scroll.", failures);
     assertIncludes(resultCardSource, "ToggleGroup", "Diff filters must use shadcn ToggleGroup.", failures);
+    assertIncludes(resultCardSource, "type DiffFilterMode = \"all\" | \"review\" | \"failed\";", "Diff filters must stay compact for users.", failures);
+    assertNotIncludes(resultCardSource, "\"candidate\"", "Diff filters must not reintroduce the removed candidate mode.", failures);
     assertIncludes(resultCardSource, "Empty className=\"min-h-0 flex-1 border bg-background/70\"", "Diff empty state must use shadcn Empty.", failures);
     assertIncludes(resultCardSource, "overflow-auto whitespace-pre-wrap break-words", "Diff text panes must constrain and wrap long paragraph content.", failures);
-    assertIncludes(resultCardSource, "function getRejectedCandidateReasons", "Rejected candidates must render concise interception reasons.", failures);
-    assertIncludes(resultCardSource, "function buildRejectedCandidatesRerunFeedback", "Rejected candidates must generate rerun feedback without rendering their content.", failures);
-    assertIncludes(resultCardSource, "function getLatestRejectedCandidate", "Rejected candidate preview must use the latest failed rewrite.", failures);
-    assertIncludes(resultCardSource, "function buildRejectedCandidateDecision", "Rejected candidate adoption must stay wired through review decisions.", failures);
-    assertIncludes(resultCardSource, "source: \"rejected_candidate\"", "Rejected candidate adoption must preserve its source.", failures);
-    assertIncludes(resultCardSource, "未采用，需人工介入", "Rejected candidate preview must be clearly marked as not adopted.", failures);
-    assertIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate cards must expose one-click adoption.", failures);
-    assertIncludes(resultCardSource, "TriangleAlert", "Rejected candidate actions must carry a visible high-risk warning icon.", failures);
-    assertIncludes(resultCardSource, "T.highRiskCandidate", "Rejected candidate surfaces must label candidates as high risk.", failures);
-    assertIncludes(resultCardSource, "variant={candidateAdoptableCount ? \"outlineDanger\" : \"outline\"}", "Bulk candidate adoption must use the dangerous outline state when active.", failures);
-    assertIncludes(resultCardSource, "variant=\"danger\"", "Rejected candidate badges must use the danger badge variant.", failures);
+    assertNotIncludes(resultCardSource, "function getRejectedCandidateReasons", "Rejected candidate UI helpers must stay removed.", failures);
+    assertNotIncludes(resultCardSource, "function buildRejectedCandidatesRerunFeedback", "Rejected candidate rerun helpers must stay removed from the UI layer.", failures);
+    assertNotIncludes(resultCardSource, "function getLatestRejectedCandidate", "Rejected candidate previews must stay removed.", failures);
+    assertNotIncludes(resultCardSource, "function buildRejectedCandidateDecision", "Rejected candidate adoption helpers must stay removed.", failures);
+    assertNotIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate one-click adoption must stay removed.", failures);
+    assertNotIncludes(resultCardSource, "T.highRiskCandidate", "Rejected candidate high-risk UI must stay removed.", failures);
+    assertNotIncludes(resultCardSource, "candidateAdoptableCount", "Bulk candidate adoption state must stay removed.", failures);
     assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must render concise visible reasons.", failures);
     assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must drive the visible quality badge.", failures);
     assertNotIncludes(resultCardSource, "<AlertTitle>报错</AlertTitle>", "Ordinary user UI must not expose raw fallback errors.", failures);
@@ -206,8 +204,6 @@ function runRegression() {
     assertNotIncludes(resultCardSource, "右侧仅预览，默认不导出。", "Rejected candidate UI must avoid generic preview helper copy.", failures);
     assertNotIncludes(resultCardSource, "模型连续输出未通过硬校验，本块没有采用不合格改写。", "Fallback UI must avoid duplicate hard-check boilerplate.", failures);
     assertNotIncludes(resultCardSource, "重跑指令", "Manual rerun panel must not render redundant headings.", failures);
-    assertIncludes(resultCardSource, "onRerun(candidateFeedback)", "Rejected candidate cards must expose a direct rerun action.", failures);
-    assertIncludes(resultCardSource, "原因：", "Rejected candidate UI must show the reason instead of generic helper copy.", failures);
     assertNotIncludes(resultCardSource, "候选不展示、不导出", "Rejected candidate UI must not show generic filler copy.", failures);
     assertNotIncludes(resultCardSource, "重跑本块", "Rejected candidate action label must stay concise.", failures);
     assertNotIncludes(resultCardSource, "function CandidateInspectionPanel", "Rejected candidate inspection panel must stay removed.", failures);
@@ -224,11 +220,12 @@ function runRegression() {
   }
 
   if (historyCardSource) {
-    assertIncludes(historyCardSource, "data-ui-section=\"history-governance-boundary\"", "History page must expose a clear governance boundary section.", failures);
+    assertNotIncludes(historyCardSource, "data-ui-section=\"history-governance-boundary\"", "History page must not reintroduce verbose governance boundary copy.", failures);
     assertIncludes(historyCardSource, "data-ui-section=\"history-user-summary\"", "History page must lead with user workflow outcomes.", failures);
     assertIncludes(historyCardSource, "data-ui-section=\"history-advanced-maintenance\"", "History maintenance controls must stay grouped behind an advanced section.", failures);
     assertIncludes(historyCardSource, "Card className=\"min-h-full overflow-visible\"", "History page must use shadcn Card composition.", failures);
-    assertIncludes(historyCardSource, "ImpactCard", "History cleanup impact must stay summarized in reusable cards.", failures);
+    assertIncludes(historyCardSource, "StatPill", "History cleanup impact must stay summarized with compact stats.", failures);
+    assertNotIncludes(historyCardSource, "ImpactCard", "History page must not keep removed impact-card boilerplate.", failures);
     assertNotIncludes(historyCardSource, "<Card key={card.title}", "History governance boundary must not nest cards inside the page card.", failures);
   }
 
@@ -254,8 +251,10 @@ function runRegression() {
     assertIncludes(protectionMapCardSource, "data-ui-section=\"docx-scope-diagnostics\"", "Protection map must expose the body-scope diagnostics section for regression checks.", failures);
     assertIncludes(protectionMapCardSource, "<Sheet open={open}", "Full body-scope diagnostics must use a shadcn Sheet.", failures);
     assertIncludes(protectionMapCardSource, "<SheetTitle>正文边界完整诊断</SheetTitle>", "Body-scope diagnostics Sheet must have an accessible shadcn SheetTitle.", failures);
-    assertIncludes(protectionMapCardSource, "普通段落和自动编号正文会参与改写。", "Protection map must surface that numbered body paragraphs stay editable.", failures);
-    assertIncludes(protectionMapCardSource, "只把摘要到致谢之间的正文交给模型处理", "Protection map must describe the enforced rewrite scope.", failures);
+    assertIncludes(protectionMapCardSource, "BoundaryStrip", "Protection map must keep the visual body-scope boundary strip.", failures);
+    assertIncludes(protectionMapCardSource, "ReasonGrid", "Protection map must keep compact protection reason distribution.", failures);
+    assertNotIncludes(protectionMapCardSource, "普通段落和自动编号正文会参与改写。", "Protection map must not reintroduce verbose numbered-paragraph helper copy.", failures);
+    assertNotIncludes(protectionMapCardSource, "只把摘要到致谢之间的正文交给模型处理", "Protection map must not reintroduce verbose rewrite-scope helper copy.", failures);
     assertNotIncludes(protectionMapCardSource, "<Card key={`${section.key}", "Protection map list rows must not nest shadcn Cards inside another Card.", failures);
     assertNotIncludes(protectionMapCardSource, "line-clamp-", "Protection map diagnostics should avoid optional Tailwind line-clamp dependencies.", failures);
   }

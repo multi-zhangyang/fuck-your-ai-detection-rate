@@ -54,7 +54,7 @@ def run_regression() -> dict[str, object]:
     _assert('ScrollArea className="min-h-0 flex-1' in component_source, "Prompt preview panels must use internal shadcn ScrollArea scrolling")
     _assert("<textarea" not in component_source.lower(), "Prompt preview page must not expose a textarea editor")
     _assert("<input" not in component_source.lower(), "Prompt preview page must not expose an input editor")
-    _assert("页面只读展示" in component_source, "Prompt preview page should clearly communicate read-only behavior")
+    _assert("页面只读展示" not in component_source, "Prompt preview page should not reintroduce verbose read-only helper copy")
     _assert('timeoutMs: 8_000' in web_service_source, "Prompt preview request should have a timeout instead of spinning forever")
     _assert("loadPromptPreviewsViaReadOutput" in web_service_source, "Prompt preview should fall back to existing read-output route for old running backends")
     checks.append("frontend prompt page is read-only and discoverable")

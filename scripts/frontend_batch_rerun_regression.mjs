@@ -100,58 +100,54 @@ function checkRerunFailureVisibilityContract(appSource, resultCardSource, failur
   assertIncludes(appSource, "failure.scopeKey === activeRerunFailureScopeKey && activeChunkIds.has(failure.chunkId)", "App must scope rerun failures to the active Diff.", failures);
   assertIncludes(appSource, "function upsertRerunFailure(failure: BatchRerunFailure)", "Single rerun failures must be recorded for the Diff UI.", failures);
   assertIncludes(appSource, "function extractRerunFailureExtras(error: unknown)", "Single rerun failures must extract backend failure details.", failures);
-  assertIncludes(appSource, "normalizeFailureRejectedCandidates(failure.rejectedCandidates)", "Single rerun failures must normalize rejected candidate output.", failures);
-  assertIncludes(appSource, "upsertRerunFailure({ chunkId, error: message, ...extractRerunFailureExtras(appError) });", "Single rerun failure UI must preserve rejected candidates.", failures);
-  assertIncludes(appSource, "result.failures.map((failure) => ({ ...failure }))", "Batch rerun failures must preserve rejected candidate details from the backend.", failures);
+  assertNotIncludes(appSource, "normalizeFailureRejectedCandidates", "Frontend rerun failures must not keep removed candidate payload normalization.", failures);
+  assertIncludes(appSource, "upsertRerunFailure({ chunkId, error: message, ...extractRerunFailureExtras(appError) });", "Single rerun failures must preserve concise failure metadata.", failures);
+  assertIncludes(appSource, "result.failures.map((failure) => ({ ...failure }))", "Batch rerun failures must preserve backend failure records.", failures);
   assertIncludes(appSource, "setRerunFailures(scopeRerunFailures(failures, latestCompare ?? activeCompareData));", "Batch rerun failures must be promoted into visible scoped Diff state.", failures);
   assertIncludes(appSource, "rerunFailures={activeRerunFailures}", "Home ResultCard must receive active rerun failures.", failures);
   assertIncludes(appSource, "batchRerunStatusText={runtimeLabel}", "Home ResultCard must show live batch rerun status text.", failures);
   assertIncludes(resultCardSource, "rerunFailures?: RerunFailure[];", "ResultCard must expose rerun failure input.", failures);
   assertIncludes(resultCardSource, "batchRerunStatusText?: string;", "ResultCard must expose batch rerun status text.", failures);
-  assertIncludes(resultCardSource, "rejectedCandidates?: NonNullable<RoundCompareData[\"chunks\"][number][\"rejectedCandidates\"]>;", "Visible rerun failures must carry rejected model candidates.", failures);
-  assertIncludes(resultCardSource, "type DiffFilterMode = \"all\" | \"review\" | \"failed\" | \"candidate\" | \"changed\" | \"number\" | \"citation\";", "Diff panel must support review, failure, candidate and risk-specific filters.", failures);
+  assertNotIncludes(resultCardSource, "rejectedCandidates?: NonNullable<RoundCompareData[\"chunks\"][number][\"rejectedCandidates\"]>;", "ResultCard rerun failures must not carry removed candidate payloads.", failures);
+  assertIncludes(resultCardSource, "type DiffFilterMode = \"all\" | \"review\" | \"failed\";", "Diff panel filters must stay compact.", failures);
   assertIncludes(resultCardSource, "const [filterMode, setFilterMode] = useState<DiffFilterMode>(\"all\");", "Diff panel must keep filter mode as a typed state.", failures);
   assertIncludes(resultCardSource, "const previousFailedCountRef = useRef(0);", "Diff panel must detect newly appeared failed chunks.", failures);
   assertIncludes(resultCardSource, "setFilterMode(\"failed\");", "Diff panel must auto-focus failed chunks when new failures appear.", failures);
-  assertIncludes(resultCardSource, "const previousCandidateCountRef = useRef(0);", "Diff panel must detect newly appeared rejected candidates.", failures);
-  assertIncludes(resultCardSource, "setFilterMode(\"candidate\");", "Diff panel must auto-focus rejected candidates when no failed chunk is present.", failures);
+  assertNotIncludes(resultCardSource, "previousCandidateCountRef", "Diff panel must not keep removed candidate-focus state.", failures);
+  assertNotIncludes(resultCardSource, "setFilterMode(\"candidate\")", "Diff panel must not auto-focus removed candidate filters.", failures);
   assertIncludes(resultCardSource, "const rerunFailureByChunk = new Map", "Diff panel must map failures by chunk id.", failures);
-  assertIncludes(resultCardSource, "const failureCandidateChunkIdSet = new Set", "Diff panel must include failed chunks that only have failure-level candidates.", failures);
-  assertIncludes(resultCardSource, "const displayChunk = failureRejectedCandidates.length", "Diff panel must merge failure-level candidates into the chunk card.", failures);
-  assertIncludes(resultCardSource, "chunk={displayChunk}", "Chunk quality panel must display failure-level rejected candidates.", failures);
-  assertIncludes(resultCardSource, "const candidateChunkIds = allChunks.filter", "Diff panel must map rejected candidate chunks.", failures);
+  assertNotIncludes(resultCardSource, "failureCandidateChunkIdSet", "Diff panel must not keep removed failure-candidate maps.", failures);
+  assertNotIncludes(resultCardSource, "failureRejectedCandidates", "Diff panel must not merge removed failure-level candidates.", failures);
+  assertNotIncludes(resultCardSource, "const candidateChunkIds = allChunks.filter", "Diff panel must not map removed candidate-only chunks.", failures);
   assertIncludes(resultCardSource, "const changedChunkIds = allChunks.filter", "Diff panel must map chunks with source/rewrite changes.", failures);
   assertIncludes(resultCardSource, "const numberRiskChunkIds = allChunks.filter", "Diff panel must map chunks with numeric risks.", failures);
   assertIncludes(resultCardSource, "const citationRiskChunkIds = allChunks.filter", "Diff panel must map chunks with citation risks.", failures);
-  assertIncludes(resultCardSource, "function hasChunkNumberRisk", "Diff panel must detect numeric risk for rewrites and rejected candidates.", failures);
-  assertIncludes(resultCardSource, "function hasChunkCitationRisk", "Diff panel must detect citation risk for rewrites and rejected candidates.", failures);
-  assertIncludes(resultCardSource, "function getDiffFilterEmptyState", "Diff panel must explain empty risk-specific filters.", failures);
+  assertIncludes(resultCardSource, "function hasChunkNumberRisk", "Diff panel must detect numeric risk for rewrites.", failures);
+  assertIncludes(resultCardSource, "function hasChunkCitationRisk", "Diff panel must detect citation risk for rewrites.", failures);
+  assertIncludes(resultCardSource, "function getDiffFilterEmptyState", "Diff panel must keep concise empty states.", failures);
   assertIncludes(resultCardSource, "T.failedOnly", "Diff panel must expose the failed-only action.", failures);
-  assertIncludes(resultCardSource, "T.candidateOnly", "Diff panel must expose the candidate-only action.", failures);
-  assertIncludes(resultCardSource, "T.changedChunks", "Diff panel must expose the source/rewrite change filter.", failures);
-  assertIncludes(resultCardSource, "T.numberRisk", "Diff panel must expose the numeric risk filter.", failures);
-  assertIncludes(resultCardSource, "T.citationRisk", "Diff panel must expose the citation risk filter.", failures);
-  assertIncludes(resultCardSource, "filterMode === \"number\"", "Diff panel must render numeric-risk-only state.", failures);
-  assertIncludes(resultCardSource, "filterMode === \"citation\"", "Diff panel must render citation-risk-only state.", failures);
-  assertIncludes(resultCardSource, "T.rerunFailureSummary", "Failed chunks must have a visible summary banner.", failures);
-  assertIncludes(resultCardSource, "T.rerunFailureHint", "Failed chunks must explain the next action.", failures);
+  assertNotIncludes(resultCardSource, "T.candidateOnly", "Diff panel must not expose candidate-only action.", failures);
+  assertIncludes(resultCardSource, "T.changedChunks", "Diff panel must keep source/rewrite change badges.", failures);
+  assertIncludes(resultCardSource, "T.numberRisk", "Diff panel must keep numeric risk badges.", failures);
+  assertIncludes(resultCardSource, "T.citationRisk", "Diff panel must keep citation risk badges.", failures);
+  assertNotIncludes(resultCardSource, "filterMode === \"number\"", "Diff panel must not keep hidden numeric-only filters.", failures);
+  assertNotIncludes(resultCardSource, "filterMode === \"citation\"", "Diff panel must not keep hidden citation-only filters.", failures);
+  assertNotIncludes(resultCardSource, "T.rerunFailureSummary", "Failed chunks must not show verbose summary copy.", failures);
+  assertNotIncludes(resultCardSource, "T.rerunFailureHint", "Failed chunks must not show verbose helper copy.", failures);
   assertIncludes(resultCardSource, "批量重跑进行中", "ResultCard must keep batch rerun status visible in the main result area.", failures);
-  assertIncludes(resultCardSource, "function inspectRejectedCandidate", "Rejected candidates must be inspected for rerun feedback.", failures);
-  assertIncludes(resultCardSource, "function getRejectedCandidateReasons", "Rejected candidates must expose concise visible interception reasons.", failures);
-  assertIncludes(resultCardSource, "function buildRejectedCandidatesRerunFeedback", "Rejected candidates must generate reusable rerun feedback without rendering their content.", failures);
-  assertIncludes(resultCardSource, "function getLatestRejectedCandidate", "Rejected candidate preview must use the latest non-empty failed rewrite.", failures);
-  assertIncludes(resultCardSource, "function buildRejectedCandidateDecision", "Rejected candidate adoption must persist as a custom review decision.", failures);
-  assertIncludes(resultCardSource, "source: \"rejected_candidate\"", "Rejected candidate adoption must be distinguishable from manual custom text.", failures);
-  assertIncludes(resultCardSource, "未采用，需人工介入", "Rejected candidate text must be shown in the rewrite pane with a non-adopted warning.", failures);
-  assertIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate UI must expose one-click adoption.", failures);
-  assertIncludes(resultCardSource, "T.adoptAllRejected", "Output action row must expose one-click adoption for all rejected candidates.", failures);
-  assertIncludes(resultCardSource, "TriangleAlert", "Rejected candidate actions must carry a visible high-risk warning icon.", failures);
-  assertIncludes(resultCardSource, "T.highRiskCandidate", "Rejected candidate surfaces must label candidates as high risk.", failures);
-  assertIncludes(resultCardSource, "variant={candidateAdoptableCount ? \"outlineDanger\" : \"outline\"}", "Bulk candidate adoption must be styled as a dangerous action when candidates exist.", failures);
-  assertIncludes(resultCardSource, "variant=\"danger\"", "Rejected candidate badges must use the danger badge variant.", failures);
-  assertIncludes(appSource, "function collectAdoptableRejectedCandidates", "Bulk candidate adoption must collect latest rejected candidates from compare and rerun failures.", failures);
-  assertIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Bulk candidate adoption must be wired through the app review-decision state.", failures);
-  assertIncludes(appSource, "buildRejectedCandidateReviewDecision(item.candidate)", "Bulk candidate adoption must save rejected candidates as custom review decisions.", failures);
+  assertNotIncludes(resultCardSource, "function inspectRejectedCandidate", "Rejected candidate inspection must stay removed from the UI.", failures);
+  assertNotIncludes(resultCardSource, "function getRejectedCandidateReasons", "Rejected candidate reasons must stay removed from the UI.", failures);
+  assertNotIncludes(resultCardSource, "function buildRejectedCandidatesRerunFeedback", "Rejected candidate rerun helpers must stay removed from the UI.", failures);
+  assertNotIncludes(resultCardSource, "function getLatestRejectedCandidate", "Rejected candidate previews must stay removed.", failures);
+  assertNotIncludes(resultCardSource, "function buildRejectedCandidateDecision", "Rejected candidate adoption helpers must stay removed.", failures);
+  assertNotIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate UI must not expose one-click adoption.", failures);
+  assertNotIncludes(resultCardSource, "T.adoptAllRejected", "Output action row must not expose removed candidate adoption.", failures);
+  assertNotIncludes(resultCardSource, "TriangleAlert", "Rejected candidate warning action icon must stay removed with the action.", failures);
+  assertNotIncludes(resultCardSource, "T.highRiskCandidate", "Rejected candidate high-risk surfaces must stay removed.", failures);
+  assertNotIncludes(resultCardSource, "candidateAdoptableCount", "Bulk candidate adoption state must stay removed.", failures);
+  assertNotIncludes(appSource, "function collectAdoptableRejectedCandidates", "Bulk candidate adoption must stay removed.", failures);
+  assertNotIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Bulk candidate adoption handler must stay removed.", failures);
+  assertNotIncludes(appSource, "buildRejectedCandidateReviewDecision", "Bulk candidate adoption decision builder must stay removed.", failures);
   assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must expose visible quality reasons.", failures);
   assertNotIncludes(resultCardSource, "<AlertTitle>报错</AlertTitle>", "Ordinary user UI must not expose raw fallback errors.", failures);
   assertNotIncludes(resultCardSource, "compactFeedbackText(chunk.fallbackError", "Fallback error detail must stay out of the review UI.", failures);
@@ -159,17 +155,17 @@ function checkRerunFailureVisibilityContract(appSource, resultCardSource, failur
   assertNotIncludes(resultCardSource, "右侧仅预览，默认不导出。", "Rejected candidate UI must not repeat preview/export helper copy.", failures);
   assertNotIncludes(resultCardSource, "模型连续输出未通过硬校验，本块没有采用不合格改写。", "Fallback UI must avoid duplicate hard-check boilerplate.", failures);
   assertNotIncludes(resultCardSource, "重跑指令", "Manual rerun panel must not render redundant headings.", failures);
-  assertIncludes(resultCardSource, "const candidateFeedback = rejectedCandidates.length ? buildRejectedCandidatesRerunFeedback", "Candidate rerun feedback must be prepared at chunk level.", failures);
-  assertIncludes(resultCardSource, "const candidateReasons = rejectedCandidates.length ? getRejectedCandidateReasons", "Candidate reason labels must be prepared at chunk level.", failures);
-  assertIncludes(resultCardSource, "onRerun(candidateFeedback)", "Candidate cards must expose one-click rerun using generated feedback.", failures);
+  assertNotIncludes(resultCardSource, "candidateFeedback", "Candidate rerun feedback plumbing must stay removed.", failures);
+  assertNotIncludes(resultCardSource, "candidateReasons", "Candidate reason plumbing must stay removed.", failures);
+  assertNotIncludes(resultCardSource, "onRerun(candidateFeedback)", "Candidate cards must not expose one-click rerun.", failures);
   assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must be passed into the chunk quality bar.", failures);
   assertIncludes(resultCardSource, "const reviewToolsVisible = !isConfirmed && (qualityNeedsReview || isSourceFallback);", "Confirmed chunks and candidate-only chunks should not open the manual feedback panel.", failures);
   assertIncludes(resultCardSource, "!isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? \"rewrite\")", "Diff review and candidate counts must only include unresolved chunks.", failures);
   assertIncludes(appSource, "function normalizeReviewDecisionsForSave", "Review decision saves must not collapse default and confirmed choices together.", failures);
   assertIncludes(appSource, "decision.source === \"rejected_candidate\" && decision.confirmed !== true", "Legacy candidate decisions must not clear unresolved high-risk counts.", failures);
   assertNotIncludes(appSource, "if (decision === \"rewrite\") return [chunkId, \"rewrite_confirmed\" as ReviewDecision];", "Reloading saved default rewrites must not mark review items resolved.", failures);
-  assertNotIncludes(resultCardSource, "needsReview || rejectedCandidates.length", "Candidate-only chunks must stay as a compact interception notice.", failures);
-  assertIncludes(resultCardSource, "原因：", "Rejected candidate UI must show the interception reason.", failures);
+  assertNotIncludes(resultCardSource, "needsReview || rejectedCandidates.length", "Candidate-only chunks must not reappear.", failures);
+  assertNotIncludes(resultCardSource, "原因：", "Rejected candidate interception reason UI must stay removed.", failures);
   assertNotIncludes(resultCardSource, "候选不展示、不导出", "Rejected candidate UI must not show generic filler copy.", failures);
   assertNotIncludes(resultCardSource, "重跑本块", "Rejected candidate action label must stay concise.", failures);
   assertNotIncludes(resultCardSource, "function CandidateInspectionPanel", "Rejected candidate detail inspection panel must stay removed.", failures);
@@ -178,9 +174,9 @@ function checkRerunFailureVisibilityContract(appSource, resultCardSource, failur
   assertNotIncludes(resultCardSource, "pendingAdoptCandidateKey", "Rejected candidates must not expose risky manual adoption flow.", failures);
   assertNotIncludes(resultCardSource, "确认采用候选", "Rejected candidates must not expose manual adoption copy.", failures);
   assertNotIncludes(resultCardSource, "<Accordion type=\"single\" collapsible>", "Rejected candidates must not render expandable detail blocks.", failures);
-  assertIncludes(resultCardSource, "extractNumberTokens(sourceText)", "Candidate inspection must compare numeric tokens.", failures);
-  assertIncludes(resultCardSource, "英文段落被改成中文", "Candidate inspection must flag language inversion.", failures);
-  assertIncludes(resultCardSource, "已保留 {failureRejectedCandidates.length} 个模型候选", "Failed chunk banner must point users to preserved model candidates.", failures);
+  assertNotIncludes(resultCardSource, "extractNumberTokens(sourceText)", "Candidate inspection numeric comparison must stay removed.", failures);
+  assertNotIncludes(resultCardSource, "英文段落被改成中文", "Candidate inspection language checks must stay removed from UI.", failures);
+  assertNotIncludes(resultCardSource, "已保留 {failureRejectedCandidates.length} 个模型候选", "Failed chunk banner must not mention removed model candidates.", failures);
 }
 
 function checkRequestErrorPayloadContract(webServiceSource, failures) {
@@ -240,13 +236,10 @@ function runRegression() {
       "backend task result promotes partial failures",
       "manual targeted-rerun feedback reaches the backend",
       "batch rerun failures are visible and filterable in Diff",
-      "single rerun failure payload preserves model candidates",
-      "rejected candidates stay as compact interception notices",
-      "rejected candidate detail panels stay removed",
-      "rejected candidate rerun feedback is generated without rendering content",
+      "removed candidate UI and adoption paths stay absent",
       "rerun failure markers are scoped per active Diff",
       "new failures auto-focus the failed-only view",
-      "diff panel supports risk-specific filters",
+      "diff panel keeps compact user-facing filters",
       "batch rerun status stays visible in result area",
       "export audit samples stay available in service payload",
     ],

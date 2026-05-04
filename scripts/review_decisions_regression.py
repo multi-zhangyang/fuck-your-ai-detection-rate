@@ -49,7 +49,8 @@ def run_regression() -> dict[str, Any]:
         "Frontend must persist explicit rewrite confirmations.",
         failures,
     )
-    _assert("confirmed: true" in app_source, "New rejected candidate adoption must be explicitly confirmed.", failures)
+    _assert("buildRejectedCandidateReviewDecision" not in app_source, "Frontend must not keep removed candidate adoption decisions.", failures)
+    _assert("handleAdoptAllRejectedCandidates" not in app_source, "Frontend must not keep removed bulk candidate adoption.", failures)
 
     report = {
         "ok": not failures,

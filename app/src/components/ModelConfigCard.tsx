@@ -6,9 +6,9 @@ import { CheckCircle2, DatabaseZap, Loader2, Plus, RefreshCw, Save, ShieldCheck,
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Field, FieldContent, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -47,7 +47,6 @@ type SchoolFormatCardProps = {
   onCancelParseFormatRules: () => void;
   onParserProviderChange: (providerId: string) => void;
   onParserModelChange: (model: string) => void;
-  onRefreshParserProviderModels: (providerId: string) => void;
   pendingFormatRules: FormatRules | null;
   onConfirmFormatRules: () => void;
   onDiscardFormatRules: () => void;
@@ -256,7 +255,6 @@ export function ModelConfigCard({
           <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <CardTitle className="text-xl">模型配置</CardTitle>
-              <CardDescription className="mt-1">管理默认连接和服务商仓库。</CardDescription>
             </div>
             <TabsList className="grid h-9 w-full shrink-0 grid-cols-2 lg:w-[360px]">
               <TabsTrigger value="default">默认连接</TabsTrigger>
@@ -272,7 +270,6 @@ export function ModelConfigCard({
               <Card className="flex min-h-0 flex-col overflow-hidden shadow-none">
                 <CardHeader className="border-b px-4 py-3">
                   <CardTitle className="text-base">默认连接</CardTitle>
-                  <CardDescription>没有指定专属服务商的轮次会使用这里。</CardDescription>
                 </CardHeader>
                 <ScrollArea className="min-h-0 flex-1">
                   <CardContent className="flex flex-col gap-4 p-4">
@@ -332,7 +329,6 @@ export function ModelConfigCard({
                 <Card className="shadow-none">
                   <CardHeader className="p-4">
                     <CardTitle className="text-base">连接操作</CardTitle>
-                    <CardDescription>测试、读取模型列表并保存默认配置。</CardDescription>
                   </CardHeader>
                   <CardContent className="flex flex-col gap-2 p-4 pt-0">
                     <Button variant="outline" onClick={onTestConnection} disabled={busy}>
@@ -356,7 +352,6 @@ export function ModelConfigCard({
                   <Alert>
                     <CheckCircle2 />
                     <AlertTitle>模型列表已读取</AlertTitle>
-                    <AlertDescription>共 {modelCatalog.total} 个模型。</AlertDescription>
                   </Alert>
                 ) : null}
               </div>
@@ -370,7 +365,6 @@ export function ModelConfigCard({
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <CardTitle className="text-base">服务商</CardTitle>
-                      <CardDescription>连接、模型与限速策略</CardDescription>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button type="button" size="sm" variant="outline" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || enabledProviderCount === 0}>
@@ -418,7 +412,6 @@ export function ModelConfigCard({
                         <EmptyHeader>
                           <EmptyMedia variant="icon"><DatabaseZap /></EmptyMedia>
                           <EmptyTitle>还没有服务商</EmptyTitle>
-                          <EmptyDescription>添加后可为不同轮次指定模型。</EmptyDescription>
                         </EmptyHeader>
                         <Button type="button" onClick={addProvider} disabled={busy}><Plus data-icon="inline-start" />添加服务商</Button>
                       </Empty>
@@ -433,9 +426,10 @@ export function ModelConfigCard({
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0">
                         <CardTitle className="truncate text-base">{selectedProvider.name || "未命名服务商"}</CardTitle>
-                        <CardDescription>
-                          {selectedProvider.models?.length ?? 0} 个缓存模型 · {selectedProvider.enabled !== false ? "启用" : "关闭"}
-                        </CardDescription>
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          <Badge variant="outline">{selectedProvider.models?.length ?? 0} 模型</Badge>
+                          <Badge variant={selectedProvider.enabled !== false ? "secondary" : "outline"}>{selectedProvider.enabled !== false ? "启用" : "关闭"}</Badge>
+                        </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button type="button" size="sm" variant="outline" disabled={busy || providerCatalogRunning} onClick={() => void refreshProviderCatalog(selectedProvider)}>
@@ -460,7 +454,6 @@ export function ModelConfigCard({
                       <Field orientation="horizontal" className="rounded-lg border bg-muted/40 px-4 py-3">
                         <FieldContent>
                           <FieldTitle>启用服务商</FieldTitle>
-                          <FieldDescription>关闭后不会被任务使用。</FieldDescription>
                         </FieldContent>
                         <Switch checked={selectedProvider.enabled !== false} onCheckedChange={(enabled) => updateProvider(selectedProvider.id, { enabled })} />
                       </Field>
@@ -557,7 +550,6 @@ export function ModelConfigCard({
                   <EmptyHeader>
                     <EmptyMedia variant="icon"><DatabaseZap /></EmptyMedia>
                     <EmptyTitle>先添加服务商</EmptyTitle>
-                    <EmptyDescription>服务商会沉淀模型列表、API 类型和限速策略。</EmptyDescription>
                   </EmptyHeader>
                   <Button type="button" onClick={addProvider} disabled={busy}><Plus data-icon="inline-start" />添加服务商</Button>
                 </Empty>
@@ -585,14 +577,12 @@ export function SchoolFormatCard({
   onCancelParseFormatRules,
   onParserProviderChange,
   onParserModelChange,
-  onRefreshParserProviderModels,
   pendingFormatRules,
   onConfirmFormatRules,
   onDiscardFormatRules,
   onResetFormatRules,
 }: SchoolFormatCardProps) {
   const displayRules = pendingFormatRules ?? activeFormatRules;
-  const rulesMode = pendingFormatRules ? zh(0x5f85, 0x786e, 0x8ba4) : activeFormatRules ? zh(0x5df2, 0x542f, 0x7528) : zh(0x672a, 0x89e3, 0x6790);
   const hasInput = Boolean(formatRuleText.trim());
   const usingDefault = !pendingFormatRules && (activeFormatRules?.schoolName === "default" || !activeFormatRules);
   const parserProviderValue = parserProviderId || FORMAT_PARSER_DEFAULT_PROVIDER_ID;
@@ -610,144 +600,86 @@ export function SchoolFormatCard({
   ].filter(Boolean)));
   return (
     <Card className="overflow-hidden">
-      <CardHeader className="flex flex-col gap-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="secondary">学校规范</Badge>
-              <Badge variant={pendingFormatRules ? "warning" : "success"}>{pendingFormatRules ? "等待确认" : usingDefault ? "默认规范生效" : "已启用"}</Badge>
-              <Badge variant="outline">只影响 Word 导出</Badge>
-            </div>
+      <CardHeader className="border-b px-5 py-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
             <CardTitle className="text-2xl">学校排版规范</CardTitle>
-            <CardDescription>不填写时自动使用内置默认规范；填写后先解析成结构化规则，确认启用后才影响 Word 导出。</CardDescription>
           </div>
-          <div className="hidden rounded-md bg-primary/10 p-3 text-primary md:block">
-            <SlidersHorizontal className="size-6" />
-          </div>
+          <Badge variant={pendingFormatRules ? "warning" : usingDefault ? "outline" : "success"}>{pendingFormatRules ? "待确认" : usingDefault ? "默认" : "已启用"}</Badge>
         </div>
       </CardHeader>
 
-      <CardContent className="flex flex-col gap-5">
-        <div className="rounded-lg border border-primary/15 bg-primary/5 p-5">
-          <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center">
-            <div className="min-w-[240px] flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="text-sm font-black text-foreground">规范解析模型</div>
-                <Badge variant="secondary">JSON 优先</Badge>
-              </div>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">这里只决定“学校说明 → 结构化 JSON”的解析模型，不参与论文改写。</p>
-            </div>
+      <CardContent className="flex flex-col gap-4 p-5">
+        <div className="rounded-lg border border-border/70 bg-muted/30 p-4">
+          <FieldGroup className="grid gap-4 md:grid-cols-2">
+            <Field>
+              <FieldLabel>模型来源</FieldLabel>
+              <Select value={parserProviderValue} onValueChange={onParserProviderChange} disabled={busy}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value={FORMAT_PARSER_DEFAULT_PROVIDER_ID}>默认连接</SelectItem>
+                    {providers.map((provider) => (
+                      <SelectItem key={provider.id} value={provider.id}>
+                        {provider.name || "未命名服务商"}{provider.enabled === false ? "（已关闭）" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
 
-            <div className="grid min-w-0 flex-[2] gap-3 md:grid-cols-2">
-              <Field>
-                <FieldLabel>模型来源</FieldLabel>
-                <Select value={parserProviderValue} onValueChange={onParserProviderChange} disabled={busy}>
+            <Field>
+              <FieldLabel>解析模型</FieldLabel>
+              {parserModelOptions.length > 0 ? (
+                <Select value={effectiveParserModel || undefined} onValueChange={onParserModelChange} disabled={busy}>
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue placeholder="选择模型" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectItem value={FORMAT_PARSER_DEFAULT_PROVIDER_ID}>默认连接</SelectItem>
-                      {providers.map((provider) => (
-                        <SelectItem key={provider.id} value={provider.id}>
-                          {provider.name || "未命名服务商"}{provider.enabled === false ? "（已关闭）" : ""}
-                        </SelectItem>
+                      {parserModelOptions.map((model) => (
+                        <SelectItem key={model} value={model}>{model}</SelectItem>
                       ))}
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-              </Field>
-
-              <Field>
-                <FieldLabel>解析模型</FieldLabel>
-                {parserModelOptions.length > 0 ? (
-                  <Select value={effectiveParserModel || undefined} onValueChange={onParserModelChange} disabled={busy}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择模型" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {parserModelOptions.map((model) => (
-                          <SelectItem key={model} value={model}>{model}</SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input value={parserModel} onChange={(event) => onParserModelChange(event.target.value)} placeholder="填写能稳定输出 JSON 的模型" disabled={busy} />
-                )}
-              </Field>
-            </div>
-
-            <div className="flex min-w-0 flex-col gap-2 rounded-md border border-primary/10 bg-background/80 px-4 py-3 2xl:w-[340px]">
-              <div className="text-xs font-semibold text-foreground">解析专用配置</div>
-              <div className="text-[11px] leading-4 text-muted-foreground">建议选择遵循 schema、结构化 JSON 输出稳定的模型。</div>
-              {selectedParserProvider ? (
-                <Button type="button" variant="outline" size="sm" onClick={() => onRefreshParserProviderModels(selectedParserProvider.id)} disabled={busy} className="w-fit">
-                  <RefreshCw data-icon="inline-start" />
-                  刷新模型
-                </Button>
-              ) : null}
-            </div>
-          </div>
+              ) : (
+                <Input value={parserModel} onChange={(event) => onParserModelChange(event.target.value)} placeholder="填写模型名称" disabled={busy} />
+              )}
+            </Field>
+          </FieldGroup>
         </div>
 
-        <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="flex min-h-[480px] flex-col gap-4 rounded-lg border border-border/70 bg-background/70 p-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div>
-                <Label htmlFor="formatRuleText">学校模板说明文档</Label>
-                <p className="mt-1 text-sm text-muted-foreground">粘贴学校格式要求；为空时点击按钮会直接启用默认规范。</p>
-              </div>
-              <Badge variant={hasInput ? "default" : "outline"}>{hasInput ? `${formatRuleText.trim().length} 字` : "未填写"}</Badge>
-            </div>
-            <Textarea
-              id="formatRuleText"
-              value={formatRuleText}
-              onChange={(event) => onFormatRuleTextChange(event.target.value)}
-              placeholder="例如：正文 5 号宋体，固定行距 20 磅；一级标题 4 号黑体；A4 上下 2.5cm、左 3cm、右 3cm……"
-              disabled={busy}
-              className="min-h-[320px] flex-1 resize-y"
-            />
-            <div className="flex flex-wrap gap-3">
-              <Button type="button" onClick={() => onParseFormatRules(formatRuleText)} disabled={busy}>
-              {formatParsing ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <SlidersHorizontal data-icon="inline-start" />}
-                {hasInput ? "解析规范" : "使用默认规范"}
-              </Button>
-              {formatParsing ? (
-                <Button type="button" variant="destructive" onClick={onCancelParseFormatRules}>
-                <X data-icon="inline-start" />
-                  停止解析
-                </Button>
-              ) : null}
-              <Button type="button" variant="outline" onClick={onResetFormatRules} disabled={busy}>
-                恢复默认规范
-              </Button>
-            </div>
+        <div className="flex flex-col gap-4 rounded-lg border border-border/70 bg-background/70 p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <Label htmlFor="formatRuleText">学校格式要求</Label>
+            <Badge variant={hasInput ? "default" : "outline"}>{hasInput ? `${formatRuleText.trim().length} 字` : "未填写"}</Badge>
           </div>
-
-            <div className="flex flex-col gap-4">
-            <div className="rounded-lg border border-border/70 bg-muted/30 p-5">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-black text-foreground">当前导出规则</div>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">确认启用后才影响 Word 导出；未启用自定义时使用默认规范。</p>
-                </div>
-                <Badge variant={usingDefault ? "outline" : "success"}>{usingDefault ? "默认" : displayRules?.schoolName || "自定义"}</Badge>
-              </div>
-              <div className="mt-4 grid gap-2">
-                <FormatStep active done title="1 输入说明" text={hasInput ? "已填写学校说明" : "未填写也可继续"} />
-                <FormatStep active={Boolean(pendingFormatRules || activeFormatRules || usingDefault)} done={Boolean(!pendingFormatRules && (activeFormatRules || usingDefault))} title="2 解析审查" text={pendingFormatRules ? "有待确认解析结果" : activeFormatRules ? "当前规则已启用" : "将使用内置默认规则"} />
-                <FormatStep active={Boolean(!pendingFormatRules && (activeFormatRules || usingDefault))} done={Boolean(!pendingFormatRules && (activeFormatRules || usingDefault))} title="3 Word 导出" text="只作用于可安全处理的样式" />
-              </div>
-            </div>
-
-            <Alert>
-              <AlertTitle>解析边界</AlertTitle>
-              <AlertDescription>
-                可执行规则会进入样式；封面、目录、页码分节、公式、图表不跨页等结构要求只记录为审计提示，不伪装成样式。
-              </AlertDescription>
-            </Alert>
+          <Textarea
+            id="formatRuleText"
+            value={formatRuleText}
+            onChange={(event) => onFormatRuleTextChange(event.target.value)}
+            placeholder="粘贴学校格式要求"
+            disabled={busy}
+            className="h-[190px] min-h-[180px] resize-y"
+          />
+          <div className="flex flex-wrap gap-3">
+            <Button type="button" onClick={() => onParseFormatRules(formatRuleText)} disabled={busy}>
+              {formatParsing ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <SlidersHorizontal data-icon="inline-start" />}
+              {hasInput ? "解析规范" : "使用默认规范"}
+            </Button>
+            {formatParsing ? (
+              <Button type="button" variant="destructive" onClick={onCancelParseFormatRules}>
+                <X data-icon="inline-start" />
+                停止解析
+              </Button>
+            ) : null}
+            <Button type="button" variant="outline" onClick={onResetFormatRules} disabled={busy}>
+              恢复默认规范
+            </Button>
           </div>
         </div>
 
@@ -755,20 +687,11 @@ export function SchoolFormatCard({
           <FormatRulesPreview
             rules={displayRules}
             busy={busy}
-            mode={rulesMode}
             isPending={Boolean(pendingFormatRules)}
             onConfirm={onConfirmFormatRules}
             onDiscard={onDiscardFormatRules}
           />
-        ) : (
-          <div className="rounded-lg border border-dashed border-border bg-background/70 p-8 text-center">
-            <div className="mx-auto w-fit rounded-md bg-primary/10 p-4 text-primary">
-            <SlidersHorizontal className="size-7" />
-            </div>
-            <h3 className="mt-4 text-lg font-semibold text-foreground">默认规范会自动兜底</h3>
-            <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted-foreground">后端导出时如果没有自定义学校规范，会使用内置默认规则。点击“使用默认规范”只是显式启用默认值，不会假装解析出了学校专属规则。</p>
-          </div>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -776,18 +699,6 @@ export function SchoolFormatCard({
 
 
 const zh = (...codes: number[]) => String.fromCharCode(...codes);
-
-function FormatStep({ active, done, title, text }: { active: boolean; done: boolean; title: string; text: string }) {
-  return (
-    <div className={`rounded-md border p-3 ${active ? "border-primary/20 bg-background" : "border-border/70 bg-background/70"}`}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-sm font-black text-foreground">{title}</div>
-        <Badge variant={done ? "success" : active ? "default" : "outline"}>{done ? "完成" : active ? "进行中" : "等待"}</Badge>
-      </div>
-      <p className="mt-1 text-xs leading-5 text-muted-foreground">{text}</p>
-    </div>
-  );
-}
 
 const ROLE_GROUPS: Array<{ title: string; roles: string[] }> = [
   { title: zh(0x9875, 0x9762, 0x4e0e, 0x76ee, 0x5f55), roles: ["toc_heading"] },
@@ -819,120 +730,37 @@ const ROLE_LABELS: Record<string, string> = {
   ack_body: zh(0x81f4, 0x8c22, 0x5185, 0x5bb9),
 };
 
-const REQUIRED_FORMAT_ROLES = [
-  "body_text",
-  "heading_1",
-  "heading_2",
-  "heading_3",
-  "cn_abstract_lead",
-  "cn_abstract_body",
-  "cn_keywords",
-  "references_heading",
-  "references_body",
-  "ack_heading",
-  "ack_body",
-];
-
 function FormatRulesPreview({
   rules,
   busy,
-  mode,
   isPending,
   onConfirm,
   onDiscard,
 }: {
   rules: FormatRules;
   busy: boolean;
-  mode: string;
   isPending: boolean;
   onConfirm: () => void;
   onDiscard: () => void;
 }) {
   const styles = rules.styles ?? {};
-  const page = rules.page ?? {};
-  const quality = rules.quality ?? {};
-  const styleMeta = rules.styleMeta ?? {};
-  const warnings = quality.warnings ?? [];
-  const suggestions = quality.suggestions ?? [];
-  const explicitRoles = quality.explicitRoles ?? Object.entries(styleMeta).filter(([, meta]) => !meta?.isInferred).map(([role]) => role);
-  const inheritedRoles = quality.inheritedRoles ?? Object.entries(styleMeta).filter(([, meta]) => meta?.isInferred).map(([role]) => role);
-  const defaultRoles = quality.defaultRoles ?? REQUIRED_FORMAT_ROLES.filter((role) => !styleMeta[role]);
-  const missingSourceRoles = quality.missingSourceRoles ?? REQUIRED_FORMAT_ROLES.filter((role) => defaultRoles.includes(role));
-  const lowConfidenceRoles = quality.lowConfidenceRoles ?? REQUIRED_FORMAT_ROLES.filter((role) => {
-    const meta = styleMeta[role];
-    return meta && typeof meta.confidence === "number" && meta.confidence < 0.7;
-  });
-  const explicitCoverage = quality.explicitCoveragePercent ?? Math.round((REQUIRED_FORMAT_ROLES.filter((role) => explicitRoles.includes(role)).length / REQUIRED_FORMAT_ROLES.length) * 100);
-  const usableCoverage = quality.usableCoveragePercent ?? Math.round((REQUIRED_FORMAT_ROLES.filter((role) => explicitRoles.includes(role) || inheritedRoles.includes(role)).length / REQUIRED_FORMAT_ROLES.length) * 100);
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
-      <div className="border-b border-border bg-muted/50 p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="success">{zh(0x5f85, 0x786e, 0x8ba4, 0x89c4, 0x8303)}</Badge>
-              <Badge variant={isPending ? "warning" : "success"}>{mode}</Badge>
-              <Badge variant="outline">{rules.schoolName || "自定义"}</Badge>
-              <Badge variant={warnings.length ? "warning" : "outline"}>{warnings.length ? `${warnings.length} 条提示` : "已检查"}</Badge>
-            </div>
-            <h3 className="mt-3 text-lg font-semibold text-foreground">{zh(0x5b8c, 0x6574, 0x89e3, 0x6790, 0x7ed3, 0x679c, 0x5ba1, 0x67e5)}</h3>
-            <p className="mt-1 text-sm leading-6 text-muted-foreground">
-              {isPending ? zh(0x89c4, 0x5219, 0x5c1a, 0x672a, 0x542f, 0x7528, 0xff0c, 0x786e, 0x8ba4, 0x540e, 0x624d, 0x4f1a, 0x5f71, 0x54cd, 0x0020, 0x0057, 0x006f, 0x0072, 0x0064, 0x0020, 0x5bfc, 0x51fa, 0x3002) : zh(0x5f53, 0x524d, 0x89c4, 0x8303, 0x5df2, 0x542f, 0x7528, 0xff0c, 0x540e, 0x7eed, 0x0020, 0x0057, 0x006f, 0x0072, 0x0064, 0x0020, 0x5bfc, 0x51fa, 0x4f1a, 0x6309, 0x8fd9, 0x5957, 0x89c4, 0x5219, 0x6267, 0x884c, 0x3002)}
-            </p>
+      <div className="flex flex-col gap-3 border-b border-border bg-muted/50 p-5 md:flex-row md:items-center md:justify-between">
+        <h3 className="text-lg font-semibold text-foreground">解析结果</h3>
+        {isPending ? (
+          <div className="flex flex-wrap gap-3">
+            <Button type="button" onClick={onConfirm} disabled={busy}>
+              <CheckCircle2 data-icon="inline-start" />
+              {zh(0x786e, 0x8ba4, 0x542f, 0x7528)}
+            </Button>
+            <Button type="button" variant="outline" onClick={onDiscard} disabled={busy}>
+              {zh(0x653e, 0x5f03, 0x672c, 0x6b21, 0x89e3, 0x6790)}
+            </Button>
           </div>
-          <div className="grid gap-2 text-right text-sm">
-            <span>{zh(0x786e, 0x5b9a, 0x547d, 0x4e2d)}: {quality.deterministicHits ?? 0}</span>
-            <span>继承项: {inheritedRoles.length}</span>
-            <span>默认项: {defaultRoles.length}</span>
-          </div>
-        </div>
+        ) : null}
       </div>
-      <div className="grid gap-4 p-5 md:grid-cols-4">
-        <RuleMetric label="显式命中" value={`${explicitCoverage}%`} hint={`${explicitRoles.filter((role) => REQUIRED_FORMAT_ROLES.includes(role)).length}/${REQUIRED_FORMAT_ROLES.length}`} />
-        <RuleMetric label="可执行覆盖" value={`${usableCoverage}%`} hint={`含 ${inheritedRoles.length} 个继承项`} />
-        <RuleMetric label={zh(0x4e0a, 0x4e0b, 0x8fb9, 0x8ddd)} value={`${page.topMarginCm ?? "-"}/${page.bottomMarginCm ?? "-"}cm`} hint={`${page.leftMarginCm ?? "-"}/${page.rightMarginCm ?? "-"}cm`} />
-        <RuleMetric label={zh(0x8bba, 0x6587, 0x6b63, 0x6587)} value={styleSummary(styles.body_text)} hint={styleSpacing(styles.body_text)} />
-        <RuleMetric label={zh(0x4e00, 0x7ea7, 0x6807, 0x9898)} value={styleSummary(styles.heading_1)} hint={styleSpacing(styles.heading_1)} />
-      </div>
-      {missingSourceRoles.length || inheritedRoles.length || defaultRoles.length || lowConfidenceRoles.length ? (
-        <div className="mx-5 mb-4 grid gap-3 xl:grid-cols-2">
-          {missingSourceRoles.length ? (
-            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm leading-6 text-destructive">
-              <div className="mb-2 font-semibold">建议补充来源</div>
-              <div>{missingSourceRoles.map((role) => ROLE_LABELS[role] ?? role).join(" / ")}</div>
-            </div>
-          ) : null}
-          {inheritedRoles.length ? (
-            <div className="rounded-md border border-primary/20 bg-muted/60 p-4 text-sm leading-6 text-foreground">
-              <div className="mb-2 font-semibold">继承项</div>
-              <div>{inheritedRoles.slice(0, 12).map((role) => ROLE_LABELS[role] ?? role).join(" / ")}</div>
-            </div>
-          ) : null}
-          {defaultRoles.length ? (
-            <div className="rounded-md border border-border bg-muted/50 p-4 text-sm leading-6 text-foreground">
-              <div className="mb-2 font-semibold">默认项</div>
-              <div>{defaultRoles.slice(0, 12).map((role) => ROLE_LABELS[role] ?? role).join(" / ")}</div>
-            </div>
-          ) : null}
-          {lowConfidenceRoles.length ? (
-            <div className="rounded-md border border-primary/20 bg-muted/60 p-4 text-sm leading-6 text-foreground">
-              <div className="mb-2 font-semibold">低置信项</div>
-              <div>{lowConfidenceRoles.map((role) => ROLE_LABELS[role] ?? role).join(" / ")}</div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {warnings.length ? (
-        <div className="mx-5 mb-4 rounded-md border border-primary/20 bg-muted/60 p-4 text-sm leading-6 text-foreground">
-          {warnings.map((warning, index) => <p key={index}>- {warning}</p>)}
-        </div>
-      ) : null}
-      {suggestions.length ? (
-        <div className="mx-5 mb-4 rounded-md border border-border bg-muted/50 p-4 text-sm leading-6 text-foreground">
-          {suggestions.map((suggestion, index) => <p key={index}>- {suggestion}</p>)}
-        </div>
-      ) : null}
-          <div className="flex flex-col gap-4 px-5 pb-5">
+      <div className="flex flex-col gap-4 p-5">
         {ROLE_GROUPS.map((group) => (
           <div key={group.title} className="rounded-md border border-border/70 bg-background p-4">
             <div className="mb-3 text-sm font-semibold text-foreground">{group.title}</div>
@@ -943,31 +771,6 @@ function FormatRulesPreview({
             </div>
           </div>
         ))}
-      </div>
-      {rules.notes?.length ? (
-        <div className="px-5 pb-4 text-sm leading-6 text-muted-foreground">
-          {rules.notes.slice(0, 6).map((note, index) => <p key={index}>- {note}</p>)}
-        </div>
-      ) : null}
-      <div className="flex flex-col gap-3 border-t border-border bg-muted/40 p-5 md:flex-row md:items-center md:justify-between">
-        <div className={cn("text-sm", missingSourceRoles.length ? "text-foreground" : "text-muted-foreground")}>
-          {missingSourceRoles.length ? "存在关键规则未命中来源，将使用默认值；建议确认后再启用。" : "关键规则已命中来源，可以确认启用。"}
-        </div>
-        <div className="flex flex-wrap gap-3">
-          {isPending ? (
-            <>
-              <Button type="button" onClick={onConfirm} disabled={busy}>
-            <CheckCircle2 data-icon="inline-start" />
-                {zh(0x786e, 0x8ba4, 0x542f, 0x7528)}
-              </Button>
-              <Button type="button" variant="outline" onClick={onDiscard} disabled={busy}>
-                {zh(0x653e, 0x5f03, 0x672c, 0x6b21, 0x89e3, 0x6790)}
-              </Button>
-            </>
-          ) : (
-            <Badge variant="success" className="rounded-full px-4 py-2">{zh(0x5df2, 0x4f5c, 0x4e3a, 0x5bfc, 0x51fa, 0x89c4, 0x8303, 0x542f, 0x7528)}</Badge>
-          )}
-        </div>
       </div>
     </div>
   );
@@ -981,7 +784,6 @@ function RuleRow({ role, style, meta }: { role: string; style?: Record<string, u
         <Badge variant={meta?.isInferred ? "warning" : meta ? "success" : "outline"}>{meta?.isInferred ? "继承" : meta ? `${Math.round((meta.confidence ?? 0.7) * 100)}%` : "默认"}</Badge>
       </div>
       <div className="mt-2 text-sm text-muted-foreground">{styleSummary(style)} · {styleSpacing(style)} · {formatAlignment(style?.alignment)}</div>
-      {meta?.sourceText ? <div className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{meta.sourceText}</div> : null}
     </div>
   );
 }
@@ -1004,14 +806,4 @@ function formatAlignment(value: unknown): string {
   if (value === "right") return zh(0x5c45, 0x53f3);
   if (value === "justify") return zh(0x4e24, 0x7aef, 0x5bf9, 0x9f50);
   return String(value ?? "-");
-}
-
-function RuleMetric({ label, value, hint }: { label: string; value: string; hint: string }) {
-  return (
-    <div className="rounded-md border border-border/70 bg-background/80 p-4">
-      <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
-      <div className="mt-2 text-base font-semibold text-foreground">{value}</div>
-      <div className="mt-1 text-xs text-muted-foreground">{hint}</div>
-    </div>
-  );
 }

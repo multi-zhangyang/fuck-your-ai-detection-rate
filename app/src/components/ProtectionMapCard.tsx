@@ -1,11 +1,11 @@
-import { AlertTriangle, FileSearch, FileText, Layers3, ListChecks, Lock, Map, ShieldCheck, Unlock } from "lucide-react";
+import { AlertTriangle, FileSearch, ListChecks, Lock, ShieldCheck, Unlock } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -24,12 +24,6 @@ type Props = {
   diagnostics?: DocumentScopeDiagnostics | null;
 };
 
-type BoundaryRisk = {
-  title: string;
-  text: string;
-  level: "ok" | "warn";
-};
-
 export function ProtectionMapCard({ value, diagnostics }: Props) {
   if (!value || !value.available) {
     return (
@@ -43,7 +37,6 @@ export function ProtectionMapCard({ value, diagnostics }: Props) {
                   <Badge variant="outline">未建立</Badge>
                 </div>
                 <CardTitle className="text-xl">文档边界地图</CardTitle>
-                <CardDescription className="mt-2">上传 DOCX 后会显示可改正文、锁定结构和导出保护边界。</CardDescription>
               </div>
               <IconFrame>
                 <ShieldCheck />
@@ -57,7 +50,6 @@ export function ProtectionMapCard({ value, diagnostics }: Props) {
                   <ShieldCheck />
                 </EmptyMedia>
                 <EmptyTitle>保护区未建立</EmptyTitle>
-                <EmptyDescription>当前文档还没有可展示的 DOCX 保护区快照。</EmptyDescription>
               </EmptyHeader>
             </Empty>
           </CardContent>
@@ -70,7 +62,6 @@ export function ProtectionMapCard({ value, diagnostics }: Props) {
   const { summary } = value;
   const editableRate = summary.totalUnits ? Math.round((summary.editableUnits / summary.totalUnits) * 100) : 0;
   const protectedRate = summary.totalUnits ? 100 - editableRate : 0;
-  const risks = buildBoundaryRisks(value, editableRate);
 
   return (
     <div className="flex min-h-full flex-col gap-5">
@@ -85,9 +76,6 @@ export function ProtectionMapCard({ value, diagnostics }: Props) {
                 <Badge variant="outline">锁定 {protectedRate}%</Badge>
               </div>
               <CardTitle className="text-2xl">文档边界地图</CardTitle>
-              <CardDescription className="max-w-3xl leading-6">
-                只把摘要到致谢之间的正文交给模型处理，目录、图表、公式、表格和参考文献保持锁定。
-              </CardDescription>
             </div>
             <div className="grid grid-cols-3 gap-2 text-center text-sm">
               <MiniStat label="总单元" value={summary.totalUnits} />
@@ -107,41 +95,18 @@ export function ProtectionMapCard({ value, diagnostics }: Props) {
           </div>
 
           <BoundaryStrip sections={value.sections} totalUnits={summary.totalUnits} />
-
-          <div className="grid gap-3 md:grid-cols-3">
-            <InfoTile icon={<FileText />} label="正文段落" value={`${summary.topLevelParagraphUnits}`} text="普通段落和自动编号正文会参与改写。" />
-            <InfoTile icon={<Layers3 />} label="表格单元" value={`${summary.tableUnits}`} text="表格内容默认锁定，避免破坏版式。" />
-            <InfoTile icon={<Map />} label="连续区块" value={`${value.sections.length}`} text="按正文范围和保护原因连续分组。" />
-          </div>
         </CardContent>
       </Card>
 
       <ScopeDiagnosticsPanel value={diagnostics ?? null} />
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid gap-5">
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">保护原因分布</CardTitle>
-            <CardDescription>改写和导出阶段会继续复核这些锁定原因。</CardDescription>
           </CardHeader>
           <CardContent>
             <ReasonGrid reasons={summary.protectionReasons} protectedUnits={summary.protectedUnits} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">边界审计</CardTitle>
-            <CardDescription>判断当前文档结构是否适合直接进入改写。</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            {risks.map((risk) => (
-              <Alert key={risk.title} className={risk.level === "warn" ? "border-primary/25 bg-muted/60" : undefined}>
-                {risk.level === "warn" ? <AlertTriangle /> : <ShieldCheck />}
-                <AlertTitle>{risk.title}</AlertTitle>
-                <AlertDescription>{risk.text}</AlertDescription>
-              </Alert>
-            ))}
           </CardContent>
         </Card>
       </div>
@@ -149,7 +114,6 @@ export function ProtectionMapCard({ value, diagnostics }: Props) {
       <Card className="overflow-hidden">
         <CardHeader>
           <CardTitle className="text-lg">完整边界序列</CardTitle>
-          <CardDescription>按 Word 解析顺序展示全部连续区块。</CardDescription>
         </CardHeader>
         <CardContent className="pb-5">
           <ScrollArea className="h-[min(38rem,58svh)] pr-1">
@@ -169,25 +133,7 @@ function ScopeDiagnosticsPanel({ value }: { value: DocumentScopeDiagnostics | nu
   const [open, setOpen] = useState(false);
 
   if (!value || !value.available) {
-    return (
-      <Card data-ui-section="docx-scope-diagnostics">
-        <CardHeader>
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                <Badge variant="secondary">正文诊断</Badge>
-                <Badge variant="outline">未生成</Badge>
-              </div>
-              <CardTitle className="text-lg">正文边界诊断</CardTitle>
-              <CardDescription className="mt-2">{value?.message ?? "当前文档暂无 DOCX 正文边界诊断。"}</CardDescription>
-            </div>
-            <IconFrame>
-              <FileSearch />
-            </IconFrame>
-          </div>
-        </CardHeader>
-      </Card>
-    );
+    return null;
   }
 
   const scope = value.scope ?? {};
@@ -204,10 +150,9 @@ function ScopeDiagnosticsPanel({ value }: { value: DocumentScopeDiagnostics | nu
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <Badge variant="secondary">正文诊断</Badge>
                 <Badge variant={value.ok ? "success" : "danger"}>{value.ok ? "可用" : "需处理"}</Badge>
-                <Badge variant={hasIssues ? "warning" : "outline"}>{value.issueCount} 条提示</Badge>
+                <Badge variant={hasIssues ? "warning" : "outline"}>{value.issueCount} 条</Badge>
               </div>
               <CardTitle className="text-lg">正文边界诊断</CardTitle>
-              <CardDescription className="mt-2">摘要起点、致谢终点和后置材料边界已写入诊断报告。</CardDescription>
             </div>
             <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
               <FileSearch data-icon="inline-start" />
@@ -235,13 +180,7 @@ function ScopeDiagnosticsPanel({ value }: { value: DocumentScopeDiagnostics | nu
               <AlertTitle>{value.errorCount > 0 ? "存在边界错误" : "存在边界提示"}</AlertTitle>
               <AlertDescription>{issues[0]?.message ?? "诊断报告包含需要复核的正文边界提示。"}</AlertDescription>
             </Alert>
-          ) : (
-            <Alert>
-              <ShieldCheck />
-              <AlertTitle>边界诊断通过</AlertTitle>
-              <AlertDescription>当前 DOCX 的正文范围与保护区没有发现明显冲突。</AlertDescription>
-            </Alert>
-          )}
+          ) : null}
         </CardContent>
       </Card>
 
@@ -249,9 +188,7 @@ function ScopeDiagnosticsPanel({ value }: { value: DocumentScopeDiagnostics | nu
         <SheetContent side="right" className="flex w-[min(92vw,760px)] flex-col gap-0 sm:max-w-[760px]">
           <SheetHeader className="shrink-0">
             <SheetTitle>正文边界完整诊断</SheetTitle>
-            <SheetDescription>
-              {formatScopeRange(scope.startIndex, scope.endIndex)}，{value.editableUnitCount ?? 0} 个可改正文单元。
-            </SheetDescription>
+            <SheetDescription className="sr-only">查看正文范围、诊断提示和单元序列。</SheetDescription>
           </SheetHeader>
           <Separator className="my-4" />
           <ScrollArea className="min-h-0 flex-1 pr-2">
@@ -267,11 +204,7 @@ function ScopeDiagnosticsPanel({ value }: { value: DocumentScopeDiagnostics | nu
                     </Alert>
                   ))
                 ) : (
-                  <Alert>
-                    <ShieldCheck />
-                    <AlertTitle>没有诊断提示</AlertTitle>
-                    <AlertDescription>正文边界、结构保护和可改范围保持一致。</AlertDescription>
-                  </Alert>
+                  <Badge variant="success" className="w-fit">无提示</Badge>
                 )}
               </div>
 
@@ -365,23 +298,6 @@ function MiniStat({ label, value }: { label: string; value: number }) {
   );
 }
 
-function InfoTile({ icon, label, value, text }: { icon: ReactNode; label: string; value: string; text: string }) {
-  return (
-    <div className="rounded-md border bg-muted/25 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-sm font-black text-foreground">
-          <span className="flex size-10 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden="true">
-            {icon}
-          </span>
-          {label}
-        </div>
-        <div className="text-xl font-black text-foreground">{value}</div>
-      </div>
-      <p className="mt-2 text-xs leading-5 text-muted-foreground">{text}</p>
-    </div>
-  );
-}
-
 function BoundaryStrip({ sections, totalUnits }: { sections: ProtectionMapSection[]; totalUnits: number }) {
   if (!sections.length || totalUnits <= 0) {
     return null;
@@ -424,7 +340,6 @@ function ReasonGrid({ reasons, protectedUnits }: { reasons: ProtectionReasonSumm
             <ShieldCheck />
           </EmptyMedia>
           <EmptyTitle>暂无额外保护原因</EmptyTitle>
-          <EmptyDescription>文档可能只有普通正文结构。</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
@@ -441,7 +356,7 @@ function ReasonGrid({ reasons, protectedUnits }: { reasons: ProtectionReasonSumm
               <Badge variant="outline">{item.count}</Badge>
             </div>
             <Progress value={percent} className="mt-3 h-2" />
-            <div className="mt-1 text-xs text-muted-foreground">保护区占比 {percent}%</div>
+            <Badge variant="outline" className="mt-2">{percent}%</Badge>
           </div>
         );
       })}
@@ -486,52 +401,8 @@ function SectionRow({ section, totalUnits }: { section: ProtectionMapSection; to
   );
 }
 
-function buildBoundaryRisks(value: DocumentProtectionMap, editableRate: number): BoundaryRisk[] {
-  const risks: BoundaryRisk[] = [];
-  const { summary } = value;
-  if (summary.editableUnits <= 0) {
-    risks.push({
-      title: "未识别到可改写正文",
-      text: "这通常说明文档结构异常，或正文被表格、文本框等结构包住。建议先检查原始 Word。",
-      level: "warn",
-    });
-  } else {
-    risks.push({
-      title: "正文边界已建立",
-      text: "系统会优先只处理可编辑正文，并在导出时重新校验保护区是否被误改。",
-      level: "ok",
-    });
-  }
-  if (editableRate > 0 && editableRate < 20) {
-    risks.push({
-      title: "可编辑占比较低",
-      text: "如果论文正文很多但这里只显示较少正文，可能存在解析遗漏，需要重点检查完整边界序列。",
-      level: "warn",
-    });
-  }
-  if (summary.tableUnits > 0) {
-    risks.push({
-      title: "表格已锁定",
-      text: "表格内容不会进入普通改写链路，避免三线表、数据和单元格结构被破坏。",
-      level: "ok",
-    });
-  }
-  if (summary.protectionReasons.some((item) => item.reason === "references")) {
-    risks.push({
-      title: "参考文献已锁定",
-      text: "参考文献不参与改写，防止作者、年份、题名和格式被模型改坏。",
-      level: "ok",
-    });
-  }
-  return risks;
-}
-
 function formatUnitIndex(value?: number | null): string {
   return typeof value === "number" ? `#${value}` : "未命中";
-}
-
-function formatScopeRange(start?: number | null, end?: number | null): string {
-  return `${formatUnitIndex(start)} - ${formatUnitIndex(end)}`;
 }
 
 function formatScopeReason(value?: string): string {
