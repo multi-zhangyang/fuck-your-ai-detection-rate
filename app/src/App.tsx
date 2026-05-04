@@ -103,7 +103,6 @@ const AUTO_NEXT_ROUND_DELAY_SECONDS = 60;
 
 type Props = {
   service: AppService;
-  pickerLabel?: string;
 };
 
 type WorkbenchView = "home" | "quality" | "model" | "prompts" | "format" | "protection" | "history" | "diagnostics";
@@ -1576,7 +1575,7 @@ function formatExportError(error: unknown): string {
   return message;
 }
 
-export function App({ service, pickerLabel = "上传文档" }: Props) {
+export function App({ service }: Props) {
   const progressUnlistenRef = useRef<null | (() => void | Promise<void>)>(null);
   const liveCompareRef = useRef<RoundCompareData | null>(null);
   const visibleProgressRef = useRef<RoundProgress | null>(null);
@@ -4569,7 +4568,6 @@ export function App({ service, pickerLabel = "上传文档" }: Props) {
                       <HomeRunPanel
                         value={documentStatus}
                         busy={uiBusy}
-                        pickerLabel={pickerLabel}
                         modelConfig={modelConfig}
                         progress={progress}
                         roundProgressStatus={roundProgressStatus}
@@ -4996,7 +4994,6 @@ function PromptPreviewPage({
 function HomeRunPanel({
   value,
   busy,
-  pickerLabel,
   modelConfig,
   progress,
   roundProgressStatus,
@@ -5018,7 +5015,6 @@ function HomeRunPanel({
 }: {
   value: DocumentStatus | null;
   busy: boolean;
-  pickerLabel: string;
   modelConfig: ModelConfig;
   progress: RoundProgress | null;
   roundProgressStatus: RoundProgressStatus | null;
@@ -5058,7 +5054,6 @@ function HomeRunPanel({
 
   const hasDocument = Boolean(value);
   const hasPendingRound = Boolean(value?.hasNextRound);
-  const uploadButtonText = hasDocument ? "更换文档" : pickerLabel;
   const activeSequence = normalizePromptSequence(promptSequence);
   const activeFlowSequence = getPromptFlowSequence(promptProfile, activeSequence);
   const providers = modelConfig.modelProviders ?? [];
@@ -5389,9 +5384,9 @@ function HomeRunPanel({
               </div>
             </>
           ) : (
-              <Button variant="default" className="h-11 w-full min-w-0 overflow-hidden" onClick={onPickFile} disabled={busy}>
-              <FileText data-icon="inline-start" />
-              <span className="min-w-0 truncate">{uploadButtonText}</span>
+            <Button type="button" variant="secondary" className="h-11 w-full min-w-0 overflow-hidden" disabled>
+              <Wand2 data-icon="inline-start" />
+              <span className="min-w-0 truncate">{runButtonText}</span>
             </Button>
           )}
         </section>

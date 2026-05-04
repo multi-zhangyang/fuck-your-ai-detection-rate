@@ -7,6 +7,6 @@ import "@/styles/global.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App service={webService} pickerLabel="上传文档" />
+    <App service={webService} />
   </React.StrictMode>,
 );
