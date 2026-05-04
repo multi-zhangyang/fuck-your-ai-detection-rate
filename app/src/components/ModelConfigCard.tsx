@@ -358,12 +358,16 @@ export function ModelConfigCard({
           </TabsContent>
 
           <TabsContent value="providers" className="m-0 h-full min-h-0 overflow-hidden">
-            <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
-              <Card className="flex min-h-0 flex-col overflow-hidden shadow-none">
-                <CardHeader className="border-b p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <CardTitle className="text-base">服务商</CardTitle>
+            <div className="grid h-full min-h-0 gap-3 xl:grid-cols-[280px_minmax(0,1fr)]">
+              <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card">
+                <div className="border-b px-3 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-foreground">服务商</div>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        <Badge variant="outline">{providers.length} 个</Badge>
+                        <Badge variant="outline">{enabledProviderCount} 启用</Badge>
+                      </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button type="button" size="sm" variant="outline" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || enabledProviderCount === 0}>
@@ -374,9 +378,9 @@ export function ModelConfigCard({
                       </Button>
                     </div>
                   </div>
-                </CardHeader>
+                </div>
                 <ScrollArea className="min-h-0 flex-1">
-                  <CardContent className="flex flex-col gap-2 p-3">
+                  <div className="flex flex-col p-2">
                     {providers.length ? providers.map((provider) => {
                       const active = selectedProvider?.id === provider.id;
                       const modelLabel = provider.defaultModel || provider.models?.[0] || "未选择模型";
@@ -386,11 +390,11 @@ export function ModelConfigCard({
                         <Button
                           key={provider.id}
                           type="button"
-                          variant="outline"
+                          variant="ghost"
                           onClick={() => setSelectedProviderId(provider.id)}
                           className={cn(
-                            "h-auto w-full flex-col items-stretch justify-start gap-2 whitespace-normal p-3 text-left",
-                            active && "border-primary bg-muted shadow-sm",
+                            "h-auto w-full flex-col items-stretch justify-start gap-2 whitespace-normal p-2.5 text-left",
+                            active && "bg-muted",
                           )}
                         >
                           <span className="flex items-start justify-between gap-3">
@@ -415,18 +419,19 @@ export function ModelConfigCard({
                         <Button type="button" onClick={addProvider} disabled={busy}><Plus data-icon="inline-start" />添加服务商</Button>
                       </Empty>
                     )}
-                  </CardContent>
+                  </div>
                 </ScrollArea>
-              </Card>
+              </div>
 
               {selectedProvider ? (
                 <Card className="flex min-h-0 flex-col overflow-hidden shadow-none">
-                  <CardHeader className="border-b p-4">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <CardHeader className="border-b p-3">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                       <div className="min-w-0">
                         <CardTitle className="truncate text-base">{selectedProvider.name || "未命名服务商"}</CardTitle>
                         <div className="mt-1 flex flex-wrap gap-2">
                           <Badge variant="outline">{selectedProvider.models?.length ?? 0} 模型</Badge>
+                          <Badge variant="outline">{selectedProvider.apiType}</Badge>
                           <Badge variant={selectedProvider.enabled !== false ? "secondary" : "outline"}>{selectedProvider.enabled !== false ? "启用" : "关闭"}</Badge>
                         </div>
                       </div>
@@ -449,15 +454,15 @@ export function ModelConfigCard({
                     </div>
                   </CardHeader>
                   <ScrollArea className="min-h-0 flex-1">
-                    <CardContent className="flex flex-col gap-4 p-4">
-                      <Field orientation="horizontal" className="rounded-lg border bg-muted/40 px-4 py-3">
+                    <CardContent className="flex flex-col gap-3 p-3">
+                      <Field orientation="horizontal" className="rounded-lg border bg-background px-3 py-2">
                         <FieldContent>
                           <FieldTitle>启用服务商</FieldTitle>
                         </FieldContent>
                         <Switch checked={selectedProvider.enabled !== false} onCheckedChange={(enabled) => updateProvider(selectedProvider.id, { enabled })} />
                       </Field>
 
-                      <FieldGroup className="grid gap-4 md:grid-cols-2">
+                      <FieldGroup className="grid gap-3 md:grid-cols-2">
                         <Field>
                           <FieldLabel>服务商名称</FieldLabel>
                           <Input value={selectedProvider.name} onChange={handleProviderFieldChange(selectedProvider.id, "name")} placeholder="例如：DeepSeek / Nebius / Groq" />
@@ -485,7 +490,7 @@ export function ModelConfigCard({
 
                       <Separator />
 
-                      <FieldGroup className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <FieldGroup className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                         <Field className="md:col-span-2 xl:col-span-4">
                           <FieldLabel>默认模型</FieldLabel>
                           {(selectedProvider.models?.length ?? 0) > 0 ? (
@@ -524,12 +529,12 @@ export function ModelConfigCard({
                       </FieldGroup>
 
                       {selectedProvider.models?.length ? (
-                        <div className="rounded-lg border bg-muted/30 p-3">
-                          <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="rounded-lg border bg-background p-3">
+                          <div className="mb-2 flex items-center justify-between gap-3">
                             <div className="text-sm font-semibold">缓存模型</div>
                             <Badge variant="outline">{selectedProvider.updatedAt ? new Date(selectedProvider.updatedAt).toLocaleString() : "未读取"}</Badge>
                           </div>
-                          <div className="flex max-h-28 flex-wrap gap-2 overflow-auto">
+                          <div className="flex max-h-24 flex-wrap gap-2 overflow-auto">
                             {selectedProvider.models.slice(0, 80).map((model) => <Badge key={model} variant="outline">{model}</Badge>)}
                           </div>
                         </div>
