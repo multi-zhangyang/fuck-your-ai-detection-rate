@@ -361,22 +361,20 @@ export function ModelConfigCard({
             <div className="grid h-full min-h-0 gap-3 xl:grid-cols-[280px_minmax(0,1fr)]">
               <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card">
                 <div className="border-b px-3 py-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-foreground">服务商</div>
-                      <div className="mt-1 flex flex-wrap gap-2">
-                        <Badge variant="outline">{providers.length} 个</Badge>
-                        <Badge variant="outline">{enabledProviderCount} 启用</Badge>
-                      </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 text-sm font-semibold text-foreground">服务商</div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <Badge variant="outline">{providers.length} 个</Badge>
+                      <Badge variant="outline">{enabledProviderCount} 启用</Badge>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || enabledProviderCount === 0}>
-                        {providerCatalogRunning ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取全部
-                      </Button>
-                      <Button type="button" size="sm" onClick={addProvider} disabled={busy}>
-                        <Plus data-icon="inline-start" />添加
-                      </Button>
-                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <Button type="button" size="sm" variant="outline" className="w-full justify-center" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || enabledProviderCount === 0}>
+                      {providerCatalogRunning ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取全部
+                    </Button>
+                    <Button type="button" size="sm" className="w-full justify-center" onClick={addProvider} disabled={busy}>
+                      <Plus data-icon="inline-start" />添加
+                    </Button>
                   </div>
                 </div>
                 <ScrollArea className="min-h-0 flex-1">
