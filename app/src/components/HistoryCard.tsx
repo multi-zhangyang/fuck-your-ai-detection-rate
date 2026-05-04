@@ -498,7 +498,12 @@ function hasExportableOutput(item: HistoryDocumentSummary, rounds: HistoryRound[
 }
 
 function getExportStateText(item: HistoryDocumentSummary, rounds: HistoryRound[]): string {
-  return hasExportableOutput(item, rounds) ? "可导出" : "暂无输出";
+  if (!hasExportableOutput(item, rounds)) {
+    return "暂无输出";
+  }
+  const missingCount = getSafeArtifactStats(item.artifactStats).missing
+    + rounds.reduce((total, round) => total + getSafeArtifactStats(round.artifactStats).missing, 0);
+  return missingCount ? "需检查" : "可导出";
 }
 
 function getCleanupStateText(stats?: HistoryArtifactStats): string {
@@ -507,6 +512,27 @@ function getCleanupStateText(stats?: HistoryArtifactStats): string {
     return "很干净";
   }
   return formatBytes(safeStats.bytes);
+}
+
+function getMaintenanceStateLabel(input: {
+  missingDocumentCount: number;
+  orphanCount: number;
+  query: HistoryArtifactQueryResponse | null;
+  loading: boolean;
+}): string {
+  if (input.loading) {
+    return "读取中";
+  }
+  if (input.query?.ok === false) {
+    return "需修复索引";
+  }
+  if (input.missingDocumentCount) {
+    return `${input.missingDocumentCount} 篇需检查`;
+  }
+  if (input.orphanCount) {
+    return `${input.orphanCount} 个可清理`;
+  }
+  return "已整理";
 }
 
 function StatPill({ label, value }: { label: string; value: string }) {
@@ -650,6 +676,13 @@ export function HistoryCard({
     return completedRounds.length < maxRounds;
   }).length;
   const exportableCount = items.filter((item) => hasExportableOutput(item, getRoundsForProfile(item.rounds, promptProfile, promptSequence))).length;
+  const missingDocumentCount = items.filter((item) => getSafeArtifactStats(item.artifactStats).missing > 0).length;
+  const maintenanceStateLabel = getMaintenanceStateLabel({
+    missingDocumentCount,
+    orphanCount: orphanScan?.orphanStats.existing ?? 0,
+    query: artifactQuery,
+    loading: artifactLoading,
+  });
   const currentCleanupOptions: DeleteHistoryOptions = { mode: "records_and_artifacts" };
   const currentCleanupKey = currentDocId ? makeDeleteActionKey(currentDocId, currentCleanupOptions) : "";
   const governanceImpactPreview = impactPreview?.key === currentCleanupKey ? impactPreview.impact : null;
@@ -695,13 +728,12 @@ export function HistoryCard({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline">高级维护</Badge>
-                {artifactQuery?.ok === false ? <Badge variant="warning">需要检查</Badge> : null}
-                {orphanScan?.orphanStats.existing ? <Badge variant="outline">可清理 {orphanScan.orphanStats.existing}</Badge> : null}
+                <Badge variant={artifactQuery?.ok === false || missingDocumentCount ? "warning" : orphanScan?.orphanStats.existing ? "secondary" : "outline"}>{maintenanceStateLabel}</Badge>
               </div>
             </div>
             <Button variant="outline" onClick={() => setMaintenanceOpen((value) => !value)} disabled={busy}>
               <Wrench data-icon="inline-start" />
-              {maintenanceOpen ? "收起高级工具" : "展开高级工具"}
+              {maintenanceOpen ? "收起" : "维护"}
             </Button>
           </div>
           {maintenanceOpen ? (
@@ -773,6 +805,7 @@ export function HistoryCard({
                             <h3 className="min-w-0 truncate text-lg font-semibold">{formatDocName(item)}</h3>
                             {isActive ? <Badge variant="neutral">当前选用</Badge> : null}
                             <Badge variant="outline">{completedRounds.length}/{maxRounds} 轮</Badge>
+                            {getSafeArtifactStats(item.artifactStats).missing ? <Badge variant="warning">资产需检查</Badge> : null}
                           </div>
                           <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
                             <span className="inline-flex items-center gap-1.5">
@@ -855,6 +888,7 @@ export function HistoryCard({
                                       <Badge variant="secondary">第 {roundItem.round} 轮</Badge>
                                       <Badge variant="outline">{getProfileLabel(roundPromptProfile)}</Badge>
                                       {roundPromptProfile === "cn_custom" ? <Badge variant="outline">{formatPromptSequence(roundItem.promptSequence)}</Badge> : null}
+                                      {getSafeArtifactStats(roundItem.artifactStats).missing ? <Badge variant="warning">资产需检查</Badge> : null}
                                       <Badge variant="outline">{formatTimestamp(roundItem.timestamp)}</Badge>
                                     </div>
                                     <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{roundItem.outputPath ? formatPathScope(roundItem.outputPath) : "暂无输出路径"}</p>

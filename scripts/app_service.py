@@ -2101,6 +2101,10 @@ def list_available_models(model_config: dict[str, Any]) -> dict[str, Any]:
 
 def export_round_output(output_path: str, export_path: str, target_format: str) -> dict[str, Any]:
     normalized_output_path = _resolve_api_path(output_path, allowed_roots=API_OUTPUT_ALLOWED_ROOTS, label="Output path")
+    if not normalized_output_path.exists():
+        raise ValueError(f"Output file does not exist: {normalized_output_path}")
+    if not normalized_output_path.is_file():
+        raise ValueError(f"Output path is not a file: {normalized_output_path}")
     normalized_export_path = Path(export_path).resolve()
     normalized_export_path.parent.mkdir(parents=True, exist_ok=True)
     if target_format == "txt":

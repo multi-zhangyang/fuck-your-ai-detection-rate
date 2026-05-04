@@ -98,6 +98,13 @@ def run_regression() -> dict[str, object]:
             _assert(unquote(export_path_header).endswith("export-source.txt"), "export path header should carry the generated artifact path")
             checks.append("export-round exposes the generated artifact path")
 
+            missing_output = ROOT_DIR / "finish" / "regression" / "missing-export-source.txt"
+            missing_output.unlink(missing_ok=True)
+            missing_export_response = client.get(f"/api/export-round?outputPath={quote(str(missing_output))}&targetFormat=txt")
+            _assert(missing_export_response.status_code == 400, "export-round should reject missing output files")
+            _assert("Output file does not exist" in missing_export_response.get_data(as_text=True), "missing output exports should return a clear error")
+            checks.append("export-round rejects missing output paths clearly")
+
             with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
                 handle.write("outside workspace")
                 outside_path = handle.name
