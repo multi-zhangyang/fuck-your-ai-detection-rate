@@ -1,178 +1,522 @@
-# Fuck your AI detection rate
+# FYADR
 
-这是一个面向中文论文、摘要和技术文档的多轮改写与 Word 导出辅助项目。
+Fuck your AI detection rate 是一个本地运行的中文论文改写、检测报告复盘和 Word 导出辅助工具。
 
-项目本身不提供外部平台 AIGC 检测能力；如果接入 SpeedAI、PaperPass 等外部报告，报告只作为定位反馈和复盘记录使用，不作为自动判定依据。
+项目重点不是“生成一篇新论文”，而是把用户已经写好的论文或技术文档按段落进行多轮自然化改写，并尽量守住事实、术语、编号、引用、正文范围和 Word 版式。
 
-项目核心边界：
+> 本项目不提供 AIGC 检测服务，也不保证通过任何学校、期刊或第三方平台检测。外部检测报告只作为定位、审阅和复盘材料。
 
-- 正文按段落改写，尽量保留事实、术语、编号、引用和段落角色。
-- 目录、图表、表格、公式、参考文献等保护区内容不交给模型改写。
-- 学校规范用于导出样式和审计提示，不直接改写保护区正文。
-- 外部报告只用于定位问题段和复盘策略，不作为唯一改写依据。
+## 适用场景
 
-## 项目来源与致谢
+- 中文毕业论文、课程论文、摘要、技术文档的段落级改写。
+- 使用长思考模型或自建 AI 中转站做慢速但质量更高的改写。
+- 导入 PaperPass、SpeedAI 等外部 PDF 报告后，定位疑似高风险片段。
+- 对 DOCX 做“只改正文、保护版式”的导出。
+- 管理多轮历史、断点续跑、导出文件和提示词版本。
 
-本项目早期基础设施和使用思路参考了 [baibaiAIGC](https://github.com/poleHansen/baibaiAIGC)。在此基础上，本项目围绕段落级改写、多轮模型路线、断点续跑、外部报告反馈、Word 导出排版、保护区审计、历史生成物治理和开源检查做了大幅重构与扩展。
+## 它不会做什么
 
-本项目的部分中文改写 prompt 设计参考了 [Linux.do](https://linux.do/) 社区中的公开讨论、经验总结和用户整理内容。相关 prompt 已重新整理为适配当前流程的版本；如继续分发或二次开发，请尊重原社区内容贡献者和对应平台规则。
+- 不内置检测平台，不声称能测出真实 AI 率。
+- 不自动改目录、图表、表格、公式、参考文献、封面等保护区内容。
+- 不把 API Key 写入仓库；Web 配置保存在本机用户目录。
+- 不重复调用同一段生成多份结果做自动竞赛，避免浪费 token。
+- 不替代学校、导师、期刊的学术诚信要求。
 
-本项目以 AGPL-3.0 协议发布，详见 [LICENSE](LICENSE)。
+## 功能概览
 
-## 使用边界
+- 本地 Web UI：React、Vite、Tailwind、shadcn/ui 风格组件。
+- 暗黑 / 浅色 / 系统主题：默认暗黑模式。
+- 模型配置：支持 OpenAI 兼容的 Chat Completions 和 Responses 风格接口。
+- 多服务商管理：可配置多个 provider，并为不同轮次指定不同模型。
+- 自定义改写流程：默认支持“润色改写 -> 规范改写 -> 专家改写”，可调整流程组合。
+- 提示词 CRUD：可新建、修改、删除自定义 prompt；内置 prompt 支持恢复默认。
+- 并发改写：后端按 chunk 并行请求模型，最高并发 8，结果按原文顺序恢复。
+- 长请求容错：默认请求超时 600 秒，失败重试默认 3 次，带指数退避和随机抖动。
+- 断点续跑：中断或异常后保留已完成 chunk，下次优先从 checkpoint 继续。
+- 高风险审阅：模型输出未通过硬校验时，如果有可读输出，会进入高风险审阅而不是静默丢弃。
+- 外部报告匹配：解析检测报告 PDF，并把高风险片段匹配到 Diff 区对应 chunk。
+- Word 导出保护：DOCX 导出只回写可编辑正文，保护目录、图表、表格、公式、参考文献等。
+- 学校规范辅助：解析学校格式要求，导出时生成审计、预检和保护区报告。
+- SQLite 历史治理：用 SQLite 做历史索引，保留 JSON 兼容记录，并支持修复、备份、压缩、孤儿文件扫描。
 
-本项目是写作辅助、改写辅助和排版辅助工具，不提供 AIGC 检测服务，也不承诺任何外部平台的检测结果。不同检测平台的算法、检测范围和阈值可能不同，结果也可能存在明显差异。
+## 系统要求
 
-请自行确认学校、期刊、机构或平台对论文写作、AI 工具使用、引用披露和学术诚信的具体要求。
+建议环境：
 
-## 先看这个
+- Windows 10/11
+- Python 3.10+
+- Node.js 18+
+- npm
 
-如果你只是想打开 Web 端，按下面做：
+项目当前主要按 Windows 本地工具使用设计。macOS / Linux 可以手动启动后端和前端，但启动脚本主要服务 Windows。
 
-1. 先安装依赖
-2. 双击根目录的 `start_web.bat`
-3. 脚本会自动打开浏览器；如果没有自动打开，手动访问 [http://127.0.0.1:1420](http://127.0.0.1:1420)
+## 快速开始
 
-如果你更习惯 PowerShell，也可以在项目根目录运行：
-
-```powershell
-.\start_web.ps1
-```
-
-## 运行前准备
-
-### Python 依赖
+在项目根目录执行：
 
 ```powershell
 pip install -r requirements.txt
-```
-
-### 前端依赖
-
-```powershell
 cd app
 npm install
+cd ..
+.\start_web.ps1
 ```
 
-## 一键启动 Web 端
+也可以直接双击：
 
-项目根目录已经提供了两个启动脚本：
+```text
+start_web.bat
+```
 
-- `start_web.bat`
-- `start_web.ps1`
+默认地址：
 
-它们会做这些事：
+- 前端页面：http://127.0.0.1:1420
+- 后端 API：http://127.0.0.1:8765
+- 后端探针：http://127.0.0.1:8765/api/ping
+- 后端诊断：http://127.0.0.1:8765/api/health
 
-- 检查 `python` 和 `npm` 是否可用
-- 检查 `app/node_modules` 是否已经安装
-- 自动启动本地后端 `http://127.0.0.1:8765`
-- 自动启动前端开发服务 `http://127.0.0.1:1420`
-- 前端就绪后尝试自动打开浏览器；如系统拦截，会在终端显示手动访问地址
-
-如果只想启动服务、不自动打开浏览器：
+如果不想自动打开浏览器：
 
 ```powershell
 .\start_web.ps1 -NoBrowser
 ```
 
-推荐直接双击 `start_web.bat`。
+## 手动启动
 
-## 手动启动 Web 端
+开两个终端。
 
-如果你想手动开两个窗口，也可以这样做。
-
-### 1. 启动后端
+终端 1，启动后端：
 
 ```powershell
 python scripts/web_app.py
 ```
 
-后端默认地址：
-
-- API: `http://127.0.0.1:8765`
-- 启动探针: `http://127.0.0.1:8765/api/ping`
-- 诊断信息: `http://127.0.0.1:8765/api/health`
-
-### 2. 启动前端
+终端 2，启动前端：
 
 ```powershell
 cd app
 npm run dev:web
 ```
 
-前端默认地址：
+## 基本使用流程
 
-- Web 页面: `http://127.0.0.1:1420`
+1. 打开 Web 页面。
+2. 进入模型配置，填写 Base URL、API Key、模型名和接口类型。
+3. 点击连通性测试，确认本地服务可以访问模型服务商。
+4. 上传 TXT 或 DOCX。
+5. 选择改写流程和轮次数。
+6. 设置并发、超时、重试等参数。
+7. 开始改写。
+8. 运行中断时，直接继续当前轮；系统会优先复用 checkpoint。
+9. 轮次完成后，在 Diff 区审阅需处理和高风险内容。
+10. 满意后导出 TXT 或 DOCX。
+11. 不满意时，可以继续追加后续轮次，不会强制把当前轮认定为最终结果。
 
-### 可选前端环境变量
+## 模型配置
 
-本地开发通常不需要配置环境变量；如果前端和后端分开部署，可以复制 `app/.env.example` 为 `app/.env`，再填写：
-
-- `VITE_FYADR_API_BASE`：前端请求的后端地址，例如 `http://127.0.0.1:8765`
-
-### 可选脚本环境变量
-
-如果只使用命令行脚本，也可以复制根目录 `.env.example` 作为自己的本地环境变量参考。不要把真实 `.env`、API Key 或私有模型地址提交到公开仓库。
-
-### 本地模型配置保存位置
-
-Web 端保存的模型服务商、轮次模型、超时、重试和速率限制不会写进仓库，默认保存在系统用户目录：
+Web 端模型配置保存在本机，不写入仓库：
 
 - Windows：`%APPDATA%\FYADR\config.json`
 - 其他系统：`~/.fyadr/config.json`
 
-这个文件可能包含 API Key，不要提交到公开仓库。
+配置项包括：
 
-## Web 端使用顺序
+- `baseUrl`：模型服务地址。
+- `apiKey`：模型密钥。
+- `model`：默认模型名。
+- `apiType`：`chat_completions` 或 `responses`。
+- `temperature`：温度。
+- `requestTimeoutSeconds`：单次请求超时，默认 `600`，范围 `30` 到 `3600`。
+- `maxRetries`：失败重试次数，默认 `3`，范围 `0` 到 `10`。
+- `rewriteConcurrency`：改写并发，默认 `2`，最高 `8`。
+- `modelProviders`：多服务商列表。
+- `roundModels`：每轮单独模型路由。
 
-推荐这样用：
+前端读取配置时会拿到脱敏字段，API Key 不会完整回传给浏览器界面。已保存密钥用占位符和尾号预览表示。
 
-1. 打开 Web 页面
-2. 先填写模型配置并保存
-3. 先点一次“测试连通性”
-4. 导入 `txt` 或 `docx`
-5. 点击“开始 / 继续第 N 轮”
-6. 处理中如果中断，再点一次执行，系统会优先尝试断点续跑
-7. 跑完后在历史记录里下载 TXT 或 Word
+## 并发与长思考模型
 
-### 主页布局说明
+本项目的改写请求大多是网络 I/O 密集型。并发可以明显减少整轮等待时间，但不是越高越稳。
 
-- 顶部状态条显示当前文件、改写路线、Diff / 报告状态、运行进度和最新通知。
-- 左侧是实时 Diff 和导出区域，是主要工作区。
-- 右侧是操作面板，集中放上传、更换文档、轮次执行、模型路线和检测报告入口。
-- 如果只想审阅 Diff，可以点击右侧操作面板顶部的“专注 Diff”；再次点击“展开操作面板”即可恢复。
+当前并发档位：
 
-## 主要能力
+```text
+1, 2, 3, 4, 6, 8
+```
 
-- 段落级多轮改写，支持按轮次选择不同 prompt 和模型服务商。
-- 保护目录、图表、表格、公式、参考文献等非正文区域，避免无关内容被改写。
-- 支持中断后继续处理，已完成分块会优先复用。
-- 支持模型超时、重试和速率限制配置，适配较慢或限流严格的上游服务。
-- 支持导出 TXT / DOCX，并结合学校规范做基础排版和审计提示。
-- 支持导入外部检测报告，用于定位疑似问题段和复盘改写策略。
+建议：
 
-## 文档与输出目录
+- 普通 API：从 `2` 或 `4` 开始。
+- 自建中转站：先用 `4` 验证稳定性，再尝试 `6` 或 `8`。
+- 长思考模型：建议把超时保持在 `600` 秒或更高。
+- 如果上游经常 500、502、503、504：先降低并发，再观察重试是否能恢复。
+- 如果只剩一个 chunk 卡住，可以中断后继续；已完成 chunk 会保留。
 
-- `origin/`：原始输入文档
-- `finish/intermediate/`：中间文本、manifest、checkpoint 等
-- `finish/web_exports/`：Web 端生成的 TXT 或 DOCX 导出副本，浏览器下载到本地的文件不受历史清理影响
-- `finish/fyadr_records.json`：轮次记录
-- `prompts/`：核心 prompt
-- `scripts/`：后端逻辑
-- `app/`：Web 前端
+后端会把 chunk 并行提交给模型，但写回和 compare 数据会按原文 chunk 顺序恢复，避免 Diff 顺序错乱。
 
-## Prompt 文件
+## 改写算法思路
 
-- `prompts/fyadr-cn-round1.md`
-- `prompts/fyadr-cn-round2.md`
-- `prompts/fyadr-cn-prewrite.md`
-- `prompts/fyadr-cn-classical.md`
+核心流程：
 
-这些文件是中文改写路线的核心 prompt。开发者调整前建议先阅读 `docs/DEVELOPMENT.md`。
+1. 从 TXT 或 DOCX 提取可编辑正文。
+2. 按项目当前分段策略构建 chunk manifest。
+3. 每个 chunk 拼接当前轮 prompt、语言约束、段落约束、引用和结构保护约束。
+4. 并发调用模型。
+5. 对输出做结构、编号、引用、数字、术语、语言、长度和事实关系校验。
+6. 校验失败时追加修复提示重试。
+7. 多次失败但模型有输出时，把输出作为高风险内容放入审阅。
+8. 恢复为完整文本并保存 Diff compare 数据。
+9. 写入历史记录、checkpoint、质量摘要和审阅决策。
 
-## 提交前自检
+项目会保护这些内容：
 
-如果准备提交代码或整理公开仓库，建议先运行：
+- 引用标记，如 `[1]`、`[3-5]`。
+- 关键数字、比例、公式样式数字。
+- 结构编号，如 `1`、`1.1`、`1.1.1`、`（1）`、`1）`。
+- 术语和事实关系。
+- 英文段落语言稳定性。
+- 段落数量和段落角色。
+
+自动编号段落本身可以参与改写，但编号标记会被保护，避免模型把章节结构改乱。
+
+## 提示词体系
+
+当前内置 prompt：
+
+| ID | UI 名称 | 文件 |
+| --- | --- | --- |
+| `prewrite` | 润色改写 | `prompts/prewrite.md` |
+| `classical` | 经典改写 | `prompts/classical-rewrite.md` |
+| `round1` | 规范改写 | `prompts/rewrite-pass-1.md` |
+| `round2` | 专家改写 | `prompts/rewrite-pass-2.md` |
+
+默认可见流程：
+
+```text
+润色改写 -> 规范改写 -> 专家改写
+```
+
+相关文件：
+
+- `prompts/prompt-registry.json`：prompt 注册表。
+- `prompts/prompt-workflows.json`：改写流程注册表。
+- `prompts/defaults/`：内置 prompt 默认版本。
+- `prompts/custom/`：用户新建 prompt。
+- `finish/prompt_backups/`：修改 prompt 前的自动备份。
+
+提示词 UI 支持：
+
+- 新建自定义 prompt。
+- 修改名称、描述和正文。
+- 删除自定义 prompt。
+- 保存当前内容。
+- 恢复内置默认版本。
+- 查看并恢复 prompt 备份。
+- 修改自定义流程组合。
+
+内置 prompt 可以编辑，但不能删除；自定义 prompt 可以删除。
+
+## DOCX 正文保护与导出
+
+DOCX 处理目标是：只改正文，最大限度保留原 Word 的结构和版式。
+
+默认正文范围：
+
+```text
+从“摘要”开始，到“致谢”结束
+```
+
+正文之外会尽量保护：
+
+- 封面。
+- 目录。
+- 页眉页脚相关字段。
+- 图、图题、图注。
+- 表格、表题、表注、表格内文字。
+- 公式。
+- 参考文献。
+- 附录和其他后置材料。
+
+导出策略：
+
+- 优先基于原 DOCX 的 body map 回写正文段落。
+- 只允许回写顶层正文段落，不把表格单元格当正文改写。
+- 导出前检查正文段落数量、目标顺序、重复目标、空段落、语言漂移和长度异常。
+- 导出后生成 guard、audit、preflight 等报告。
+- 学校规范明确的格式要求优先应用。
+- 学校规范未说明的段前、段后、缩进、样式细节，优先沿用上传 DOCX 的原有格式，避免无依据重排。
+
+如果导出失败，通常是正文映射不一致、Word 结构异常、段落数量变化或保护区 guard 拦截。请优先查看导出错误和对应的审计文件。
+
+## 学校规范解析
+
+学校规范用于辅助导出，不会把保护区内容送入模型改写。
+
+当前覆盖方向：
+
+- 标题层级格式。
+- 摘要、Abstract、关键词区域。
+- 正文常见字体、字号、行距和缩进。
+- 图表题注和三线表相关提示。
+- 参考文献和致谢区域。
+- 页边距、页码等页面要求。
+
+规范中没有明确说明的部分，不应由系统强行臆造。更稳的策略是沿用上传文档自身格式，并在审计报告中提示缺失或不确定项。
+
+## 检测报告工作流
+
+项目支持上传外部 PDF 检测报告，用于定位需要关注的片段。
+
+流程：
+
+1. 上传检测报告 PDF。
+2. 后端解析报告中的风险片段、概率、页码和摘要。
+3. 把报告片段和当前输出 compare 内容做匹配。
+4. Diff 区展示强命中、疑似、未确认等状态。
+5. 用户决定是否重跑对应 chunk，或手动采用某个版本。
+
+注意：
+
+- 报告解析不是检测服务，只读取用户上传的报告。
+- 不同报告格式差异很大，解析结果可能需要人工确认。
+- 强命中不代表一定要改；未命中也不代表没有风险。
+
+## 高风险与需处理
+
+Diff 区主要有三类需要关注的内容：
+
+- 需处理：模型输出通过基本校验，但质量摘要或报告匹配提示需要确认。
+- 高风险：模型给出了输出，但硬校验认为它可能改变了编号、术语、事实、语言或结构。
+- 失败：重跑或改写请求本身失败，需要继续、重试或回退。
+
+高风险默认更保守，系统不会自动采用危险输出。用户可以在 Diff 区查看原文、安全文本、模型输出和失败原因，再决定采用哪个版本。
+
+## 历史记录与 SQLite
+
+项目保留兼容 JSON 记录，同时使用 SQLite 做历史索引和治理。
+
+主要文件：
+
+- `finish/fyadr_records.json`：兼容历史记录。
+- `finish/fyadr_history.sqlite3`：SQLite 历史索引。
+- `finish/history_db_backups/`：SQLite 自动或手动备份。
+- `finish/intermediate/`：中间文件、manifest、checkpoint、compare、quality、body map。
+- `finish/web_exports/`：Web 导出副本。
+- `finish/detection_reports/`：上传的检测报告。
+- `origin/`：上传的原始文档副本。
+- `logs/`：本地日志。
+
+SQLite 负责：
+
+- 文档、轮次、产物引用的索引。
+- 历史列表查询。
+- 删除影响预览。
+- 孤儿产物扫描和清理。
+- 数据库健康检查。
+- 自动修复、备份和压缩。
+
+`finish/`、`origin/`、`logs/` 是本地运行目录，默认不应提交到公开仓库。
+
+## 环境变量
+
+常用环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `FYADR_API_KEY` | CLI 脚本默认 API Key |
+| `FYADR_MODEL` | CLI 脚本默认模型 |
+| `FYADR_BASE_URL` | CLI 脚本默认 Base URL |
+| `FYADR_API_TYPE` | CLI 脚本默认接口类型 |
+| `OPENAI_API_KEY` | 当 `FYADR_API_KEY` 为空时作为兼容输入 |
+| `OPENAI_BASE_URL` | 当 `FYADR_BASE_URL` 为空时作为兼容输入 |
+| `FYADR_ALLOWED_ORIGINS` | 额外允许访问本地 API 的前端 Origin，逗号分隔 |
+| `FYADR_MAX_REQUEST_BYTES` | JSON 请求体上限，默认 64 MB |
+| `FYADR_MAX_UPLOAD_BYTES` | 单文件上传上限，默认 40 MB |
+| `VITE_FYADR_API_BASE` | 前端构建后访问的后端 API 地址 |
+
+本地开发通常不需要 `.env`。如果要配置，可参考：
+
+- `.env.example`
+- `app/.env.example`
+
+不要提交真实 `.env`、API Key、私有中转地址或个人路径。
+
+## 目录结构
+
+```text
+.
+├─ app/                         # React Web 前端
+├─ docs/                        # 开发、发布和检查文档
+├─ prompts/                     # 内置 prompt、默认版本、注册表和自定义 prompt
+├─ references/                  # 优化路线和参考资料
+├─ scripts/                     # Flask 后端、算法、导出、检测匹配、回归脚本
+├─ start_web.bat                # Windows 一键启动
+├─ start_web.ps1                # PowerShell 一键启动
+├─ requirements.txt             # Python 依赖
+├─ SECURITY.md                  # 安全说明
+├─ CONTRIBUTING.md              # 贡献指南
+└─ README.md
+```
+
+运行后会生成：
+
+```text
+origin/
+finish/
+logs/
+app/node_modules/
+app/dist/
+```
+
+这些目录默认不提交。
+
+## 开发命令
+
+安装依赖：
+
+```powershell
+pip install -r requirements.txt
+npm --prefix app install
+```
+
+前端文本检查：
+
+```powershell
+npm --prefix app run check:text
+```
+
+前端构建：
+
+```powershell
+npm --prefix app run build
+```
+
+后端和算法回归：
+
+```powershell
+python scripts/run_regressions.py --skip-frontend-build
+```
+
+完整回归：
+
+```powershell
+python scripts/run_regressions.py
+```
+
+发布前总闸：
+
+```powershell
+python scripts/pre_release_check.py
+```
+
+开源审计：
+
+```powershell
+python scripts/open_source_audit.py
+```
+
+注意：`history_db_regression.py` 这类历史治理回归可能比较慢，完整回归不是秒级检查。
+
+## 常用专项回归
+
+```powershell
+python scripts/state_machine_regression.py
+python scripts/parallel_round_regression.py
+python scripts/llm_client_regression.py
+python scripts/detection_report_regression.py
+python scripts/detection_matching_regression.py
+python scripts/format_rules_regression.py
+python scripts/docx_export_regression.py --rebuild-sample
+python scripts/web_security_regression.py
+npm --prefix app run test:e2e:smoke
+```
+
+如果没有本地真实 DOCX 样例，部分真实文档冒烟测试会跳过。
+
+## 常见问题
+
+### 页面提示连不上本地服务
+
+先确认后端是否启动：
+
+```text
+http://127.0.0.1:8765/api/ping
+```
+
+如果打不开，重新运行 `start_web.bat` 或 `python scripts/web_app.py`。
+
+### 模型测试失败
+
+重点检查：
+
+- Base URL 是否正确。
+- API Key 是否正确。
+- 模型名是否存在。
+- 接口类型是否选对。
+- 代理或自建中转站是否可访问。
+- 目标服务是否要求 `/v1/chat/completions` 或 `/v1/responses`。
+
+### 长思考模型经常超时
+
+把 `requestTimeoutSeconds` 调到 `600` 或更高。长思考模型单段超过 2 分钟是正常情况。
+
+如果上游服务返回空响应或 500，项目会按重试策略处理。重试仍失败时，保留 checkpoint，用户可以继续当前轮。
+
+### 并发设了但看起来没有跑满
+
+实际并发会受这些因素影响：
+
+- 当前剩余 chunk 数。
+- 后端最高并发限制 8。
+- 当前运行任务是否已有 checkpoint。
+- 轮次是否只剩少量 chunk。
+- 上游服务是否限流或返回错误。
+
+如果只剩 1 个 chunk，实际并发自然就是 1。
+
+### 中断后为什么能继续
+
+每个 chunk 完成后都会写入 checkpoint。中断、刷新、后端重启后，只要 checkpoint 兼容，下次执行会跳过已完成 chunk。
+
+如果用户明确放弃当前进度，系统会清理对应轮次 checkpoint；此后再启动会按新的轮次状态计算。
+
+### 导出 Word 失败
+
+常见原因：
+
+- 原 DOCX 结构复杂，正文范围识别不稳定。
+- 改写后段落数量不一致。
+- body map 指向的段落已变化。
+- 输出包含异常换行。
+- 保护区 guard 认为导出会破坏正文外内容。
+
+优先查看页面提示，以及 `finish/web_exports/` 和 `finish/intermediate/` 中生成的 audit、guard、preflight 文件。
+
+### 检测报告匹配不准
+
+外部报告格式差异很大。项目会尽量匹配报告片段和当前 Diff 内容，但仍需要人工审阅。
+
+遇到不准时，优先看：
+
+- 报告是否能解析出片段。
+- 风险片段是否来自上一轮或另一份文档。
+- 当前 Diff 是否已经改写过对应内容。
+- 报告片段是否过短、过泛或被 PDF 抽取打乱。
+
+### 上传提示文件过大
+
+默认单文件上传上限是 40 MB。可以用环境变量调整：
+
+```powershell
+$env:FYADR_MAX_UPLOAD_BYTES = "83886080"
+python scripts/web_app.py
+```
+
+### API Key 会不会进仓库
+
+Web 配置保存在系统用户目录，不在项目目录。前端不会把完整 API Key 缓存在 localStorage。
+
+开源前仍建议运行：
 
 ```powershell
 python scripts/open_source_audit.py
@@ -180,61 +524,40 @@ git status --short
 git ls-files -ci --exclude-standard
 ```
 
-其中 `open_source_audit.py` 会检查疑似 API Key、私有模型地址、个人路径、被跟踪的本地产物和必要发布文件；`git ls-files -ci --exclude-standard` 用于确认没有被 `.gitignore` 覆盖但仍在索引中的文件。
+## 安全与隐私
 
-## 常见问题
+- 不要把真实论文、检测报告、API Key、私有模型地址、个人路径提交到公开仓库。
+- 不要在 Issue 里粘贴完整论文或完整检测报告。
+- 需要报错复现时，优先构造最小样例。
+- Web 后端默认只允许本机前端 Origin 访问。
+- 如果通过 `FYADR_ALLOWED_ORIGINS` 放开访问，请确认自己知道风险。
 
-### 1. 打开页面后提示连不上本地服务
+## 开源发布前检查
 
-先确认后端是否启动成功：
+建议至少执行：
 
-- 访问 [http://127.0.0.1:8765/api/ping](http://127.0.0.1:8765/api/ping)
-- 如果打不开，先重新执行 `start_web.bat`
+```powershell
+npm --prefix app run check:text
+npm --prefix app run build
+python scripts/open_source_audit.py
+python scripts/run_regressions.py --skip-frontend-build
+git status --short
+```
 
-### 2. 提示 `WinError 10061` 或连接被拒绝
+发布前人工确认：
 
-这通常不是项目核心逻辑坏了，而是模型接口地址不通：
+- `finish/`、`origin/`、`logs/` 没有被提交。
+- 没有真实 DOCX、PDF、截图、数据库和浏览器缓存。
+- README、启动脚本、回归命令与实际代码一致。
+- Prompt 变更是明确需要的，不是顺手改动。
+- `CHANGELOG.md` 和发布检查文档已同步更新。
 
-- Base URL 填错了
-- 代理没开
-- 本地转发没起
-- 目标服务本身挂了
+## 项目来源与致谢
 
-### 3. 出现 502 / 503 / 504
+本项目早期基础设施和使用思路参考了 [baibaiAIGC](https://github.com/poleHansen/baibaiAIGC)。
 
-这通常是上游模型服务不稳定。
+部分中文改写 prompt 的设计参考了 [Linux.do](https://linux.do/) 社区中的公开讨论、经验总结和用户整理内容。当前 prompt 已重新整理为适配本项目流程的版本。继续分发或二次开发时，请尊重原社区内容贡献者和对应平台规则。
 
-建议：
+## 协议
 
-- 直接重试这一轮
-- 适当调大“单次请求超时（秒）”
-- 适当增加“失败重试次数”
-
-现在项目已经支持断点续跑，通常不会整轮白跑。
-
-### 4. 进度跑一半断掉了
-
-可以直接再点一次“执行下一轮”。
-
-如果已经有检查点，系统会优先从已完成分块继续。
-
-### 5. 我要提交 Issue，需要提供什么？
-
-先打开 Web 端左侧的“启动诊断”，点击“复制诊断信息”，检查其中没有私密内容后粘贴到 GitHub Issue。请同时写清楚复现步骤、点击了什么按钮、是否刷新过页面、是否从历史记录切换过文档、后端日志或浏览器控制台是否有报错。
-
-不要在 Issue 里粘贴真实论文全文、检测报告原文、API Key、私有模型地址或个人路径。
-
-## 相关入口
-
-- Web 后端：[scripts/web_app.py](scripts/web_app.py)
-- 单轮脚本：[scripts/run_fyadr_round.py](scripts/run_fyadr_round.py)
-- Web 前端：[app/package.json](app/package.json)
-- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)
-- 版本记录：[CHANGELOG.md](CHANGELOG.md)
-- 发布检查：[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
-- 开发检查：[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
-- 优化路线：[references/optimization-roadmap.md](references/optimization-roadmap.md)
-- 隐私与安全：[SECURITY.md](SECURITY.md)
-
-开发者回归、审计和发布前检查命令见 `docs/DEVELOPMENT.md`。普通使用者只需要阅读上面的启动和使用流程。
-
+本项目以 AGPL-3.0 协议发布，详见 [LICENSE](LICENSE)。
