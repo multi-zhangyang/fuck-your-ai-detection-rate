@@ -12,7 +12,7 @@ or workflows can rely on it:
     "rounds": [
       {
         "round": 1,
-        "prompt": "prompts/fyadr-cn-round1.md",
+        "prompt": "prompts/rewrite-pass-1.md",
         "input_path": "origin/毕业论文_原始_utf8.txt",
         "output_path": "finish/intermediate/毕业论文_原始_utf8_round1.txt",
         "score_total": 38,
@@ -35,7 +35,7 @@ You can import this module from other Python code, or use the CLI:
   python scripts/fyadr_records.py show                # show all records
   python scripts/fyadr_records.py show origin/xxx.txt # show one document
   python scripts/fyadr_records.py update-round \
-      origin/xxx.txt 1 prompts/fyadr-cn-round1.md \
+      origin/xxx.txt 1 prompts/rewrite-pass-1.md \
       origin/xxx.txt finish/intermediate/xxx_round1.txt \
       --score-total 38
 
@@ -56,12 +56,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from prompt_library import (
+    DEFAULT_PROMPT_PROFILE,
+    LEGACY_PROMPT_PROFILE,
+    get_default_prompt_profile,
+    get_prompt_workflow_ids,
+    list_prompt_workflows,
+    is_prompt_sequence_customizable,
+    normalize_prompt_profile,
+    normalize_prompt_sequence,
+)
+
 # Paths are computed relative to this file: scripts/ -> workspace root.
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FINISH_DIR = ROOT_DIR / "finish"
 RECORDS_PATH = FINISH_DIR / "fyadr_records.json"
-SUPPORTED_PROMPT_PROFILES = {"cn", "cn_prewrite", "cn_custom"}
-SUPPORTED_PROMPT_IDS = {"prewrite", "classical", "round1", "round2"}
 DELETE_MODES = {"records_and_artifacts", "records_artifacts_and_source", "records_only", "exports_only"}
 ORIGIN_DIR = ROOT_DIR / "origin"
 INTERMEDIATE_DIR = ROOT_DIR / "finish" / "intermediate"
@@ -73,6 +82,11 @@ _HISTORY_GOVERNANCE_LOCK = threading.RLock()
 _HISTORY_GOVERNANCE_CACHE: Dict[str, Any] | None = None
 _HISTORY_GOVERNANCE_CACHE_AT = 0.0
 _HISTORY_GOVERNANCE_CACHE_COMPACT = False
+
+
+def _prompt_workflow_help() -> str:
+    workflows = list_prompt_workflows()
+    return ", ".join(f"{item['id']}={item['label']}" for item in workflows) or get_default_prompt_profile()
 RECOVER_FIRST_HISTORY_ISSUE_CODES = {
     "sqlite_integrity_check_failed",
     "history_index_unreadable",
@@ -100,7 +114,7 @@ class RoundRecord:
     prompt: str
     input_path: str
     output_path: str
-    prompt_profile: str = "cn"
+    prompt_profile: str = DEFAULT_PROMPT_PROFILE
     prompt_sequence: Optional[List[str]] = None
     score_total: Optional[int] = None
     chunk_limit: Optional[int] = None
@@ -758,20 +772,17 @@ def normalize_doc_id(doc_id: str) -> str:
 
 
 def _normalize_prompt_profile(value: Any) -> str:
-    candidate = str(value or "cn").strip().lower() or "cn"
-    if candidate not in SUPPORTED_PROMPT_PROFILES:
-        return "cn"
-    return candidate
+    try:
+        return normalize_prompt_profile(str(value or LEGACY_PROMPT_PROFILE))
+    except ValueError:
+        return LEGACY_PROMPT_PROFILE
 
 
-def _normalize_prompt_sequence(value: Any) -> List[str]:
-    raw_items = value if isinstance(value, list) else []
-    normalized: List[str] = []
-    for raw_item in raw_items:
-        prompt_id = str(raw_item or "").strip().lower()
-        if prompt_id in SUPPORTED_PROMPT_IDS:
-            normalized.append(prompt_id)
-    return normalized[:3]
+def _normalize_prompt_sequence(value: Any, prompt_profile: str = DEFAULT_PROMPT_PROFILE) -> List[str]:
+    try:
+        return normalize_prompt_sequence(prompt_profile, value)
+    except ValueError:
+        return []
 
 
 def _normalize_round_item(item: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -793,8 +804,12 @@ def _normalize_round_item(item: Dict[str, Any]) -> Dict[str, Any] | None:
         value = normalized_item.get(field)
         if isinstance(value, str):
             normalized_item[field] = normalize_record_path(value)
-    normalized_item["prompt_profile"] = _normalize_prompt_profile(normalized_item.get("prompt_profile", "cn"))
-    prompt_sequence = _normalize_prompt_sequence(normalized_item.get("prompt_sequence"))
+    normalized_item["prompt_profile"] = _normalize_prompt_profile(normalized_item.get("prompt_profile", LEGACY_PROMPT_PROFILE))
+    prompt_sequence = (
+        _normalize_prompt_sequence(normalized_item.get("prompt_sequence"), normalized_item["prompt_profile"])
+        if is_prompt_sequence_customizable(normalized_item["prompt_profile"])
+        else []
+    )
     if prompt_sequence:
         normalized_item["prompt_sequence"] = prompt_sequence
     else:
@@ -846,8 +861,8 @@ def _round_record_key(item: Dict[str, Any]) -> tuple[str, str, int] | None:
     round_number = item.get("round")
     if not isinstance(round_number, int):
         return None
-    prompt_profile = _normalize_prompt_profile(item.get("prompt_profile", "cn"))
-    sequence_key = ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"))) if prompt_profile == "cn_custom" else ""
+    prompt_profile = _normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE))
+    sequence_key = ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"), prompt_profile)) if is_prompt_sequence_customizable(prompt_profile) else ""
     return (prompt_profile, sequence_key, round_number)
 
 
@@ -978,8 +993,8 @@ def _round_sql_filters(rounds: List[Dict[str, Any]]) -> list[Dict[str, Any]]:
     for item in rounds:
         if not isinstance(item, dict) or not isinstance(item.get("round"), int):
             continue
-        prompt_profile = _normalize_prompt_profile(item.get("prompt_profile", "cn"))
-        sequence_key = ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"))) if prompt_profile == "cn_custom" else ""
+        prompt_profile = _normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE))
+        sequence_key = ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"), prompt_profile)) if is_prompt_sequence_customizable(prompt_profile) else ""
         filters.append({
             "roundNumber": int(item["round"]),
             "promptProfile": prompt_profile,
@@ -1323,8 +1338,8 @@ def _round_filter(
 ) -> tuple[str | None, List[str] | None, str, Any]:
     normalized_prompt_profile = _normalize_prompt_profile(prompt_profile) if prompt_profile is not None else None
     normalized_prompt_sequence = (
-        _normalize_prompt_sequence(prompt_sequence)
-        if normalized_prompt_profile == "cn_custom" and prompt_sequence is not None
+        _normalize_prompt_sequence(prompt_sequence, normalized_prompt_profile)
+        if normalized_prompt_profile is not None and is_prompt_sequence_customizable(normalized_prompt_profile) and prompt_sequence is not None
         else None
     )
     normalized_sequence_key = ",".join(normalized_prompt_sequence or [])
@@ -1334,11 +1349,11 @@ def _round_filter(
             return False
         if normalized_prompt_profile is None:
             return True
-        if _normalize_prompt_profile(item.get("prompt_profile", "cn")) != normalized_prompt_profile:
+        if _normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE)) != normalized_prompt_profile:
             return False
         if normalized_prompt_sequence is None:
             return True
-        return ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"))) == normalized_sequence_key
+        return ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"), normalized_prompt_profile)) == normalized_sequence_key
 
     return normalized_prompt_profile, normalized_prompt_sequence, normalized_sequence_key, round_matches
 
@@ -1525,7 +1540,7 @@ def update_round(
         rounds = []
 
     normalized_prompt_profile = _normalize_prompt_profile(prompt_profile)
-    normalized_prompt_sequence = _normalize_prompt_sequence(prompt_sequence) if normalized_prompt_profile == "cn_custom" else []
+    normalized_prompt_sequence = _normalize_prompt_sequence(prompt_sequence, normalized_prompt_profile) if is_prompt_sequence_customizable(normalized_prompt_profile) else []
     normalized_sequence_key = ",".join(normalized_prompt_sequence)
 
     # Remove any existing entry for the same round under the same prompt profile.
@@ -1535,10 +1550,10 @@ def update_round(
         if not (
             isinstance(r, dict)
             and r.get("round") == round_number
-            and _normalize_prompt_profile(r.get("prompt_profile", "cn")) == normalized_prompt_profile
+            and _normalize_prompt_profile(r.get("prompt_profile", LEGACY_PROMPT_PROFILE)) == normalized_prompt_profile
             and (
-                normalized_prompt_profile != "cn_custom"
-                or ",".join(_normalize_prompt_sequence(r.get("prompt_sequence"))) == normalized_sequence_key
+                not is_prompt_sequence_customizable(normalized_prompt_profile)
+                or ",".join(_normalize_prompt_sequence(r.get("prompt_sequence"), normalized_prompt_profile)) == normalized_sequence_key
             )
         )
     ]
@@ -1567,8 +1582,10 @@ def update_round(
     # Keep rounds grouped by prompt profile, then sorted by round number.
     filtered_rounds.sort(
         key=lambda item: (
-            _normalize_prompt_profile(item.get("prompt_profile", "cn")) if isinstance(item, dict) else "cn",
-            ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"))) if isinstance(item, dict) else "",
+            _normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE)) if isinstance(item, dict) else LEGACY_PROMPT_PROFILE,
+            ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"), _normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE))))
+            if isinstance(item, dict) and is_prompt_sequence_customizable(_normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE)))
+            else "",
             int(item.get("round", 0)) if isinstance(item, dict) else 0,
         )
     )
@@ -1714,10 +1731,10 @@ def delete_rounds(
             and (
                 normalized_prompt_profile is None
                 or (
-                    _normalize_prompt_profile(item.get("prompt_profile", "cn")) == normalized_prompt_profile
+                    _normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE)) == normalized_prompt_profile
                     and (
                         normalized_prompt_sequence is None
-                        or ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"))) == normalized_sequence_key
+                        or ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"), normalized_prompt_profile)) == normalized_sequence_key
                     )
                 )
             )
@@ -1786,10 +1803,10 @@ def delete_rounds(
             item
             for item in remaining_rounds
             if isinstance(item, dict)
-            and _normalize_prompt_profile(item.get("prompt_profile", "cn")) == normalized_prompt_profile
+            and _normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE)) == normalized_prompt_profile
             and (
                 normalized_prompt_sequence is None
-                or ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"))) == normalized_sequence_key
+                or ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"), normalized_prompt_profile)) == normalized_sequence_key
             )
         ]
 
@@ -1999,7 +2016,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     rollback_parser.add_argument(
         "--prompt-profile",
         default=None,
-        choices=sorted(SUPPORTED_PROMPT_PROFILES),
+        choices=sorted(get_prompt_workflow_ids()),
         help="Optional prompt profile filter for rollback. When omitted, matching rounds are removed across all profiles.",
     )
 
@@ -2017,13 +2034,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     update_parser.add_argument(
         "prompt",
-        help="Prompt file path used for this round (e.g. prompts/fyadr-cn-round1.md).",
+        help="Prompt file path used for this round (e.g. prompts/rewrite-pass-1.md).",
     )
     update_parser.add_argument(
         "--prompt-profile",
-        default="cn",
-        choices=sorted(SUPPORTED_PROMPT_PROFILES),
-        help="Prompt profile for this round: cn=中文双轮, cn_prewrite=中文三轮预改写, cn_custom=自定义组合.",
+        default=get_default_prompt_profile(),
+        choices=sorted(get_prompt_workflow_ids()),
+        help=f"Prompt workflow id for this round. Available: {_prompt_workflow_help()}.",
     )
     update_parser.add_argument(
         "input_path",

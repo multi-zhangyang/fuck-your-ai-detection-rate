@@ -91,7 +91,7 @@ def _append_record(doc_id: str, source_path: Path, output_path: Path) -> None:
         "rounds": [
             {
                 "round": 1,
-                "prompt": "prompts/fyadr-cn-round1.md",
+                    "prompt": "prompts/rewrite-pass-1.md",
                 "prompt_profile": "cn_prewrite",
                 "input_path": _rel(source_path),
                 "output_path": _rel(output_path),

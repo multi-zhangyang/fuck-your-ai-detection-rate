@@ -13,6 +13,7 @@ import type {
   RoundProgress,
   RoundResult,
 } from "@/types/app";
+import { ACTIVE_PROMPT_PROFILE, DEFAULT_PROMPT_SEQUENCE } from "@/lib/promptRegistry";
 
 const defaultModelConfig: ModelConfig = {
   baseUrl: "",
@@ -20,10 +21,11 @@ const defaultModelConfig: ModelConfig = {
   model: "",
   apiType: "chat_completions",
   temperature: 0.7,
-  promptProfile: "cn_custom",
-  promptSequence: ["prewrite", "round1", "round2"],
+  promptProfile: ACTIVE_PROMPT_PROFILE,
+  promptSequence: DEFAULT_PROMPT_SEQUENCE,
   requestTimeoutSeconds: 600,
   maxRetries: 3,
+  rewriteConcurrency: 2,
   modelProviders: [],
   roundModels: {},
 };

@@ -20,6 +20,8 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from app_config import get_app_config_path, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
 from detection_report_parser import parse_detection_report_pdf
 from app_service import (
+    MAX_REWRITE_CONCURRENCY,
+    MIN_REWRITE_REQUEST_TIMEOUT_SECONDS,
     build_detection_matches_for_output,
     backup_history_database_governance,
     check_history_database_governance,
@@ -58,6 +60,19 @@ from format_rules import (
     parse_format_rules_from_text,
     save_active_format_rules,
 )
+from prompt_library import (
+    DEFAULT_PROMPT_PROFILE,
+    create_prompt,
+    delete_prompt,
+    list_prompt_backups,
+    list_prompt_preview_items,
+    list_prompt_workflows,
+    restore_default_prompt,
+    restore_prompt_backup,
+    save_prompt_content,
+    update_prompt_metadata,
+    update_prompt_workflow,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -73,33 +88,6 @@ TASK_STATE_SELF_HEAL_INTERVAL_SECONDS = 60
 TASK_STATE_SNAPSHOT_PREFIXES = ("run_round_", "batch_rerun_")
 DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_UPLOAD_BYTES = 40 * 1024 * 1024
-PROMPT_DIR = ROOT_DIR / "prompts"
-PROMPT_PREVIEW_FILES: tuple[dict[str, str], ...] = (
-    {
-        "id": "prewrite",
-        "label": "预改写",
-        "description": "保守自然化",
-        "relativePath": "prompts/fyadr-cn-prewrite.md",
-    },
-    {
-        "id": "classical",
-        "label": "经典改写",
-        "description": "解释性慢节奏",
-        "relativePath": "prompts/fyadr-cn-classical.md",
-    },
-    {
-        "id": "round1",
-        "label": "一轮",
-        "description": "主体改写",
-        "relativePath": "prompts/fyadr-cn-round1.md",
-    },
-    {
-        "id": "round2",
-        "label": "二轮",
-        "description": "最终降痕",
-        "relativePath": "prompts/fyadr-cn-round2.md",
-    },
-)
 
 
 @dataclass
@@ -253,26 +241,6 @@ def write_uploaded_detection_report(filename: str, content_base64: str) -> Path:
     target_path = DETECTION_REPORT_DIR / safe_name
     target_path.write_bytes(_decode_upload_base64(content_base64, label="Detection report"))
     return target_path
-
-
-def build_prompt_preview_item(meta: dict[str, str]) -> dict[str, Any]:
-    relative_path = Path(meta["relativePath"])
-    if relative_path.is_absolute() or ".." in relative_path.parts:
-        raise ValueError("Invalid prompt preview path.")
-    prompt_path = (ROOT_DIR / relative_path).resolve()
-    if prompt_path.parent != PROMPT_DIR.resolve():
-        raise ValueError("Prompt preview path must stay inside prompts directory.")
-    stat = prompt_path.stat()
-    return {
-        "id": meta["id"],
-        "label": meta["label"],
-        "description": meta["description"],
-        "fileName": prompt_path.name,
-        "relativePath": str(relative_path).replace("\\", "/"),
-        "sizeBytes": stat.st_size,
-        "updatedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat().replace("+00:00", "Z"),
-        "content": prompt_path.read_text(encoding="utf-8"),
-    }
 
 
 def _is_path_under(path: Path, root: Path) -> bool:
@@ -1143,27 +1111,33 @@ def find_compare_chunk(compare_payload: Any, chunk_id: str) -> dict[str, Any] | 
     return None
 
 
-def normalize_rejected_candidates_for_failure(value: Any) -> list[dict[str, Any]]:
+def normalize_failed_attempts_for_failure(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    candidates: list[dict[str, Any]] = []
-    for candidate in value[-4:]:
-        if not isinstance(candidate, dict):
+    attempts: list[dict[str, Any]] = []
+    for attempt in value[-4:]:
+        if not isinstance(attempt, dict):
             continue
-        output_text = str(candidate.get("outputText", "") or "")
+        output_text = str(attempt.get("outputText", "") or "")
         if not output_text.strip():
             continue
-        candidates.append(
+        attempts.append(
             {
-                "attempt": candidate.get("attempt"),
-                "candidate": candidate.get("candidate"),
+                "attempt": attempt.get("attempt"),
                 "outputText": output_text,
-                "outputCharCount": candidate.get("outputCharCount", len(output_text)),
-                "truncated": bool(candidate.get("truncated")),
-                "error": str(candidate.get("error", "") or ""),
+                "outputCharCount": attempt.get("outputCharCount", len(output_text)),
+                "truncated": bool(attempt.get("truncated")),
+                "error": str(attempt.get("error", "") or ""),
             }
         )
-    return candidates
+    return attempts
+
+
+def get_chunk_failed_attempts(chunk: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(chunk, dict):
+        return []
+    failed_attempts = normalize_failed_attempts_for_failure(chunk.get("failedAttempts"))
+    return failed_attempts or normalize_failed_attempts_for_failure(chunk.get("rejectedCandidates"))
 
 
 def build_batch_rerun_failure(
@@ -1175,7 +1149,7 @@ def build_batch_rerun_failure(
     failure: dict[str, Any] = {"chunkId": chunk_id, "error": error}
     compare_payload = latest_compare if isinstance(latest_compare, dict) else None
     chunk = find_compare_chunk(compare_payload, chunk_id)
-    if chunk is None or not normalize_rejected_candidates_for_failure(chunk.get("rejectedCandidates")):
+    if chunk is None or not get_chunk_failed_attempts(chunk):
         try:
             disk_compare = read_round_compare(output_path)
             disk_chunk = find_compare_chunk(disk_compare, chunk_id)
@@ -1186,9 +1160,9 @@ def build_batch_rerun_failure(
             compare_payload = latest_compare if isinstance(latest_compare, dict) else None
             chunk = find_compare_chunk(compare_payload, chunk_id)
     if chunk:
-        rejected_candidates = normalize_rejected_candidates_for_failure(chunk.get("rejectedCandidates"))
-        if rejected_candidates:
-            failure["rejectedCandidates"] = rejected_candidates
+        failed_attempts = get_chunk_failed_attempts(chunk)
+        if failed_attempts:
+            failure["failedAttempts"] = failed_attempts
         if chunk.get("rerunStatus"):
             failure["rerunStatus"] = chunk.get("rerunStatus")
         if chunk.get("rerunFallbackMode"):
@@ -1403,6 +1377,16 @@ def build_environment_diagnostics() -> dict[str, Any]:
     config_path = get_app_config_path()
     providers = config.get("modelProviders", []) if isinstance(config.get("modelProviders"), list) else []
     round_models = config.get("roundModels", {}) if isinstance(config.get("roundModels"), dict) else {}
+    try:
+        rewrite_concurrency = int(config.get("rewriteConcurrency", 2) or 2)
+    except (TypeError, ValueError):
+        rewrite_concurrency = 2
+    rewrite_concurrency = max(1, min(MAX_REWRITE_CONCURRENCY, rewrite_concurrency))
+    try:
+        configured_timeout = int(config.get("requestTimeoutSeconds", MIN_REWRITE_REQUEST_TIMEOUT_SECONDS) or MIN_REWRITE_REQUEST_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        configured_timeout = MIN_REWRITE_REQUEST_TIMEOUT_SECONDS
+    effective_rewrite_timeout = max(MIN_REWRITE_REQUEST_TIMEOUT_SECONDS, min(3600, configured_timeout))
     enabled_providers = [provider for provider in providers if bool(provider.get("enabled"))]
     custom_rounds = [item for item in round_models.values() if isinstance(item, dict) and bool(item.get("enabled"))]
     active_runs: list[dict[str, Any]] = []
@@ -1491,6 +1475,13 @@ def build_environment_diagnostics() -> dict[str, Any]:
             "message": f"已启用 {len(enabled_providers)} 个服务商。" if enabled_providers else "没有启用服务商；每轮会继承默认连接。",
         },
         {
+            "key": "rewriteConcurrency",
+            "label": "轮内并发",
+            "ok": 1 <= rewrite_concurrency <= MAX_REWRITE_CONCURRENCY,
+            "level": "success",
+            "message": f"当前轮内并发 {rewrite_concurrency}/{MAX_REWRITE_CONCURRENCY}，默认建议 2；自建服务商可按稳定性调到 8。",
+        },
+        {
             "key": "paths",
             "label": "工作目录",
             "ok": all(item.get("exists") and item.get("writable") for item in path_summaries if item["key"] != "config"),
@@ -1548,7 +1539,10 @@ def build_environment_diagnostics() -> dict[str, Any]:
             "apiType": str(config.get("apiType", "")),
             "promptProfile": str(config.get("promptProfile", "")),
             "promptSequence": config.get("promptSequence", []),
+            "rewriteConcurrency": rewrite_concurrency,
+            "maxRewriteConcurrency": MAX_REWRITE_CONCURRENCY,
             "requestTimeoutSeconds": config.get("requestTimeoutSeconds"),
+            "effectiveRewriteTimeoutSeconds": effective_rewrite_timeout,
             "maxRetries": config.get("maxRetries"),
             "providerCount": len(providers),
             "enabledProviderCount": len(enabled_providers),
@@ -1662,7 +1656,7 @@ def batch_rerun_async(run_id: str, output_path: str, targets: list[dict[str, str
                         "total": len(targets),
                         "chunkId": chunk_id,
                         "error": str(exc),
-                        "rejectedCandidates": failure.get("rejectedCandidates", []),
+                        "failedAttempts": failure.get("failedAttempts", []),
                     },
                 )
 
@@ -1742,7 +1736,7 @@ def add_cors_headers(response: Response) -> Response:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
     response.headers["Access-Control-Expose-Headers"] = (
         "Content-Disposition, X-Export-Path, X-Export-Format, X-Export-Layout-Mode, "
         "X-Export-Paragraph-Source, X-Export-Format-Mode, X-Export-Format-Scope, "
@@ -1761,16 +1755,95 @@ def get_model_config() -> Response:
     return jsonify(redact_app_config(load_app_config()))
 
 
-@app.route("/api/prompts", methods=["GET"])
+@app.route("/api/prompts", methods=["GET", "POST"])
 def get_prompts() -> tuple[Response, int] | Response:
     try:
+        if request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            item = create_prompt(payload.get("label"), payload.get("content"), payload.get("description", ""))
+            return jsonify({"ok": True, "promptDir": "prompts", "item": item}), 201
         return jsonify(
             {
                 "ok": True,
                 "promptDir": "prompts",
-                "items": [build_prompt_preview_item(item) for item in PROMPT_PREVIEW_FILES],
+                "items": list_prompt_preview_items(),
+                "workflows": list_prompt_workflows(),
             }
         )
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        return error_response(str(exc), 500)
+
+
+@app.route("/api/prompts/<prompt_id>", methods=["PUT", "DELETE"])
+def update_prompt(prompt_id: str) -> tuple[Response, int] | Response:
+    try:
+        if request.method == "DELETE":
+            payload = delete_prompt(prompt_id)
+            return jsonify({"ok": True, "promptDir": "prompts", **payload})
+        payload = request.get_json(silent=True) or {}
+        item = save_prompt_content(prompt_id, payload.get("content"))
+        return jsonify({"ok": True, "promptDir": "prompts", "item": item})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        return error_response(str(exc), 500)
+
+
+@app.route("/api/prompts/<prompt_id>/meta", methods=["PATCH"])
+def update_prompt_meta(prompt_id: str) -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        item = update_prompt_metadata(prompt_id, payload.get("label"), payload.get("description", ""))
+        return jsonify({"ok": True, "promptDir": "prompts", "item": item})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        return error_response(str(exc), 500)
+
+
+@app.route("/api/prompts/<prompt_id>/restore-default", methods=["POST"])
+def restore_prompt_default(prompt_id: str) -> tuple[Response, int] | Response:
+    try:
+        item = restore_default_prompt(prompt_id)
+        return jsonify({"ok": True, "promptDir": "prompts", "item": item})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        return error_response(str(exc), 500)
+
+
+@app.route("/api/prompts/<prompt_id>/backups", methods=["GET"])
+def get_prompt_backups(prompt_id: str) -> tuple[Response, int] | Response:
+    try:
+        return jsonify({"ok": True, "items": list_prompt_backups(prompt_id)})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        return error_response(str(exc), 500)
+
+
+@app.route("/api/prompts/<prompt_id>/restore-backup", methods=["POST"])
+def restore_prompt_from_backup(prompt_id: str) -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        item = restore_prompt_backup(prompt_id, payload.get("relativePath"))
+        return jsonify({"ok": True, "promptDir": "prompts", "item": item})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        return error_response(str(exc), 500)
+
+
+@app.route("/api/prompt-workflows/<workflow_id>", methods=["PATCH"])
+def patch_prompt_workflow(workflow_id: str) -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        workflows = update_prompt_workflow(workflow_id, payload)
+        return jsonify({"ok": True, "promptDir": "prompts", "workflows": workflows})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
     except Exception as exc:
         return error_response(str(exc), 500)
 
@@ -1911,7 +1984,7 @@ def post_detection_report() -> tuple[Response, int] | Response:
 @app.route("/api/document-status", methods=["GET"])
 def get_status() -> tuple[Response, int] | Response:
     try:
-        prompt_profile = request.args.get("promptProfile", "cn_custom")
+        prompt_profile = request.args.get("promptProfile", DEFAULT_PROMPT_PROFILE)
         prompt_sequence = parse_prompt_sequence_value(request.args.get("promptSequence"))
         return jsonify(
             get_document_status(
@@ -2370,7 +2443,7 @@ def get_run_round_status(run_id: str) -> tuple[Response, int] | Response:
 def get_round_progress_status_route() -> tuple[Response, int] | Response:
     try:
         source_path = normalize_api_source_path(require_query_value("sourcePath"))
-        prompt_profile = request.args.get("promptProfile", "cn_custom")
+        prompt_profile = request.args.get("promptProfile", DEFAULT_PROMPT_PROFILE)
         prompt_sequence = parse_prompt_sequence_value(request.args.get("promptSequence"))
         round_number = optional_int_query_value("roundNumber")
         status = get_round_progress_status(
@@ -2395,7 +2468,7 @@ def delete_round_progress_route() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
         source_path = str(payload.get("sourcePath", "")).strip()
-        prompt_profile = str(payload.get("promptProfile", "cn_custom")).strip()
+        prompt_profile = str(payload.get("promptProfile", DEFAULT_PROMPT_PROFILE)).strip()
         prompt_sequence = parse_prompt_sequence_value(payload.get("promptSequence"))
         round_number = int(payload.get("roundNumber", 0) or 0)
         if not source_path or round_number <= 0:

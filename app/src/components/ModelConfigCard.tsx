@@ -19,6 +19,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { FormatRules, ModelCatalogResult, ModelConfig, ModelProviderConfig } from "@/types/app";
 
+const LOADING_ICON_CLASS_NAME = "animate-spin text-success";
+const MAX_REWRITE_CONCURRENCY = 8;
+
 type ModelConfigCardProps = {
   value: ModelConfig;
   busy: boolean;
@@ -52,7 +55,7 @@ type SchoolFormatCardProps = {
   onResetFormatRules: () => void;
 };
 
-const NUMBER_FIELDS = new Set<keyof ModelConfig>(["temperature", "requestTimeoutSeconds", "maxRetries"]);
+const NUMBER_FIELDS = new Set<keyof ModelConfig>(["temperature", "requestTimeoutSeconds", "maxRetries", "rewriteConcurrency"]);
 const PROVIDER_NUMBER_FIELDS = new Set<keyof ModelProviderConfig>(["temperature", "requestTimeoutSeconds", "maxRetries", "rateLimitWindowMinutes", "rateLimitMaxRequests"]);
 
 const API_OPTIONS: Array<{ value: ModelConfig["apiType"]; label: string }> = [
@@ -317,6 +320,10 @@ export function ModelConfigCard({
                         <FieldLabel htmlFor="maxRetries">最大重试</FieldLabel>
                         <Input id="maxRetries" type="number" min="0" max="10" value={value.maxRetries} onChange={handleFieldChange("maxRetries")} />
                       </Field>
+                      <Field>
+                        <FieldLabel htmlFor="rewriteConcurrency">轮内并发</FieldLabel>
+                        <Input id="rewriteConcurrency" type="number" min="1" max={MAX_REWRITE_CONCURRENCY} value={value.rewriteConcurrency} onChange={handleFieldChange("rewriteConcurrency")} />
+                      </Field>
                     </FieldGroup>
                   </CardContent>
                 </ScrollArea>
@@ -332,7 +339,7 @@ export function ModelConfigCard({
                       <ShieldCheck data-icon="inline-start" />测试连接
                     </Button>
                     <Button variant="outline" onClick={onRefreshModels} disabled={busy || modelCatalogBusy}>
-                      {modelCatalogBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读取模型列表
+                      {modelCatalogBusy ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}读取模型列表
                     </Button>
                     <Button onClick={() => onSave(value, value)} disabled={busy}>
                       <Save data-icon="inline-start" />保存默认配置
@@ -368,7 +375,7 @@ export function ModelConfigCard({
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <Button type="button" size="sm" variant="outline" className="w-full justify-center" onClick={() => void refreshAllProviderCatalogs()} disabled={busy || providerCatalogRunning || enabledProviderCount === 0}>
-                      {providerCatalogRunning ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取全部
+                      {providerCatalogRunning ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取全部
                     </Button>
                     <Button type="button" size="sm" className="w-full justify-center" onClick={addProvider} disabled={busy}>
                       <Plus data-icon="inline-start" />添加
@@ -433,7 +440,7 @@ export function ModelConfigCard({
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button type="button" size="sm" variant="outline" disabled={busy || providerCatalogRunning} onClick={() => void refreshProviderCatalog(selectedProvider)}>
-                          {providerCatalogBusy[selectedProvider.id] ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取模型
+                          {providerCatalogBusy[selectedProvider.id] ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}获取模型
                         </Button>
                         {providerCatalogRunning ? (
                           <Button type="button" size="sm" variant="outlineDanger" onClick={stopProviderCatalogRequest}>
@@ -671,7 +678,7 @@ export function SchoolFormatCard({
 
               <div className="flex flex-wrap gap-2">
                 <Button type="button" size="sm" onClick={() => onParseFormatRules(formatRuleText)} disabled={busy}>
-                  {formatParsing ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <SlidersHorizontal data-icon="inline-start" />}
+                  {formatParsing ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <SlidersHorizontal data-icon="inline-start" />}
                   {hasInput ? "解析规范" : "使用默认规范"}
                 </Button>
                 {formatParsing ? (

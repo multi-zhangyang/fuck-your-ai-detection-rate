@@ -5,23 +5,19 @@ import os
 from pathlib import Path
 from typing import Any
 
+from prompt_library import (
+    get_default_prompt_profile,
+    get_round_model_keys,
+    normalize_prompt_profile,
+    normalize_prompt_sequence,
+)
+
 APP_DIR_NAME = "FYADR"
 CONFIG_FILE_NAME = "config.json"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_RETRIES = 3
-DEFAULT_PROMPT_PROFILE = "cn_custom"
-SUPPORTED_PROMPT_PROFILES = {"cn", "cn_prewrite", "cn_custom"}
-SUPPORTED_PROMPT_IDS = {"prewrite", "classical", "round1", "round2"}
-ROUND_MODEL_KEYS = {
-    "cn_prewrite:1",
-    "cn_prewrite:2",
-    "cn_prewrite:3",
-    "cn:1",
-    "cn:2",
-    "cn_custom:1",
-    "cn_custom:2",
-    "cn_custom:3",
-}
+DEFAULT_REWRITE_CONCURRENCY = 2
+MAX_REWRITE_CONCURRENCY = 8
 SAVED_SECRET_PLACEHOLDER = "__FYADR_SAVED_SECRET__"
 _MISSING_SECRET = object()
 
@@ -46,20 +42,19 @@ def get_app_config_path() -> Path:
 
 
 def _normalize_prompt_profile(value: Any) -> str:
-    candidate = str(value or DEFAULT_PROMPT_PROFILE).strip().lower() or DEFAULT_PROMPT_PROFILE
-    if candidate not in SUPPORTED_PROMPT_PROFILES:
-        return DEFAULT_PROMPT_PROFILE
-    return candidate
+    fallback_profile = get_default_prompt_profile()
+    try:
+        return normalize_prompt_profile(str(value or fallback_profile))
+    except ValueError:
+        return fallback_profile
 
 
-def _normalize_prompt_sequence(value: Any) -> list[str]:
-    raw_items = value if isinstance(value, list) else []
-    normalized: list[str] = []
-    for raw_item in raw_items:
-        prompt_id = str(raw_item or "").strip().lower()
-        if prompt_id in SUPPORTED_PROMPT_IDS:
-            normalized.append(prompt_id)
-    return normalized[:3] or ["prewrite", "round1", "round2"]
+def _normalize_prompt_sequence(value: Any, prompt_profile: str | None = None) -> list[str]:
+    normalized_profile = prompt_profile or get_default_prompt_profile()
+    try:
+        return normalize_prompt_sequence(normalized_profile, value)
+    except ValueError:
+        return normalize_prompt_sequence(normalized_profile, None)
 
 
 def _normalize_api_type(value: Any) -> str:
@@ -221,7 +216,7 @@ def _normalize_round_models(value: Any) -> dict[str, dict[str, Any]]:
     normalized: dict[str, dict[str, Any]] = {}
     for key, raw_config in value.items():
         normalized_key = str(key).strip()
-        if normalized_key not in ROUND_MODEL_KEYS or not isinstance(raw_config, dict):
+        if normalized_key not in get_round_model_keys() or not isinstance(raw_config, dict):
             continue
         normalized[normalized_key] = {
             "enabled": bool(raw_config.get("enabled", False)),
@@ -300,28 +295,31 @@ def _normalize_model_providers(value: Any) -> list[dict[str, Any]]:
 def load_app_config() -> dict[str, Any]:
     path = get_app_config_path()
     if not path.exists():
+        prompt_profile = get_default_prompt_profile()
         return {
             "baseUrl": "",
             "apiKey": "",
             "model": "",
             "apiType": "chat_completions",
             "temperature": 0.7,
-            "promptProfile": DEFAULT_PROMPT_PROFILE,
-            "promptSequence": ["prewrite", "round1", "round2"],
+            "promptProfile": prompt_profile,
+            "promptSequence": normalize_prompt_sequence(prompt_profile, None),
             "requestTimeoutSeconds": DEFAULT_REQUEST_TIMEOUT_SECONDS,
             "maxRetries": DEFAULT_MAX_RETRIES,
+            "rewriteConcurrency": DEFAULT_REWRITE_CONCURRENCY,
             "modelProviders": [],
             "roundModels": {},
         }
     data = json.loads(path.read_text(encoding="utf-8"))
+    prompt_profile = _normalize_prompt_profile(data.get("promptProfile", get_default_prompt_profile()))
     return {
         "baseUrl": str(data.get("baseUrl", "")),
         "apiKey": str(data.get("apiKey", "")),
         "model": str(data.get("model", "")),
         "apiType": _normalize_api_type(data.get("apiType", "chat_completions")),
         "temperature": float(data.get("temperature", 0.7)),
-        "promptProfile": _normalize_prompt_profile(data.get("promptProfile", DEFAULT_PROMPT_PROFILE)),
-        "promptSequence": _normalize_prompt_sequence(data.get("promptSequence")),
+        "promptProfile": prompt_profile,
+        "promptSequence": _normalize_prompt_sequence(data.get("promptSequence"), prompt_profile),
         "requestTimeoutSeconds": _clamp_int(
             data.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
             default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -333,6 +331,12 @@ def load_app_config() -> dict[str, Any]:
             default=DEFAULT_MAX_RETRIES,
             minimum=0,
             maximum=10,
+        ),
+        "rewriteConcurrency": _clamp_int(
+            data.get("rewriteConcurrency", DEFAULT_REWRITE_CONCURRENCY),
+            default=DEFAULT_REWRITE_CONCURRENCY,
+            minimum=1,
+            maximum=MAX_REWRITE_CONCURRENCY,
         ),
         "modelProviders": _normalize_model_providers(data.get("modelProviders", [])),
         "roundModels": _normalize_round_models(data.get("roundModels", {})),
@@ -355,14 +359,15 @@ def save_app_config(config: dict[str, Any]) -> dict[str, Any]:
         config.get("modelProviders", existing.get("modelProviders", [])),
         existing,
     )
+    prompt_profile = _normalize_prompt_profile(config.get("promptProfile", get_default_prompt_profile()))
     normalized = {
         "baseUrl": str(config.get("baseUrl", "")).strip(),
         "apiKey": _secret_or_existing(config.get("apiKey", _MISSING_SECRET), existing.get("apiKey")),
         "model": str(config.get("model", "")).strip(),
         "apiType": _normalize_api_type(config.get("apiType", "chat_completions")),
         "temperature": float(config.get("temperature", 0.7)),
-        "promptProfile": _normalize_prompt_profile(config.get("promptProfile", DEFAULT_PROMPT_PROFILE)),
-        "promptSequence": _normalize_prompt_sequence(config.get("promptSequence", existing.get("promptSequence", []))),
+        "promptProfile": prompt_profile,
+        "promptSequence": _normalize_prompt_sequence(config.get("promptSequence", existing.get("promptSequence", [])), prompt_profile),
         "requestTimeoutSeconds": _clamp_int(
             config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
             default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -374,6 +379,12 @@ def save_app_config(config: dict[str, Any]) -> dict[str, Any]:
             default=DEFAULT_MAX_RETRIES,
             minimum=0,
             maximum=10,
+        ),
+        "rewriteConcurrency": _clamp_int(
+            config.get("rewriteConcurrency", DEFAULT_REWRITE_CONCURRENCY),
+            default=DEFAULT_REWRITE_CONCURRENCY,
+            minimum=1,
+            maximum=MAX_REWRITE_CONCURRENCY,
         ),
         "modelProviders": _normalize_model_providers(raw_model_providers),
         "roundModels": _normalize_round_models(raw_round_models),

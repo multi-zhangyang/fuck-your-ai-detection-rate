@@ -37,6 +37,10 @@ DETECTION_RECALL_TOP_K = 36
 DETECTION_RECALL_ADJACENT_RADIUS = 1
 DETECTION_NGRAM_SIZES = (12, 8, 5, 4)
 DETECTION_WEIGHTED_ANCHOR_LIMIT = 48
+LATIN_TECH_TOKEN_PATTERN = re.compile(
+    r"[A-Za-z]*\d[A-Za-z0-9+.#/-]*|[A-Z]{2,}[A-Za-z0-9+.#/-]*|[A-Za-z][A-Za-z0-9+.#/-]{2,}"
+)
+COMMON_SHORT_TECH_PREFIXES = {"AI", "API", "CPU", "GPU", "UI", "UX", "IT", "OS", "ML", "DL", "PDF", "DOCX", "JSON", "SQL", "XML"}
 
 
 @dataclass
@@ -688,12 +692,12 @@ def _extract_detection_anchor_candidates(value: str) -> list[WeightedDetectionAn
 
     latin_matches = [
         match
-        for match in re.finditer(r"[A-Za-z][A-Za-z0-9+.#/-]{2,}", raw)
+        for match in LATIN_TECH_TOKEN_PATTERN.finditer(raw)
         if normalize_for_detection_match(match.group(0)) not in STOP_WORDS
     ]
     for match in latin_matches:
         token = normalize_for_detection_match(match.group(0))
-        if len(token) >= 3:
+        if len(token) >= 3 or re.search(r"\d|[+.#/-]", match.group(0)):
             add(match.group(0), "latin", 1.06 if len(token) < 8 else 1.18)
     for start_index in range(len(latin_matches)):
         for window_size in (2, 3):
@@ -704,8 +708,9 @@ def _extract_detection_anchor_candidates(value: str) -> list[WeightedDetectionAn
             end = latin_matches[end_index - 1].end()
             span = raw[start:end]
             normalized = normalize_for_detection_match(span)
-            if 8 <= len(normalized) <= 56:
-                add(span, "latin_phrase", 1.24 + window_size * 0.06)
+            if 4 <= len(normalized) <= 56 and _is_signal_latin_anchor_span(span, normalized):
+                phrase_weight = 2.18 if len(normalized) < 8 else 1.24 + window_size * 0.06
+                add(span, "latin_phrase", phrase_weight)
 
     for match in re.finditer(r"[\u3400-\u9fff]{4,}", raw):
         run = normalize_for_detection_match(match.group(0))
@@ -716,6 +721,22 @@ def _extract_detection_anchor_candidates(value: str) -> list[WeightedDetectionAn
             add(fragment, "cjk_phrase", 1.16 + min(0.34, len(fragment) / 40))
 
     return sorted(anchors.values(), key=lambda anchor: (anchor.weight, len(anchor.value)), reverse=True)[:80]
+
+
+def _is_signal_latin_anchor_span(span: str, normalized: str) -> bool:
+    if len(normalized) >= 8:
+        return True
+    if re.search(r"\d|[+.#/-]", span):
+        return True
+    tokens = [match.group(0) for match in LATIN_TECH_TOKEN_PATTERN.finditer(span)]
+    upper_tokens = [token for token in tokens if token.isupper() and len(token) >= 2]
+    if len(upper_tokens) >= 2:
+        if all(token in COMMON_SHORT_TECH_PREFIXES for token in upper_tokens):
+            return len(normalized) >= 8
+        return len(normalized) >= 4
+    if upper_tokens and upper_tokens[0] not in COMMON_SHORT_TECH_PREFIXES:
+        return len(normalized) >= 6
+    return False
 
 
 def _build_cjk_anchor_windows(run: str) -> list[str]:

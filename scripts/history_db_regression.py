@@ -176,7 +176,7 @@ def run_regression() -> dict[str, Any]:
             "rounds": [
                 {
                     "round": 1,
-                    "prompt": "prompts/fyadr-cn-round1.md",
+                    "prompt": "prompts/rewrite-pass-1.md",
                     "prompt_profile": "cn",
                     "input_path": TEST_DOC_ID,
                     "output_path": "finish/intermediate/__fyadr_history_db_regression___round1.txt",
@@ -208,7 +208,7 @@ def run_regression() -> dict[str, Any]:
         updated_doc = update_round(
             doc_id=TEST_DOC_ID,
             round_number=2,
-            prompt="prompts/fyadr-cn-round2.md",
+        prompt="prompts/rewrite-pass-2.md",
             prompt_profile="cn",
             input_path="finish/intermediate/__fyadr_history_db_regression___round1.txt",
             output_path="finish/intermediate/__fyadr_history_db_regression___round2.txt",

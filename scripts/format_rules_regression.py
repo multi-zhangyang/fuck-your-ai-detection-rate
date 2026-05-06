@@ -92,6 +92,18 @@ def run_regression(spec_path: Path, report_path: Path) -> dict[str, Any]:
         if actual_indent not in (None, 0, 0.0):
             failures.append(f"{role}.firstLineIndentPt should not be parsed from title character spacing: {actual_indent!r}")
 
+    style_meta = rules.get("styleMeta", {})
+    for role, blocked_fields in {
+        "heading_1": ("firstLineIndentPt", "spaceBeforePt", "spaceAfterPt", "lineSpacingPt"),
+        "heading_2": ("firstLineIndentPt", "spaceBeforePt", "spaceAfterPt", "lineSpacingPt"),
+        "body_text": ("spaceBeforePt", "spaceAfterPt"),
+    }.items():
+        explicit_fields = set(style_meta.get(role, {}).get("explicitFields", [])) if isinstance(style_meta.get(role), dict) else set()
+        checks.append({"role": role, "key": "explicitFields", "actual": sorted(explicit_fields), "expected": f"exclude {blocked_fields}"})
+        leaked_fields = [field for field in blocked_fields if field in explicit_fields]
+        if leaked_fields:
+            failures.append(f"{role}.explicitFields should not force unspecified fields: {leaked_fields}")
+
     page = rules.get("page", {})
     expected_page = {"paper": "A4", "topMarginCm": 2.5, "bottomMarginCm": 2.5, "leftMarginCm": 3.0, "rightMarginCm": 3.0}
     for key, expected in expected_page.items():
@@ -318,6 +330,112 @@ def run_regression(spec_path: Path, report_path: Path) -> dict[str, Any]:
     variant_quality = variant_rules.get("quality", {})
     if int(variant_quality.get("explicitCoveragePercent", 0) or 0) < 90:
         failures.append(f"variant explicit coverage too low: {variant_quality.get('explicitCoveragePercent')}")
+
+    coverage_instruction_text = """
+    页面设置：A4，页边距上、下、左、右分别为25、25、30、20mm。
+    标题层次：一级三号黑体居中，二级四号黑体居左，三级小四号黑体居左，四级五号黑体居左。
+    正文格式：中文宋体，英文和数字TimesNewRoman，小四号，22磅固定行距，首行缩进2em，两端对齐。
+    参考书目标题三号黑体居中，参考书目条目五号宋体；谢辞正文小四号宋体。
+    """
+    coverage_rules = merge_deterministic_rules({}, extract_deterministic_format_rules(coverage_instruction_text))
+    coverage_expectations = {
+        "page": {"topMarginCm": 2.5, "bottomMarginCm": 2.5, "leftMarginCm": 3.0, "rightMarginCm": 2.0},
+        "body_text": {"cnFont": "宋体", "enFont": "Times New Roman", "fontSizePt": 12.0, "lineSpacingPt": 22.0, "firstLineIndentPt": 21.0, "alignment": "justify"},
+        "heading_1": {"cnFont": "黑体", "fontSizePt": 16.0, "alignment": "center"},
+        "heading_2": {"cnFont": "黑体", "fontSizePt": 14.0, "alignment": "left"},
+        "heading_3": {"cnFont": "黑体", "fontSizePt": 12.0, "alignment": "left"},
+        "heading_4": {"cnFont": "黑体", "fontSizePt": 10.5, "alignment": "left"},
+        "references_heading": {"cnFont": "黑体", "fontSizePt": 16.0, "alignment": "center"},
+        "references_body": {"cnFont": "宋体", "fontSizePt": 10.5},
+        "ack_body": {"cnFont": "宋体", "fontSizePt": 12.0},
+    }
+    for role, expected in coverage_expectations.items():
+        if role == "page":
+            for key, expected_value in expected.items():
+                actual = coverage_rules.get("page", {}).get(key)
+                checks.append({"role": "coverage_page", "key": key, "actual": actual, "expected": expected_value})
+                if not _values_equal(actual, expected_value):
+                    failures.append(f"coverage page.{key}: expected {expected_value!r}, got {actual!r}")
+            continue
+        _expect_style(coverage_rules, role, expected, failures, checks)
+
+    loose_ai_rules = merge_deterministic_rules(
+        {
+            "version": 1,
+            "schoolName": "loose-nested-ai",
+            "pageLayout": {
+                "pageMargin": {"top": "25mm", "bottom": "2.6cm", "left": "30mm", "right": "2cm"},
+            },
+            "styles": [
+                {
+                    "roleName": "body",
+                    "textStyle": {"font": {"cn": "仿宋GB2312", "en": "TimesNewRoman"}, "size": "小四号"},
+                    "paragraphFormat": {"lineHeight": "22磅固定行距", "indent": "2em", "align": "两端对齐"},
+                }
+            ],
+            "styleMeta": [{"roleName": "body", "sourceText": "Nested AI body rule.", "confidence": "93%", "isInferred": False}],
+            "notes": [],
+        },
+        {},
+    )
+    loose_body = loose_ai_rules.get("styles", {}).get("body_text", {})
+    loose_expectations = {
+        "cnFont": "仿宋GB2312",
+        "enFont": "Times New Roman",
+        "fontSizePt": 12.0,
+        "lineSpacingPt": 22.0,
+        "firstLineIndentPt": 21.0,
+        "alignment": "justify",
+    }
+    for key, expected_value in loose_expectations.items():
+        actual = loose_body.get(key)
+        checks.append({"role": "loose_ai_body", "key": key, "actual": actual, "expected": expected_value})
+        if not _values_equal(actual, expected_value):
+            failures.append(f"loose AI body_text.{key}: expected {expected_value!r}, got {actual!r}")
+    for key, expected_value in {"topMarginCm": 2.5, "bottomMarginCm": 2.6, "leftMarginCm": 3.0, "rightMarginCm": 2.0}.items():
+        actual = loose_ai_rules.get("page", {}).get(key)
+        checks.append({"role": "loose_ai_page", "key": key, "actual": actual, "expected": expected_value})
+        if not _values_equal(actual, expected_value):
+            failures.append(f"loose AI page.{key}: expected {expected_value!r}, got {actual!r}")
+
+    wide_ai_rules = merge_deterministic_rules(
+        {
+            "version": 1,
+            "schoolName": "wide-ai-schema",
+            "pageSetup": {"margins": ["25mm", "26mm", "30mm", "20mm"]},
+            "paragraphStyles": {
+                "headings": {
+                    "level_1": {"cnFont": "SimHei", "fontSize": 16, "align": "center"},
+                    "level_3": {"font": {"cn": "SimHei", "en": "TimesNewRoman"}, "size": 12, "align": "left"},
+                },
+                "references": {
+                    "heading": {"font": "SimHei", "size": 16, "align": "center"},
+                    "items": {"font": {"cn": "SimSun", "en": "TimesNewRoman"}, "size": 10.5, "lineHeight": "18pt"},
+                },
+                "ack": {
+                    "body": {"font": {"cnFont": "SimSun"}, "size": 12},
+                },
+            },
+            "body_text": {"font": {"cn": "SimSun", "en": "TimesNewRoman"}, "fontSize": 12, "lineHeight": "22pt", "indent": "2em", "align": "justify"},
+            "notes": [],
+        },
+        {},
+    )
+    wide_expectations = {
+        "body_text": {"cnFont": "宋体", "enFont": "Times New Roman", "fontSizePt": 12.0, "lineSpacingPt": 22.0, "firstLineIndentPt": 21.0, "alignment": "justify"},
+        "heading_1": {"cnFont": "黑体", "fontSizePt": 16.0, "alignment": "center"},
+        "heading_3": {"cnFont": "黑体", "enFont": "Times New Roman", "fontSizePt": 12.0, "alignment": "left"},
+        "references_heading": {"cnFont": "黑体", "fontSizePt": 16.0, "alignment": "center"},
+        "references_body": {"cnFont": "宋体", "enFont": "Times New Roman", "fontSizePt": 10.5, "lineSpacingPt": 18.0},
+        "ack_body": {"cnFont": "宋体", "fontSizePt": 12.0},
+    }
+    for role, expected in wide_expectations.items():
+        _expect_style(wide_ai_rules, role, expected, failures, checks)
+    for key, expected_value in {"topMarginCm": 2.5, "bottomMarginCm": 2.6, "leftMarginCm": 3.0, "rightMarginCm": 2.0}.items():
+        actual = wide_ai_rules.get("page", {}).get(key)
+        checks.append({"role": "wide_ai_page", "key": key, "actual": actual, "expected": expected_value})
+        if not _values_equal(actual, expected_value):
+            failures.append(f"wide AI page.{key}: expected {expected_value!r}, got {actual!r}")
 
     report = _build_report(spec_path, report_path, rules, checks, failures)
     report_path.parent.mkdir(parents=True, exist_ok=True)

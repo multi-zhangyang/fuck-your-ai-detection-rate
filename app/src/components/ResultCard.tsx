@@ -9,25 +9,26 @@ import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empt
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import type { DetectionReportMatch, ExportResult, OutputPreview, ReviewDecision, RoundCompareData, RoundResult } from "@/types/app";
+import type { CustomReviewDecision, DetectionReportMatch, ExportResult, OutputPreview, ReviewDecision, RoundCompareData, RoundResult } from "@/types/app";
 
 const T = {
   noResult: "还没有结果",
   liveRunning: "运行中",
+  checkpointIncomplete: "断点未完成",
   diff: "改写对照",
-  shown: "全部显示",
-  reviewOnly: "只看需处理",
   showAll: "显示全部",
   noReviewChunks: "暂无需处理块",
   failedChunks: "重跑失败",
-  failedOnly: "只看失败",
   noFailedChunks: "暂无重跑失败块",
+  highRisk: "高风险",
+  noHighRiskChunks: "暂无高风险块",
   changedChunks: "新增/删除",
   numberRisk: "数字风险",
   citationRisk: "引用风险",
   rerunFailure: "重跑失败",
   source: "原文",
   rewrite: "改写",
+  highRiskRewrite: "高风险改写",
   risk: "表达提示",
   needsReview: "需处理",
   stable: "稳定",
@@ -50,7 +51,7 @@ const T = {
 
 const diffScrollPositions = new Map<string, number>();
 
-export type DiffFilterMode = "all" | "review" | "failed";
+export type DiffFilterMode = "all" | "review" | "highRisk" | "failed";
 export type DiffFocusRequest = {
   filterMode: DiffFilterMode;
   chunkId?: string;
@@ -60,6 +61,7 @@ export type DiffFocusRequest = {
 type RerunFailure = {
   chunkId: string;
   error: string;
+  failedAttempts?: RoundCompareData["chunks"][number]["failedAttempts"];
   rerunStatus?: string;
   rerunFallbackMode?: string;
   rerunFallbackError?: string;
@@ -84,10 +86,13 @@ type Props = {
   onCancelBatchRerun?: () => void;
   onExportTxt: () => void;
   onExportDocx: () => void;
+  roundRunning?: boolean;
+  checkpointPending?: boolean;
 };
 
-export function ResultCard({ result, compareData, busy, reviewDecisions, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportTxt, onExportDocx }: Props) {
+export function ResultCard({ result, compareData, busy, reviewDecisions, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportTxt, onExportDocx, roundRunning = false, checkpointPending = false }: Props) {
   const hasOutput = Boolean(result || compareData?.chunks.length);
+  const outputReady = Boolean((result?.outputPath || compareData?.outputPath) && !checkpointPending);
   return (
     <Card className={cn("flex h-auto min-h-[8rem] w-full shrink-0 flex-col overflow-hidden border-border bg-card shadow-sm", hasOutput && "min-h-0")}>
       <CardHeader className="shrink-0 border-b border-border bg-card px-5 py-3">
@@ -114,21 +119,21 @@ export function ResultCard({ result, compareData, busy, reviewDecisions, onRerun
         ) : null}
         {hasOutput ? (
           <>
-            <div className="grid shrink-0 gap-2 sm:grid-cols-2 xl:grid-cols-3">
-              <Button className="h-11 justify-start px-4" onClick={onExportDocx} disabled={!result || busy}>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <Button className="h-11 min-w-40 px-4" onClick={onExportDocx} disabled={!outputReady || busy}>
                 <Download data-icon="inline-start" />
                 导出 Word
               </Button>
-              <Button className="h-11 justify-start px-4" variant="outline" onClick={onExportTxt} disabled={!result || busy}>
+              <Button className="h-11 min-w-28 px-4" variant="outline" onClick={onExportTxt} disabled={!outputReady || busy}>
                 <Download data-icon="inline-start" />
                 TXT
               </Button>
-              <Button className="h-11 justify-start px-4" variant="outline" onClick={onRerunRiskyChunks} disabled={!result || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? "rewrite")) || busy}>
+              <Button className="h-11 min-w-40 px-4" variant="outline" onClick={onRerunRiskyChunks} disabled={!outputReady || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? "rewrite")) || busy}>
                 {T.rerunRisky}
               </Button>
             </div>
 
-            {!result ? <LiveHint /> : null}
+            {!result ? <LiveHint running={roundRunning} /> : null}
           </>
         ) : (
           <Empty className="min-h-0 flex-1 border bg-background/70">
@@ -180,8 +185,12 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
 
   const allChunks = data?.chunks ?? [];
   const rerunFailureByChunk = new Map(rerunFailures.map((failure) => [failure.chunkId, failure]));
-  const failedChunkIds = allChunks.filter((chunk) => rerunFailureByChunk.has(chunk.chunkId) && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? "rewrite")).map((chunk) => chunk.chunkId);
+  const failedChunkIds = allChunks.filter((chunk) => rerunFailureByChunk.has(chunk.chunkId) && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? getDefaultReviewDecisionForChunk(chunk))).map((chunk) => chunk.chunkId);
   const failedChunkIdSet = new Set(failedChunkIds);
+  const highRiskChunkIds = allChunks
+    .filter((chunk) => !failedChunkIdSet.has(chunk.chunkId) && isHighRiskFailedOutputChunk(chunk) && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? getDefaultReviewDecisionForChunk(chunk)))
+    .map((chunk) => chunk.chunkId);
+  const highRiskChunkIdSet = new Set(highRiskChunkIds);
   const changedChunkIds = allChunks.filter((chunk) => hasChunkTextChange(chunk)).map((chunk) => chunk.chunkId);
   const changedChunkIdSet = new Set(changedChunkIds);
   const numberRiskChunkIds = allChunks.filter((chunk) => hasChunkNumberRisk(chunk)).map((chunk) => chunk.chunkId);
@@ -189,11 +198,13 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   const citationRiskChunkIds = allChunks.filter((chunk) => hasChunkCitationRisk(chunk)).map((chunk) => chunk.chunkId);
   const citationRiskChunkIdSet = new Set(citationRiskChunkIds);
   const reviewChunkIds = allChunks
-    .filter((chunk) => !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? "rewrite") && (isReviewChunk(chunk, detectionMatchesByChunk[chunk.chunkId] ?? []) || rerunFailureByChunk.has(chunk.chunkId)))
+    .filter((chunk) => !failedChunkIdSet.has(chunk.chunkId) && !highRiskChunkIdSet.has(chunk.chunkId) && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? getDefaultReviewDecisionForChunk(chunk)) && isReviewChunk(chunk, detectionMatchesByChunk[chunk.chunkId] ?? []))
     .map((chunk) => chunk.chunkId);
   const reviewChunkIdSet = new Set(reviewChunkIds);
   const shownChunks = filterMode === "failed"
     ? allChunks.filter((chunk) => failedChunkIdSet.has(chunk.chunkId))
+    : filterMode === "highRisk"
+      ? allChunks.filter((chunk) => highRiskChunkIdSet.has(chunk.chunkId))
     : filterMode === "review"
       ? allChunks.filter((chunk) => reviewChunkIdSet.has(chunk.chunkId))
       : allChunks;
@@ -201,10 +212,10 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   const baseScrollKey = data ? data.outputPath || `${data.docId}-${data.round}` : "empty";
   const scrollKey = `${baseScrollKey}:${filterMode}`;
   const chunkCount = shownChunks.length;
-  const shownLabel = getDiffFilterLabel(filterMode);
   const emptyState = getDiffFilterEmptyState(filterMode);
   const getFirstChunkIdForMode = (mode: DiffFilterMode) => {
     if (mode === "failed") return failedChunkIds[0] ?? "";
+    if (mode === "highRisk") return highRiskChunkIds[0] ?? "";
     if (mode === "review") return reviewChunkIds[0] ?? "";
     return shownChunks[0]?.chunkId ?? allChunks[0]?.chunkId ?? "";
   };
@@ -222,9 +233,11 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
       setFocusedReviewIndex(-1);
     } else if (failedChunkIds.length === 0 && filterMode === "failed") {
       setFilterMode("all");
+    } else if (highRiskChunkIds.length === 0 && filterMode === "highRisk") {
+      setFilterMode("all");
     }
     previousFailedCountRef.current = failedChunkIds.length;
-  }, [failedChunkIds.length, filterMode]);
+  }, [failedChunkIds.length, filterMode, highRiskChunkIds.length]);
 
   useEffect(() => {
     if (!diffFocusRequest || !allChunks.length) {
@@ -330,9 +343,9 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
           >
             <ToggleGroupItem value="all" aria-label="显示全部">全部</ToggleGroupItem>
             <ToggleGroupItem value="review" aria-label="只看需处理" disabled={!reviewChunkIds.length}>需处理 {reviewChunkIds.length}</ToggleGroupItem>
-            <ToggleGroupItem value="failed" aria-label="只看失败" disabled={!failedChunkIds.length}>失败 {failedChunkIds.length}</ToggleGroupItem>
+            <ToggleGroupItem value="highRisk" aria-label="只看高风险" disabled={!highRiskChunkIds.length}>高风险 {highRiskChunkIds.length}</ToggleGroupItem>
+            {failedChunkIds.length ? <ToggleGroupItem value="failed" aria-label="只看失败">失败 {failedChunkIds.length}</ToggleGroupItem> : null}
           </ToggleGroup>
-          <Badge variant="secondary" className="ml-auto">{shownLabel}</Badge>
         </div>
       </div>
       {failedChunkIds.length ? (
@@ -353,6 +366,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
             const hasChangedText = changedChunkIdSet.has(chunk.chunkId);
             const hasNumberRisk = numberRiskChunkIdSet.has(chunk.chunkId);
             const hasCitationRisk = citationRiskChunkIdSet.has(chunk.chunkId);
+            const hasHighRiskFailedOutput = highRiskChunkIdSet.has(chunk.chunkId);
             const strongMatches = detectionMatches.filter((match) => match.confidence === "strong");
             const reviewMatches = detectionMatches.filter((match) => match.confidence === "review");
             const matchTone = strongMatches.length ? "strong" : reviewMatches.length ? "review" : "weak";
@@ -365,7 +379,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
             const reviewReasonHints = detectionMatches
               .filter((match) => match.confidence === "strong" || match.confidence === "review")
               .map((match) => match.reason || `${match.label} ${match.segment.probability}%`);
-            const decision = reviewDecisions[chunk.chunkId] ?? "rewrite";
+            const decision = reviewDecisions[chunk.chunkId] ?? getDefaultReviewDecisionForChunk(chunk);
             const displayOutput = getDecisionDisplayOutput(chunk, decision);
             return (
               <div
@@ -377,6 +391,8 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                   "grid min-w-0 gap-4 overflow-hidden rounded-lg border p-4 transition xl:grid-cols-2",
                   rerunFailure
                     ? "border-destructive/30 bg-destructive/5"
+                    : hasHighRiskFailedOutput
+                      ? "border-destructive/40 bg-destructive/5"
                     : needsReview
                       ? "border-primary/20 bg-muted/60"
                       : "border-border/70 bg-muted/30",
@@ -407,6 +423,14 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                     ) : null}
                   </div>
                 ) : null}
+                {hasHighRiskFailedOutput ? (
+                  <Alert variant="destructive" className="xl:col-span-2 py-3 text-xs leading-5">
+                    <AlertTitle>{T.highRiskRewrite}</AlertTitle>
+                    <AlertDescription className="text-xs">
+                      未过硬校验，默认保留原文。确认采用后才会导出此改写。
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
                 {hasChangedText || hasNumberRisk || hasCitationRisk ? (
                   <div className="xl:col-span-2 flex flex-wrap items-center gap-2 text-xs">
                     {hasChangedText ? <Badge variant="secondary">{T.changedChunks}</Badge> : null}
@@ -415,7 +439,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                   </div>
                 ) : null}
                 <TextPane title={T.source} text={chunk.inputText} />
-                <TextPane title={displayOutput.title} text={displayOutput.text} tone="rewrite" />
+                <TextPane title={displayOutput.title} text={displayOutput.text} tone={displayOutput.tone} />
                 <div className="xl:col-span-2 min-w-0">
                   <ChunkQualityBar chunk={chunk} busy={busy} decision={decision} forceNeedsReview={needsReview} reviewReasonHints={reviewReasonHints} onDecisionChange={(decision) => onReviewDecisionChange(chunk.chunkId, decision)} onRerun={(userFeedback) => onRerunChunk(chunk.chunkId, userFeedback)} />
                 </div>
@@ -440,20 +464,39 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
 
 function isReviewChunk(chunk: RoundCompareData["chunks"][number], detectionMatches: DetectionReportMatch[]): boolean {
   const flags = chunk.quality?.flags ?? [];
-  const hasLocalReview = Boolean(chunk.quality?.needsReview) || chunk.fallbackMode === "source" || flags.includes("source_fallback");
+  const hasLocalReview = Boolean(chunk.quality?.needsReview) || isHardValidationFallbackChunk(chunk);
   const hasReportReview = detectionMatches.some((match) => match.confidence === "strong" || match.confidence === "review");
   return hasLocalReview || hasReportReview;
 }
 
-function getDiffFilterLabel(mode: DiffFilterMode): string {
-  if (mode === "failed") return T.failedOnly;
-  if (mode === "review") return T.reviewOnly;
-  return T.shown;
-}
-
 function getDiffFilterEmptyState(mode: DiffFilterMode): { title: string } {
   if (mode === "failed") return { title: T.noFailedChunks };
+  if (mode === "highRisk") return { title: T.noHighRiskChunks };
   return { title: T.noReviewChunks };
+}
+
+function getLatestFailedAttempt(chunk: RoundCompareData["chunks"][number]): NonNullable<RoundCompareData["chunks"][number]["failedAttempts"]>[number] | null {
+  const attempts = (chunk.failedAttempts ?? []).filter((attempt) => typeof attempt?.outputText === "string" && attempt.outputText.trim());
+  return attempts.length ? attempts[attempts.length - 1] : null;
+}
+
+function isHardValidationFallbackChunk(chunk: RoundCompareData["chunks"][number]): boolean {
+  const flags = chunk.quality?.flags ?? [];
+  return Boolean(
+    chunk.fallbackMode === "source"
+    || flags.includes("source_fallback")
+    || flags.includes("targeted_rerun_fallback")
+    || chunk.rerunStatus === "fallback"
+    || chunk.rerunFallbackMode,
+  );
+}
+
+function isHighRiskFailedOutputChunk(chunk: RoundCompareData["chunks"][number]): boolean {
+  return Boolean(isHardValidationFallbackChunk(chunk) && getLatestFailedAttempt(chunk));
+}
+
+function getDefaultReviewDecisionForChunk(chunk: RoundCompareData["chunks"][number]): ReviewDecision {
+  return isHighRiskFailedOutputChunk(chunk) ? "source" : "rewrite";
 }
 
 function hasTokenDifference(sourceText: string, outputText: string, extractor: (text: string) => string[]): boolean {
@@ -475,45 +518,64 @@ function hasChunkCitationRisk(chunk: RoundCompareData["chunks"][number]): boolea
   return (chunk.quality?.missingCitationCount ?? 0) > 0 || hasTokenDifference(chunk.inputText, chunk.outputText, extractCitationTokens);
 }
 
-function TextPane({ title, text, tone = "source" }: { title: string; text: string; tone?: "source" | "rewrite" }) {
+function TextPane({ title, text, tone = "source" }: { title: string; text: string; tone?: "source" | "rewrite" | "danger" }) {
   return (
-    <div className={cn("min-w-0 overflow-hidden rounded-lg border border-border p-3", tone === "rewrite" ? "bg-muted/40" : "bg-background")}>
-      <div className={cn("mb-2 text-xs font-semibold text-muted-foreground", tone === "rewrite" && "text-foreground")}>{title}</div>
+    <div className={cn(
+      "min-w-0 overflow-hidden rounded-lg border p-3",
+      tone === "danger"
+        ? "border-destructive/30 bg-destructive/5"
+        : tone === "rewrite"
+          ? "border-border bg-muted/40"
+          : "border-border bg-background",
+    )}>
+      <div className={cn("mb-2 text-xs font-semibold text-muted-foreground", tone === "rewrite" && "text-foreground", tone === "danger" && "text-destructive")}>{title}</div>
       <div className="max-h-[min(58vh,42rem)] min-h-[8rem] overflow-auto whitespace-pre-wrap break-words pr-2 text-sm leading-7 text-foreground">{text}</div>
     </div>
   );
 }
 
-function LiveHint() {
+function LiveHint({ running }: { running: boolean }) {
   return (
     <Alert className="shrink-0">
-      <AlertTitle>{T.liveRunning}</AlertTitle>
+      <AlertTitle>{running ? T.liveRunning : T.checkpointIncomplete}</AlertTitle>
     </Alert>
   );
 }
 
 function getReviewDecisionMode(decision: ReviewDecision): "rewrite" | "source" | "custom" {
+  if (isFailedOutputDecision(decision)) return "rewrite";
   if (typeof decision === "object" && decision?.mode === "custom") return "custom";
   return decision === "source" || decision === "source_confirmed" ? "source" : "rewrite";
 }
 
-function getDecisionDisplayOutput(chunk: RoundCompareData["chunks"][number], decision: ReviewDecision): { title: string; text: string } {
+function getDecisionDisplayOutput(chunk: RoundCompareData["chunks"][number], decision: ReviewDecision): { title: string; text: string; tone: "rewrite" | "danger" } {
+  const failedAttempt = getLatestFailedAttempt(chunk);
+  if (failedAttempt && isHighRiskFailedOutputChunk(chunk)) {
+    if (isFailedOutputDecision(decision) && isReviewDecisionConfirmed(decision)) {
+      return { title: `${T.rewrite}（${T.highRisk}已采用）`, text: decision.text || failedAttempt.outputText, tone: "danger" };
+    }
+    return { title: `${T.rewrite}（${T.highRisk}）`, text: failedAttempt.outputText, tone: "danger" };
+  }
   const mode = getReviewDecisionMode(decision);
   if (mode === "custom" && typeof decision === "object" && isReviewDecisionConfirmed(decision)) {
     const title = `${T.rewrite}（${T.customChoice}）`;
-    return { title, text: decision.text || chunk.outputText };
+    return { title, text: decision.text || chunk.outputText, tone: "rewrite" };
   }
   if (mode === "source") {
-    return { title: `${T.rewrite}（${T.useSource}）`, text: chunk.inputText };
+    return { title: `${T.rewrite}（${T.useSource}）`, text: chunk.inputText, tone: "rewrite" };
   }
-  return { title: T.rewrite, text: chunk.outputText };
+  return { title: T.rewrite, text: chunk.outputText, tone: "rewrite" };
 }
 
 function isReviewDecisionConfirmed(decision: ReviewDecision): boolean {
   if (typeof decision === "object") {
-    return decision.source === "rejected_candidate" ? decision.confirmed === true : true;
+    return isFailedOutputDecision(decision) ? decision.confirmed === true : true;
   }
   return decision === "rewrite_confirmed" || decision === "source_confirmed";
+}
+
+function isFailedOutputDecision(decision: ReviewDecision): decision is CustomReviewDecision & { source: "failed_output" } {
+  return typeof decision === "object" && decision.source === "failed_output";
 }
 
 function extractNumberTokens(text: string): string[] {
@@ -590,24 +652,47 @@ function ChunkQualityBar({ chunk, busy, decision, forceNeedsReview = false, revi
   const flags = quality?.flags ?? [];
   const advisoryFlags = quality?.advisoryFlags ?? [];
   const isSourceFallback = chunk.fallbackMode === "source" || flags.includes("source_fallback");
+  const isTargetedFallback = flags.includes("targeted_rerun_fallback") || chunk.rerunStatus === "fallback" || Boolean(chunk.rerunFallbackMode);
+  const isValidationFallback = isSourceFallback || isTargetedFallback;
+  const failedAttempt = getLatestFailedAttempt(chunk);
+  const isHighRiskFailedOutput = Boolean(isValidationFallback && failedAttempt);
   const [feedback, setFeedback] = useState("");
   const selectedBaseDecision = getReviewDecisionMode(decision);
   const isConfirmed = isReviewDecisionConfirmed(decision);
-  const reviewToolsVisible = !isConfirmed && (qualityNeedsReview || isSourceFallback);
-  const reviewReasons = getChunkReviewReasons(chunk, reviewReasonHints);
+  const reviewToolsVisible = !isConfirmed && (qualityNeedsReview || isValidationFallback);
+  const reviewReasons = isHighRiskFailedOutput ? [] : getChunkReviewReasons(chunk, reviewReasonHints);
+  const visibleFlags = isHighRiskFailedOutput ? flags.filter((flag) => flag !== "source_fallback" && flag !== "targeted_rerun_fallback") : flags;
   const decisionLabel = selectedBaseDecision === "custom" ? T.customChoice : selectedBaseDecision === "rewrite" ? T.useRewrite : T.useSource;
   const needsReview = !isConfirmed && (forceNeedsReview || qualityNeedsReview);
+  const adoptRewrite = () => {
+    if (isHighRiskFailedOutput && failedAttempt) {
+      onDecisionChange({
+        mode: "custom",
+        text: failedAttempt.outputText,
+        source: "failed_output",
+        confirmed: true,
+        attempt: failedAttempt.attempt,
+        error: failedAttempt.error,
+      });
+      return;
+    }
+    onDecisionChange("rewrite_confirmed");
+  };
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-md border border-border/60 bg-background px-3 py-3 text-xs text-muted-foreground">
+    <div className={cn(
+      "flex min-w-0 flex-col gap-3 rounded-md border px-3 py-3 text-xs text-muted-foreground",
+      isHighRiskFailedOutput ? "border-destructive/30 bg-destructive/5" : "border-border/60 bg-background",
+    )}>
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant={needsReview ? "warning" : "success"}>{needsReview ? T.needsReview : T.stable}</Badge>
-        {isSourceFallback ? <Badge variant="warning">{T.sourceFallback}</Badge> : null}
+        {isHighRiskFailedOutput ? <Badge variant="danger">{T.highRisk}</Badge> : null}
+        {!isHighRiskFailedOutput ? <Badge variant={needsReview ? "warning" : "success"}>{needsReview ? T.needsReview : T.stable}</Badge> : null}
+        {!isHighRiskFailedOutput && isValidationFallback ? <Badge variant="warning">{T.sourceFallback}</Badge> : null}
         <span>{T.expansion} {quality?.expansionRatio ?? "-"}</span>
         <span>{T.protectedTokens} {quality?.protectedTokenCount ?? 0}</span>
         {formatProtectedTypes(quality?.protectedTokenTypes) ? <span>{formatProtectedTypes(quality?.protectedTokenTypes)}</span> : null}
         <span>{T.citationMissing} {quality?.missingCitationCount ?? 0}</span>
         {chunk.rerunStrategy?.length ? <span>{T.rerunStrategy} {chunk.rerunStrategy.map(formatRerunStrategy).join(" / ")}</span> : null}
-        {flags.slice(0, 3).map((flag) => <Badge key={flag} variant="outline">{formatChunkFlag(flag)}</Badge>)}
+        {visibleFlags.slice(0, 3).map((flag) => <Badge key={flag} variant="outline">{formatChunkFlag(flag)}</Badge>)}
         {!needsReview && advisoryFlags.length ? <Badge variant="outline">{T.risk} {advisoryFlags.slice(0, 2).map(formatChunkFlag).join(" / ")}</Badge> : null}
         <Badge variant={isConfirmed ? "success" : "secondary"}>{isConfirmed ? T.confirmedChoice : T.defaultChoice}：{decisionLabel}</Badge>
       </div>
@@ -622,7 +707,7 @@ function ChunkQualityBar({ chunk, busy, decision, forceNeedsReview = false, revi
         </div>
       ) : null}
       <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-2">
-        <Button size="sm" variant={selectedBaseDecision === "rewrite" && isConfirmed ? "default" : "outline"} onClick={() => onDecisionChange("rewrite_confirmed")}>{isConfirmed && selectedBaseDecision === "rewrite" ? `${T.confirmedChoice}${T.useRewrite}` : T.useRewrite}</Button>
+        <Button size="sm" variant={selectedBaseDecision === "rewrite" && isConfirmed ? "default" : isHighRiskFailedOutput ? "outlineDanger" : "outline"} onClick={adoptRewrite}>{isConfirmed && selectedBaseDecision === "rewrite" ? `${T.confirmedChoice}${T.useRewrite}` : T.useRewrite}</Button>
         <Button size="sm" variant={selectedBaseDecision === "source" && isConfirmed ? "default" : "outline"} onClick={() => onDecisionChange("source_confirmed")}>{isConfirmed && selectedBaseDecision === "source" ? `${T.confirmedChoice}${T.useSource}` : T.useSource}</Button>
         <Button size="sm" variant="outline" onClick={() => onRerun(feedback)} disabled={busy}>
           <RotateCcw data-icon="inline-start" />

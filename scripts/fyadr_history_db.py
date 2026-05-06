@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from prompt_library import LEGACY_PROMPT_PROFILE, is_prompt_sequence_customizable
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FINISH_DIR = ROOT_DIR / "finish"
 DB_PATH = FINISH_DIR / "fyadr_history.sqlite3"
@@ -1259,7 +1261,7 @@ def _history_round_from_row(row: sqlite3.Row, artifact_stats: dict[str, Any]) ->
     if not isinstance(payload.get("round"), int):
         payload["round"] = int(row["round_number"])
     if not str(payload.get("prompt_profile", "")).strip():
-        payload["prompt_profile"] = str(row["prompt_profile"] or "cn")
+        payload["prompt_profile"] = str(row["prompt_profile"] or LEGACY_PROMPT_PROFILE)
     if "prompt_sequence" not in payload:
         sequence_key = str(row["prompt_sequence_key"] or "")
         if sequence_key:
@@ -1451,12 +1453,11 @@ def _insert_document_entry(connection: sqlite3.Connection, doc_id: str, entry: A
         if not isinstance(round_number, int):
             continue
         round_count += 1
-        prompt_profile = str(round_item.get("prompt_profile", "cn") or "cn").strip().lower() or "cn"
-        prompt_sequence_key = ",".join(
-            str(part).strip().lower()
-            for part in round_item.get("prompt_sequence", [])
-            if str(part).strip()
+        prompt_profile = (
+            str(round_item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower()
+            or LEGACY_PROMPT_PROFILE
         )
+        prompt_sequence_key = _prompt_sequence_key(round_item, prompt_profile)
         cursor = connection.execute(
             """
             INSERT INTO rounds (
@@ -1554,7 +1555,12 @@ def _normalize_round_filters(round_filters: list[dict[str, Any]] | None) -> list
         round_number = item.get("roundNumber", item.get("round"))
         if not isinstance(round_number, int):
             continue
-        prompt_profile = str(item.get("promptProfile", item.get("prompt_profile", "cn")) or "cn").strip().lower() or "cn"
+        prompt_profile = (
+            str(item.get("promptProfile", item.get("prompt_profile", LEGACY_PROMPT_PROFILE)) or LEGACY_PROMPT_PROFILE)
+            .strip()
+            .lower()
+            or LEGACY_PROMPT_PROFILE
+        )
         prompt_sequence_key = str(item.get("promptSequenceKey", item.get("prompt_sequence_key", "")) or "").strip().lower()
         key = (round_number, prompt_profile, prompt_sequence_key)
         if key in seen:
@@ -1944,6 +1950,20 @@ def _normalize_record_path(path: str) -> str:
     while "//" in candidate:
         candidate = candidate.replace("//", "/")
     return candidate
+
+
+def _is_prompt_sequence_customizable(prompt_profile: str) -> bool:
+    return bool(is_prompt_sequence_customizable(prompt_profile))
+
+
+def _prompt_sequence_key(round_item: dict[str, Any], prompt_profile: str) -> str:
+    if not _is_prompt_sequence_customizable(prompt_profile):
+        return ""
+    return ",".join(
+        str(part).strip().lower()
+        for part in round_item.get("prompt_sequence", [])
+        if str(part).strip()
+    )
 
 
 def _record_path_to_absolute(path: str) -> Path | None:

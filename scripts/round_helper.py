@@ -16,6 +16,7 @@ from fyadr_round_service import (
     relative_to_root,
     run_round,
 )
+from prompt_library import DEFAULT_PROMPT_PROFILE, LEGACY_PROMPT_PROFILE, is_prompt_sequence_customizable
 from docx_bodymap import (
     build_docx_body_map,
     extract_body_map_paragraphs_from_output,
@@ -84,7 +85,7 @@ class DocumentRoundState:
 
 
 def _round_sequence_key(round_item: dict, prompt_profile: str) -> str:
-    if normalize_prompt_profile(prompt_profile) != "cn_custom":
+    if not is_prompt_sequence_customizable(prompt_profile):
         return ""
     sequence = round_item.get("prompt_sequence")
     if not isinstance(sequence, list):
@@ -94,12 +95,12 @@ def _round_sequence_key(round_item: dict, prompt_profile: str) -> str:
 
 def get_document_round_state(
     doc_id: str,
-    prompt_profile: str = "cn",
+    prompt_profile: str = DEFAULT_PROMPT_PROFILE,
     prompt_sequence: object | None = None,
 ) -> DocumentRoundState:
     normalized_prompt_profile = normalize_prompt_profile(prompt_profile)
     normalized_prompt_sequence = normalize_prompt_sequence(normalized_prompt_profile, prompt_sequence)
-    expected_sequence_key = ",".join(normalized_prompt_sequence) if normalized_prompt_profile == "cn_custom" else ""
+    expected_sequence_key = ",".join(normalized_prompt_sequence) if is_prompt_sequence_customizable(normalized_prompt_profile) else ""
     max_rounds = get_max_rounds(normalized_prompt_profile, normalized_prompt_sequence)
     rounds = _get_rounds(doc_id)
     completed = sorted(
@@ -107,9 +108,9 @@ def get_document_round_state(
         for round_item in rounds
         if isinstance(round_item, dict)
         and isinstance(round_item.get("round"), int)
-        and str(round_item.get("prompt_profile", "cn") or "cn").strip().lower() == normalized_prompt_profile
+        and str(round_item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() == normalized_prompt_profile
         and (
-            normalized_prompt_profile != "cn_custom"
+            not is_prompt_sequence_customizable(normalized_prompt_profile)
             or _round_sequence_key(round_item, normalized_prompt_profile) == expected_sequence_key
         )
         and 1 <= int(round_item.get("round")) <= max_rounds
@@ -134,7 +135,7 @@ def get_document_round_state(
     )
 
 
-def detect_next_round(doc_id: str, prompt_profile: str = "cn", prompt_sequence: object | None = None) -> int:
+def detect_next_round(doc_id: str, prompt_profile: str = DEFAULT_PROMPT_PROFILE, prompt_sequence: object | None = None) -> int:
     state = get_document_round_state(doc_id, prompt_profile=prompt_profile, prompt_sequence=prompt_sequence)
     if state.next_round is None:
         raise ValueError(f"Document already completed all {get_max_rounds(prompt_profile, prompt_sequence)} rounds: {doc_id}")
@@ -144,7 +145,7 @@ def detect_next_round(doc_id: str, prompt_profile: str = "cn", prompt_sequence: 
 def build_round_context(
     source_path: Path | str,
     round_number: int | None = None,
-    prompt_profile: str = "cn",
+    prompt_profile: str = DEFAULT_PROMPT_PROFILE,
     prompt_sequence: object | None = None,
 ) -> RoundContext:
     normalized_source = normalize_path(Path(source_path))
@@ -248,11 +249,12 @@ def run_document_round(
     source_path: Path | str,
     transform: Transform,
     round_number: int | None = None,
-    prompt_profile: str = "cn",
+    prompt_profile: str = DEFAULT_PROMPT_PROFILE,
     prompt_sequence: object | None = None,
     progress_callback: ProgressCallback | None = None,
     checkpoint_metadata: dict[str, object] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    max_concurrency: int = 1,
 ) -> dict:
     context = build_round_context(
         source_path,
@@ -278,6 +280,7 @@ def run_document_round(
         progress_callback=progress_callback,
         checkpoint_metadata=checkpoint_metadata,
         cancel_check=cancel_check,
+        max_concurrency=max_concurrency,
     )
 
     if body_map is not None and context.body_map_path is not None:
@@ -333,7 +336,7 @@ def run_document_round(
 def dump_round_plan(
     source_path: Path | str,
     round_number: int | None = None,
-    prompt_profile: str = "cn",
+    prompt_profile: str = DEFAULT_PROMPT_PROFILE,
     prompt_sequence: object | None = None,
 ) -> str:
     context = build_round_context(
@@ -356,9 +359,9 @@ def _doc_stem(doc_id: str) -> str:
 def _build_round_artifact_stem(doc_id: str, prompt_profile: str, prompt_sequence: object | None = None) -> str:
     stem = _doc_stem(doc_id)
     normalized_prompt_profile = normalize_prompt_profile(prompt_profile)
-    if normalized_prompt_profile == "cn":
+    if normalized_prompt_profile == LEGACY_PROMPT_PROFILE:
         return stem
-    if normalized_prompt_profile == "cn_custom":
+    if is_prompt_sequence_customizable(normalized_prompt_profile):
         return f"{stem}_{get_prompt_sequence_key(normalized_prompt_profile, prompt_sequence)}"
     return f"{stem}_{normalized_prompt_profile}"
 
@@ -379,14 +382,14 @@ def _get_round_item(
 ) -> dict | None:
     normalized_prompt_profile = normalize_prompt_profile(prompt_profile)
     normalized_prompt_sequence = normalize_prompt_sequence(normalized_prompt_profile, prompt_sequence)
-    expected_sequence_key = ",".join(normalized_prompt_sequence) if normalized_prompt_profile == "cn_custom" else ""
+    expected_sequence_key = ",".join(normalized_prompt_sequence) if is_prompt_sequence_customizable(normalized_prompt_profile) else ""
     rounds = _get_rounds(doc_id)
     for round_item in rounds:
         if (
             round_item.get("round") == round_number
-            and str(round_item.get("prompt_profile", "cn") or "cn").strip().lower() == normalized_prompt_profile
+            and str(round_item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() == normalized_prompt_profile
             and (
-                normalized_prompt_profile != "cn_custom"
+                not is_prompt_sequence_customizable(normalized_prompt_profile)
                 or _round_sequence_key(round_item, normalized_prompt_profile) == expected_sequence_key
             )
         ):

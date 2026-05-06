@@ -35,8 +35,32 @@ export type FormatParserModelRoute = {
   model?: string;
 };
 
-export type PromptId = "prewrite" | "classical" | "round1" | "round2";
-export type PromptProfile = "cn" | "cn_prewrite" | "cn_custom";
+export type PromptId = string;
+export type PromptProfile = string;
+
+export type PromptOption = {
+  id: PromptId;
+  label: string;
+  description?: string;
+  fileName?: string;
+  relativePath?: string;
+  builtIn?: boolean;
+  editable?: boolean;
+  defaultAvailable?: boolean;
+};
+
+export type PromptWorkflow = {
+  id: PromptProfile;
+  label: string;
+  description?: string;
+  defaultSequence: PromptId[];
+  customizable: boolean;
+  sequenceLimit: number;
+  roundLimit?: number;
+  chunkMetric?: "char" | "word" | string;
+  legacy?: boolean;
+  visible?: boolean;
+};
 
 export type PromptPreviewItem = {
   id: PromptId;
@@ -47,12 +71,51 @@ export type PromptPreviewItem = {
   sizeBytes: number;
   updatedAt: string;
   content: string;
+  builtIn?: boolean;
+  editable?: boolean;
+  defaultAvailable?: boolean;
+  backupPath?: string | null;
 };
 
 export type PromptPreviewResponse = {
   ok: boolean;
   promptDir: string;
   items: PromptPreviewItem[];
+  workflows?: PromptWorkflow[];
+};
+
+export type PromptSaveResult = {
+  ok: boolean;
+  promptDir: string;
+  item: PromptPreviewItem;
+};
+
+export type PromptDeleteResult = {
+  ok: boolean;
+  promptDir: string;
+  deletedId: PromptId;
+  backupPath?: string | null;
+  items: PromptPreviewItem[];
+  workflows?: PromptWorkflow[];
+};
+
+export type PromptWorkflowSaveResult = {
+  ok: boolean;
+  promptDir: string;
+  workflows: PromptWorkflow[];
+};
+
+export type PromptBackupItem = {
+  fileName: string;
+  relativePath: string;
+  sizeBytes: number;
+  createdAt: string;
+  content: string;
+};
+
+export type PromptBackupsResult = {
+  ok: boolean;
+  items: PromptBackupItem[];
 };
 
 export type ModelConfig = {
@@ -65,6 +128,7 @@ export type ModelConfig = {
   promptSequence: PromptId[];
   requestTimeoutSeconds: number;
   maxRetries: number;
+  rewriteConcurrency: number;
   modelProviders?: ModelProviderConfig[];
   roundModels?: Record<string, RoundModelConfig>;
 };
@@ -188,7 +252,10 @@ export type EnvironmentDiagnostics = {
     apiType: string;
     promptProfile: string;
     promptSequence: string[];
+    rewriteConcurrency?: number;
+    maxRewriteConcurrency?: number;
     requestTimeoutSeconds?: number;
+    effectiveRewriteTimeoutSeconds?: number;
     maxRetries?: number;
     providerCount: number;
     enabledProviderCount: number;
@@ -208,6 +275,13 @@ export type RoundProgress = {
   currentChunk?: number;
   totalChunks?: number;
   completedChunks?: number;
+  activeChunks?: number;
+  queuedChunks?: number;
+  concurrency?: number;
+  configuredConcurrency?: number;
+  requestTimeoutSeconds?: number;
+  configuredRequestTimeoutSeconds?: number;
+  failedChunks?: number;
   estimatedApiCalls?: number;
   chunkId?: string;
   nextChunkId?: string;
@@ -225,6 +299,16 @@ export type RoundProgress = {
   compareInputText?: string;
   compareOutputText?: string;
   error?: string;
+  errorCategory?: string;
+  statusCode?: number | string;
+    retryable?: boolean;
+    attempts?: number | string;
+    maxAttempts?: number | string;
+    nextAttempt?: number | string;
+    cooldownSeconds?: number | string;
+    retryAfterSeconds?: number | string;
+    configuredMaxRetries?: number | string;
+    providerMessage?: string;
   autoRetryEligible?: boolean;
   retryDelaySeconds?: number;
   maxAutoRetries?: number;
@@ -253,9 +337,8 @@ export type RoundCompareChunk = {
   fallbackError?: string;
   fallbackAttempts?: number;
   fallbackAt?: string;
-  rejectedCandidates?: Array<{
+  failedAttempts?: Array<{
     attempt?: number;
-    candidate?: number;
     outputText: string;
     outputCharCount?: number;
     truncated?: boolean;
@@ -324,10 +407,9 @@ export type GlobalStyleProfile = {
 export type CustomReviewDecision = {
   mode: "custom";
   text: string;
-  source?: "rejected_candidate" | "manual" | string;
+  source?: "failed_output" | "manual" | string;
   confirmed?: boolean;
   attempt?: number;
-  candidate?: number;
   error?: string;
 };
 
@@ -368,6 +450,7 @@ export type RoundProgressStatus = {
   progressPercent: number;
   checkpointPath: string;
   lastError: string;
+  lastErrorDetails?: Record<string, unknown>;
   updatedAt: string;
   validationEventCount: number;
   message: string;
@@ -413,6 +496,7 @@ export type RunAuditSummary = {
   maxRetries?: number | null;
   rateLimitWindowMinutes?: number | null;
   rateLimitMaxRequests?: number | null;
+  rewriteConcurrency?: number | null;
   promptProfile?: PromptProfile | string;
   promptSequence?: PromptId[] | string[];
   estimatedApiCalls?: number | null;
@@ -459,7 +543,7 @@ export type BatchRerunTarget = {
 export type BatchRerunFailure = {
   chunkId: string;
   error: string;
-  rejectedCandidates?: NonNullable<RoundCompareChunk["rejectedCandidates"]>;
+  failedAttempts?: NonNullable<RoundCompareChunk["failedAttempts"]>;
   rerunStatus?: string;
   rerunFallbackMode?: string;
   rerunFallbackError?: string;
@@ -523,6 +607,7 @@ export type DocumentStatus = {
   sourceKind: string;
   completedRounds: number[];
   nextRound: number | null;
+  plannedRounds?: number;
   maxRounds: number;
   hasNextRound: boolean;
   isComplete: boolean;
@@ -1023,6 +1108,10 @@ export type DetectionReportMatch = {
     windowScore: number;
     directFragmentScore: number;
     windowFragmentScore: number;
+    directWeightedAnchorScore?: number;
+    windowWeightedAnchorScore?: number;
+    weightedAnchorScore?: number;
+    weightedAnchorHitCount?: number;
     runnerUpScore: number;
     scoreGap: number;
     matchedAnchors: string[];

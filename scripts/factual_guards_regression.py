@@ -59,6 +59,32 @@ def main() -> int:
     if channel_issues:
         failures.append(f"channel identifiers were incorrectly treated as standalone numeric order: {channel_issues}")
 
+    api_source = (
+        "（2）发送请求：通过OkHttpClient向文心一言API端点"
+        "`https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions`"
+        "发送POST请求，请求头中包含`Content-Type: application/json`及认证Token，请求体为JSON格式的消息数组。"
+    )
+    api_output = (
+        "(2) 发送请求：运用OkHttpClient来向文心一言API端点"
+        "`https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions`"
+        "去发送一个POST请求，请求头当中包含了`Content-Type: application/json`以及认证Token，请求体的格式是JSON消息数组。"
+    )
+    api_issues = collect_factual_relation_issues(api_source, api_output)
+    if api_issues:
+        failures.append(f"API endpoint rewrite was incorrectly blocked by factual relation guard: {api_issues}")
+
+    repeated_api_source = (
+        "后端使用SpringBoot框架，能快速构建RESTful API，简化开发；前端采用Vue.js，组件化开发模式清晰高效。"
+        "在AI能力方面，系统调用百度的文心一言API，其接口文档完善、调用方式标准（RESTful API），开发者只需通过HTTP请求即可集成。"
+    )
+    repeated_api_output = (
+        "后端方面运用SpringBoot框架，能够快速开展RESTful API的构建工作，进而简化开发过程；前端则选用Vue.js，组件化开发模式比较清晰并且高效。"
+        "在AI能力方面，系统调用百度的文心一言API，它的接口文档比较完善，调用方式标准即RESTful API，开发者只需借助HTTP请求就可以完成集成。"
+    )
+    repeated_api_issues = collect_factual_relation_issues(repeated_api_source, repeated_api_output)
+    if repeated_api_issues:
+        failures.append(f"Repeated API term positions caused a false order failure: {repeated_api_issues}")
+
     report = {
         "ok": not failures,
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -68,6 +94,8 @@ def main() -> int:
         "harmlessIssues": harmless_issues,
         "listIssues": list_issues,
         "channelIssues": channel_issues,
+        "apiIssues": api_issues,
+        "repeatedApiIssues": repeated_api_issues,
     }
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -91,14 +91,14 @@ def main() -> int:
         raise AssertionError("targeted rerun should prefer previous valid output as fallback")
     if "targeted_rerun_fallback" not in (quality.get("flags") or []):
         raise AssertionError("fallback chunk must expose targeted_rerun_fallback flag")
-    rejected_candidates = chunk.get("rejectedCandidates") or []
-    if not rejected_candidates or rejected_candidates[-1].get("outputText") != "错误输出":
-        raise AssertionError("targeted rerun fallback must expose rejected model output for manual review")
+    failed_attempts = chunk.get("failedAttempts") or []
+    if not failed_attempts or failed_attempts[-1].get("outputText") != "错误输出":
+        raise AssertionError("targeted rerun fallback must expose failed model output for manual review")
     events = result["compare"].get("validationEvents") or []
     if not any(event.get("event") == "targeted-rerun-fallback" for event in events):
         raise AssertionError("compare payload must record targeted-rerun-fallback event")
     if not any(event.get("event") == "validation-retry" and event.get("outputText") == "错误输出" for event in events):
-        raise AssertionError("compare payload must record targeted rejected candidates")
+        raise AssertionError("compare payload must record targeted failed outputs")
 
     print("targeted rerun fallback regression passed")
     return 0

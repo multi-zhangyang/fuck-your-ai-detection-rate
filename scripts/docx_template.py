@@ -33,7 +33,7 @@ from docx_pipeline import (
     _normalize_marker_text,
     _paragraph_has_field_code,
 )
-from format_rules import load_active_format_rules
+from format_rules import PAGE_FORMAT_FIELDS, STYLE_FORMAT_FIELDS, load_active_format_rules
 
 
 DOCX_TEMPLATE_PROFILE_VERSION = 5
@@ -773,26 +773,28 @@ def _build_rule_profile_for_role(role: str, paragraph: Paragraph, rules: dict[st
     raw_style = styles.get(style_key)
     if not isinstance(raw_style, dict):
         return None
-    alignment = ALIGNMENT_BY_NAME.get(str(raw_style.get("alignment", "")).strip().lower())
-    first_line_indent_pt = _as_optional_float(raw_style.get("firstLineIndentPt"))
+    explicit_fields = _get_explicit_rule_fields(rules, style_key)
+    alignment = ALIGNMENT_BY_NAME.get(str(_explicit_rule_value(raw_style, explicit_fields, "alignment") or "").strip().lower())
+    first_line_indent_pt = _as_optional_float(_explicit_rule_value(raw_style, explicit_fields, "firstLineIndentPt"))
     if role == "numbered_body":
         first_line_indent_pt = None
+    line_spacing_pt = _as_optional_float(_explicit_rule_value(raw_style, explicit_fields, "lineSpacingPt"))
     return TemplateParagraphProfile(
         role=style_key,
         style_name=paragraph.style.name if paragraph.style is not None else "",
         source_text=paragraph.text.strip(),
         alignment=int(alignment) if alignment is not None else None,
         first_line_indent_pt=first_line_indent_pt,
-        space_before_pt=_as_optional_float(raw_style.get("spaceBeforePt")),
-        space_after_pt=_as_optional_float(raw_style.get("spaceAfterPt")),
-        line_spacing_rule=int(WD_LINE_SPACING.EXACTLY) if _as_optional_float(raw_style.get("lineSpacingPt")) is not None else None,
-        line_spacing_pt=_as_optional_float(raw_style.get("lineSpacingPt")),
-        line_spacing_multiple=_as_optional_float(raw_style.get("lineSpacingMultiple")),
-        cn_font=_as_optional_str(raw_style.get("cnFont")),
-        en_font=_as_optional_str(raw_style.get("enFont")),
-        font_size_pt=_as_optional_float(raw_style.get("fontSizePt")),
-        bold=_as_optional_bool(raw_style.get("bold")),
-        italic=_as_optional_bool(raw_style.get("italic")),
+        space_before_pt=_as_optional_float(_explicit_rule_value(raw_style, explicit_fields, "spaceBeforePt")),
+        space_after_pt=_as_optional_float(_explicit_rule_value(raw_style, explicit_fields, "spaceAfterPt")),
+        line_spacing_rule=int(WD_LINE_SPACING.EXACTLY) if line_spacing_pt is not None else None,
+        line_spacing_pt=line_spacing_pt,
+        line_spacing_multiple=_as_optional_float(_explicit_rule_value(raw_style, explicit_fields, "lineSpacingMultiple")),
+        cn_font=_as_optional_str(_explicit_rule_value(raw_style, explicit_fields, "cnFont")),
+        en_font=_as_optional_str(_explicit_rule_value(raw_style, explicit_fields, "enFont")),
+        font_size_pt=_as_optional_float(_explicit_rule_value(raw_style, explicit_fields, "fontSizePt")),
+        bold=_as_optional_bool(_explicit_rule_value(raw_style, explicit_fields, "bold")),
+        italic=_as_optional_bool(_explicit_rule_value(raw_style, explicit_fields, "italic")),
     )
 
 
@@ -808,6 +810,27 @@ def _resolve_rule_style_key(role: str, paragraph: Paragraph) -> str:
     if normalized.startswith("图注") or normalized.startswith("表注"):
         return "note"
     return role
+
+
+def _get_explicit_rule_fields(rules: dict[str, Any], style_key: str) -> set[str] | None:
+    meta = rules.get("styleMeta")
+    if not isinstance(meta, dict):
+        return None
+    style_meta = meta.get(style_key)
+    if not isinstance(style_meta, dict) and meta:
+        return set()
+    if not isinstance(style_meta, dict) or "explicitFields" not in style_meta:
+        return None
+    raw_fields = style_meta.get("explicitFields")
+    if not isinstance(raw_fields, (list, tuple, set)):
+        return set()
+    return {str(item) for item in raw_fields if str(item) in STYLE_FORMAT_FIELDS}
+
+
+def _explicit_rule_value(raw_style: dict[str, Any], explicit_fields: set[str] | None, key: str) -> Any:
+    if explicit_fields is not None and key not in explicit_fields:
+        return None
+    return raw_style.get(key)
 
 
 def _school_center_heading_profile(
@@ -1054,6 +1077,8 @@ def _write_school_format_preflight_report(
 
 def _apply_school_section_layout(document: DocxDocument, rules: dict[str, Any] | None = None) -> None:
     page_rules = rules.get("page", {}) if isinstance(rules, dict) else {}
+    raw_explicit_fields = rules.get("pageExplicitFields") if isinstance(rules, dict) else None
+    explicit_fields = {str(item) for item in raw_explicit_fields if str(item) in PAGE_FORMAT_FIELDS} if isinstance(raw_explicit_fields, (list, tuple, set)) else None
     for section in document.sections:
         margins = {
             "top_margin": page_rules.get("topMarginCm", SCHOOL_PAGE_MARGINS_CM["top_margin"]),
@@ -1061,7 +1086,15 @@ def _apply_school_section_layout(document: DocxDocument, rules: dict[str, Any] |
             "left_margin": page_rules.get("leftMarginCm", SCHOOL_PAGE_MARGINS_CM["left_margin"]),
             "right_margin": page_rules.get("rightMarginCm", SCHOOL_PAGE_MARGINS_CM["right_margin"]),
         }
+        field_by_attribute = {
+            "top_margin": "topMarginCm",
+            "bottom_margin": "bottomMarginCm",
+            "left_margin": "leftMarginCm",
+            "right_margin": "rightMarginCm",
+        }
         for attribute, value_cm in margins.items():
+            if explicit_fields is not None and field_by_attribute[attribute] not in explicit_fields:
+                continue
             setattr(section, attribute, Cm(value_cm))
 
 

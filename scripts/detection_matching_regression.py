@@ -177,6 +177,46 @@ def run_regression() -> dict[str, Any]:
         failures,
     )
 
+    ocr_split_segment = (
+        "The report highlights XG Boost scoring, SH AP explanations, and F1 - Score drift "
+        "in the v8 adapter calibration notes."
+    )
+    ocr_split_matches = build_detection_matches(
+        make_report([make_segment(22, ocr_split_segment, 81)]),
+        make_compare(
+            [
+                make_chunk(
+                    "ocr_noise",
+                    24,
+                    "The AI system section mentions scoring explanations and adapter calibration in general terms.",
+                ),
+                make_chunk(
+                    "ocr_target",
+                    25,
+                    "The report highlights XGBoost scoring, SHAP explanations, and F1-Score drift "
+                    "in the v8 adapter calibration notes.",
+                ),
+            ]
+        ),
+    )
+    ocr_target = next((match for match in ocr_split_matches if match["chunkId"] == "ocr_target"), None)
+    ocr_anchors = set((ocr_target or {}).get("evidence", {}).get("matchedAnchors", []))
+    assert_condition(
+        bool(ocr_target) and ocr_target["confidence"] == "strong",
+        "OCR-spaced technical tokens should still strongly match compact chunk text",
+        failures,
+    )
+    assert_condition(
+        {"xgboost", "shap", "f1score"}.issubset(ocr_anchors),
+        "OCR-spaced technical tokens should be promoted into dynamic anchors",
+        failures,
+    )
+    assert_condition(
+        not any(match["chunkId"] == "ocr_noise" and match["confidence"] == "strong" for match in ocr_split_matches),
+        "generic short acronym overlap must not promote the OCR distractor to strong",
+        failures,
+    )
+
     generic_matches = build_detection_matches(
         make_report([make_segment(3, "The method has certain value and needs further analysis.", 75)]),
         make_compare([make_chunk("p6_c0", 6, "The method has value.")]),
@@ -233,6 +273,7 @@ def run_regression() -> dict[str, Any]:
             "multiChunkStrongCount": len(strong_ids),
             "legalMatchCount": len(legal_matches),
             "medicalMatchCount": len(medical_matches),
+            "ocrSplitMatchCount": len(ocr_split_matches),
             "genericStrongCount": sum(1 for match in generic_matches if match["confidence"] == "strong"),
             "lowRiskMatchCount": len(low_risk_matches),
             "largeDistractorMatchCount": len(large_matches),

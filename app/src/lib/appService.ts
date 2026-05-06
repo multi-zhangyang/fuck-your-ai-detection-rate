@@ -26,7 +26,12 @@ import type {
   ModelCatalogResult,
   ModelConfig,
   OutputPreview,
+  PromptBackupsResult,
+  PromptDeleteResult,
   PromptPreviewResponse,
+  PromptSaveResult,
+  PromptWorkflow,
+  PromptWorkflowSaveResult,
   RoundCompareData,
   RoundProgress,
   RoundProgressStatus,
@@ -47,6 +52,14 @@ export type PickedDocument = {
 export interface AppService {
   getHealth(): Promise<EnvironmentDiagnostics>;
   getPromptPreviews(): Promise<PromptPreviewResponse>;
+  savePrompt(promptId: string, content: string): Promise<PromptSaveResult>;
+  updatePromptMeta(promptId: string, payload: { label: string; description?: string }): Promise<PromptSaveResult>;
+  restoreDefaultPrompt(promptId: string): Promise<PromptSaveResult>;
+  listPromptBackups(promptId: string): Promise<PromptBackupsResult>;
+  restorePromptBackup(promptId: string, relativePath: string): Promise<PromptSaveResult>;
+  createPrompt(payload: { label: string; description?: string; content: string }): Promise<PromptSaveResult>;
+  deletePrompt(promptId: string): Promise<PromptDeleteResult>;
+  updatePromptWorkflow(workflowId: string, payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit">): Promise<PromptWorkflowSaveResult>;
   cleanupTaskStateSnapshots(mode?: "expired" | "completed" | "all", maxAgeHours?: number): Promise<TaskStateCleanupResult>;
   loadModelConfig(): Promise<ModelConfig>;
   saveModelConfig(config: ModelConfig): Promise<ModelConfig>;

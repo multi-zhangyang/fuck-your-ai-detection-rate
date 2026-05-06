@@ -456,11 +456,11 @@ async function runSmoke() {
     await waitForText(browserClient, "继续处理与导出", 12_000);
     await clickByText(browserClient, "启动诊断");
     await waitForText(browserClient, "重新自检", 12_000);
-    await clickByText(browserClient, "提示词预览");
-    await waitForExpression(browserClient, "Boolean(document.querySelector('pre code'))", "prompt preview code block", 12_000);
-    const promptPageUsesFixedBoundary = await evaluate(browserClient, "Boolean(document.querySelector('pre code') && getComputedStyle(document.documentElement).overflow === 'hidden' && getComputedStyle(document.body).overflow === 'hidden')", 3000);
+    await clickByText(browserClient, "提示词");
+    await waitForExpression(browserClient, "Boolean(document.querySelector('textarea'))", "prompt editor textarea", 12_000);
+    const promptPageUsesFixedBoundary = await evaluate(browserClient, "Boolean(document.querySelector('textarea') && getComputedStyle(document.documentElement).overflow === 'hidden' && getComputedStyle(document.body).overflow === 'hidden')", 3000);
     if (!promptPageUsesFixedBoundary) {
-      throw new Error("Prompt preview page did not render inside the fixed page boundary.");
+      throw new Error("Prompt workspace did not render inside the fixed page boundary.");
     }
     checks.push("primary sidebar navigation remains responsive");
 
@@ -474,7 +474,7 @@ async function runSmoke() {
     }
     await pressKey(browserClient, "Escape");
     await waitForTextGone(browserClient, "通知与任务中心", 12_000);
-    checks.push("prompt preview renders and notification center opens/closes with Escape");
+    checks.push("prompt workspace renders and notification center opens/closes with Escape");
 
     return {
       ok: true,

@@ -8,6 +8,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import {
+  DEFAULT_PROMPT_SEQUENCE,
+  formatPromptSequence as formatPromptSequenceFromRegistry,
+  getPromptFlowSequence,
+  getPromptProfileLabel,
+  getPromptRoundLimit,
+  isPromptSequenceCustomizable,
+  normalizePromptSequence,
+} from "@/lib/promptRegistry";
 import { cn } from "@/lib/utils";
 import type {
   DeleteHistoryOptions,
@@ -22,6 +31,8 @@ import type {
   HistoryRound,
   ModelConfig,
   PromptId,
+  PromptOption,
+  PromptWorkflow,
 } from "@/types/app";
 
 type Props = {
@@ -30,6 +41,8 @@ type Props = {
   items: HistoryDocumentSummary[];
   promptProfile: ModelConfig["promptProfile"];
   promptSequence: PromptId[];
+  promptOptions: PromptOption[];
+  promptWorkflows?: PromptWorkflow[];
   orphanScan: HistoryOrphanScanResult | null;
   artifactQuery: HistoryArtifactQueryResponse | null;
   artifactMode: HistoryArtifactGovernanceMode;
@@ -51,13 +64,6 @@ type Props = {
 type HistoryImpactPreviewState = {
   key: string;
   impact: HistoryDeleteImpact;
-};
-
-const PROMPT_LABELS: Record<PromptId, string> = {
-  prewrite: "预改写",
-  classical: "经典改写",
-  round1: "一轮",
-  round2: "二轮",
 };
 
 function formatTimestamp(value: string): string {
@@ -117,75 +123,81 @@ function formatBytes(value?: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function getMaxRounds(promptProfile: ModelConfig["promptProfile"], promptSequence?: PromptId[]): number {
-  if (promptProfile === "cn_prewrite") {
-    return 3;
-  }
-  if (promptProfile === "cn_custom") {
-    return normalizePromptSequence(promptSequence).length;
-  }
-  return 2;
+function getMaxRounds(promptProfile: ModelConfig["promptProfile"], promptSequence?: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): number {
+  return getPromptRoundLimit(promptProfile, promptWorkflows);
 }
 
-function getProfileLabel(promptProfile: ModelConfig["promptProfile"]): string {
-  if (promptProfile === "cn_custom") {
-    return "自定义组合";
+function getPlannedRounds(promptProfile: ModelConfig["promptProfile"], promptSequence?: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): number {
+  return getPromptFlowSequence(promptProfile, promptSequence, promptOptions, promptWorkflows).length;
+}
+
+function getRoundStateText(completedRounds: number[], promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): string {
+  const plannedRounds = getPlannedRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
+  const maxRounds = getMaxRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
+  const plannedDone = completedRounds.filter((round) => round <= plannedRounds).length;
+  if (plannedDone < plannedRounds) {
+    return `${plannedDone}/${plannedRounds} 轮`;
   }
-  if (promptProfile === "cn_prewrite") {
-    return "中文三轮预改写";
+  if (completedRounds.length < maxRounds) {
+    return "流程已完成";
   }
-  return "中文双轮";
+  return "已到上限";
 }
 
-function normalizePromptSequence(value: PromptId[] | undefined): PromptId[] {
-  const allowed = new Set(["prewrite", "classical", "round1", "round2"]);
-  const normalized = (value ?? []).filter((item): item is PromptId => allowed.has(item));
-  return normalized.length ? normalized : ["prewrite", "round1", "round2"];
+function getProfileLabel(promptProfile: ModelConfig["promptProfile"], promptWorkflows?: PromptWorkflow[]): string {
+  return getPromptProfileLabel(promptProfile, promptWorkflows);
 }
 
-function formatPromptSequence(value: PromptId[] | undefined): string {
-  return normalizePromptSequence(value).map((item) => PROMPT_LABELS[item] ?? item).join(" → ");
+function formatPromptSequence(value: PromptId[] | undefined, promptOptions?: PromptOption[], promptProfile?: ModelConfig["promptProfile"], promptWorkflows?: PromptWorkflow[]): string {
+  return formatPromptSequenceFromRegistry(value ?? DEFAULT_PROMPT_SEQUENCE, promptOptions, promptProfile, promptWorkflows);
 }
 
-function promptSequencesEqual(left: PromptId[] | undefined, right: PromptId[] | undefined): boolean {
-  const a = normalizePromptSequence(left);
-  const b = normalizePromptSequence(right);
+function promptSequencesEqual(
+  left: PromptId[] | undefined,
+  right: PromptId[] | undefined,
+  promptOptions?: PromptOption[],
+  promptProfile?: ModelConfig["promptProfile"],
+  promptWorkflows?: PromptWorkflow[],
+): boolean {
+  const a = normalizePromptSequence(left, promptOptions, promptProfile, promptWorkflows);
+  const b = normalizePromptSequence(right, promptOptions, promptProfile, promptWorkflows);
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
-function getRoundsForProfile(rounds: HistoryRound[], promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[]): HistoryRound[] {
+function getRoundsForProfile(rounds: HistoryRound[], promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): HistoryRound[] {
   return rounds.filter((round) => {
     if ((round.promptProfile || "cn") !== promptProfile) {
       return false;
     }
-    if (promptProfile !== "cn_custom") {
+    if (!isPromptSequenceCustomizable(promptProfile, promptWorkflows)) {
       return true;
     }
-    return promptSequencesEqual(round.promptSequence, promptSequence);
+    return promptSequencesEqual(round.promptSequence, promptSequence, promptOptions, promptProfile, promptWorkflows);
   });
 }
 
-function getCompletedRounds(rounds: HistoryRound[], promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[]): number[] {
-  const maxRounds = getMaxRounds(promptProfile, promptSequence);
+function getCompletedRounds(rounds: HistoryRound[], promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): number[] {
+  const maxRounds = getMaxRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
   return Array.from(new Set(rounds.map((item) => item.round).filter((round) => round >= 1 && round <= maxRounds))).sort(
     (left, right) => left - right,
   );
 }
 
-function getNextRoundText(completedRounds: number[], promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[]): string {
-  const maxRounds = getMaxRounds(promptProfile, promptSequence);
+function getNextRoundText(completedRounds: number[], promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): string {
+  const plannedRounds = getPlannedRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
+  const maxRounds = getMaxRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
   for (let round = 1; round <= maxRounds; round += 1) {
     if (!completedRounds.includes(round)) {
-      return `第 ${round} 轮`;
+      return round > plannedRounds ? `追加第 ${round} 轮` : `第 ${round} 轮`;
     }
   }
-  return "已完成";
+  return "可导出";
 }
 
-function getPromptOptions(promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[]): Pick<DeleteHistoryOptions, "promptProfile" | "promptSequence"> {
+function getPromptOptions(promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): Pick<DeleteHistoryOptions, "promptProfile" | "promptSequence"> {
   return {
     promptProfile,
-    promptSequence: promptProfile === "cn_custom" ? normalizePromptSequence(promptSequence) : undefined,
+    promptSequence: isPromptSequenceCustomizable(promptProfile, promptWorkflows) ? normalizePromptSequence(promptSequence, promptOptions, promptProfile, promptWorkflows) : undefined,
   };
 }
 
@@ -658,6 +670,8 @@ export function HistoryCard({
   items,
   promptProfile,
   promptSequence,
+  promptOptions,
+  promptWorkflows,
   orphanScan,
   artifactQuery,
   artifactMode,
@@ -679,13 +693,13 @@ export function HistoryCard({
   const [impactLoadingKey, setImpactLoadingKey] = useState("");
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [cleanupDocId, setCleanupDocId] = useState<string | null>(null);
-  const maxRounds = getMaxRounds(promptProfile, promptSequence);
+  const maxRounds = getMaxRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
   const totalStats = mergeArtifactStats(items.map((item) => item.artifactStats));
   const continuationCount = items.filter((item) => {
-    const completedRounds = getCompletedRounds(getRoundsForProfile(item.rounds, promptProfile, promptSequence), promptProfile, promptSequence);
+    const completedRounds = getCompletedRounds(getRoundsForProfile(item.rounds, promptProfile, promptSequence, promptOptions, promptWorkflows), promptProfile, promptSequence, promptOptions, promptWorkflows);
     return completedRounds.length < maxRounds;
   }).length;
-  const exportableCount = items.filter((item) => hasExportableOutput(item, getRoundsForProfile(item.rounds, promptProfile, promptSequence))).length;
+  const exportableCount = items.filter((item) => hasExportableOutput(item, getRoundsForProfile(item.rounds, promptProfile, promptSequence, promptOptions, promptWorkflows))).length;
   const missingDocumentCount = items.filter((item) => getSafeArtifactStats(item.artifactStats).missing > 0).length;
   const maintenanceStateLabel = getMaintenanceStateLabel({
     missingDocumentCount,
@@ -716,7 +730,7 @@ export function HistoryCard({
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2">
               <Badge variant="secondary">历史记录</Badge>
-              <Badge variant="outline">{getProfileLabel(promptProfile)}</Badge>
+              <Badge variant="outline">{getProfileLabel(promptProfile, promptWorkflows)}</Badge>
             </div>
             <CardTitle className="text-xl">继续处理与导出</CardTitle>
           </div>
@@ -781,12 +795,13 @@ export function HistoryCard({
                 const isActive = currentDocId === item.docId;
                 const cleanupOpen = cleanupDocId === item.docId;
                 const shouldShowRounds = isActive || items.length === 1;
-                const profileRounds = getRoundsForProfile(item.rounds, promptProfile, promptSequence);
-                const activeRounds = isActive && currentHistory ? getRoundsForProfile(currentHistory.rounds, promptProfile, promptSequence) : profileRounds;
+                const profileRounds = getRoundsForProfile(item.rounds, promptProfile, promptSequence, promptOptions, promptWorkflows);
+                const activeRounds = isActive && currentHistory ? getRoundsForProfile(currentHistory.rounds, promptProfile, promptSequence, promptOptions, promptWorkflows) : profileRounds;
                 const visibleRounds = activeRounds.length ? activeRounds : item.rounds;
-                const completedRounds = getCompletedRounds(activeRounds, promptProfile, promptSequence);
+                const completedRounds = getCompletedRounds(activeRounds, promptProfile, promptSequence, promptOptions, promptWorkflows);
+                const roundStateText = getRoundStateText(completedRounds, promptProfile, promptSequence, promptOptions, promptWorkflows);
                 const latestRound = getLatestRound(visibleRounds);
-                const nextStepText = getNextRoundText(completedRounds, promptProfile, promptSequence);
+                const nextStepText = getNextRoundText(completedRounds, promptProfile, promptSequence, promptOptions, promptWorkflows);
                 const latestResultText = latestRound?.outputPath ? `第 ${latestRound.round} 轮` : "未生成";
                 const exportStateText = getExportStateText(item, visibleRounds);
                 const cleanupStateText = getCleanupStateText(item.artifactStats);
@@ -804,7 +819,7 @@ export function HistoryCard({
 
                 return (
                   <div
-                    key={`${item.docId}-${promptProfile}-${formatPromptSequence(promptSequence)}`}
+                    key={`${item.docId}-${promptProfile}-${formatPromptSequence(promptSequence, promptOptions, promptProfile, promptWorkflows)}`}
                     className={cn(
                       "relative rounded-lg border bg-card p-4 transition-colors",
                       isActive ? "border-primary/30" : "border-border hover:bg-muted/20",
@@ -816,7 +831,7 @@ export function HistoryCard({
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className="min-w-0 truncate text-base font-semibold">{formatDocName(item)}</h3>
                             {isActive ? <Badge variant="neutral">当前选用</Badge> : null}
-                            <Badge variant="outline">{completedRounds.length}/{maxRounds} 轮</Badge>
+                            <Badge variant={roundStateText === "流程已完成" ? "secondary" : "outline"}>{roundStateText}</Badge>
                             {missingAssets ? <Badge variant="warning">资产需检查</Badge> : null}
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -880,7 +895,7 @@ export function HistoryCard({
                         <div className="grid gap-2">
                           {visibleRounds.map((roundItem) => {
                             const roundPromptProfile = (roundItem.promptProfile || "cn") as ModelConfig["promptProfile"];
-                            const roundPromptOptions = getPromptOptions(roundPromptProfile, roundItem.promptSequence ?? promptSequence);
+                            const roundPromptOptions = getPromptOptions(roundPromptProfile, roundItem.promptSequence ?? promptSequence, promptOptions, promptWorkflows);
                             const roundDeleteActions: Array<{ title: string; options: DeleteHistoryOptions; destructive?: boolean }> = [
                               { title: "清理本轮导出", options: { ...roundPromptOptions, fromRound: roundItem.round, mode: "exports_only" } },
                               { title: "回滚到本轮前", options: { ...roundPromptOptions, fromRound: roundItem.round, mode: "records_and_artifacts" }, destructive: true },
@@ -890,13 +905,13 @@ export function HistoryCard({
                               ? impactPreview.impact
                               : null;
                             return (
-                              <div key={`${item.docId}-${roundItem.promptProfile}-${roundItem.round}-${formatPromptSequence(roundItem.promptSequence)}`} className="rounded-lg border border-border bg-muted/20 p-3">
+                              <div key={`${item.docId}-${roundItem.promptProfile}-${roundItem.round}-${formatPromptSequence(roundItem.promptSequence, promptOptions, roundPromptProfile, promptWorkflows)}`} className="rounded-lg border border-border bg-muted/20 p-3">
                                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                                   <div className="flex min-w-0 flex-col gap-2">
                                     <div className="flex flex-wrap items-center gap-2">
                                       <Badge variant="secondary">第 {roundItem.round} 轮</Badge>
-                                      <Badge variant="outline">{getProfileLabel(roundPromptProfile)}</Badge>
-                                      {roundPromptProfile === "cn_custom" ? <Badge variant="outline">{formatPromptSequence(roundItem.promptSequence)}</Badge> : null}
+                                      <Badge variant="outline">{getProfileLabel(roundPromptProfile, promptWorkflows)}</Badge>
+                                      {isPromptSequenceCustomizable(roundPromptProfile, promptWorkflows) ? <Badge variant="outline">{formatPromptSequence(roundItem.promptSequence, promptOptions, roundPromptProfile, promptWorkflows)}</Badge> : null}
                                       {getSafeArtifactStats(roundItem.artifactStats).missing ? <Badge variant="warning">资产需检查</Badge> : null}
                                       <Badge variant="outline">{formatTimestamp(roundItem.timestamp)}</Badge>
                                     </div>

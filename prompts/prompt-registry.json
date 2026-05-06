@@ -1,0 +1,38 @@
+[
+  {
+    "id": "prewrite",
+    "label": "润色改写",
+    "description": "先做保守自然化与结构预热。",
+    "relativePath": "prompts/prewrite.md",
+    "defaultPath": "prompts/defaults/prewrite.md",
+    "builtIn": true,
+    "editable": true
+  },
+  {
+    "id": "classical",
+    "label": "经典改写",
+    "description": "慢节奏解释型改写。",
+    "relativePath": "prompts/classical-rewrite.md",
+    "defaultPath": "prompts/defaults/classical-rewrite.md",
+    "builtIn": true,
+    "editable": true
+  },
+  {
+    "id": "round1",
+    "label": "规范改写",
+    "description": "正文主体降痕与语气调整。",
+    "relativePath": "prompts/rewrite-pass-1.md",
+    "defaultPath": "prompts/defaults/rewrite-pass-1.md",
+    "builtIn": true,
+    "editable": true
+  },
+  {
+    "id": "round2",
+    "label": "专家改写",
+    "description": "最终降痕与连贯性修整。",
+    "relativePath": "prompts/rewrite-pass-2.md",
+    "defaultPath": "prompts/defaults/rewrite-pass-2.md",
+    "builtIn": true,
+    "editable": true
+  }
+]

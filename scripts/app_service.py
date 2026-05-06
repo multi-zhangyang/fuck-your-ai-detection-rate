@@ -48,10 +48,11 @@ from fyadr_round_service import (
     _build_validation_repair_steps,
     _extract_required_terms,
     _is_checkpoint_compatible,
-    _score_rewrite_candidate,
-    _serialize_rejected_candidate_output,
+    _score_rewrite_output,
+    _serialize_failed_output,
     _sha256_text,
 )
+from prompt_library import DEFAULT_PROMPT_PROFILE, LEGACY_PROMPT_PROFILE, get_prompt_id_for_round, is_prompt_sequence_customizable
 from docx_bodymap import load_docx_body_map, save_docx_body_map, update_docx_body_map_texts
 from docx_audit import audit_docx_export, get_docx_audit_report_path
 from docx_export_guard import (
@@ -71,19 +72,26 @@ from docx_pipeline import (
 )
 from docx_protection_map import build_docx_protection_map
 from docx_template import apply_school_format_rules
-from llm_client import list_llm_models, llm_completion, test_llm_connection
+from llm_client import LLMRequestError, list_llm_models, llm_completion, test_llm_connection
 from round_helper import build_round_context, ensure_round_input_text, get_document_round_state
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600
+MIN_REWRITE_REQUEST_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_RETRIES = 3
+MIN_REWRITE_TRANSIENT_RETRIES = 6
+REWRITE_RETRY_BACKOFF_SECONDS = 5.0
+DEFAULT_REWRITE_CONCURRENCY = 2
+MAX_REWRITE_CONCURRENCY = 8
 DEFAULT_PREVIEW_MAX_CHARS = 12000
 TARGETED_RERUN_VALIDATION_ATTEMPTS = 2
 DETECTION_FEEDBACK_MAX_SEGMENTS = 6
 DETECTION_FEEDBACK_MAX_ANCHORS = 10
 _RATE_LIMIT_STATE: dict[str, list[float]] = {}
 _RATE_LIMIT_LOCK = threading.Lock()
+_PROVIDER_GUARD_STATE: dict[str, dict[str, Any]] = {}
+_PROVIDER_GUARD_LOCK = threading.Lock()
 API_READ_ALLOWED_ROOTS = tuple((ROOT_DIR / name).resolve() for name in ("finish", "origin", "prompts", "references"))
 API_OUTPUT_ALLOWED_ROOTS = ((ROOT_DIR / "finish").resolve(),)
 DETECTOR_MECHANICAL_CONNECTOR_RE = re.compile(
@@ -197,6 +205,15 @@ def _coerce_int_config(value: Any, *, default: int, minimum: int, maximum: int) 
     return max(minimum, min(maximum, normalized))
 
 
+def _coerce_rewrite_timeout_seconds(value: Any) -> int:
+    return _coerce_int_config(
+        value,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        minimum=MIN_REWRITE_REQUEST_TIMEOUT_SECONDS,
+        maximum=3600,
+    )
+
+
 def _coerce_rate_limit(value: Any) -> int:
     return _coerce_int_config(value, default=0, minimum=0, maximum=10000)
 
@@ -225,6 +242,28 @@ def _coerce_rate_max_requests(model_config: dict[str, Any]) -> int:
     return _coerce_rate_limit(model_config.get("rateLimitPerMinute", 0))
 
 
+def _provider_guard_key(model_config: dict[str, Any]) -> str:
+    provider_id = str(model_config.get("providerId", "") or "").strip()
+    if provider_id:
+        return f"id:{provider_id}"
+    return "|".join(
+        [
+            str(model_config.get("providerName", "")).strip(),
+            str(model_config.get("baseUrl", "")).strip(),
+            str(model_config.get("apiKey", "")).strip()[-12:],
+        ]
+    )
+
+
+def _provider_display_name(model_config: dict[str, Any]) -> str:
+    return (
+        str(model_config.get("providerName", "") or "").strip()
+        or str(model_config.get("providerId", "") or "").strip()
+        or str(model_config.get("baseUrl", "") or "").strip()
+        or "default-provider"
+    )
+
+
 def _build_provider_rate_limiter(model_config: dict[str, Any]) -> Callable[[], float]:
     window_minutes = _coerce_rate_window_minutes(model_config)
     max_requests = _coerce_rate_max_requests(model_config)
@@ -232,14 +271,7 @@ def _build_provider_rate_limiter(model_config: dict[str, Any]) -> Callable[[], f
         return lambda: 0.0
 
     window_seconds = window_minutes * 60.0
-    provider_id = str(model_config.get("providerId", "") or "").strip()
-    provider_key = provider_id or "|".join(
-        [
-            str(model_config.get("providerName", "")).strip(),
-            str(model_config.get("baseUrl", "")).strip(),
-            str(model_config.get("apiKey", "")).strip()[-12:],
-        ]
-    )
+    provider_key = _provider_guard_key(model_config)
 
     def wait_for_slot() -> float:
         waited = 0.0
@@ -256,6 +288,74 @@ def _build_provider_rate_limiter(model_config: dict[str, Any]) -> Callable[[], f
             waited += wait_seconds
 
     return wait_for_slot
+
+
+def _wait_for_provider_cooldown(
+    model_config: dict[str, Any],
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+) -> float:
+    provider_key = _provider_guard_key(model_config)
+    waited = 0.0
+    while True:
+        if cancel_check is not None and cancel_check():
+            raise RuntimeError("Run was interrupted by user. Completed chunks are kept; click continue to resume this round.")
+        with _PROVIDER_GUARD_LOCK:
+            state = _PROVIDER_GUARD_STATE.get(provider_key) or {}
+            cooldown_until = float(state.get("cooldownUntil", 0.0) or 0.0)
+            reason = str(state.get("category", "") or "")
+            now = time.monotonic()
+            remaining = cooldown_until - now
+        if remaining <= 0:
+            return waited
+        time.sleep(min(remaining, 1.0))
+        waited += min(remaining, 1.0)
+        if waited >= 1.0 and reason:
+            continue
+
+
+def _register_provider_success(model_config: dict[str, Any]) -> None:
+    provider_key = _provider_guard_key(model_config)
+    with _PROVIDER_GUARD_LOCK:
+        state = _PROVIDER_GUARD_STATE.get(provider_key)
+        if not state:
+            return
+        state["successCount"] = int(state.get("successCount", 0) or 0) + 1
+        state["failureCount"] = 0
+        if float(state.get("cooldownUntil", 0.0) or 0.0) <= time.monotonic():
+            state.pop("cooldownUntil", None)
+            state.pop("category", None)
+            state.pop("message", None)
+
+
+def _register_provider_failure(model_config: dict[str, Any], exc: BaseException) -> None:
+    provider_key = _provider_guard_key(model_config)
+    category = str(getattr(exc, "category", "") or "unknown")
+    cooldown_seconds = getattr(exc, "cooldown_seconds", None)
+    if cooldown_seconds is None:
+        cooldown_seconds = 0
+    try:
+        cooldown_seconds = float(cooldown_seconds)
+    except (TypeError, ValueError):
+        cooldown_seconds = 0
+    retryable = bool(getattr(exc, "retryable", False))
+    should_cooldown = retryable or category in {"rate_limit", "server", "timeout", "network"}
+    with _PROVIDER_GUARD_LOCK:
+        state = _PROVIDER_GUARD_STATE.setdefault(provider_key, {})
+        failure_count = int(state.get("failureCount", 0) or 0) + 1
+        state.update(
+            {
+                "provider": _provider_display_name(model_config),
+                "failureCount": failure_count,
+                "category": category,
+                "message": str(exc),
+                "updatedAt": time.monotonic(),
+            }
+        )
+        if should_cooldown:
+            fallback_seconds = min(60.0, max(3.0, 3.0 * failure_count))
+            effective_cooldown = max(cooldown_seconds, fallback_seconds)
+            state["cooldownUntil"] = max(float(state.get("cooldownUntil", 0.0) or 0.0), time.monotonic() + effective_cooldown)
 
 
 def _coerce_history_artifact_stats(value: Any) -> dict[str, Any] | None:
@@ -282,7 +382,7 @@ def _map_history_round(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "round": int(item.get("round", 0)),
         "prompt": str(item.get("prompt", "")),
-        "promptProfile": str(item.get("prompt_profile", "cn") or "cn").strip().lower() or "cn",
+        "promptProfile": str(item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() or LEGACY_PROMPT_PROFILE,
         "promptSequence": prompt_sequence if isinstance(prompt_sequence, list) else [],
         "inputPath": str(item.get("input_path", "")),
         "outputPath": str(item.get("output_path", "")),
@@ -342,7 +442,7 @@ def _build_history_run_audit(item: dict[str, Any], quality_summary: dict[str, An
             audit.setdefault("splitParagraphCount", split_summary.get("splitParagraphCount"))
     if item.get("input_segment_count") is not None:
         audit.setdefault("chunkCount", item.get("input_segment_count"))
-    audit.setdefault("promptProfile", str(item.get("prompt_profile", "cn") or "cn"))
+    audit.setdefault("promptProfile", str(item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE))
     prompt_sequence = item.get("prompt_sequence")
     if isinstance(prompt_sequence, list):
         audit.setdefault("promptSequence", prompt_sequence)
@@ -445,17 +545,27 @@ def _find_origin_docx_for_output(output_path: Path) -> tuple[Path, Path] | None:
 
 
 def _find_compare_path_for_output(output_path: Path) -> Path:
-    record_context = _find_record_context_for_output(output_path)
+    normalized_output_path = normalize_path(output_path)
+    default_compare_path = get_round_compare_path(normalized_output_path)
+    if default_compare_path.exists():
+        return default_compare_path
+    record_context = _find_record_context_for_output(normalized_output_path)
     if record_context is not None:
         _, round_item = record_context
         compare_path = round_item.get("compare_path")
         if isinstance(compare_path, str) and compare_path.strip():
             return normalize_path(Path(compare_path))
-    return get_round_compare_path(normalize_path(output_path))
+    return default_compare_path
 
 
-def _find_manifest_path_for_output(output_path: Path) -> Path | None:
-    record_context = _find_record_context_for_output(output_path)
+def _find_manifest_path_for_output(output_path: Path, *, include_records: bool = True) -> Path | None:
+    normalized_output_path = normalize_path(output_path)
+    default_manifest_path = normalized_output_path.with_name(f"{normalized_output_path.stem}_manifest.json")
+    if default_manifest_path.exists():
+        return default_manifest_path
+    if not include_records:
+        return None
+    record_context = _find_record_context_for_output(normalized_output_path)
     if record_context is None:
         return None
     _, round_item = record_context
@@ -465,8 +575,14 @@ def _find_manifest_path_for_output(output_path: Path) -> Path | None:
     return normalize_path(Path(manifest_path))
 
 
-def _find_body_map_path_for_output(output_path: Path) -> Path | None:
-    record_context = _find_record_context_for_output(output_path)
+def _find_body_map_path_for_output(output_path: Path, *, include_records: bool = True) -> Path | None:
+    normalized_output_path = normalize_path(output_path)
+    default_body_map_path = normalized_output_path.with_name(f"{normalized_output_path.stem}_body_map.json")
+    if default_body_map_path.exists():
+        return default_body_map_path
+    if not include_records:
+        return None
+    record_context = _find_record_context_for_output(normalized_output_path)
     if record_context is None:
         return None
     _, round_item = record_context
@@ -477,7 +593,11 @@ def _find_body_map_path_for_output(output_path: Path) -> Path | None:
 
 
 def _find_validation_path_for_output(output_path: Path) -> Path | None:
-    record_context = _find_record_context_for_output(output_path)
+    normalized_output_path = normalize_path(output_path)
+    default_validation_path = normalized_output_path.with_name(f"{normalized_output_path.stem}_validation.json")
+    if default_validation_path.exists():
+        return default_validation_path
+    record_context = _find_record_context_for_output(normalized_output_path)
     if record_context is None:
         return None
     _, round_item = record_context
@@ -504,7 +624,126 @@ def _load_compare_payload_for_output(output_path: Path) -> dict[str, Any] | None
         return None
     if not isinstance(payload, dict):
         return None
+    payload = _normalize_compare_failed_attempts(payload)
+    if _recover_valid_failed_outputs(payload):
+        try:
+            compare_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass
+        _sync_compare_payload_to_text_artifacts(output_path, payload)
     return payload
+
+
+def _normalize_failed_attempts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    attempts: list[dict[str, Any]] = []
+    for item in value[-4:]:
+        if not isinstance(item, dict):
+            continue
+        output_text = str(item.get("outputText", "") or "")
+        if not output_text.strip():
+            continue
+        attempts.append(
+            {
+                "attempt": item.get("attempt"),
+                "outputText": output_text,
+                "outputCharCount": item.get("outputCharCount", len(output_text)),
+                "truncated": bool(item.get("truncated")),
+                "error": str(item.get("error", "") or ""),
+            }
+        )
+    return attempts
+
+
+def _normalize_compare_failed_attempts(payload: dict[str, Any]) -> dict[str, Any]:
+    chunks = payload.get("chunks")
+    if not isinstance(chunks, list):
+        return payload
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        failed_attempts = _normalize_failed_attempts(chunk.get("failedAttempts"))
+        if not failed_attempts:
+            failed_attempts = _normalize_failed_attempts(chunk.get("rejectedCandidates"))
+        chunk.pop("rejectedCandidates", None)
+        if failed_attempts:
+            chunk["failedAttempts"] = failed_attempts
+    return payload
+
+
+def _is_failed_output_fallback_chunk(chunk: dict[str, Any], flags: list[Any] | None = None) -> bool:
+    normalized_flags = {str(flag) for flag in (flags or [])}
+    return (
+        chunk.get("fallbackMode") == "source"
+        or "source_fallback" in normalized_flags
+        or "targeted_rerun_fallback" in normalized_flags
+        or chunk.get("rerunStatus") == "fallback"
+        or bool(chunk.get("rerunFallbackMode"))
+    )
+
+
+def _recover_valid_failed_outputs(compare_payload: dict[str, Any]) -> list[str]:
+    chunks = compare_payload.get("chunks")
+    if not isinstance(chunks, list):
+        return []
+    recovered_chunk_ids: list[str] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        quality = chunk.get("quality") if isinstance(chunk.get("quality"), dict) else {}
+        flags = list(quality.get("flags") or []) if isinstance(quality, dict) else []
+        if not _is_failed_output_fallback_chunk(chunk, flags):
+            continue
+        input_text = str(chunk.get("inputText", ""))
+        chunk_id = str(chunk.get("chunkId", ""))
+        failed_attempts = _normalize_failed_attempts(chunk.get("failedAttempts"))
+        for attempt in reversed(failed_attempts):
+            output_text = str(attempt.get("outputText", "")).strip()
+            if not input_text.strip() or not output_text:
+                continue
+            try:
+                validate_chunk_output(input_text, output_text, chunk_id)
+            except ValueError:
+                continue
+            chunk["outputText"] = output_text
+            chunk["outputCharCount"] = len(output_text)
+            chunk["outputWordCount"] = len(re.findall(r"[A-Za-z0-9]+", output_text))
+            chunk["quality"] = _build_chunk_quality(input_text, output_text)
+            chunk["recoveredFromFailedAttempt"] = {
+                "attempt": attempt.get("attempt"),
+                "error": attempt.get("error", ""),
+                "recoveredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            for key in ("fallbackMode", "fallbackReason", "fallbackError", "fallbackAttempts", "fallbackAt"):
+                chunk.pop(key, None)
+            for key in ("rerunStatus", "rerunFallbackMode", "rerunFallbackError"):
+                chunk.pop(key, None)
+            recovered_chunk_ids.append(chunk_id)
+            break
+    if recovered_chunk_ids:
+        summary = compare_payload.get("qualitySummary")
+        if not isinstance(summary, dict):
+            summary = {}
+            compare_payload["qualitySummary"] = summary
+        source_fallback_ids = [
+            str(chunk_id)
+            for chunk_id in (summary.get("sourceFallbackChunkIds") or [])
+            if str(chunk_id) not in recovered_chunk_ids
+        ]
+        summary["sourceFallbackChunkIds"] = source_fallback_ids
+        summary["sourceFallbackCount"] = len(source_fallback_ids)
+        targeted_fallback_ids = [
+            str(chunk_id)
+            for chunk_id in (summary.get("targetedRerunFallbackChunkIds") or [])
+            if str(chunk_id) not in recovered_chunk_ids
+        ]
+        summary["targetedRerunFallbackChunkIds"] = targeted_fallback_ids
+        summary["targetedRerunFallbackCount"] = len(targeted_fallback_ids)
+        recovered_ids = list(dict.fromkeys([*(summary.get("recoveredFailedOutputChunkIds") or []), *recovered_chunk_ids]))
+        summary["recoveredFailedOutputChunkIds"] = recovered_ids[:24]
+        summary["recoveredFailedOutputCount"] = len(recovered_ids)
+    return recovered_chunk_ids
 
 
 def _load_manifest_for_compare(output_path: Path, compare_payload: dict[str, Any]):
@@ -513,7 +752,7 @@ def _load_manifest_for_compare(output_path: Path, compare_payload: dict[str, Any
     if isinstance(raw_manifest_path, str) and raw_manifest_path.strip():
         manifest_path = normalize_path(Path(raw_manifest_path))
     if manifest_path is None:
-        manifest_path = _find_manifest_path_for_output(output_path)
+        manifest_path = _find_manifest_path_for_output(output_path, include_records=False)
     if manifest_path is None or not manifest_path.exists():
         return None
     try:
@@ -527,13 +766,15 @@ def _normalize_review_decision_value(decision: Any) -> str | dict[str, Any]:
         mode = str(decision.get("mode", "")).strip().lower()
         text = decision.get("text")
         if mode == "custom" and isinstance(text, str) and text.strip():
+            source = str(decision.get("source", "")).strip()
+            if source == "rejected_candidate":
+                source = "failed_output"
             return {
                 "mode": "custom",
                 "text": text,
-                "source": str(decision.get("source", "")).strip(),
+                "source": source,
                 "confirmed": bool(decision.get("confirmed")),
                 "attempt": decision.get("attempt"),
-                "candidate": decision.get("candidate"),
                 "error": str(decision.get("error", "")).strip(),
             }
     decision_text = str(decision)
@@ -586,6 +827,80 @@ def _restore_paragraphs_from_compare_manifest(
     return paragraphs or None
 
 
+def _build_paragraphs_from_compare_payload(
+    output_path: Path,
+    compare_payload: dict[str, Any],
+    decisions: dict[str, Any] | None = None,
+) -> list[str] | None:
+    restored_paragraphs = _restore_paragraphs_from_compare_manifest(output_path, compare_payload, decisions)
+    if restored_paragraphs is not None:
+        return restored_paragraphs
+
+    raw_chunks = compare_payload.get("chunks")
+    if not isinstance(raw_chunks, list):
+        return None
+
+    paragraphs_by_index: dict[int, list[tuple[int, str]]] = {}
+    for raw_chunk in raw_chunks:
+        if not isinstance(raw_chunk, dict):
+            continue
+        chunk_id = str(raw_chunk.get("chunkId", "")).strip()
+        try:
+            paragraph_index = int(raw_chunk.get("paragraphIndex"))
+            chunk_index = int(raw_chunk.get("chunkIndex"))
+        except (TypeError, ValueError):
+            continue
+        input_text = raw_chunk.get("inputText", "")
+        output_text = raw_chunk.get("outputText", "")
+        selected_text = _select_review_text(input_text, output_text, (decisions or {}).get(chunk_id))
+        normalized_text = normalize_chunk_output(
+            input_text if isinstance(input_text, str) else "",
+            selected_text,
+        )
+        paragraphs_by_index.setdefault(paragraph_index, []).append((chunk_index, normalized_text))
+
+    if not paragraphs_by_index:
+        return None
+
+    return [
+        "".join(text.strip() for _, text in sorted(paragraphs_by_index[paragraph_index], key=lambda item: item[0]) if text.strip()).strip()
+        for paragraph_index in sorted(paragraphs_by_index)
+    ]
+
+
+def _sync_compare_payload_to_text_artifacts(
+    output_path: Path,
+    compare_payload: dict[str, Any],
+    decisions: dict[str, Any] | None = None,
+) -> bool:
+    paragraphs = _build_paragraphs_from_compare_payload(output_path, compare_payload, decisions)
+    if paragraphs is None:
+        return False
+    try:
+        output_path.write_text("\n\n".join(paragraphs), encoding="utf-8")
+    except OSError:
+        return False
+
+    body_map_path = _find_body_map_path_for_output(output_path, include_records=False)
+    body_map = load_docx_body_map(body_map_path) if body_map_path is not None else None
+    if body_map is not None and body_map_path is not None:
+        try:
+            reviewed_paragraphs = _ensure_reviewed_paragraph_count_for_body_map(
+                output_path,
+                compare_payload,
+                paragraphs,
+                len(body_map.units),
+                decisions or {},
+            )
+            save_docx_body_map(
+                update_docx_body_map_texts(body_map, reviewed_paragraphs, round_number=body_map.round_number),
+                body_map_path,
+            )
+        except Exception:
+            return False
+    return True
+
+
 def _ensure_reviewed_paragraph_count_for_body_map(
     output_path: Path,
     compare_payload: dict[str, Any],
@@ -607,39 +922,9 @@ def _ensure_reviewed_paragraph_count_for_body_map(
 def _read_output_paragraphs_for_export(output_path: Path) -> tuple[list[str], str]:
     compare_payload = _load_compare_payload_for_output(output_path)
     if compare_payload is not None:
-        restored_paragraphs = _restore_paragraphs_from_compare_manifest(output_path, compare_payload)
-        if restored_paragraphs is not None:
-            return restored_paragraphs, "compare-manifest"
-        raw_chunks = compare_payload.get("chunks")
-        if isinstance(raw_chunks, list):
-            paragraphs_by_index: dict[int, list[tuple[int, str]]] = {}
-            for raw_chunk in raw_chunks:
-                if not isinstance(raw_chunk, dict):
-                    continue
-                try:
-                    paragraph_index = int(raw_chunk.get("paragraphIndex"))
-                    chunk_index = int(raw_chunk.get("chunkIndex"))
-                except (TypeError, ValueError):
-                    continue
-                input_text = raw_chunk.get("inputText", "")
-                output_text = raw_chunk.get("outputText", "")
-                if not isinstance(output_text, str):
-                    continue
-                normalized_output = normalize_chunk_output(
-                    input_text if isinstance(input_text, str) else "",
-                    output_text,
-                )
-                paragraphs_by_index.setdefault(paragraph_index, []).append((chunk_index, normalized_output))
-
-            if paragraphs_by_index:
-                paragraphs: list[str] = []
-                for paragraph_index in sorted(paragraphs_by_index):
-                    ordered_parts = [
-                        text
-                        for _, text in sorted(paragraphs_by_index[paragraph_index], key=lambda item: item[0])
-                    ]
-                    paragraphs.append("".join(part.strip() for part in ordered_parts if part.strip()).strip())
-                return paragraphs, "compare"
+        paragraphs = _build_paragraphs_from_compare_payload(output_path, compare_payload)
+        if paragraphs is not None:
+            return paragraphs, "compare"
 
     text = output_path.read_text(encoding="utf-8")
     return _split_text_into_blocks(text), "text"
@@ -652,36 +937,10 @@ def _build_reviewed_paragraphs_from_compare(output_path: Path, decisions: dict[s
     raw_chunks = compare_payload.get("chunks")
     if not isinstance(raw_chunks, list):
         raise ValueError("Review export compare data is invalid: chunks missing.")
-    restored_paragraphs = _restore_paragraphs_from_compare_manifest(output_path, compare_payload, decisions)
-    if restored_paragraphs is not None:
-        return restored_paragraphs
-
-    paragraphs_by_index: dict[int, list[tuple[int, str]]] = {}
-    for raw_chunk in raw_chunks:
-        if not isinstance(raw_chunk, dict):
-            continue
-        chunk_id = str(raw_chunk.get("chunkId", "")).strip()
-        try:
-            paragraph_index = int(raw_chunk.get("paragraphIndex"))
-            chunk_index = int(raw_chunk.get("chunkIndex"))
-        except (TypeError, ValueError):
-            continue
-        input_text = raw_chunk.get("inputText", "")
-        output_text = raw_chunk.get("outputText", "")
-        selected_text = _select_review_text(input_text, output_text, decisions.get(chunk_id))
-        normalized_text = normalize_chunk_output(
-            input_text if isinstance(input_text, str) else "",
-            selected_text,
-        )
-        paragraphs_by_index.setdefault(paragraph_index, []).append((chunk_index, normalized_text))
-
-    if not paragraphs_by_index:
+    paragraphs = _build_paragraphs_from_compare_payload(output_path, compare_payload, decisions)
+    if paragraphs is None:
         raise ValueError("Review export did not find any selectable chunks.")
-
-    return [
-        "".join(text.strip() for _, text in sorted(paragraphs_by_index[paragraph_index], key=lambda item: item[0]) if text.strip()).strip()
-        for paragraph_index in sorted(paragraphs_by_index)
-    ]
+    return paragraphs
 
 
 def _round_model_key(prompt_profile: str, round_number: int) -> str:
@@ -689,7 +948,7 @@ def _round_model_key(prompt_profile: str, round_number: int) -> str:
 
 
 def _record_prompt_sequence_key(item: dict[str, Any], prompt_profile: str) -> str:
-    if normalize_prompt_profile(prompt_profile) != "cn_custom":
+    if not is_prompt_sequence_customizable(prompt_profile):
         return ""
     sequence = item.get("prompt_sequence")
     if not isinstance(sequence, list):
@@ -703,9 +962,9 @@ def _record_matches_prompt(
     prompt_sequence: list[str],
 ) -> bool:
     normalized_profile = normalize_prompt_profile(prompt_profile)
-    if str(item.get("prompt_profile", "cn") or "cn").strip().lower() != normalized_profile:
+    if str(item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() != normalized_profile:
         return False
-    if normalized_profile != "cn_custom":
+    if not is_prompt_sequence_customizable(normalized_profile):
         return True
     return _record_prompt_sequence_key(item, normalized_profile) == ",".join(prompt_sequence)
 
@@ -722,7 +981,7 @@ def _source_to_doc_id(source_path: str) -> tuple[Path, str]:
 
 def _route_key(prompt_profile: str, prompt_sequence: list[str]) -> tuple[str, tuple[str, ...]]:
     normalized_profile = normalize_prompt_profile(prompt_profile)
-    if normalized_profile != "cn_custom":
+    if not is_prompt_sequence_customizable(normalized_profile):
         return normalized_profile, ()
     return normalized_profile, tuple(prompt_sequence)
 
@@ -730,7 +989,7 @@ def _route_key(prompt_profile: str, prompt_sequence: list[str]) -> tuple[str, tu
 def find_conflicting_history_route(source_path: str, model_config: dict[str, Any]) -> dict[str, Any] | None:
     """Return an existing completed route when a fresh route would hide history."""
     _, doc_id = _source_to_doc_id(source_path)
-    requested_profile = normalize_prompt_profile(model_config.get("promptProfile", "cn_custom"))
+    requested_profile = normalize_prompt_profile(model_config.get("promptProfile", DEFAULT_PROMPT_PROFILE))
     requested_sequence = normalize_prompt_sequence(requested_profile, model_config.get("promptSequence"))
     requested_key = _route_key(requested_profile, requested_sequence)
     records = list_records()
@@ -744,12 +1003,8 @@ def find_conflicting_history_route(source_path: str, model_config: dict[str, Any
 
     route_groups: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
     for item in normalized_rounds:
-        item_profile = normalize_prompt_profile(str(item.get("prompt_profile", "cn") or "cn"))
-        item_sequence = (
-            normalize_prompt_sequence(item_profile, item.get("prompt_sequence"))
-            if item_profile == "cn_custom"
-            else normalize_prompt_sequence(item_profile)
-        )
+        item_profile = normalize_prompt_profile(str(item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE))
+        item_sequence = normalize_prompt_sequence(item_profile, item.get("prompt_sequence"))
         item_key = _route_key(item_profile, item_sequence)
         if item_key == requested_key:
             continue
@@ -908,6 +1163,7 @@ def import_document(source_path: str) -> dict[str, Any]:
         "sourceKind": normalized_source.suffix.lower() or ".txt",
         "completedRounds": round_state.completed_rounds,
         "nextRound": round_state.next_round,
+        "plannedRounds": len(round_state.prompt_sequence),
         "maxRounds": get_max_rounds(round_state.prompt_profile, round_state.prompt_sequence),
         "hasNextRound": round_state.next_round is not None,
         "isComplete": round_state.is_complete,
@@ -920,7 +1176,7 @@ def import_document(source_path: str) -> dict[str, Any]:
 
 def get_document_status(
     source_path: str,
-    prompt_profile: str = "cn",
+    prompt_profile: str = DEFAULT_PROMPT_PROFILE,
     prompt_sequence: object | None = None,
 ) -> dict[str, Any]:
     normalized_source = normalize_path(Path(source_path))
@@ -988,6 +1244,7 @@ def get_document_status(
         "sourceKind": normalized_source.suffix.lower() or ".txt",
         "completedRounds": completed_rounds,
         "nextRound": round_state.next_round,
+        "plannedRounds": len(normalized_prompt_sequence),
         "maxRounds": get_max_rounds(normalized_prompt_profile, normalized_prompt_sequence),
         "hasNextRound": round_state.next_round is not None,
         "isComplete": round_state.is_complete,
@@ -1529,9 +1786,9 @@ def reset_round_progress(
     except ValueError:
         doc_id = normalize_doc_id(str(normalized_source))
     target_round = int(round_number)
-    if normalized_profile == "cn":
+    if normalized_profile == LEGACY_PROMPT_PROFILE:
         artifact_stem = Path(doc_id).stem
-    elif normalized_profile == "cn_custom":
+    elif is_prompt_sequence_customizable(normalized_profile):
         artifact_stem = f"{Path(doc_id).stem}_custom_{'_'.join(normalized_prompt_sequence)}"
     else:
         artifact_stem = f"{Path(doc_id).stem}_{normalized_profile}"
@@ -1545,7 +1802,7 @@ def reset_round_progress(
             doc_id,
             target_round,
             prompt_profile=normalized_profile,
-            prompt_sequence=normalized_prompt_sequence if normalized_profile == "cn_custom" else None,
+            prompt_sequence=normalized_prompt_sequence if is_prompt_sequence_customizable(normalized_profile) else None,
         )
     except ValueError as exc:
         message = str(exc)
@@ -1814,6 +2071,7 @@ def get_round_progress_status(
     total_chunks = len(chunk_ids) if isinstance(chunk_ids, list) else 0
     progress_percent = round((completed_chunks / total_chunks) * 100) if total_chunks else 0
     last_error = str(payload.get("last_error", "") or "").strip()
+    last_error_details = payload.get("last_error_details") if isinstance(payload.get("last_error_details"), dict) else {}
     updated_at = str(payload.get("updated_at", "") or "").strip()
     validation_event_count = len(validation_events) if isinstance(validation_events, list) else 0
     resume_details = _build_checkpoint_resume_details(
@@ -1836,6 +2094,7 @@ def get_round_progress_status(
         "progressPercent": progress_percent,
         "checkpointPath": str(checkpoint_path),
         "lastError": last_error,
+        "lastErrorDetails": last_error_details,
         "updatedAt": updated_at,
         "validationEventCount": validation_event_count,
         **resume_details,
@@ -1862,7 +2121,7 @@ def delete_document_history(
         normalized_doc_id,
         from_round,
         prompt_profile=normalized_profile,
-        prompt_sequence=normalize_prompt_sequence(normalized_profile, prompt_sequence) if normalized_profile == "cn_custom" else None,
+        prompt_sequence=normalize_prompt_sequence(normalized_profile, prompt_sequence) if normalized_profile and is_prompt_sequence_customizable(normalized_profile) else None,
         mode=mode,
     )
 
@@ -1880,7 +2139,7 @@ def preview_document_history_delete(
         normalized_doc_id,
         from_round,
         prompt_profile=normalized_profile,
-        prompt_sequence=normalize_prompt_sequence(normalized_profile, prompt_sequence) if normalized_profile == "cn_custom" else None,
+        prompt_sequence=normalize_prompt_sequence(normalized_profile, prompt_sequence) if normalized_profile and is_prompt_sequence_customizable(normalized_profile) else None,
         mode=mode,
     )
 
@@ -1894,7 +2153,7 @@ def run_round_for_app(
 ) -> dict[str, Any]:
     from round_helper import run_document_round
 
-    prompt_profile = normalize_prompt_profile(model_config.get("promptProfile", "cn_custom"))
+    prompt_profile = normalize_prompt_profile(model_config.get("promptProfile", DEFAULT_PROMPT_PROFILE))
     prompt_sequence = normalize_prompt_sequence(prompt_profile, model_config.get("promptSequence"))
     status = get_document_status(source_path, prompt_profile=prompt_profile, prompt_sequence=prompt_sequence)
     if bool(status.get("isComplete")):
@@ -1907,17 +2166,25 @@ def run_round_for_app(
     model = str(effective_model_config.get("model", "")).strip()
     api_type = str(effective_model_config.get("apiType", "chat_completions")).strip()
     temperature = float(effective_model_config.get("temperature", model_config.get("temperature", 0.7)) or 0.7)
-    request_timeout_seconds = _coerce_int_config(
+    configured_timeout_seconds = _coerce_int_config(
         effective_model_config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
         default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
         minimum=30,
         maximum=3600,
     )
-    max_retries = _coerce_int_config(
+    request_timeout_seconds = _coerce_rewrite_timeout_seconds(configured_timeout_seconds)
+    configured_max_retries = _coerce_int_config(
         effective_model_config.get("maxRetries", DEFAULT_MAX_RETRIES),
         default=DEFAULT_MAX_RETRIES,
         minimum=0,
         maximum=10,
+    )
+    max_retries = max(configured_max_retries, MIN_REWRITE_TRANSIENT_RETRIES)
+    rewrite_concurrency = _coerce_int_config(
+        model_config.get("rewriteConcurrency", DEFAULT_REWRITE_CONCURRENCY),
+        default=DEFAULT_REWRITE_CONCURRENCY,
+        minimum=1,
+        maximum=MAX_REWRITE_CONCURRENCY,
     )
 
     if not base_url or not api_key or not model:
@@ -1938,6 +2205,12 @@ def run_round_for_app(
                 "rateLimitMaxRequests": _coerce_rate_max_requests(effective_model_config),
                 "routeSource": str(effective_model_config.get("routeSource", "default")),
             },
+            "concurrency": rewrite_concurrency,
+            "configuredConcurrency": rewrite_concurrency,
+            "requestTimeoutSeconds": request_timeout_seconds,
+            "configuredRequestTimeoutSeconds": configured_timeout_seconds,
+            "maxRetries": max_retries,
+            "configuredMaxRetries": configured_max_retries,
         })
 
     def ensure_not_cancelled() -> None:
@@ -1946,20 +2219,55 @@ def run_round_for_app(
 
     rate_limiter = _build_provider_rate_limiter(effective_model_config)
 
-    def transform(_: str, prompt_input: str, __: int, ___: str) -> str:
+    def transform(_: str, prompt_input: str, __: int, chunk_id: str) -> str:
+        ensure_not_cancelled()
+        _wait_for_provider_cooldown(effective_model_config, cancel_check=cancel_check)
         ensure_not_cancelled()
         rate_limiter()
         ensure_not_cancelled()
-        return llm_completion(
-            prompt_input,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            api_type=api_type,
-            temperature=temperature,
-            timeout=request_timeout_seconds,
-            max_retries=max_retries,
-        )
+
+        def emit_retry_wait(event: dict[str, object]) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                {
+                    "phase": "provider-retry-wait",
+                    "round": effective_round,
+                    "chunkId": chunk_id,
+                    "error": str(event.get("message", "") or ""),
+                    "errorCategory": str(event.get("category", "") or ""),
+                    "statusCode": event.get("statusCode"),
+                    "retryable": event.get("retryable"),
+                    "attempts": event.get("attempt"),
+                    "maxAttempts": event.get("maxAttempts"),
+                    "nextAttempt": event.get("nextAttempt"),
+                    "retryDelaySeconds": event.get("retryDelaySeconds"),
+                    "retryAfterSeconds": event.get("retryAfterSeconds"),
+                    "cooldownSeconds": event.get("cooldownSeconds"),
+                    "providerMessage": str(event.get("providerMessage", "") or ""),
+                    "concurrency": rewrite_concurrency,
+                    "configuredConcurrency": rewrite_concurrency,
+                }
+            )
+
+        try:
+            output = llm_completion(
+                prompt_input,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                api_type=api_type,
+                temperature=temperature,
+                timeout=request_timeout_seconds,
+                max_retries=max_retries,
+                retry_backoff_seconds=REWRITE_RETRY_BACKOFF_SECONDS,
+                retry_callback=emit_retry_wait,
+            )
+        except LLMRequestError as exc:
+            _register_provider_failure(effective_model_config, exc)
+            raise
+        _register_provider_success(effective_model_config)
+        return output
 
     checkpoint_metadata = {
         "base_url": base_url,
@@ -1973,7 +2281,11 @@ def run_round_for_app(
         "round_model_provider": str(effective_model_config.get("providerName", "")),
         "round_model_route_source": str(effective_model_config.get("routeSource", "default")),
         "request_timeout_seconds": request_timeout_seconds,
+        "configured_request_timeout_seconds": configured_timeout_seconds,
         "max_retries": max_retries,
+        "configured_max_retries": configured_max_retries,
+        "retry_backoff_seconds": REWRITE_RETRY_BACKOFF_SECONDS,
+        "rewrite_concurrency": rewrite_concurrency,
         "rate_limit_window_minutes": _coerce_rate_window_minutes(effective_model_config),
         "rate_limit_max_requests": _coerce_rate_max_requests(effective_model_config),
     }
@@ -1987,6 +2299,7 @@ def run_round_for_app(
         progress_callback=progress_callback or emit_progress_event,
         checkpoint_metadata=checkpoint_metadata,
         cancel_check=cancel_check,
+        max_concurrency=rewrite_concurrency,
     )
     return {
         "round": int(result["round"]),
@@ -2054,6 +2367,8 @@ def test_model_connection(model_config: dict[str, Any]) -> dict[str, Any]:
         "message": "接口连通性测试成功。",
         **result,
     }
+
+
 def list_available_models(model_config: dict[str, Any]) -> dict[str, Any]:
     base_url = str(model_config.get("baseUrl", "")).strip()
     api_key = str(model_config.get("apiKey", "")).strip()
@@ -2096,8 +2411,20 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
         raise ValueError(f"Output path is not a file: {normalized_output_path}")
     normalized_export_path = Path(export_path).resolve()
     normalized_export_path.parent.mkdir(parents=True, exist_ok=True)
+    review_decisions = load_review_decisions(str(normalized_output_path)).get("decisions", {})
+    if not isinstance(review_decisions, dict):
+        review_decisions = {}
     if target_format == "txt":
-        shutil.copyfile(normalized_output_path, normalized_export_path)
+        if review_decisions:
+            blocks = _build_reviewed_paragraphs_from_compare(normalized_output_path, review_decisions)
+            normalized_export_path.write_text("\n\n".join(blocks), encoding="utf-8")
+        else:
+            compare_payload = _load_compare_payload_for_output(normalized_output_path)
+            if compare_payload is not None:
+                blocks, _paragraph_source = _read_output_paragraphs_for_export(normalized_output_path)
+                normalized_export_path.write_text("\n\n".join(blocks), encoding="utf-8")
+            else:
+                shutil.copyfile(normalized_output_path, normalized_export_path)
         return {
             "format": "txt",
             "path": str(normalized_export_path),
@@ -2118,6 +2445,29 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                 snapshot_path=snapshot_path,
             )
             if body_map is not None:
+                if review_decisions:
+                    reviewed_paragraphs = _build_reviewed_paragraphs_from_compare(normalized_output_path, review_decisions)
+                    reviewed_paragraphs = _ensure_reviewed_paragraph_count_for_body_map(
+                        normalized_output_path,
+                        compare_payload or {},
+                        reviewed_paragraphs,
+                        len(body_map.units),
+                        review_decisions,
+                    )
+                    body_map = update_docx_body_map_texts(body_map, reviewed_paragraphs, round_number=body_map.round_number)
+                    paragraph_source = "body_map_review_decisions"
+                elif compare_payload is not None:
+                    compare_paragraphs = _build_paragraphs_from_compare_payload(normalized_output_path, compare_payload)
+                    if compare_paragraphs is not None:
+                        compare_paragraphs = _ensure_reviewed_paragraph_count_for_body_map(
+                            normalized_output_path,
+                            compare_payload,
+                            compare_paragraphs,
+                            len(body_map.units),
+                            {},
+                        )
+                        body_map = update_docx_body_map_texts(body_map, compare_paragraphs, round_number=body_map.round_number)
+                        paragraph_source = "body_map_compare"
                 guard_report = run_docx_pre_export_guard(
                     body_map.current_texts(),
                     source_path=source_docx_path,
@@ -2127,7 +2477,7 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                     body_map=body_map,
                     compare_payload=compare_payload,
                     mode="docx-export",
-                    paragraph_source="body_map",
+                    paragraph_source=paragraph_source,
                 )
                 if not bool(guard_report.get("ok")):
                     raise ValueError(summarize_docx_export_guard_failure(guard_report, label="导出"))
@@ -2137,9 +2487,14 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                     export_path=normalized_export_path,
                 )
                 layout_mode = "body-map-roundtrip"
-                paragraph_source = "body_map"
+                if not review_decisions:
+                    paragraph_source = "body_map"
             else:
-                blocks, paragraph_source = _read_output_paragraphs_for_export(normalized_output_path)
+                if review_decisions:
+                    blocks = _build_reviewed_paragraphs_from_compare(normalized_output_path, review_decisions)
+                    paragraph_source = "compare_review_decisions"
+                else:
+                    blocks, paragraph_source = _read_output_paragraphs_for_export(normalized_output_path)
                 snapshot = _load_docx_snapshot(snapshot_path)
                 expected_paragraph_count = (
                     snapshot.editable_unit_count
@@ -2172,7 +2527,11 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                 )
                 layout_mode = "snapshot-compare-reflow" if paragraph_source.startswith("compare") else "snapshot-roundtrip"
         else:
-            blocks, paragraph_source = _read_output_paragraphs_for_export(normalized_output_path)
+            if review_decisions:
+                blocks = _build_reviewed_paragraphs_from_compare(normalized_output_path, review_decisions)
+                paragraph_source = "compare_review_decisions"
+            else:
+                blocks, paragraph_source = _read_output_paragraphs_for_export(normalized_output_path)
             write_docx_text(blocks, normalized_export_path)
         text_fingerprint_before_format = _collect_docx_text_fingerprint(normalized_export_path)
         format_result = apply_school_format_rules(
@@ -2265,6 +2624,14 @@ def read_round_compare(output_path: str) -> dict[str, Any]:
     payload = json.loads(compare_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid compare data payload: {compare_path}")
+    payload = _normalize_compare_failed_attempts(payload)
+    recovered_chunk_ids = _recover_valid_failed_outputs(payload)
+    if recovered_chunk_ids:
+        compare_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        try:
+            _sync_compare_payload_to_text_artifacts(normalized_output_path, payload)
+        except Exception as exc:
+            payload["recoveryWarning"] = str(exc)
     return payload
 
 
@@ -2325,18 +2692,16 @@ def _build_transform_from_model_config(model_config: dict[str, Any]) -> tuple[Ca
     model = str(model_config.get("model", "")).strip()
     api_type = str(model_config.get("apiType", "chat_completions")).strip()
     temperature = float(model_config.get("temperature", 0.7) or 0.7)
-    request_timeout_seconds = _coerce_int_config(
-        model_config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
-        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
-        minimum=30,
-        maximum=3600,
+    request_timeout_seconds = _coerce_rewrite_timeout_seconds(
+        model_config.get("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS)
     )
-    max_retries = _coerce_int_config(
+    configured_max_retries = _coerce_int_config(
         model_config.get("maxRetries", DEFAULT_MAX_RETRIES),
         default=DEFAULT_MAX_RETRIES,
         minimum=0,
         maximum=10,
     )
+    max_retries = max(configured_max_retries, MIN_REWRITE_TRANSIENT_RETRIES)
 
     if not base_url or not api_key or not model:
         raise ValueError("Model configuration is incomplete.")
@@ -2344,17 +2709,25 @@ def _build_transform_from_model_config(model_config: dict[str, Any]) -> tuple[Ca
     rate_limiter = _build_provider_rate_limiter(model_config)
 
     def transform(_chunk_text: str, prompt_input: str, _round: int, _chunk_id: str) -> str:
+        _wait_for_provider_cooldown(model_config)
         rate_limiter()
-        return llm_completion(
-            prompt_input,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            api_type=api_type,
-            temperature=temperature,
-            timeout=request_timeout_seconds,
-            max_retries=max_retries,
-        )
+        try:
+            output = llm_completion(
+                prompt_input,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                api_type=api_type,
+                temperature=temperature,
+                timeout=request_timeout_seconds,
+                max_retries=max_retries,
+                retry_backoff_seconds=REWRITE_RETRY_BACKOFF_SECONDS,
+            )
+        except LLMRequestError as exc:
+            _register_provider_failure(model_config, exc)
+            raise
+        _register_provider_success(model_config)
+        return output
 
     return transform, "online"
 
@@ -2803,7 +3176,7 @@ def _build_detection_surgery_feedback(
     result_patterns = [
         r"(图|表)\s*\d",
         r"(准确率|召回率|AUC|F1|F1-Score|实验结果|对比实验|特征重要性)",
-        r"(LSTM|Bi-LSTM|XGBoost|Random Forest|Streamlit)",
+        r"\b[A-Z][A-Za-z0-9+.#/-]{2,}\b",
         r"\d+\.\d+",
     ]
     if sum(1 for pattern in result_patterns if re.search(pattern, analysis_text, re.I)) >= 2:
@@ -2837,18 +3210,19 @@ def _build_compact_round_brief(
     normalized_profile = normalize_prompt_profile(prompt_profile)
     normalized_prompt_sequence = normalize_prompt_sequence(normalized_profile, prompt_sequence)
     final_round = round_number >= get_max_rounds(normalized_profile, normalized_prompt_sequence)
-    if normalized_profile == "cn_prewrite" and round_number == 1:
+    current_prompt_id = get_prompt_id_for_round(normalized_profile, round_number, normalized_prompt_sequence)
+    if current_prompt_id == "prewrite":
         return [
-            "- 当前轮次是保守预改写：只做轻量自然化，不要大幅扩写。",
+            "- 当前轮次是润色改写：只做轻量自然化，不要大幅扩写。",
             "- 字数尽量贴近原文，段落角色、事实、术语和结论保持不变。",
         ]
-    if final_round:
+    if current_prompt_id == "round2" or final_round:
         return [
             "- 当前轮次偏向最终自然化：降低机械论文腔，但不能新增观点或改变逻辑。",
             "- 避免总分总模板、泛化价值判断和过于整齐的连接词节奏。",
         ]
     return [
-        "- 当前轮次是主体改写：表达可以更自然、更具解释性，但不能偏离原文。",
+        "- 当前轮次是规范改写：表达可以更自然、更具解释性，但不能偏离原文。",
         "- 控制长度，优先修正句式与节奏，不要写成总结、建议或答疑。",
     ]
 
@@ -2857,7 +3231,7 @@ def _build_targeted_validation_retry_note(validation_error: str) -> str:
     repair_steps = _build_validation_repair_steps(validation_error)
     sections = [
         "[TARGETED VALIDATION RETRY]",
-        "- The previous targeted rerun candidate failed local hard validation.",
+        "- The previous targeted rerun output failed local hard validation.",
         "- Regenerate the same chunk and fix the validation problem directly.",
         "- Do not make broader changes just to avoid the error; keep the rewrite conservative.",
     ]
@@ -3016,7 +3390,7 @@ def _apply_targeted_rerun_fallback_quality(
             },
         },
     )
-    rewrite_advice.insert(0, "可更换模型或补充更具体的人工反馈后再单独重跑；在通过硬校验前，不采用失败候选。")
+    rewrite_advice.insert(0, "可更换模型或补充更具体的人工反馈后再单独重跑；在通过硬校验前，不采用失败输出。")
     next_quality["flags"] = _unique_strings([str(flag) for flag in flags])
     next_quality["reviewReasons"] = review_reasons
     next_quality["rewriteAdvice"] = _unique_strings([str(item) for item in rewrite_advice])
@@ -3032,19 +3406,18 @@ def _append_compare_validation_event(compare_payload: dict[str, Any], event: dic
     events.append(event)
 
 
-def _record_targeted_rejected_candidate(
+def _record_targeted_failed_output(
     compare_payload: dict[str, Any],
     target_chunk: dict[str, Any],
     *,
     round_number: int,
     chunk_id: str,
     validation_attempt: int,
-    candidate_index: int,
     error: str,
     output_text: str,
 ) -> None:
-    rejected_payload = _serialize_rejected_candidate_output(output_text)
-    if not rejected_payload.get("outputText"):
+    failed_payload = _serialize_failed_output(output_text)
+    if not failed_payload.get("outputText"):
         return
     event = {
         "event": "validation-retry",
@@ -3053,25 +3426,24 @@ def _record_targeted_rejected_candidate(
         "paragraphIndex": target_chunk.get("paragraphIndex"),
         "chunkIndex": target_chunk.get("chunkIndex"),
         "attempt": validation_attempt,
-        "candidate": candidate_index,
         "error": error,
-        **rejected_payload,
+        **failed_payload,
     }
     _append_compare_validation_event(compare_payload, event)
-    rejected_candidates = target_chunk.get("rejectedCandidates")
-    if not isinstance(rejected_candidates, list):
-        rejected_candidates = []
-    rejected_candidates.append(
+    failed_attempts = _normalize_failed_attempts(target_chunk.get("failedAttempts"))
+    if not failed_attempts:
+        failed_attempts = _normalize_failed_attempts(target_chunk.get("rejectedCandidates"))
+    failed_attempts.append(
         {
             "attempt": validation_attempt,
-            "candidate": candidate_index,
-            "outputText": rejected_payload.get("outputText", ""),
-            "outputCharCount": rejected_payload.get("outputCharCount"),
-            "truncated": bool(rejected_payload.get("truncated")),
+            "outputText": failed_payload.get("outputText", ""),
+            "outputCharCount": failed_payload.get("outputCharCount"),
+            "truncated": bool(failed_payload.get("truncated")),
             "error": error,
         }
     )
-    target_chunk["rejectedCandidates"] = rejected_candidates[-4:]
+    target_chunk.pop("rejectedCandidates", None)
+    target_chunk["failedAttempts"] = failed_attempts[-4:]
 
 
 def _bump_quality_summary_counter(compare_payload: dict[str, Any], key: str, chunk_id: str) -> None:
@@ -3105,7 +3477,7 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
     if target_chunk is None:
         raise ValueError(f"Chunk not found in compare data: {chunk_id}")
 
-    prompt_profile = normalize_prompt_profile(compare_payload.get("promptProfile", model_config.get("promptProfile", "cn")))
+    prompt_profile = normalize_prompt_profile(compare_payload.get("promptProfile", model_config.get("promptProfile", DEFAULT_PROMPT_PROFILE)))
     prompt_sequence = normalize_prompt_sequence(prompt_profile, compare_payload.get("promptSequence", model_config.get("promptSequence")))
     round_number = int(compare_payload.get("round", 1) or 1)
     input_text = str(target_chunk.get("inputText", ""))
@@ -3142,9 +3514,9 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
     if style_card:
         strategy_tags = _unique_strings([*strategy_tags, "global-style-card"])
         advice_items = _unique_strings([*advice_items, "重跑会参考全文高频连接词、模板句和重复开头，避免继续放大全文层面的机械感。"])
-    candidate_count = 1
-    valid_candidates: list[tuple[float, str, int]] = []
-    candidate_errors: list[str] = []
+    accepted_output: str | None = None
+    accepted_score = 999.0
+    output_errors: list[str] = []
 
     validation_retry_note: str | None = None
     used_fallback = False
@@ -3154,56 +3526,54 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
 
     for validation_attempt in range(1, TARGETED_RERUN_VALIDATION_ATTEMPTS + 1):
         attempts_used = validation_attempt
-        for candidate_index in range(1, candidate_count + 1):
-            prompt_input = _build_targeted_rerun_prompt_input(
-                protected_input_text=protected_chunk.text,
-                previous_output_text=previous_output_text,
-                prompt_profile=prompt_profile,
-                prompt_sequence=prompt_sequence,
+        prompt_input = _build_targeted_rerun_prompt_input(
+            protected_input_text=protected_chunk.text,
+            previous_output_text=previous_output_text,
+            prompt_profile=prompt_profile,
+            prompt_sequence=prompt_sequence,
+            round_number=round_number,
+            chunk_id=chunk_id,
+            rerun_note=rerun_note,
+            issue_cards=issue_cards,
+            style_card=style_card,
+            validation_retry_note=validation_retry_note,
+        )
+        output_for_review = ""
+        try:
+            raw_output = transform(protected_chunk.text, prompt_input, round_number, chunk_id)
+            output_for_review = str(raw_output or "").strip()
+            protected_output = normalize_chunk_output(protected_chunk.text, raw_output)
+            validate_structure_placeholders(protected_output, protected_chunk.tokens, chunk_id)
+            rewritten_output = restore_structure_tokens(protected_output, protected_chunk.tokens)
+            output_for_review = rewritten_output
+            validate_chunk_output(input_text, rewritten_output, chunk_id)
+            score = _score_rewrite_output(input_text, rewritten_output)
+            if previous_output_text and rewritten_output.strip() == previous_output_text:
+                score += 2.0
+            accepted_output = rewritten_output
+            accepted_score = score
+        except Exception as exc:
+            output_error = f"attempt {validation_attempt}: {exc}"
+            output_errors.append(output_error)
+            _record_targeted_failed_output(
+                compare_payload,
+                target_chunk,
                 round_number=round_number,
                 chunk_id=chunk_id,
-                rerun_note=rerun_note,
-                issue_cards=issue_cards,
-                style_card=style_card,
-                validation_retry_note=validation_retry_note,
+                validation_attempt=validation_attempt,
+                error=str(exc),
+                output_text=output_for_review,
             )
-            candidate_output_for_review = ""
-            try:
-                raw_output = transform(protected_chunk.text, prompt_input, round_number, chunk_id)
-                candidate_output_for_review = str(raw_output or "").strip()
-                protected_output = normalize_chunk_output(protected_chunk.text, raw_output)
-                validate_structure_placeholders(protected_output, protected_chunk.tokens, chunk_id)
-                candidate_output = restore_structure_tokens(protected_output, protected_chunk.tokens)
-                candidate_output_for_review = candidate_output
-                validate_chunk_output(input_text, candidate_output, chunk_id)
-                score = _score_rewrite_candidate(input_text, candidate_output)
-                if previous_output_text and candidate_output.strip() == previous_output_text:
-                    score += 2.0
-                valid_candidates.append((score, candidate_output, candidate_index))
-            except Exception as exc:
-                candidate_error = f"attempt {validation_attempt} candidate {candidate_index}: {exc}"
-                candidate_errors.append(candidate_error)
-                _record_targeted_rejected_candidate(
-                    compare_payload,
-                    target_chunk,
-                    round_number=round_number,
-                    chunk_id=chunk_id,
-                    validation_attempt=validation_attempt,
-                    candidate_index=candidate_index,
-                    error=str(exc),
-                    output_text=candidate_output_for_review,
-                )
-                validation_retry_note = _build_targeted_validation_retry_note(str(exc))
-        if valid_candidates:
+            validation_retry_note = _build_targeted_validation_retry_note(str(exc))
+        if accepted_output is not None:
             break
 
-    if valid_candidates:
-        selected_score, output_text, selected_candidate = min(valid_candidates, key=lambda item: item[0])
+    if accepted_output is not None:
+        selected_score, output_text = accepted_score, accepted_output
     else:
-        fallback_detail = "; ".join(candidate_errors[-3:]) if candidate_errors else "no valid candidate"
+        fallback_detail = "; ".join(output_errors[-3:]) if output_errors else "no valid output"
         output_text, fallback_mode = _pick_targeted_fallback_text(input_text, previous_output_text, chunk_id)
         selected_score = 999.0
-        selected_candidate = 0
         used_fallback = True
 
     target_chunk["outputText"] = output_text
@@ -3224,9 +3594,7 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
     target_chunk["rerunIssueCards"] = issue_cards
     target_chunk["rerunStyleCard"] = style_card or ""
     target_chunk["rerunGlobalStyleProfile"] = global_style_profile
-    target_chunk["rerunCandidateCount"] = candidate_count
     target_chunk["rerunAttemptCount"] = attempts_used
-    target_chunk["rerunSelectedCandidate"] = selected_candidate
     target_chunk["rerunSelectedScore"] = round(selected_score, 3)
     target_chunk["rerunPromptNote"] = rerun_note
     target_chunk["rerunUserFeedback"] = " ".join(str(user_feedback or "").split())[:800]
@@ -3258,7 +3626,6 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
                 "paragraphIndex": target_chunk.get("paragraphIndex"),
                 "chunkIndex": target_chunk.get("chunkIndex"),
                 "attempts": attempts_used,
-                "candidateCount": candidate_count,
                 "fallbackMode": fallback_mode,
                 "error": fallback_detail,
                 "createdAt": target_chunk["rerunAt"],
@@ -3311,7 +3678,7 @@ def cli_main() -> None:
 
     status_parser = subparsers.add_parser("document-status")
     status_parser.add_argument("source_path")
-    status_parser.add_argument("prompt_profile", nargs="?", default="cn")
+    status_parser.add_argument("prompt_profile", nargs="?", default=DEFAULT_PROMPT_PROFILE)
 
     history_parser = subparsers.add_parser("document-history")
     history_parser.add_argument("source_path")

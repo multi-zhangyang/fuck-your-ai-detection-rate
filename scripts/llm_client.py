@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import socket
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Callable
 from urllib import error, request
 
 
@@ -16,7 +20,17 @@ DEFAULT_HEADERS = {
 }
 TRANSIENT_HTTP_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 DEFAULT_MAX_RETRIES = 2
-DEFAULT_RETRY_BACKOFF_SECONDS = 1.5
+DEFAULT_RETRY_BACKOFF_SECONDS = 2.0
+MAX_RETRY_SLEEP_SECONDS = 60.0
+RETRY_JITTER_RATIO = 0.35
+MAX_ERROR_DETAIL_CHARS = 1200
+RetryCallback = Callable[[dict[str, object]], None]
+COOLDOWN_BY_ERROR_CATEGORY = {
+    "rate_limit": 60,
+    "server": 20,
+    "timeout": 12,
+    "network": 12,
+}
 _RESPONSES_TO_CHAT_FALLBACK_BASE_URLS: set[str] = set()
 THINKING_PART_TYPES = {
     "analysis",
@@ -47,6 +61,44 @@ REASONING_BLOCK_RE_LIST = (
     re.compile(r"(?is)<\|begin_of_thought\|>.*?<\|end_of_thought\|>"),
 )
 REASONING_PREFIX_RE = re.compile(r"(?is)^\s*<(?:think|thinking|reasoning)\b[^>]*>.*?(?=(?:```json|```|\{\s*\"|\[\s*(?:\{|\[|\")))")
+
+
+class LLMRequestError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "unknown",
+        status_code: int | None = None,
+        retryable: bool = False,
+        attempts: int = 1,
+        endpoint: str = "",
+        retry_after_seconds: float | None = None,
+        cooldown_seconds: float | None = None,
+        provider_message: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.status_code = status_code
+        self.retryable = retryable
+        self.attempts = attempts
+        self.endpoint = endpoint
+        self.retry_after_seconds = retry_after_seconds
+        self.cooldown_seconds = cooldown_seconds
+        self.provider_message = provider_message
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "message": str(self),
+            "category": self.category,
+            "statusCode": self.status_code,
+            "retryable": self.retryable,
+            "attempts": self.attempts,
+            "endpoint": self.endpoint,
+            "retryAfterSeconds": self.retry_after_seconds,
+            "cooldownSeconds": self.cooldown_seconds,
+            "providerMessage": self.provider_message,
+        }
 
 
 def normalize_api_type(api_type: str | None, base_url: str) -> str:
@@ -183,6 +235,7 @@ def _send_completion_once(
     timeout: int,
     max_retries: int,
     retry_backoff_seconds: float,
+    retry_callback: RetryCallback | None = None,
 ) -> tuple[str, str]:
     endpoint = build_endpoint(base_url, api_type)
     payload = build_payload(prompt, model=model, temperature=temperature, api_type=api_type)
@@ -199,8 +252,19 @@ def _send_completion_once(
         timeout=timeout,
         max_retries=max_retries,
         retry_backoff_seconds=retry_backoff_seconds,
+        retry_callback=retry_callback,
     )
-    return extract_response_text(data, response_body, api_type), endpoint
+    try:
+        return extract_response_text(data, response_body, api_type), endpoint
+    except RuntimeError as exc:
+        raise LLMRequestError(
+            str(exc),
+            category="response_parse",
+            retryable=False,
+            attempts=max(1, max_retries + 1),
+            endpoint=endpoint,
+            provider_message=_truncate_error_detail(response_body),
+        ) from exc
 
 
 def _send_test_connection_once(
@@ -228,7 +292,18 @@ def _send_test_connection_once(
         max_retries=max_retries,
         retry_backoff_seconds=retry_backoff_seconds,
     )
-    extract_response_text(data, response_body, api_type)
+    try:
+        extract_response_text(data, response_body, api_type)
+    except RuntimeError as exc:
+        raise LLMRequestError(
+            str(exc),
+            category="response_parse",
+            status_code=int(status_code),
+            retryable=False,
+            attempts=max(1, max_retries + 1),
+            endpoint=endpoint,
+            provider_message=_truncate_error_detail(response_body),
+        ) from exc
 
     return {
         "ok": True,
@@ -243,6 +318,29 @@ def _is_transient_http_status(status_code: int) -> bool:
     if status_code in TRANSIENT_HTTP_STATUS_CODES:
         return True
     return 520 <= status_code < 600
+
+
+def _classify_http_status(status_code: int) -> str:
+    if status_code == 429:
+        return "rate_limit"
+    if status_code in {408, 409} or status_code >= 500:
+        return "server"
+    if status_code in {401, 403}:
+        return "auth"
+    if status_code in {404, 405}:
+        return "endpoint"
+    if 400 <= status_code < 500:
+        return "bad_request"
+    return "unknown"
+
+
+def _classify_url_reason(reason: object) -> str:
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return "timeout"
+    message = str(reason).strip().lower()
+    if any(marker in message for marker in ("timed out", "timeout")):
+        return "timeout"
+    return "network"
 
 
 def _is_transient_url_reason(reason: object) -> bool:
@@ -264,15 +362,96 @@ def _is_transient_url_reason(reason: object) -> bool:
     return any(marker in message for marker in transient_markers)
 
 
+def _truncate_error_detail(value: str) -> str:
+    normalized = str(value or "").strip()
+    if len(normalized) <= MAX_ERROR_DETAIL_CHARS:
+        return normalized
+    return f"{normalized[:MAX_ERROR_DETAIL_CHARS]}... [truncated]"
+
+
+def _extract_provider_message(response_body: str) -> str:
+    normalized_body = str(response_body or "").strip()
+    if not normalized_body:
+        return ""
+    try:
+        payload = json.loads(normalized_body)
+    except json.JSONDecodeError:
+        return _truncate_error_detail(normalized_body)
+    if isinstance(payload, dict):
+        error_payload = payload.get("error")
+        if isinstance(error_payload, dict):
+            for key in ("message", "detail", "code", "type"):
+                value = error_payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return _truncate_error_detail(value)
+        for key in ("message", "detail", "error"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return _truncate_error_detail(value)
+    return _truncate_error_detail(normalized_body)
+
+
+def _parse_retry_after_seconds(value: object) -> float | None:
+    if value is None:
+        return None
+    raw_value = str(value).strip()
+    if not raw_value:
+        return None
+    try:
+        seconds = float(raw_value)
+        if seconds >= 0:
+            return min(MAX_RETRY_SLEEP_SECONDS, seconds)
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(raw_value)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        if seconds > 0:
+            return min(MAX_RETRY_SLEEP_SECONDS, seconds)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return None
+
+
+def _cooldown_seconds_for(category: str, retry_after_seconds: float | None) -> float | None:
+    base_seconds = COOLDOWN_BY_ERROR_CATEGORY.get(category)
+    if base_seconds is None and retry_after_seconds is None:
+        return None
+    return max(float(base_seconds or 0), float(retry_after_seconds or 0))
+
+
 def _format_final_error(message: str, attempt: int, retried: bool) -> str:
     if not retried:
         return message
     return f"{message} (after {attempt} attempts)"
 
 
-def _sleep_before_retry(attempt: int, retry_backoff_seconds: float) -> None:
+def _calculate_retry_delay(attempt: int, retry_backoff_seconds: float, retry_after_seconds: float | None = None) -> float:
     delay = retry_backoff_seconds * (2 ** max(attempt - 1, 0))
+    if retry_after_seconds is not None:
+        delay = max(delay, retry_after_seconds)
+    delay = min(MAX_RETRY_SLEEP_SECONDS, max(0.0, delay))
+    jitter_ceiling = min(MAX_RETRY_SLEEP_SECONDS, delay * (1 + RETRY_JITTER_RATIO))
+    if jitter_ceiling > delay:
+        delay = random.uniform(delay, jitter_ceiling)
+    return min(MAX_RETRY_SLEEP_SECONDS, max(0.0, delay))
+
+
+def _sleep_before_retry(attempt: int, retry_backoff_seconds: float, retry_after_seconds: float | None = None) -> float:
+    delay = _calculate_retry_delay(attempt, retry_backoff_seconds, retry_after_seconds)
     time.sleep(delay)
+    return delay
+
+
+def _emit_retry_callback(retry_callback: RetryCallback | None, payload: dict[str, object]) -> None:
+    if retry_callback is None:
+        return
+    try:
+        retry_callback(payload)
+    except Exception:
+        return
 
 
 def _send_json_request(
@@ -281,9 +460,11 @@ def _send_json_request(
     timeout: int,
     max_retries: int,
     retry_backoff_seconds: float,
+    retry_callback: RetryCallback | None = None,
 ) -> tuple[dict[str, object], int, str]:
     last_message = "LLM request failed."
     attempts = max(1, max_retries + 1)
+    endpoint = str(http_request.full_url)
 
     for attempt in range(1, attempts + 1):
         try:
@@ -292,30 +473,135 @@ def _send_json_request(
                 status_code = getattr(response, "status", 200)
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            last_message = f"LLM request failed with status {exc.code}: {detail}"
-            if attempt >= attempts or not _is_transient_http_status(exc.code):
-                raise RuntimeError(_format_final_error(last_message, attempt, attempt > 1)) from exc
-            _sleep_before_retry(attempt, retry_backoff_seconds)
+            status_code = int(exc.code)
+            category = _classify_http_status(status_code)
+            provider_message = _extract_provider_message(detail)
+            retry_after_seconds = _parse_retry_after_seconds(exc.headers.get("Retry-After") if exc.headers else None)
+            retryable = _is_transient_http_status(status_code)
+            detail_text = provider_message or _truncate_error_detail(detail)
+            last_message = f"LLM request failed with status {status_code}: {detail_text}"
+            if attempt >= attempts or not retryable:
+                raise LLMRequestError(
+                    _format_final_error(last_message, attempt, attempt > 1),
+                    category=category,
+                    status_code=status_code,
+                    retryable=retryable,
+                    attempts=attempt,
+                    endpoint=endpoint,
+                    retry_after_seconds=retry_after_seconds,
+                    cooldown_seconds=_cooldown_seconds_for(category, retry_after_seconds),
+                    provider_message=provider_message,
+                ) from exc
+            retry_delay_seconds = _calculate_retry_delay(attempt, retry_backoff_seconds, retry_after_seconds)
+            _emit_retry_callback(
+                retry_callback,
+                {
+                    "attempt": attempt,
+                    "maxAttempts": attempts,
+                    "nextAttempt": attempt + 1,
+                    "category": category,
+                    "statusCode": status_code,
+                    "retryable": retryable,
+                    "retryDelaySeconds": retry_delay_seconds,
+                    "retryAfterSeconds": retry_after_seconds,
+                    "cooldownSeconds": _cooldown_seconds_for(category, retry_after_seconds),
+                    "endpoint": endpoint,
+                    "providerMessage": provider_message,
+                    "message": last_message,
+                },
+            )
+            time.sleep(retry_delay_seconds)
             continue
         except error.URLError as exc:
+            category = _classify_url_reason(exc.reason)
+            retryable = _is_transient_url_reason(exc.reason)
             last_message = f"LLM request failed: {exc.reason}"
-            if attempt >= attempts or not _is_transient_url_reason(exc.reason):
-                raise RuntimeError(_format_final_error(last_message, attempt, attempt > 1)) from exc
-            _sleep_before_retry(attempt, retry_backoff_seconds)
+            if attempt >= attempts or not retryable:
+                raise LLMRequestError(
+                    _format_final_error(last_message, attempt, attempt > 1),
+                    category=category,
+                    retryable=retryable,
+                    attempts=attempt,
+                    endpoint=endpoint,
+                    cooldown_seconds=_cooldown_seconds_for(category, None),
+                    provider_message=str(exc.reason),
+                ) from exc
+            retry_delay_seconds = _calculate_retry_delay(attempt, retry_backoff_seconds)
+            _emit_retry_callback(
+                retry_callback,
+                {
+                    "attempt": attempt,
+                    "maxAttempts": attempts,
+                    "nextAttempt": attempt + 1,
+                    "category": category,
+                    "retryable": retryable,
+                    "retryDelaySeconds": retry_delay_seconds,
+                    "cooldownSeconds": _cooldown_seconds_for(category, None),
+                    "endpoint": endpoint,
+                    "providerMessage": str(exc.reason),
+                    "message": last_message,
+                },
+            )
+            time.sleep(retry_delay_seconds)
             continue
         except OSError as exc:
+            category = _classify_url_reason(exc)
+            retryable = _is_transient_url_reason(exc)
             last_message = f"LLM request failed: {exc}"
-            if attempt >= attempts or not _is_transient_url_reason(exc):
-                raise RuntimeError(_format_final_error(last_message, attempt, attempt > 1)) from exc
-            _sleep_before_retry(attempt, retry_backoff_seconds)
+            if attempt >= attempts or not retryable:
+                raise LLMRequestError(
+                    _format_final_error(last_message, attempt, attempt > 1),
+                    category=category,
+                    retryable=retryable,
+                    attempts=attempt,
+                    endpoint=endpoint,
+                    cooldown_seconds=_cooldown_seconds_for(category, None),
+                    provider_message=str(exc),
+                ) from exc
+            retry_delay_seconds = _calculate_retry_delay(attempt, retry_backoff_seconds)
+            _emit_retry_callback(
+                retry_callback,
+                {
+                    "attempt": attempt,
+                    "maxAttempts": attempts,
+                    "nextAttempt": attempt + 1,
+                    "category": category,
+                    "retryable": retryable,
+                    "retryDelaySeconds": retry_delay_seconds,
+                    "cooldownSeconds": _cooldown_seconds_for(category, None),
+                    "endpoint": endpoint,
+                    "providerMessage": str(exc),
+                    "message": last_message,
+                },
+            )
+            time.sleep(retry_delay_seconds)
             continue
 
-        data = json.loads(response_body)
+        try:
+            data = json.loads(response_body)
+        except json.JSONDecodeError as exc:
+            raise LLMRequestError(
+                f"Unexpected LLM response payload: {_truncate_error_detail(response_body)}",
+                category="response_parse",
+                status_code=int(status_code),
+                retryable=False,
+                attempts=attempt,
+                endpoint=endpoint,
+                provider_message=_truncate_error_detail(response_body),
+            ) from exc
         if not isinstance(data, dict):
-            raise RuntimeError(f"Unexpected LLM response payload: {response_body}")
+            raise LLMRequestError(
+                f"Unexpected LLM response payload: {_truncate_error_detail(response_body)}",
+                category="response_parse",
+                status_code=int(status_code),
+                retryable=False,
+                attempts=attempt,
+                endpoint=endpoint,
+                provider_message=_truncate_error_detail(response_body),
+            )
         return data, int(status_code), response_body
 
-    raise RuntimeError(_format_final_error(last_message, attempts, attempts > 1))
+    raise LLMRequestError(_format_final_error(last_message, attempts, attempts > 1), attempts=attempts, endpoint=endpoint)
 
 
 def _normalize_text_fragment(value: object) -> str:
@@ -485,6 +771,7 @@ def llm_completion(
     timeout: int = 120,
     max_retries: int = DEFAULT_MAX_RETRIES,
     retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
+    retry_callback: RetryCallback | None = None,
 ) -> str:
     resolved_api_type = normalize_api_type(api_type, base_url)
     effective_api_type = _get_effective_api_type(resolved_api_type, base_url)
@@ -499,6 +786,7 @@ def llm_completion(
             timeout=timeout,
             max_retries=max_retries,
             retry_backoff_seconds=retry_backoff_seconds,
+            retry_callback=retry_callback,
         )
         return text
     except RuntimeError as exc:
@@ -514,6 +802,7 @@ def llm_completion(
             timeout=timeout,
             max_retries=max_retries,
             retry_backoff_seconds=retry_backoff_seconds,
+            retry_callback=retry_callback,
         )
         _remember_responses_fallback(base_url)
         return text
@@ -580,7 +869,15 @@ def list_llm_models(
 
     raw_models = data.get("data")
     if not isinstance(raw_models, list):
-        raise RuntimeError(f"Unexpected model list payload: {response_body}")
+        raise LLMRequestError(
+            f"Unexpected model list payload: {_truncate_error_detail(response_body)}",
+            category="response_parse",
+            status_code=int(status_code),
+            retryable=False,
+            attempts=max(1, max_retries + 1),
+            endpoint=endpoint,
+            provider_message=_truncate_error_detail(response_body),
+        )
 
     models: list[dict[str, object]] = []
     seen_ids: set[str] = set()

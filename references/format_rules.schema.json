@@ -17,6 +17,12 @@
         "rightMarginCm": { "type": "number" }
       }
     },
+    "pageExplicitFields": {
+      "type": "array",
+      "items": {
+        "enum": ["paper", "topMarginCm", "bottomMarginCm", "leftMarginCm", "rightMarginCm"]
+      }
+    },
     "styles": {
       "type": "object",
       "propertyNames": {
@@ -89,7 +95,25 @@
         "properties": {
           "sourceText": { "type": "string" },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-          "isInferred": { "type": "boolean" }
+          "isInferred": { "type": "boolean" },
+          "explicitFields": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "cnFont",
+                "enFont",
+                "fontSizePt",
+                "bold",
+                "italic",
+                "alignment",
+                "firstLineIndentPt",
+                "spaceBeforePt",
+                "spaceAfterPt",
+                "lineSpacingPt",
+                "lineSpacingMultiple"
+              ]
+            }
+          }
         }
       }
     },

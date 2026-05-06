@@ -60,18 +60,17 @@ def check_partial_failure_continues(failures: list[str]) -> None:
     original_rerun = web_app.rerun_compare_chunk
     original_read_compare = web_app.read_round_compare
     calls: list[str] = []
-    rejected_candidate = {
+    failed_attempt = {
         "attempt": 1,
-        "candidate": 1,
-        "outputText": "model output rejected by guard",
+        "outputText": "model output failed local guard",
         "outputCharCount": 30,
         "truncated": False,
         "error": "synthetic validation guard",
     }
 
-    def compare_with_rejected_candidate(output_path: str) -> dict[str, Any]:
+    def compare_with_failed_attempt(output_path: str) -> dict[str, Any]:
         compare = _minimal_compare(output_path, ["p1", "p2", "p3"])
-        compare["chunks"][1]["rejectedCandidates"] = [rejected_candidate]
+        compare["chunks"][1]["failedAttempts"] = [failed_attempt]
         compare["chunks"][1]["quality"] = {"needsReview": True, "flags": ["validation_failed"]}
         return compare
 
@@ -88,7 +87,7 @@ def check_partial_failure_continues(failures: list[str]) -> None:
 
     try:
         web_app.rerun_compare_chunk = fake_rerun
-        web_app.read_round_compare = compare_with_rejected_candidate
+        web_app.read_round_compare = compare_with_failed_attempt
         run_id, state = web_app.register_batch_rerun(str(OUTPUT_PATH), 3)
         web_app.batch_rerun_async(
             run_id,
@@ -103,8 +102,8 @@ def check_partial_failure_continues(failures: list[str]) -> None:
         _assert(state.failure_count == 1, f"Expected 1 failure, got {state.failure_count}.", failures)
         _assert(state.result and state.result["failureCount"] == 1, "Final result should preserve failure count.", failures)
         _assert(state.result and state.result["successChunkIds"] == ["p1", "p3"], "Final result should preserve successful chunk ids.", failures)
-        _assert(state.failures and state.failures[0].get("rejectedCandidates") == [rejected_candidate], "Batch rerun failure should preserve rejected model candidates.", failures)
-        _assert(state.result and state.result["failures"][0].get("rejectedCandidates") == [rejected_candidate], "Final batch result should expose rejected model candidates.", failures)
+        _assert(state.failures and state.failures[0].get("failedAttempts") == [failed_attempt], "Batch rerun failure should preserve failed model outputs.", failures)
+        _assert(state.result and state.result["failures"][0].get("failedAttempts") == [failed_attempt], "Final batch result should expose failed model outputs.", failures)
         _assert(not web_app.ACTIVE_BATCH_RERUNS_BY_OUTPUT, "Completed batch rerun should release active output lock.", failures)
     finally:
         web_app.rerun_compare_chunk = original_rerun
@@ -226,23 +225,24 @@ def check_status_and_cancel_routes_fall_back_to_persisted_batch(failures: list[s
     _assert((cancel_response.get_json() or {}).get("restoredFromDisk") is True, "Persisted batch cancel should not 404 after restart.", failures)
 
 
-def check_single_rerun_error_exposes_failure_candidates(failures: list[str]) -> None:
+def check_single_rerun_error_exposes_failed_attempts(failures: list[str]) -> None:
     _reset_state()
     client = web_app.app.test_client()
     original_rerun = web_app.rerun_compare_chunk
     original_read_compare = web_app.read_round_compare
-    rejected_candidate = {
+    legacy_failed_attempt = {
         "attempt": 1,
         "candidate": 2,
-        "outputText": "single rerun rejected output",
+        "outputText": "single rerun failed output",
         "outputCharCount": 28,
         "truncated": False,
         "error": "single guard failure",
     }
+    expected_failed_attempt = {key: value for key, value in legacy_failed_attempt.items() if key != "candidate"}
 
-    def compare_with_rejected_candidate(output_path: str) -> dict[str, Any]:
+    def compare_with_failed_attempt(output_path: str) -> dict[str, Any]:
         compare = _minimal_compare(output_path, ["p1", "p2"])
-        compare["chunks"][0]["rejectedCandidates"] = [rejected_candidate]
+        compare["chunks"][0]["rejectedCandidates"] = [legacy_failed_attempt]
         compare["chunks"][0]["quality"] = {"needsReview": True, "flags": ["validation_failed"]}
         return compare
 
@@ -251,14 +251,14 @@ def check_single_rerun_error_exposes_failure_candidates(failures: list[str]) -> 
 
     try:
         web_app.rerun_compare_chunk = fake_rerun
-        web_app.read_round_compare = compare_with_rejected_candidate
+        web_app.read_round_compare = compare_with_failed_attempt
         response = client.post(
             "/api/rerun-chunk",
             json={"outputPath": str(OUTPUT_PATH), "chunkId": "p1", "modelConfig": ONLINE_TEST_MODEL_CONFIG},
         )
         payload = response.get_json() or {}
         _assert(response.status_code == 400, f"Single rerun failure should return 400, got {response.status_code}.", failures)
-        _assert(payload.get("failure", {}).get("rejectedCandidates") == [rejected_candidate], "Single rerun error payload should expose rejected candidates.", failures)
+        _assert(payload.get("failure", {}).get("failedAttempts") == [expected_failed_attempt], "Single rerun error payload should expose migrated failed attempts.", failures)
     finally:
         web_app.rerun_compare_chunk = original_rerun
         web_app.read_round_compare = original_read_compare
@@ -271,7 +271,7 @@ def main() -> int:
     check_health_reports_active_batch_reruns(failures)
     check_persisted_batch_summary_survives_memory_loss(failures)
     check_status_and_cancel_routes_fall_back_to_persisted_batch(failures)
-    check_single_rerun_error_exposes_failure_candidates(failures)
+    check_single_rerun_error_exposes_failed_attempts(failures)
     report = {
         "ok": not failures,
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -279,13 +279,13 @@ def main() -> int:
         "failures": failures,
         "checks": [
             "batch rerun isolates per-chunk failures",
-            "batch rerun failures expose rejected model output",
+            "batch rerun failures expose failed model output",
             "batch rerun cancel stops before next chunk",
             "terminal states release active output locks",
             "health diagnostics exposes active batch reruns",
             "persisted batch summaries survive backend memory loss",
             "persisted batch status and cancel routes survive memory loss",
-            "single rerun errors expose rejected model output",
+            "single rerun errors expose failed model output",
         ],
     }
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)

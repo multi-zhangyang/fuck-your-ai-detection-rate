@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ import app_service  # noqa: E402
 from app_service import export_round_output  # noqa: E402
 from format_rules import ACTIVE_RULES_PATH, extract_deterministic_format_rules, merge_deterministic_rules, save_active_format_rules  # noqa: E402
 from docx_audit import audit_docx_export, get_docx_audit_report_path  # noqa: E402
-from docx_bodymap import load_docx_body_map  # noqa: E402
+from docx_bodymap import load_docx_body_map, validate_docx_body_map  # noqa: E402
 from docx_pipeline import (  # noqa: E402
     _load_docx_snapshot,
     _looks_like_acknowledgement_heading,
@@ -110,7 +111,9 @@ def create_regression_sample(path: Path) -> Path:
     add_paragraph(document, zh(0x5f15, 0x8a00), style="Heading 1")
     add_paragraph(document, zh(0x70df, 0x53f6, 0x75c5, 0x866b, 0x5bb3, 0x7684, 0x65e9, 0x671f, 0x8bc6, 0x522b, 0x5bf9, 0x751f, 0x4ea7, 0x7ba1, 0x7406, 0x5177, 0x6709, 0x76f4, 0x63a5, 0x4ef7, 0x503c, 0x3002) + zh(0x76f8, 0x5173, 0x7814, 0x7a76) + zh(0xff08, 0x90ed, 0x6c34, 0x826f, 0xff0c) + "1999" + zh(0xff1b, 0x94b1, 0x5b8f, 0xff0c) + "1990" + zh(0xff09, 0x8868, 0x660e, 0xff0c, 0x5408, 0x7406, 0x7684, 0x56fe, 0x50cf, 0x9884, 0x5904, 0x7406, 0x80fd, 0x591f, 0x964d, 0x4f4e, 0x8bef, 0x68c0, 0x7387, 0x3002))
     add_paragraph(document, "1 " + zh(0x6570, 0x636e, 0x4e0e, 0x65b9, 0x6cd5), style="Heading 1")
-    add_paragraph(document, zh(0x672c, 0x7814, 0x7a76, 0x91c7, 0x7528) + "YOLOv8" + zh(0x4f5c, 0x4e3a, 0x57fa, 0x7840, 0x6a21, 0x578b, 0xff0c, 0x8bad, 0x7ec3, 0x56fe, 0x50cf, 0x5c3a, 0x5bf8, 0x63a7, 0x5236, 0x5728) + "640px" + zh(0xff0c, 0x5b66, 0x4e60, 0x7387, 0x8303, 0x56f4, 0x4e3a) + "0.001?0.01" + zh(0x3002))
+    preserved_spacing_paragraph = add_paragraph(document, zh(0x672c, 0x7814, 0x7a76, 0x91c7, 0x7528) + "YOLOv8" + zh(0x4f5c, 0x4e3a, 0x57fa, 0x7840, 0x6a21, 0x578b, 0xff0c, 0x8bad, 0x7ec3, 0x56fe, 0x50cf, 0x5c3a, 0x5bf8, 0x63a7, 0x5236, 0x5728) + "640px" + zh(0xff0c, 0x5b66, 0x4e60, 0x7387, 0x8303, 0x56f4, 0x4e3a) + "0.001?0.01" + zh(0x3002))
+    preserved_spacing_paragraph.paragraph_format.space_before = Pt(7)
+    preserved_spacing_paragraph.paragraph_format.space_after = Pt(9)
     add_paragraph(document, "1.1 " + zh(0x7cfb, 0x7edf, 0x5b9e, 0x73b0), style="Heading 2")
     add_paragraph(document, zh(0x7cfb, 0x7edf, 0x5b9e, 0x73b0, 0x8fb9, 0x754c, 0x6bb5, 0x843d, 0x63cf, 0x8ff0, 0x4e86, 0x79fb, 0x52a8, 0x7aef, 0x63a8, 0x7406, 0x4e0e, 0x7ed3, 0x679c, 0x5c55, 0x793a, 0x6d41, 0x7a0b, 0xff0c, 0x5e94, 0x5f53, 0x4f5c, 0x4e3a, 0x6b63, 0x6587, 0x53c2, 0x4e0e, 0x6539, 0x5199, 0x3002))
     add_paragraph(document, "3." + zh(0x7ed3, 0x679c, 0x5206, 0x6790))
@@ -224,6 +227,8 @@ def _audit_exported_editable_format(export_path: Path, snapshot_path: Path) -> d
         run = _first_text_run(paragraph)
         font_size = _pt_value(run.font.size) if run is not None else None
         line_spacing = _pt_value(paragraph.paragraph_format.line_spacing)
+        space_before = _pt_value(paragraph.paragraph_format.space_before)
+        space_after = _pt_value(paragraph.paragraph_format.space_after)
         alignment = int(paragraph.alignment) if paragraph.alignment is not None else None
         paragraph_text = paragraph.text.strip()
         expected_font_size = 12.0 if unit.unit_index in acknowledgement_editable_unit_indexes else 10.5
@@ -234,6 +239,8 @@ def _audit_exported_editable_format(export_path: Path, snapshot_path: Path) -> d
             "fontSizePt": font_size,
             "expectedFontSizePt": expected_font_size,
             "lineSpacingPt": line_spacing,
+            "spaceBeforePt": space_before,
+            "spaceAfterPt": space_after,
             "alignment": alignment,
         }
         checks.append(check)
@@ -241,6 +248,11 @@ def _audit_exported_editable_format(export_path: Path, snapshot_path: Path) -> d
             issues.append({"type": "editable_font_size", "expected": expected_font_size, **check})
         if line_spacing is None or abs(line_spacing - 20.0) > 0.5:
             issues.append({"type": "editable_line_spacing", "expected": 20.0, **check})
+        if "YOLOv8" in paragraph_text and "640px" in paragraph_text:
+            if space_before is None or abs(space_before - 7.0) > 0.2:
+                issues.append({"type": "unspecified_space_before_preserved", "expected": 7.0, **check})
+            if space_after is None or abs(space_after - 9.0) > 0.2:
+                issues.append({"type": "unspecified_space_after_preserved", "expected": 9.0, **check})
 
     first_section = document.sections[0]
     margins = {
@@ -380,6 +392,42 @@ def _audit_snapshot_protection_scope(snapshot: Any | None, *, strict_sample_expe
     }
 
 
+def _audit_body_map_scope_contract(body_map: Any | None, *, source_path: Path, snapshot_path: Path) -> dict[str, Any]:
+    if body_map is None:
+        return {"ok": False, "issues": [{"type": "missing_body_map"}]}
+
+    issues: list[dict[str, Any]] = []
+    scope_signature = body_map.scope_signature if isinstance(getattr(body_map, "scope_signature", None), dict) else {}
+    if not str(scope_signature.get("fingerprint", "")).strip():
+        issues.append({"type": "missing_scope_fingerprint"})
+
+    validation_report = validate_docx_body_map(body_map, source_path=source_path, snapshot_path=snapshot_path)
+    if not bool(validation_report.get("ok")):
+        issues.append({"type": "body_map_validation_failed", "blockingIssues": validation_report.get("blockingIssues", [])})
+
+    tamper_detected = True
+    if len(body_map.units) >= 2:
+        tampered_units = [body_map.units[1], body_map.units[0], *body_map.units[2:]]
+        tampered = replace(body_map, units=tampered_units)
+        tampered_report = validate_docx_body_map(tampered, source_path=source_path, snapshot_path=snapshot_path)
+        tampered_codes = {
+            str(issue.get("code", ""))
+            for issue in tampered_report.get("blockingIssues", [])
+            if isinstance(issue, dict)
+        }
+        tamper_detected = "body_map_scope_signature_mismatch" in tampered_codes
+    if not tamper_detected:
+        issues.append({"type": "tampered_scope_signature_not_blocked"})
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "fingerprint": str(scope_signature.get("fingerprint", "")),
+        "editableUnitCount": len(body_map.units),
+        "validationWarnings": validation_report.get("warnings", []) if isinstance(validation_report, dict) else [],
+    }
+
+
 def _read_json(path: str | Path | None) -> dict[str, Any]:
     if not path:
         return {}
@@ -504,8 +552,8 @@ def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Pat
         failures.append("auto-numbered targeted rerun prompt did not preserve detector anchors")
     if not isinstance(detector_profile, dict) or int(detector_profile.get("segmentCount", 0) or 0) != 1:
         failures.append("auto-numbered targeted rerun did not persist one detector segment")
-    if isinstance(rerun_chunk, dict) and rerun_chunk.get("rerunCandidateCount") != 1:
-        failures.append(f"auto-numbered targeted rerun should stay single-candidate, got {rerun_chunk.get('rerunCandidateCount')}")
+    if isinstance(rerun_chunk, dict) and ("rerunCandidateCount" in rerun_chunk or "rerunSelectedCandidate" in rerun_chunk):
+        failures.append("auto-numbered targeted rerun should not emit legacy candidate metadata")
 
     post_export_path = export_path.with_name(f"{export_path.stem}_auto_numbered_post_rerun{export_path.suffix}")
     post_export = app_service.export_round_output(str(output_path), str(post_export_path), "docx")
@@ -577,6 +625,7 @@ def run_regression(
     preflight_report = _read_json(export_result.get("preflightPath"))
     format_audit = _audit_exported_editable_format(export_path, snapshot_path)
     protection_scope_audit = _audit_snapshot_protection_scope(snapshot, strict_sample_expectations=strict_sample_scope)
+    body_map_scope_contract = _audit_body_map_scope_contract(body_map, source_path=sample_path, snapshot_path=snapshot_path)
 
     failures: list[str] = []
     if export_result.get("layoutMode") != "body-map-roundtrip":
@@ -597,6 +646,8 @@ def run_regression(
         failures.append(f"format audit issues: {len(format_audit.get('issues', []) or [])}")
     if not bool(protection_scope_audit.get("ok")):
         failures.append(f"protection scope audit issues: {len(protection_scope_audit.get('issues', []) or [])}")
+    if not bool(body_map_scope_contract.get("ok")):
+        failures.append(f"body map scope contract issues: {len(body_map_scope_contract.get('issues', []) or [])}")
     if not scope_diagnostics:
         failures.append("missing DOCX scope diagnostics")
     else:
@@ -662,6 +713,7 @@ def run_regression(
         },
         "formatAudit": format_audit,
         "protectionScopeAudit": protection_scope_audit,
+        "bodyMapScopeContract": body_map_scope_contract,
         "autoNumberedRerun": auto_numbered_rerun,
         "audit": {
             "ok": bool(audit_report.get("ok")),

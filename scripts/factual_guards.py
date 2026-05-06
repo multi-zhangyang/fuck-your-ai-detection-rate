@@ -6,6 +6,7 @@ from typing import Any
 
 
 NUMBER_RE = re.compile(r"(?<![A-Za-z0-9_.:/-])\d+(?:[.,]\d+)*(?:\.\d+)?\s*(?:%|\uff05)?(?![A-Za-z0-9_.:/-])")
+URL_RE = re.compile(r"https?://[^\s`，,。；;）)\]】>\"']+", re.IGNORECASE)
 TECH_ENTITY_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"(?:[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z0-9]*)(?:[-_](?:[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z0-9]*|\d+[A-Za-z0-9]*))+"
@@ -27,6 +28,7 @@ ORDER_CUE_RE = re.compile(
 )
 STRONG_ORDER_CUE_RE = re.compile(r"(?:→|->|=>|\brespectively\b|分别|依次|对应|顺序|排序|排名|先后)", re.IGNORECASE)
 LIST_DELIMITER_RE = re.compile(r"(?:、|，|,|/|\band\b|\bor\b)", re.IGNORECASE)
+INLINE_CODE_RE = re.compile(r"`[^`]+`")
 GENERIC_TITLE_LEADERS = {
     "a",
     "an",
@@ -188,13 +190,18 @@ def extract_parallel_entity_number_pairs(text: str) -> list[tuple[str, str]]:
 def _is_order_sensitive_segment(segment: str, entity_count: int, number_count: int) -> bool:
     if STRONG_ORDER_CUE_RE.search(segment):
         return True
-    if entity_count >= 3 and LIST_DELIMITER_RE.search(segment):
+    delimiter_count = _count_list_delimiters_outside_inline_technical_spans(segment)
+    if entity_count >= 3 and delimiter_count >= max(2, entity_count - 2):
         return True
     return False
 
 
 def _extract_entity_occurrences(text: str) -> list[EntityOccurrence]:
     raw: list[EntityOccurrence] = []
+    for match in URL_RE.finditer(text):
+        term = match.group(0).strip()
+        if term:
+            raw.append(EntityOccurrence(term, match.start(), match.end(), "url"))
     for match in TECH_ENTITY_RE.finditer(text):
         term = match.group(0).strip()
         if _is_noise_entity(term):
@@ -248,18 +255,27 @@ def _find_entity_order_violation(sequence: list[str], output_text: str) -> dict[
     checked = _unique_preserve_order(sequence)
     if len(checked) < 2:
         return None
-    positions: list[tuple[str, int]] = []
+    positions_by_term: list[tuple[str, list[int]]] = []
     missing: list[str] = []
     for term in checked:
         term_positions = _find_entity_positions(output_text, term)
         if not term_positions:
             missing.append(term)
             continue
-        positions.append((term, term_positions[0]))
+        positions_by_term.append((term, term_positions))
     if missing:
         return {"expected": checked, "missing": missing}
-    if any(positions[index][1] >= positions[index + 1][1] for index in range(len(positions) - 1)):
-        actual = [term for term, _ in sorted(positions, key=lambda item: item[1])]
+    selected_positions: list[tuple[str, int]] = []
+    last_position = -1
+    for term, term_positions in positions_by_term:
+        next_position = next((position for position in term_positions if position > last_position), None)
+        if next_position is None:
+            actual = [item for item, _ in sorted((term, positions[0]) for term, positions in positions_by_term)]
+            return {"expected": checked, "actual": actual}
+        selected_positions.append((term, next_position))
+        last_position = next_position
+    if any(selected_positions[index][1] >= selected_positions[index + 1][1] for index in range(len(selected_positions) - 1)):
+        actual = [term for term, _ in sorted(selected_positions, key=lambda item: item[1])]
         return {"expected": checked, "actual": actual}
     return None
 
@@ -269,18 +285,27 @@ def _find_number_order_violation(sequence: list[str], output_text: str) -> dict[
     if len(checked) < 2:
         return None
     positions_by_number = _number_positions_by_norm(output_text)
-    positions: list[tuple[str, int]] = []
+    positions_by_value: list[tuple[str, list[int]]] = []
     missing: list[str] = []
     for number in checked:
         number_positions = positions_by_number.get(_normalize_number(number), [])
         if not number_positions:
             missing.append(number)
             continue
-        positions.append((number, number_positions[0]))
+        positions_by_value.append((number, number_positions))
     if missing:
         return {"expected": checked, "missing": missing}
-    if any(positions[index][1] >= positions[index + 1][1] for index in range(len(positions) - 1)):
-        actual = [number for number, _ in sorted(positions, key=lambda item: item[1])]
+    selected_positions: list[tuple[str, int]] = []
+    last_position = -1
+    for number, number_positions in positions_by_value:
+        next_position = next((position for position in number_positions if position > last_position), None)
+        if next_position is None:
+            actual = [item for item, _ in sorted((number, positions[0]) for number, positions in positions_by_value)]
+            return {"expected": checked, "actual": actual}
+        selected_positions.append((number, next_position))
+        last_position = next_position
+    if any(selected_positions[index][1] >= selected_positions[index + 1][1] for index in range(len(selected_positions) - 1)):
+        actual = [number for number, _ in sorted(selected_positions, key=lambda item: item[1])]
         return {"expected": checked, "actual": actual}
     return None
 
@@ -288,8 +313,16 @@ def _find_number_order_violation(sequence: list[str], output_text: str) -> dict[
 def _find_entity_positions(text: str, term: str) -> list[int]:
     escaped = re.escape(term.strip())
     escaped = re.sub(r"\\\s+", r"\\s+", escaped)
+    if "://" in term or "/" in term or "." in term:
+        return [match.start() for match in re.finditer(escaped, text)]
     pattern = re.compile(rf"(?<![A-Za-z0-9_/-]){escaped}(?![A-Za-z0-9_/-])")
     return [match.start() for match in pattern.finditer(text)]
+
+
+def _count_list_delimiters_outside_inline_technical_spans(segment: str) -> int:
+    masked = URL_RE.sub(" ", segment)
+    masked = INLINE_CODE_RE.sub(" ", masked)
+    return len(LIST_DELIMITER_RE.findall(masked))
 
 
 def _number_positions_by_norm(text: str) -> dict[str, list[int]]:

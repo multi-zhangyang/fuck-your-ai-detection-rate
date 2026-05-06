@@ -122,6 +122,21 @@ def main() -> int:
     if "不会从第一块重跑" not in str(progress_status.get("resumeExplanation", "")):
         raise AssertionError("progress status must explain non-destructive checkpoint resume")
 
+    prompt_changed_payload = dict(checkpoint_payload)
+    prompt_changed_payload["prompt_sha256"] = "changed-prompt-file"
+    status_checkpoint_path.write_text(json.dumps(prompt_changed_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    prompt_changed_status = get_round_progress_status(
+        str(source_path),
+        "cn_custom",
+        round_number=1,
+        prompt_sequence=["classical"],
+    )
+    if not prompt_changed_status.get("canResume"):
+        raise AssertionError("prompt file edits must not force completed checkpoint chunks to rerun")
+    if prompt_changed_status.get("completedChunks") != 1:
+        raise AssertionError("prompt-only checkpoint drift must preserve completed chunk count")
+    status_checkpoint_path.write_text(json.dumps(checkpoint_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
     mismatched_payload = dict(checkpoint_payload)
     mismatched_payload["input_sha256"] = "mismatched-input"
     status_checkpoint_path.write_text(json.dumps(mismatched_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -135,6 +150,35 @@ def main() -> int:
         raise AssertionError("incompatible checkpoint status must not be advertised as resumable")
     if "假续跑" not in str(mismatched_status.get("message", "")):
         raise AssertionError("incompatible checkpoint status must explain that false resume was blocked")
+    blocked_calls: list[str] = []
+
+    def blocked_transform(chunk_text: str, _prompt: str, _round_number: int, chunk_id: str) -> str:
+        blocked_calls.append(chunk_id)
+        return chunk_text
+
+    try:
+        run_round(
+            doc_id=status_context.doc_id,
+            round_number=1,
+            input_path=source_path,
+            output_path=output_path,
+            manifest_path=manifest_path,
+            transform=blocked_transform,
+            prompt_profile="cn_custom",
+            prompt_sequence=["classical"],
+        )
+    except RuntimeError as exc:
+        if "Existing checkpoint does not match" not in str(exc):
+            raise
+    else:
+        raise AssertionError("incompatible checkpoint with saved chunks must block a fresh rerun")
+    if blocked_calls:
+        raise AssertionError(f"incompatible checkpoint must fail before model calls, got {blocked_calls}")
+    if not status_checkpoint_path.exists():
+        raise AssertionError("incompatible checkpoint must not be deleted implicitly")
+    still_mismatched = json.loads(status_checkpoint_path.read_text(encoding="utf-8"))
+    if still_mismatched.get("input_sha256") != "mismatched-input":
+        raise AssertionError("blocked incompatible checkpoint should remain intact until explicit reset")
     status_checkpoint_path.write_text(json.dumps(checkpoint_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     all_done_payload = dict(checkpoint_payload)

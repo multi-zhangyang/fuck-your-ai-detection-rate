@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -13,36 +14,15 @@ from ai_json import extract_json_payload
 from fyadr_records import ROOT_DIR, update_round
 from chunking import ChunkManifest, DEFAULT_CHUNK_LIMIT, build_manifest, restore_text_from_chunks, save_manifest
 from factual_guards import build_factual_relation_guard, validate_factual_relation_stability
-
-
-PROMPT_LIBRARY = {
-    "prewrite": "prompts/fyadr-cn-prewrite.md",
-    "classical": "prompts/fyadr-cn-classical.md",
-    "round1": "prompts/fyadr-cn-round1.md",
-    "round2": "prompts/fyadr-cn-round2.md",
-}
-
-DEFAULT_PROMPT_SEQUENCES = {
-    "cn": ["round1", "round2"],
-    "cn_prewrite": ["prewrite", "round1", "round2"],
-    "cn_custom": ["prewrite", "round1", "round2"],
-}
-
-PROMPT_PROFILES = {
-    profile: {
-        index + 1: PROMPT_LIBRARY[prompt_id]
-        for index, prompt_id in enumerate(sequence)
-    }
-    for profile, sequence in DEFAULT_PROMPT_SEQUENCES.items()
-}
-
-PROMPT_PROFILE_CHUNK_METRICS = {
-    "cn": "char",
-    "cn_prewrite": "char",
-    "cn_custom": "char",
-}
-
-MAX_ROUNDS = max(len(sequence) for sequence in DEFAULT_PROMPT_SEQUENCES.values())
+from prompt_library import (
+    DEFAULT_PROMPT_PROFILE,
+    get_chunk_metric,
+    get_max_rounds,
+    get_prompt_mapping,
+    get_prompt_sequence_key,
+    normalize_prompt_profile,
+    normalize_prompt_sequence,
+)
 
 
 Transform = Callable[[str, str, int, str], str]
@@ -51,7 +31,10 @@ CancelCheck = Callable[[], bool]
 ROUND_CHECKPOINT_VERSION = 3
 ROUND_COMPARE_VERSION = 2
 MAX_VALIDATION_ATTEMPTS = 2
-MAX_REJECTED_CANDIDATE_CHARS = 12000
+MAX_FAILED_OUTPUT_CHARS = 12000
+DEFAULT_ROUND_CONCURRENCY = 1
+MAX_ROUND_CONCURRENCY = 8
+CHECKPOINT_SOFT_MISMATCH_KEYS = {"prompt_sha256"}
 STRUCTURED_REWRITE_TEXT_KEYS = (
     "rewrittenText",
     "rewritten_text",
@@ -139,6 +122,60 @@ class ProtectedText(NamedTuple):
     text: str
     tokens: dict[str, str]
     token_types: dict[str, str]
+
+
+class ChunkRewriteResult(NamedTuple):
+    index: int
+    chunk_id: str
+    output_text: str
+    validation_events: list[dict[str, object]]
+    progress_events: list[dict[str, object]]
+
+
+def _serialize_exception_details(exc: BaseException) -> dict[str, object]:
+    details: dict[str, object] = {}
+    category = getattr(exc, "category", None)
+    if category:
+        details["errorCategory"] = str(category)
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        try:
+            details["statusCode"] = int(status_code)
+        except (TypeError, ValueError):
+            details["statusCode"] = str(status_code)
+    retryable = getattr(exc, "retryable", None)
+    if retryable is not None:
+        details["retryable"] = bool(retryable)
+    attempts = getattr(exc, "attempts", None)
+    if attempts is not None:
+        try:
+            details["attempts"] = int(attempts)
+        except (TypeError, ValueError):
+            details["attempts"] = str(attempts)
+    cooldown_seconds = getattr(exc, "cooldown_seconds", None)
+    if cooldown_seconds is not None:
+        try:
+            details["cooldownSeconds"] = round(float(cooldown_seconds), 1)
+        except (TypeError, ValueError):
+            details["cooldownSeconds"] = str(cooldown_seconds)
+    retry_after_seconds = getattr(exc, "retry_after_seconds", None)
+    if retry_after_seconds is not None:
+        try:
+            details["retryAfterSeconds"] = round(float(retry_after_seconds), 1)
+        except (TypeError, ValueError):
+            details["retryAfterSeconds"] = str(retry_after_seconds)
+    provider_message = getattr(exc, "provider_message", None)
+    if provider_message:
+        details["providerMessage"] = str(provider_message)
+    return details
+
+
+def _clamp_round_concurrency(value: object) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = DEFAULT_ROUND_CONCURRENCY
+    return max(1, min(MAX_ROUND_CONCURRENCY, normalized))
 
 
 SHARED_OUTPUT_CONTRACT = """
@@ -585,7 +622,7 @@ def _merge_generation_notes(*notes: str | None) -> str | None:
     return "\n\n".join(merged) if merged else None
 
 
-def _score_rewrite_candidate(input_text: str, output_text: str) -> float:
+def _score_rewrite_output(input_text: str, output_text: str) -> float:
     input_len = max(len(input_text.strip()), 1)
     output_len = max(len(output_text.strip()), 1)
     expansion_ratio = output_len / input_len
@@ -991,69 +1028,6 @@ def relative_to_root(path: Path) -> str:
         return str(normalized)
 
 
-def normalize_prompt_profile(prompt_profile: str | None) -> str:
-    normalized = str(prompt_profile or "cn").strip().lower()
-    if normalized not in PROMPT_PROFILES:
-        raise ValueError(f"Unsupported prompt profile: {normalized}")
-    return normalized
-
-
-def normalize_prompt_sequence(prompt_profile: str | None, prompt_sequence: object | None = None) -> list[str]:
-    normalized_profile = normalize_prompt_profile(prompt_profile)
-    default_sequence = list(DEFAULT_PROMPT_SEQUENCES[normalized_profile])
-    if normalized_profile != "cn_custom":
-        return default_sequence
-
-    raw_items: list[object]
-    if isinstance(prompt_sequence, str):
-        raw_items = [item.strip() for item in prompt_sequence.split(",")]
-    elif isinstance(prompt_sequence, (list, tuple)):
-        raw_items = list(prompt_sequence)
-    else:
-        raw_items = []
-
-    normalized_sequence: list[str] = []
-    for raw_item in raw_items:
-        prompt_id = str(raw_item or "").strip().lower()
-        if not prompt_id:
-            continue
-        if prompt_id not in PROMPT_LIBRARY:
-            raise ValueError(f"Unsupported prompt id in custom sequence: {prompt_id}")
-        normalized_sequence.append(prompt_id)
-
-    if not normalized_sequence:
-        return default_sequence
-    if len(normalized_sequence) > MAX_ROUNDS:
-        raise ValueError(f"Custom prompt sequence supports at most {MAX_ROUNDS} rounds.")
-    return normalized_sequence
-
-
-def get_prompt_sequence_key(prompt_profile: str | None, prompt_sequence: object | None = None) -> str:
-    normalized_profile = normalize_prompt_profile(prompt_profile)
-    sequence = normalize_prompt_sequence(normalized_profile, prompt_sequence)
-    if normalized_profile != "cn_custom":
-        return normalized_profile
-    return "custom_" + "_".join(sequence)
-
-
-def get_prompt_mapping(prompt_profile: str | None, prompt_sequence: object | None = None) -> dict[int, str]:
-    normalized_profile = normalize_prompt_profile(prompt_profile)
-    sequence = normalize_prompt_sequence(normalized_profile, prompt_sequence)
-    return {
-        index + 1: PROMPT_LIBRARY[prompt_id]
-        for index, prompt_id in enumerate(sequence)
-    }
-
-
-def get_max_rounds(prompt_profile: str | None, prompt_sequence: object | None = None) -> int:
-    return len(get_prompt_mapping(prompt_profile, prompt_sequence))
-
-
-def get_chunk_metric(prompt_profile: str | None, prompt_sequence: object | None = None) -> str:
-    normalized_profile = normalize_prompt_profile(prompt_profile)
-    return PROMPT_PROFILE_CHUNK_METRICS[normalized_profile]
-
-
 def load_prompt(prompt_profile: str | None, round_number: int, prompt_sequence: object | None = None) -> str:
     prompts = get_prompt_mapping(prompt_profile, prompt_sequence)
     if round_number not in prompts:
@@ -1196,10 +1170,27 @@ def _load_checkpoint_payload(path: Path) -> dict[str, object] | None:
 
 
 def _is_checkpoint_compatible(payload: dict[str, object], signature: dict[str, object]) -> bool:
+    return not _checkpoint_mismatch_keys(payload, signature)
+
+
+def _checkpoint_mismatch_keys(payload: dict[str, object], signature: dict[str, object]) -> list[str]:
+    mismatch_keys: list[str] = []
     for key, expected_value in signature.items():
+        if key in CHECKPOINT_SOFT_MISMATCH_KEYS:
+            continue
         if payload.get(key) != expected_value:
-            return False
-    return True
+            mismatch_keys.append(key)
+    return mismatch_keys
+
+
+def _checkpoint_has_saved_outputs(payload: dict[str, object]) -> bool:
+    chunk_outputs = payload.get("chunk_outputs")
+    if isinstance(chunk_outputs, dict) and any(isinstance(value, str) and value.strip() for value in chunk_outputs.values()):
+        return True
+    try:
+        return int(payload.get("completed_chunk_count", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _normalize_checkpoint_outputs(
@@ -1256,7 +1247,13 @@ def _load_resumable_checkpoint_state(
         return {}, []
     if payload.get("completed") is True:
         return {}, []
-    if not _is_checkpoint_compatible(payload, signature):
+    mismatch_keys = _checkpoint_mismatch_keys(payload, signature)
+    if mismatch_keys:
+        if _checkpoint_has_saved_outputs(payload):
+            raise RuntimeError(
+                "Existing checkpoint does not match the current document state "
+                f"({', '.join(mismatch_keys)}). Reset this round before starting a fresh run."
+            )
         try:
             checkpoint_path.unlink(missing_ok=True)
         except OSError:
@@ -1305,6 +1302,7 @@ def _save_round_checkpoint(
     chunk_outputs: dict[str, str],
     validation_events: list[dict[str, object]] | None = None,
     last_error: str | None = None,
+    last_error_details: dict[str, object] | None = None,
 ) -> None:
     payload: dict[str, object] = {
         **signature,
@@ -1316,6 +1314,8 @@ def _save_round_checkpoint(
         payload["validation_events"] = validation_events
     if last_error:
         payload["last_error"] = last_error
+    if last_error_details:
+        payload["last_error_details"] = last_error_details
     _write_json_atomically(checkpoint_path, payload)
 
 
@@ -1333,10 +1333,10 @@ def _delete_round_checkpoint(checkpoint_path: Path) -> None:
         )
 
 
-def _serialize_rejected_candidate_output(text: str) -> dict[str, object]:
+def _serialize_failed_output(text: str) -> dict[str, object]:
     normalized_text = str(text or "").strip()
-    is_truncated = len(normalized_text) > MAX_REJECTED_CANDIDATE_CHARS
-    output_text = normalized_text[:MAX_REJECTED_CANDIDATE_CHARS] if is_truncated else normalized_text
+    is_truncated = len(normalized_text) > MAX_FAILED_OUTPUT_CHARS
+    output_text = normalized_text[:MAX_FAILED_OUTPUT_CHARS] if is_truncated else normalized_text
     return {
         "outputText": output_text,
         "outputCharCount": len(normalized_text),
@@ -1365,17 +1365,16 @@ def _build_round_compare_payload(
         for event in validation_events
         if event.get("event") == "source-fallback" and event.get("chunkId")
     }
-    rejected_candidate_events: dict[str, list[dict[str, object]]] = {}
+    failed_attempt_events: dict[str, list[dict[str, object]]] = {}
     for event in validation_events:
         if event.get("event") != "validation-retry" or not event.get("chunkId"):
             continue
         output_text = event.get("outputText")
         if not isinstance(output_text, str) or not output_text.strip():
             continue
-        rejected_candidate_events.setdefault(str(event.get("chunkId")), []).append(
+        failed_attempt_events.setdefault(str(event.get("chunkId")), []).append(
             {
                 "attempt": event.get("attempt"),
-                "candidate": event.get("candidate"),
                 "outputText": output_text,
                 "outputCharCount": event.get("outputCharCount"),
                 "truncated": bool(event.get("truncated")),
@@ -1408,9 +1407,9 @@ def _build_round_compare_payload(
                     "fallbackAt": fallback_event.get("createdAt", ""),
                 }
             )
-        rejected_candidates = rejected_candidate_events.get(chunk.chunk_id)
-        if rejected_candidates:
-            chunk_payload["rejectedCandidates"] = rejected_candidates[-4:]
+        failed_attempts = failed_attempt_events.get(chunk.chunk_id)
+        if failed_attempts:
+            chunk_payload["failedAttempts"] = failed_attempts[-4:]
         compare_chunks.append(chunk_payload)
 
     return {
@@ -1672,7 +1671,7 @@ def _build_quality_summary(
     chunk_outputs: dict[str, str],
     validation_events: list[dict[str, object]],
     global_style_profile: dict[str, object] | None = None,
-    prompt_profile: str = "cn_custom",
+    prompt_profile: str = DEFAULT_PROMPT_PROFILE,
 ) -> dict[str, object]:
     restored_preview = restore_text_from_chunks(manifest, chunk_outputs) if len(chunk_outputs) == manifest.chunk_count else ""
     split_summary = _build_paragraph_split_summary(manifest)
@@ -1770,9 +1769,11 @@ def _build_run_audit(
         "apiType": str(checkpoint_metadata.get("api_type", "") or ""),
         "temperature": checkpoint_metadata.get("temperature"),
         "requestTimeoutSeconds": checkpoint_metadata.get("request_timeout_seconds"),
+        "configuredRequestTimeoutSeconds": checkpoint_metadata.get("configured_request_timeout_seconds"),
         "maxRetries": checkpoint_metadata.get("max_retries"),
         "rateLimitWindowMinutes": checkpoint_metadata.get("rate_limit_window_minutes"),
         "rateLimitMaxRequests": checkpoint_metadata.get("rate_limit_max_requests"),
+        "rewriteConcurrency": checkpoint_metadata.get("rewrite_concurrency"),
         "promptProfile": prompt_profile,
         "promptSequence": prompt_sequence,
         "estimatedApiCalls": quality_summary.get("estimatedApiCalls"),
@@ -1787,6 +1788,118 @@ def _build_run_audit(
     }
 
 
+def _rewrite_round_chunk(
+    *,
+    index: int,
+    chunk: object,
+    round_number: int,
+    normalized_prompt_profile: str,
+    prompt_text: str,
+    transform: Transform,
+    global_style_profile: dict[str, object],
+) -> ChunkRewriteResult:
+    validation_events: list[dict[str, object]] = []
+    progress_events: list[dict[str, object]] = []
+    chunk_output = ""
+    validation_error: ValueError | None = None
+    protected_chunk = protect_structure_tokens(chunk.text)
+    if should_freeze_chunk(normalized_prompt_profile, chunk.text):
+        chunk_output = chunk.text
+        validation_events.append(
+            {
+                "event": "chunk-frozen",
+                "round": round_number,
+                "chunkId": chunk.chunk_id,
+                "paragraphIndex": chunk.paragraph_index,
+                "chunkIndex": chunk.chunk_index,
+                "reason": "english_preserved_in_cn_profile",
+            }
+        )
+        validate_chunk_output(chunk.text, chunk_output, chunk.chunk_id)
+        progress_events.append(
+            {
+                "phase": "chunk-frozen",
+                "round": round_number,
+                "chunkId": chunk.chunk_id,
+                "paragraphIndex": chunk.paragraph_index,
+                "chunkIndex": chunk.chunk_index,
+            }
+        )
+        return ChunkRewriteResult(index, chunk.chunk_id, chunk_output, validation_events, progress_events)
+
+    for validation_attempt in range(1, MAX_VALIDATION_ATTEMPTS + 1):
+        retry_note = _build_retry_note(chunk.text, str(validation_error)) if validation_error is not None else None
+        raw_chunk_output = transform(
+            protected_chunk.text,
+            build_prompt_input(
+                prompt_text,
+                protected_chunk.text,
+                round_number,
+                chunk.chunk_id,
+                retry_note=retry_note,
+                relation_guard=build_factual_relation_guard(chunk.text),
+                style_card=_build_local_style_card(chunk.text, global_style_profile),
+            ),
+            round_number,
+            chunk.chunk_id,
+        )
+        output_for_review = raw_chunk_output
+        protected_output = normalize_chunk_output(protected_chunk.text, raw_chunk_output)
+        try:
+            validate_structure_placeholders(protected_output, protected_chunk.tokens, chunk.chunk_id)
+            rewritten_output = restore_structure_tokens(protected_output, protected_chunk.tokens)
+            output_for_review = rewritten_output
+            validate_chunk_output(chunk.text, rewritten_output, chunk.chunk_id)
+            chunk_output = rewritten_output
+            validation_error = None
+            break
+        except ValueError as exc:
+            validation_error = exc
+            failed_output_payload = _serialize_failed_output(output_for_review)
+            validation_events.append(
+                {
+                    "event": "validation-retry",
+                    "round": round_number,
+                    "chunkId": chunk.chunk_id,
+                    "paragraphIndex": chunk.paragraph_index,
+                    "chunkIndex": chunk.chunk_index,
+                    "attempt": validation_attempt,
+                    "error": str(exc),
+                    **failed_output_payload,
+                }
+            )
+
+        if validation_error is not None and validation_attempt >= MAX_VALIDATION_ATTEMPTS:
+            chunk_output = chunk.text
+            validation_events.append(
+                {
+                    "event": "source-fallback",
+                    "round": round_number,
+                    "chunkId": chunk.chunk_id,
+                    "paragraphIndex": chunk.paragraph_index,
+                    "chunkIndex": chunk.chunk_index,
+                    "attempts": validation_attempt,
+                    "reason": "validation-exhausted",
+                    "error": str(validation_error),
+                    "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+            )
+            progress_events.append(
+                {
+                    "phase": "chunk-source-fallback",
+                    "round": round_number,
+                    "chunkId": chunk.chunk_id,
+                    "paragraphIndex": chunk.paragraph_index,
+                    "chunkIndex": chunk.chunk_index,
+                    "error": str(validation_error),
+                }
+            )
+            validation_error = None
+            break
+
+    return ChunkRewriteResult(index, chunk.chunk_id, chunk_output, validation_events, progress_events)
+
+
 def run_round(
     doc_id: str,
     round_number: int,
@@ -1794,13 +1907,14 @@ def run_round(
     output_path: Path,
     manifest_path: Path,
     transform: Transform,
-    prompt_profile: str = "cn",
+    prompt_profile: str = DEFAULT_PROMPT_PROFILE,
     prompt_sequence: object | None = None,
     chunk_limit: int = DEFAULT_CHUNK_LIMIT,
     score_total: int | None = None,
     progress_callback: ProgressCallback | None = None,
     checkpoint_metadata: dict[str, object] | None = None,
     cancel_check: CancelCheck | None = None,
+    max_concurrency: int = DEFAULT_ROUND_CONCURRENCY,
 ) -> dict:
     normalized_input_path = normalize_path(input_path)
     normalized_output_path = normalize_path(output_path)
@@ -1814,8 +1928,10 @@ def run_round(
     save_manifest(manifest, normalized_manifest_path)
     api_call_estimate = _estimate_api_calls(manifest)
     global_style_profile = _build_global_style_profile(manifest)
+    configured_concurrency = _clamp_round_concurrency(max_concurrency)
     effective_checkpoint_metadata = {
         **(checkpoint_metadata or {}),
+        "rewrite_concurrency": configured_concurrency,
         "style_card_version": STYLE_CARD_VERSION,
         "global_style_profile_sha256": _sha256_json(global_style_profile),
     }
@@ -1845,6 +1961,15 @@ def run_round(
         signature=checkpoint_signature,
         manifest_chunks_by_id=manifest_chunks_by_id,
     )
+    pending_chunk_count = max(0, manifest.chunk_count - len(chunk_outputs))
+    effective_concurrency = max(1, min(configured_concurrency, pending_chunk_count or 1))
+    if progress_callback is not None:
+        raw_progress_callback = progress_callback
+
+        def progress_callback(event: dict[str, object]) -> None:
+            payload = dict(event)
+            payload.setdefault("configuredConcurrency", configured_concurrency)
+            raw_progress_callback(payload)
 
     if progress_callback is not None:
         progress_callback(
@@ -1852,6 +1977,10 @@ def run_round(
                 "phase": "chunking-ready",
                 "round": round_number,
                 "totalChunks": manifest.chunk_count,
+                "completedChunks": len(chunk_outputs),
+                "queuedChunks": pending_chunk_count,
+                "activeChunks": 0,
+                "concurrency": effective_concurrency,
                 "paragraphCount": manifest.paragraph_count,
                 "inputPath": str(normalized_input_path),
                 "outputPath": str(normalized_output_path),
@@ -1865,6 +1994,9 @@ def run_round(
                     "round": round_number,
                     "completedChunks": len(chunk_outputs),
                     "totalChunks": manifest.chunk_count,
+                    "queuedChunks": pending_chunk_count,
+                    "activeChunks": 0,
+                    "concurrency": effective_concurrency,
                     "checkpointPath": str(checkpoint_path),
                     "outputPath": str(normalized_output_path),
                 }
@@ -1878,7 +2010,11 @@ def run_round(
                         "phase": "chunk-complete",
                         "round": round_number,
                         "currentChunk": resumed_index,
+                        "completedChunks": len(chunk_outputs),
                         "totalChunks": manifest.chunk_count,
+                        "activeChunks": 0,
+                        "queuedChunks": pending_chunk_count,
+                        "concurrency": effective_concurrency,
                         "chunkId": resumed_chunk.chunk_id,
                         "paragraphIndex": resumed_chunk.paragraph_index,
                         "chunkIndex": resumed_chunk.chunk_index,
@@ -1890,199 +2026,197 @@ def run_round(
                 )
 
     prompts = get_prompt_mapping(normalized_prompt_profile, normalized_prompt_sequence)
-    for index, chunk in enumerate(manifest.chunks, start=1):
-        if cancel_check is not None and cancel_check():
-            _save_round_checkpoint(
-                checkpoint_path,
-                signature=checkpoint_signature,
-                chunk_outputs=chunk_outputs,
-                validation_events=validation_events,
-                last_error="Round interrupted by user before processing next chunk.",
-            )
-            raise RuntimeError("Run was interrupted by user. Completed chunks are kept; click continue to resume this round.")
-        if chunk.chunk_id in chunk_outputs:
-            continue
-        if progress_callback is not None:
-            progress_callback(
-                {
-                    "phase": "processing-chunk",
-                    "round": round_number,
-                    "currentChunk": index,
-                    "totalChunks": manifest.chunk_count,
-                    "chunkId": chunk.chunk_id,
-                    "paragraphIndex": chunk.paragraph_index,
-                    "chunkIndex": chunk.chunk_index,
-                    "outputPath": str(normalized_output_path),
-                    **api_call_estimate,
-                }
-            )
-        try:
-            chunk_output = ""
-            validation_error: ValueError | None = None
-            protected_chunk = protect_structure_tokens(chunk.text)
-            if should_freeze_chunk(normalized_prompt_profile, chunk.text):
-                chunk_output = chunk.text
-                validation_events.append(
-                    {
-                        "event": "chunk-frozen",
-                        "round": round_number,
-                        "chunkId": chunk.chunk_id,
-                        "paragraphIndex": chunk.paragraph_index,
-                        "chunkIndex": chunk.chunk_index,
-                        "reason": "english_preserved_in_cn_profile",
-                    }
-                )
-                validate_chunk_output(chunk.text, chunk_output, chunk.chunk_id)
-                chunk_outputs[chunk.chunk_id] = chunk_output
-                _save_round_checkpoint(
-                    checkpoint_path,
-                    signature=checkpoint_signature,
-                    chunk_outputs=chunk_outputs,
-                    validation_events=validation_events,
-                )
-                if progress_callback is not None:
-                    progress_callback(
-                        {
-                            "phase": "chunk-frozen",
-                            "round": round_number,
-                            "currentChunk": index,
-                            "totalChunks": manifest.chunk_count,
-                            "chunkId": chunk.chunk_id,
-                            "paragraphIndex": chunk.paragraph_index,
-                            "chunkIndex": chunk.chunk_index,
-                            "outputPath": str(normalized_output_path),
-                            **api_call_estimate,
-                        }
-                    )
-                continue
-            for validation_attempt in range(1, MAX_VALIDATION_ATTEMPTS + 1):
-                if chunk.chunk_id in chunk_outputs:
-                    break
-                retry_note = None
-                if validation_error is not None:
-                    retry_note = _build_retry_note(chunk.text, str(validation_error))
-                effective_prompt_text = prompt_text
-                valid_candidates: list[tuple[float, str, int]] = []
-                raw_chunk_output = transform(
-                    protected_chunk.text,
-                    build_prompt_input(
-                        effective_prompt_text,
-                        protected_chunk.text,
-                        round_number,
-                        chunk.chunk_id,
-                        retry_note=retry_note,
-                        relation_guard=build_factual_relation_guard(chunk.text),
-                        style_card=_build_local_style_card(chunk.text, global_style_profile),
-                    ),
-                    round_number,
-                    chunk.chunk_id,
-                )
-                candidate_output_for_review = raw_chunk_output
-                protected_output = normalize_chunk_output(protected_chunk.text, raw_chunk_output)
-                try:
-                    validate_structure_placeholders(protected_output, protected_chunk.tokens, chunk.chunk_id)
-                    candidate_output = restore_structure_tokens(protected_output, protected_chunk.tokens)
-                    candidate_output_for_review = candidate_output
-                    validate_chunk_output(chunk.text, candidate_output, chunk.chunk_id)
-                    valid_candidates.append((_score_rewrite_candidate(chunk.text, candidate_output), candidate_output, 1))
-                except ValueError as exc:
-                    validation_error = exc
-                    rejected_candidate_payload = _serialize_rejected_candidate_output(candidate_output_for_review)
-                    validation_events.append(
-                        {
-                            "event": "validation-retry",
-                            "round": round_number,
-                            "chunkId": chunk.chunk_id,
-                            "paragraphIndex": chunk.paragraph_index,
-                            "chunkIndex": chunk.chunk_index,
-                            "attempt": validation_attempt,
-                            "candidate": 1,
-                            "error": str(exc),
-                            **rejected_candidate_payload,
-                        }
-                    )
+    pending_chunks = [
+        (index, chunk)
+        for index, chunk in enumerate(manifest.chunks, start=1)
+        if chunk.chunk_id not in chunk_outputs
+    ]
+    effective_concurrency = max(1, min(effective_concurrency, len(pending_chunks) or 1))
+    first_error: tuple[int, str, BaseException] | None = None
+    first_error_details: dict[str, object] | None = None
+    next_submit_index = 0
+    futures: dict[Future[ChunkRewriteResult], tuple[int, object]] = {}
 
-                if valid_candidates:
-                    _selected_score, chunk_output, _selected_candidate = min(valid_candidates, key=lambda item: item[0])
-                    validation_error = None
-                    break
-                if validation_error is not None and validation_attempt >= MAX_VALIDATION_ATTEMPTS:
-                    chunk_output = chunk.text
-                    validation_events.append(
-                        {
-                            "event": "source-fallback",
-                            "round": round_number,
+    def emit_processing(index: int, chunk: object, active_count: int) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            {
+                "phase": "processing-chunk",
+                "round": round_number,
+                "currentChunk": index,
+                "completedChunks": len(chunk_outputs),
+                "totalChunks": manifest.chunk_count,
+                "activeChunks": active_count,
+                "queuedChunks": max(0, len(pending_chunks) - next_submit_index),
+                "concurrency": effective_concurrency,
+                "chunkId": chunk.chunk_id,
+                "paragraphIndex": chunk.paragraph_index,
+                "chunkIndex": chunk.chunk_index,
+                "outputPath": str(normalized_output_path),
+                **api_call_estimate,
+            }
+        )
+
+    def submit_next(executor: ThreadPoolExecutor) -> bool:
+        nonlocal next_submit_index
+        if next_submit_index >= len(pending_chunks):
+            return False
+        if cancel_check is not None and cancel_check():
+            return False
+        index, chunk = pending_chunks[next_submit_index]
+        next_submit_index += 1
+        future = executor.submit(
+            _rewrite_round_chunk,
+            index=index,
+            chunk=chunk,
+            round_number=round_number,
+            normalized_prompt_profile=normalized_prompt_profile,
+            prompt_text=prompt_text,
+            transform=transform,
+            global_style_profile=global_style_profile,
+        )
+        futures[future] = (index, chunk)
+        emit_processing(index, chunk, len(futures))
+        return True
+
+    with ThreadPoolExecutor(max_workers=effective_concurrency) as executor:
+        while len(futures) < effective_concurrency and submit_next(executor):
+            pass
+        while futures:
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                index, chunk = futures.pop(future)
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    exception_details = _serialize_exception_details(exc)
+                    cancelled_error = (
+                        cancel_check is not None
+                        and cancel_check()
+                        and "interrupted by user" in str(exc).lower()
+                    )
+                    if cancelled_error:
+                        _save_round_checkpoint(
+                            checkpoint_path,
+                            signature=checkpoint_signature,
+                            chunk_outputs=chunk_outputs,
+                            validation_events=validation_events,
+                            last_error="Round interrupted by user before processing next chunk.",
+                        )
+                        if progress_callback is not None:
+                            progress_callback(
+                                {
+                                    "phase": "cancel-requested",
+                                    "round": round_number,
+                                    "currentChunk": index,
+                                    "completedChunks": len(chunk_outputs),
+                                    "totalChunks": manifest.chunk_count,
+                                    "activeChunks": len(futures),
+                                    "queuedChunks": max(0, len(pending_chunks) - next_submit_index),
+                                    "concurrency": effective_concurrency,
+                                    "chunkId": chunk.chunk_id,
+                                    **api_call_estimate,
+                                }
+                            )
+                        continue
+                    if first_error is None:
+                        first_error = (index, chunk.chunk_id, exc)
+                        first_error_details = {
                             "chunkId": chunk.chunk_id,
-                            "paragraphIndex": chunk.paragraph_index,
-                            "chunkIndex": chunk.chunk_index,
-                            "attempts": validation_attempt,
-                            "reason": "validation-exhausted",
-                            "error": str(validation_error),
-                            "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                            **exception_details,
                         }
+                    _save_round_checkpoint(
+                        checkpoint_path,
+                        signature=checkpoint_signature,
+                        chunk_outputs=chunk_outputs,
+                        validation_events=validation_events,
+                        last_error=f"Chunk {chunk.chunk_id} failed: {exc}",
+                        last_error_details=first_error_details,
                     )
                     if progress_callback is not None:
                         progress_callback(
                             {
-                                "phase": "chunk-source-fallback",
+                                "phase": "chunk-failed",
                                 "round": round_number,
                                 "currentChunk": index,
+                                "completedChunks": len(chunk_outputs),
                                 "totalChunks": manifest.chunk_count,
+                                "activeChunks": len(futures),
+                                "queuedChunks": max(0, len(pending_chunks) - next_submit_index),
+                                "concurrency": effective_concurrency,
                                 "chunkId": chunk.chunk_id,
-                                "paragraphIndex": chunk.paragraph_index,
-                                "chunkIndex": chunk.chunk_index,
-                                "error": str(validation_error),
+                                "error": str(exc),
+                                **exception_details,
                                 **api_call_estimate,
                             }
                         )
-                    validation_error = None
-                    break
-            if chunk.chunk_id not in chunk_outputs:
-                chunk_outputs[chunk.chunk_id] = chunk_output
+                    continue
+
+                chunk_outputs[result.chunk_id] = result.output_text
+                validation_events.extend(result.validation_events)
                 _save_round_checkpoint(
                     checkpoint_path,
                     signature=checkpoint_signature,
                     chunk_outputs=chunk_outputs,
                     validation_events=validation_events,
+                    last_error=f"Chunk {first_error[1]} failed: {first_error[2]}" if first_error is not None else None,
+                    last_error_details=first_error_details,
                 )
-        except Exception as exc:
-            _save_round_checkpoint(
-                checkpoint_path,
-                signature=checkpoint_signature,
-                chunk_outputs=chunk_outputs,
-                validation_events=validation_events,
-                last_error=f"Chunk {chunk.chunk_id} failed: {exc}",
-            )
-            if progress_callback is not None:
-                progress_callback(
-                    {
-                        "phase": "chunk-failed",
-                        "round": round_number,
-                        "currentChunk": index,
-                        "totalChunks": manifest.chunk_count,
-                        "chunkId": chunk.chunk_id,
-                        "error": str(exc),
-                        **api_call_estimate,
-                    }
-                )
-            raise
+                for progress_event in result.progress_events:
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                **progress_event,
+                                "currentChunk": len(chunk_outputs),
+                                "completedChunks": len(chunk_outputs),
+                                "totalChunks": manifest.chunk_count,
+                                "activeChunks": len(futures),
+                                "queuedChunks": max(0, len(pending_chunks) - next_submit_index),
+                                "concurrency": effective_concurrency,
+                                "outputPath": str(normalized_output_path),
+                                **api_call_estimate,
+                            }
+                        )
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "chunk-complete",
+                            "round": round_number,
+                            "currentChunk": len(chunk_outputs),
+                            "completedChunks": len(chunk_outputs),
+                            "totalChunks": manifest.chunk_count,
+                            "activeChunks": len(futures),
+                            "queuedChunks": max(0, len(pending_chunks) - next_submit_index),
+                            "concurrency": effective_concurrency,
+                            "chunkId": result.chunk_id,
+                            "paragraphIndex": chunk.paragraph_index,
+                            "chunkIndex": chunk.chunk_index,
+                            "outputPath": str(normalized_output_path),
+                            "compareInputText": chunk.text,
+                            "compareOutputText": result.output_text,
+                            **api_call_estimate,
+                        }
+                    )
 
-        if progress_callback is not None:
-            progress_callback(
-                {
-                    "phase": "chunk-complete",
-                    "round": round_number,
-                    "currentChunk": index,
-                    "totalChunks": manifest.chunk_count,
-                    "chunkId": chunk.chunk_id,
-                    "paragraphIndex": chunk.paragraph_index,
-                    "chunkIndex": chunk.chunk_index,
-                    "outputPath": str(normalized_output_path),
-                    "compareInputText": chunk.text,
-                    "compareOutputText": chunk_output,
-                    **api_call_estimate,
-                }
-            )
+            if first_error is not None:
+                continue
+            while len(futures) < effective_concurrency and submit_next(executor):
+                pass
+
+        if first_error is not None:
+            index, chunk_id, exc = first_error
+            raise RuntimeError(f"Chunk {chunk_id} failed: {exc}") from exc
+
+    if cancel_check is not None and cancel_check() and len(chunk_outputs) < manifest.chunk_count:
+        _save_round_checkpoint(
+            checkpoint_path,
+            signature=checkpoint_signature,
+            chunk_outputs=chunk_outputs,
+            validation_events=validation_events,
+            last_error="Round interrupted by user before processing next chunk.",
+        )
+        raise RuntimeError("Run was interrupted by user. Completed chunks are kept; click continue to resume this round.")
 
     restored = restore_text_from_chunks(manifest, chunk_outputs)
 
@@ -2091,7 +2225,11 @@ def run_round(
             {
                 "phase": "restoring-output",
                 "round": round_number,
+                "completedChunks": len(chunk_outputs),
                 "totalChunks": manifest.chunk_count,
+                "activeChunks": 0,
+                "queuedChunks": 0,
+                "concurrency": effective_concurrency,
                 **api_call_estimate,
             }
         )

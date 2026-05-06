@@ -12,6 +12,8 @@ from pypdf import PdfReader
 SPEEDAI_PROVIDER = "speedai"
 PAPERPASS_PROVIDER = "paperpass"
 UNKNOWN_PROVIDER = "unknown"
+LATIN_OCR_PAIR_PATTERN = re.compile(r"\b([A-Za-z][A-Za-z0-9+.#/-]*)\s+([A-Za-z][A-Za-z0-9+.#/-]*)\b")
+COMMON_SHORT_TECH_PREFIXES = {"AI", "API", "CPU", "GPU", "UI", "UX", "IT", "OS", "ML", "DL", "PDF", "DOCX", "JSON", "SQL", "XML"}
 
 SPEEDAI_SUMMARY_START = "片段汇总列表"
 SPEEDAI_ORIGINAL_START = "原文内容"
@@ -384,20 +386,49 @@ def _percentage_bucket(value: float | None) -> dict[str, float | int] | None:
     return {"words": 0, "percentage": float(value)}
 
 
+def _repair_spaced_latin_technical_tokens(text: str) -> str:
+    repaired = str(text or "")
+    for _ in range(2):
+        updated = LATIN_OCR_PAIR_PATTERN.sub(_join_spaced_latin_pair, repaired)
+        if updated == repaired:
+            return repaired
+        repaired = updated
+    return repaired
+
+
+def _join_spaced_latin_pair(match: re.Match[str]) -> str:
+    left = match.group(1)
+    right = match.group(2)
+    return left + right if _should_join_latin_ocr_pair(left, right) else match.group(0)
+
+
+def _should_join_latin_ocr_pair(left: str, right: str) -> bool:
+    left_clean = left.strip()
+    right_clean = right.strip()
+    if not left_clean or not right_clean:
+        return False
+    has_digit = bool(re.search(r"\d", left_clean + right_clean))
+    has_token_punctuation = bool(re.search(r"[+.#/-]", left_clean + right_clean))
+    left_is_short_acronym = left_clean.isupper() and 2 <= len(left_clean) <= 4
+    right_is_short_acronym = right_clean.isupper() and 2 <= len(right_clean) <= 4
+    if has_digit:
+        return bool(re.search(r"\d", right_clean)) or right_is_short_acronym or (right_clean[0].isupper() and len(right_clean) <= 5)
+    if has_token_punctuation:
+        return right_is_short_acronym or len(right_clean) <= 6
+    if left_is_short_acronym and left_clean not in COMMON_SHORT_TECH_PREFIXES:
+        return right_clean[0].isupper() or right_is_short_acronym
+    if right_is_short_acronym:
+        return has_token_punctuation or bool(re.search(r"[A-Z][a-z]*[A-Z]", left_clean))
+    return False
+
+
 def _normalize_segment_content(text: str) -> str:
     normalized = re.sub(r"\s+", " ", str(text or "")).strip()
     normalized = normalized.replace("\u00ad", "")
-    normalized = re.sub(r"(?<=[A-Za-z])- (?=[A-Za-z])", "-", normalized)
-    normalized = re.sub(r"(?<=[A-Za-z])\s*-\s*(?=[A-Za-z])", "-", normalized)
+    normalized = re.sub(r"(?<=[A-Za-z0-9])- (?=[A-Za-z0-9])", "-", normalized)
+    normalized = re.sub(r"(?<=[A-Za-z0-9])\s*-\s*(?=[A-Za-z0-9])", "-", normalized)
     normalized = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", normalized)
-    normalized = normalized.replace("Bi-LS TM", "Bi-LSTM")
-    normalized = normalized.replace("Bi - LSTM", "Bi-LSTM").replace("Bi- LSTM", "Bi-LSTM").replace("Bi -LSTM", "Bi-LSTM")
-    normalized = normalized.replace("Str eamlit", "Streamlit")
-    normalized = normalized.replace("Stream lit", "Streamlit")
-    normalized = normalized.replace("BERT4 Rec", "BERT4Rec")
-    normalized = normalized.replace("XG Boost", "XGBoost")
-    normalized = normalized.replace("F1 - Score", "F1-Score")
-    normalized = normalized.replace("Random Forest", "Random Forest")
+    normalized = _repair_spaced_latin_technical_tokens(normalized)
     normalized = re.sub(r"(?<=[A-Za-z])\s+(?=[，。；：、！？）】])", "", normalized)
     normalized = re.sub(r"\s+([，。；：、！？）】])", r"\1", normalized)
     normalized = re.sub(r"([（【])\s+", r"\1", normalized)
@@ -406,10 +437,6 @@ def _normalize_segment_content(text: str) -> str:
 
 def _build_match_text(text: str) -> str:
     normalized = _normalize_segment_content(text).lower()
-    normalized = normalized.replace("bi-ls tm", "bi-lstm")
-    normalized = normalized.replace("bi - lstm", "bi-lstm")
-    normalized = normalized.replace("str eamlit", "streamlit")
-    normalized = normalized.replace("stream lit", "streamlit")
     normalized = re.sub(r"\s+", "", normalized)
     normalized = re.sub(r"[，。！？；：、,.!?;:'\"“”‘’()\[\]{}<>《》\-—_\\/|`~@#$%^&*+=]", "", normalized)
     return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", normalized)

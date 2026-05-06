@@ -14,6 +14,7 @@ const THEME_MODE_HOOK_PATH = resolve(ROOT_DIR, "app", "src", "hooks", "useThemeM
 const APP_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appService.ts");
 const WEB_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webService.ts");
 const GLOBAL_CSS_PATH = resolve(ROOT_DIR, "app", "src", "styles", "global.css");
+const TAILWIND_CONFIG_PATH = resolve(ROOT_DIR, "app", "tailwind.config.ts");
 const BUTTON_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "button.tsx");
 const BADGE_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "badge.tsx");
 const INPUT_PATH = resolve(ROOT_DIR, "app", "src", "components", "ui", "input.tsx");
@@ -69,13 +70,14 @@ function runRegression() {
   const appServiceSource = loadSource(APP_SERVICE_PATH, failures);
   const webServiceSource = loadSource(WEB_SERVICE_PATH, failures);
   const cssSource = loadSource(GLOBAL_CSS_PATH, failures);
+  const tailwindConfigSource = loadSource(TAILWIND_CONFIG_PATH, failures);
   const buttonSource = loadSource(BUTTON_PATH, failures);
   const badgeSource = loadSource(BADGE_PATH, failures);
   const inputSource = loadSource(INPUT_PATH, failures);
   const selectSource = loadSource(SELECT_PATH, failures);
   const textareaSource = loadSource(TEXTAREA_PATH, failures);
   const dialogSource = loadSource(DIALOG_PATH, failures);
-  const combinedSource = [appSource, appIndexSource, modelConfigCardSource, resultCardSource, historyCardSource, protectionMapCardSource, themeModeMenuSource, themeModeHookSource, appServiceSource, webServiceSource, cssSource, buttonSource, badgeSource, inputSource, selectSource, textareaSource, dialogSource].join("\n");
+  const combinedSource = [appSource, appIndexSource, modelConfigCardSource, resultCardSource, historyCardSource, protectionMapCardSource, themeModeMenuSource, themeModeHookSource, appServiceSource, webServiceSource, cssSource, tailwindConfigSource, buttonSource, badgeSource, inputSource, selectSource, textareaSource, dialogSource].join("\n");
 
   if (cssSource) {
     assertIncludes(cssSource, "html {\n    @apply h-svh overflow-hidden", "Document root must keep the app viewport-bound.", failures);
@@ -87,7 +89,13 @@ function runRegression() {
     assertNotIncludes(cssSource, "min-h-[7rem]", "Home route choice cards must not return to the oversized blank layout.", failures);
     assertIncludes(cssSource, ".shadcn-config-dialog", "Home setup dialogs must use shared shadcn utility semantics.", failures);
     assertIncludes(cssSource, ".shadcn-scroll-bound [data-radix-scroll-area-viewport] > div", "Radix ScrollArea content must be width-bound inside shadcn overlays.", failures);
+    assertIncludes(cssSource, "--success:", "Loading feedback must have a semantic green success token.", failures);
     assertNotIncludes(cssSource, ".fy-", "Old fy-* utility classes must not return after the shadcn migration.", failures);
+  }
+
+  if (tailwindConfigSource) {
+    assertIncludes(tailwindConfigSource, "success: {", "Tailwind must expose the semantic success token for green loading icons.", failures);
+    assertIncludes(tailwindConfigSource, "DEFAULT: \"hsl(var(--success))\"", "Tailwind success color must read from the shadcn CSS variable.", failures);
   }
 
   if (appSource) {
@@ -96,34 +104,79 @@ function runRegression() {
     assertIncludes(appSource, "SidebarMenuButton", "Sidebar items must use the shadcn Sidebar menu button primitive.", failures);
     assertIncludes(appSource, "isActive={activeView === item.view}", "Sidebar active state must be delegated to the shadcn Sidebar item.", failures);
     assertIncludes(appSource, "<Breadcrumb", "Top status area must use shadcn Breadcrumb composition.", failures);
+    assertIncludes(appSource, "data-ui-section=\"current-file-chip\"", "Top status area must keep the current-file chip identifiable.", failures);
+    assertIncludes(appSource, "flex h-10 min-w-0 items-center gap-2 overflow-hidden border-t px-4 text-xs", "Top status bar must keep the original single-line arrangement.", failures);
+    assertIncludes(appSource, "h-7 min-w-[22rem] max-w-[min(58vw,56rem)] shrink-0 justify-start overflow-x-auto px-2 text-xs", "Current document name must keep a base width and extend into available space.", failures);
+    assertIncludes(appSource, "flex min-w-0 shrink-0 items-center gap-2", "Top route, Diff, and feedback controls must follow the current-file chip without a large blank gap.", failures);
+    assertNotIncludes(appSource, "ml-auto flex min-w-0 shrink-0 items-center gap-2", "Top status bar must not push route, Diff, and feedback controls into a far-right island.", failures);
+    assertNotIncludes(appSource, "max-w-[240px] truncate text-foreground", "Current document name must not be truncated in the top status bar.", failures);
     assertIncludes(appSource, "aria-label=\"打开通知与任务中心\"", "Notification status action must remain accessible.", failures);
     assertIncludes(appSource, "notificationStatusLabel", "Notification status must label operation feedback clearly.", failures);
     assertIncludes(appSource, "操作反馈", "Successful operation notices must be visually distinguishable from passive notifications.", failures);
     assertIncludes(appSource, "aria-live=\"polite\"", "Status feedback must be announced as live feedback.", failures);
+    assertIncludes(appSource, "const hasActiveOperationFeedback = Boolean(activeRuntimeTaskCount || (uiBusy && !error));", "Global loading feedback must be collapsed into the top status action.", failures);
+    assertNotIncludes(appSource, "data-ui-section=\"operation-feedback-bar\"", "Top status feedback must not be duplicated by a second operation bar.", failures);
+    assertNotIncludes(appSource, "<OperationFeedbackBar", "The app shell must not render duplicate global loading surfaces.", failures);
+    assertIncludes(appSource, "hasActiveOperationFeedback ? Loader2", "Top status feedback must use a spinner while work is running.", failures);
+    assertIncludes(appSource, "const LOADING_ICON_CLASS_NAME = \"animate-spin text-success\";", "App loading spinners must render with the green success token.", failures);
+    assertIncludes(appSource, "const MAX_REWRITE_CONCURRENCY = 8;", "Frontend must expose the 8-way rewrite concurrency ceiling.", failures);
+    assertIncludes(appSource, "const REWRITE_CONCURRENCY_LEVELS = [1, 2, 3, 4, 6, 8] as const;", "Home concurrency selector must expose stable 1/2/3/4/6/8 tiers.", failures);
+    assertIncludes(appSource, "onRunRound(modelConfigRef.current);", "Home run button must start with the latest selected concurrency.", failures);
+    assertIncludes(appSource, "configuredConcurrency", "Round progress UI must distinguish configured concurrency from effective active workers.", failures);
+    assertNotIncludes(appSource, "progress?.concurrency ?? 2", "Round run status must not fall back to a hard-coded concurrency value.", failures);
+    assertIncludes(appSource, "className={cn(hasActiveOperationFeedback && LOADING_ICON_CLASS_NAME)}", "Top status spinner must turn green while work is running.", failures);
     assertIncludes(appSource, "openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)", "Top status area must route directly into focused Diff review.", failures);
+    assertIncludes(appSource, "function formatDiffDashboardLabel", "Top Diff status must format needs-review and high-risk counts separately.", failures);
+    assertIncludes(appSource, "highRiskCount", "Global Diff dashboard stats must track high-risk chunks separately.", failures);
+    assertIncludes(appSource, "failedChunkIds.length ? \"failed\" : highRiskChunkIds.length ? \"highRisk\"", "Global Diff focus must prefer high-risk chunks before ordinary review chunks.", failures);
+    assertIncludes(appSource, "function getDefaultReviewDecisionForChunk(data: RoundCompareData, chunkId: string): ReviewDecision", "Rerun completion must derive per-chunk default decisions from the latest compare data.", failures);
+    assertIncludes(appSource, "[chunkId]: nextDecision", "Single rerun fallback chunks must not be forced back to default rewrite.", failures);
+    assertIncludes(appSource, "getDefaultReviewDecisionForChunk(confirmedCompare, target.chunkId)", "Batch rerun fallback chunks must keep safe-source defaults.", failures);
     assertIncludes(appSource, "<ResultCard", "Home must keep output/export summary in the main work area.", failures);
     assertIncludes(appSource, "<DiffReviewCard", "Home must embed the full Diff review surface.", failures);
+    assertIncludes(appSource, "<RoundRunStatusCard", "Home must show a compact run status card instead of the Diff surface while a round is running.", failures);
+    assertIncludes(appSource, "<Progress value={percent} className=\"h-2\" />", "Round run status card must use shadcn Progress for chunk progress.", failures);
+    assertIncludes(appSource, "轮内并发", "Home run controls must expose the bounded rewrite concurrency setting.", failures);
+    assertIncludes(appSource, "value.config.rewriteConcurrency ?? 2", "Diagnostics must show the active rewrite concurrency setting.", failures);
+    assertIncludes(appSource, "value.config.effectiveRewriteTimeoutSeconds ?? value.config.requestTimeoutSeconds", "Diagnostics must show the effective long-thinking rewrite timeout.", failures);
     assertIncludes(appSource, "min-[1180px]:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)]", "Home operation column must use a bounded responsive track instead of a hard fixed width.", failures);
     assertNotIncludes(appSource, "xl:grid-cols-[minmax(0,1fr)_440px]", "Home operation column must not return to the overflowing fixed 440px track.", failures);
     assertIncludes(appSource, "data-ui-section=\"home-operation-scroll\"", "Home right operation stack must use shadcn ScrollArea scrolling.", failures);
     assertIncludes(appSource, "className=\"shadcn-scroll-bound h-full min-h-0 min-w-0 max-w-full overflow-x-hidden pr-1\"", "Home right ScrollArea must clamp horizontal overflow.", failures);
     assertIncludes(appSource, "<HomeRunPanel", "Run controls must stay in the right operation stack.", failures);
+    assertIncludes(appSource, "? \"刷新轮次状态\"", "Stale round status must show an actionable refresh button instead of a dead sync state.", failures);
+    assertIncludes(appSource, "? `继续第 ${value.nextRound} 轮`", "Selected multi-round workflows must present round 2+ as continuation, not append.", failures);
+    assertIncludes(appSource, "onRefreshStatus={() => void handleRefreshCurrentDocumentStatus()}", "Home run panel must be able to refresh stale round status from the primary action.", failures);
+    assertNotIncludes(appSource, "所选流程已完成，可追加", "Home run controls must not show verbose selected-workflow helper copy.", failures);
+    assertNotIncludes(appSource, "左侧可查看 Diff 和导出", "Loaded result alert must stay compact and not repeat obvious actions.", failures);
+    assertIncludes(appSource, "第 {visibleResultRound} 轮已完成", "Loaded result alert should use short completion wording.", failures);
     assertIncludes(appSource, "<DetectionReportPanel", "External report controls must stay in the right operation stack.", failures);
     assertIncludes(appSource, "<Dialog open={Boolean(setupEditor)}", "Setup editors must use centered shadcn Dialog.", failures);
     assertIncludes(appSource, "className={cn(\"shadcn-config-dialog", "Setup editors must share the shadcn dialog utility.", failures);
     assertNotIncludes(appSource, "<Sheet open={Boolean(setupEditor)}", "Setup editors must not reopen as right-side Sheets.", failures);
     assertNotIncludes(appSource, "shadcn-config-sheet", "Setup editors must not use the removed config Sheet utility.", failures);
-    assertIncludes(appSource, "onPromptProfileChange(ACTIVE_PROMPT_PROFILE)", "Rewrite workflow action must force the custom profile before editing.", failures);
+    assertIncludes(appSource, "const editablePromptProfile = getDefaultPromptProfile(promptWorkflows);", "Rewrite workflow action must derive the editable workflow from backend metadata.", failures);
+    assertIncludes(appSource, "onPromptProfileChange(editablePromptProfile)", "Rewrite workflow action must switch to the editable workflow before editing.", failures);
     assertNotIncludes(appSource, "ToggleGroupItem value=\"cn_prewrite\"", "Rewrite workflow editor must not expose the legacy three-round preset.", failures);
     assertNotIncludes(appSource, "ToggleGroupItem value=\"cn\"", "Rewrite workflow editor must not expose the legacy two-round preset.", failures);
+    assertNotIncludes(appSource, "data-ui-section=\"prompt-workflow-route-defaults\"", "Prompt library page must not duplicate home workflow/model-route settings.", failures);
+    assertIncludes(appSource, "<Card className=\"flex h-full min-h-0 flex-col overflow-hidden\">", "Prompt library left panel must use a flex container for internal scrolling.", failures);
+    assertIncludes(appSource, "<CardContent className=\"flex min-h-0 flex-1 flex-col gap-4 px-5 pb-5\">", "Prompt library list must allocate remaining height to its ScrollArea.", failures);
+    assertIncludes(appSource, "onDeletePrompt={(promptId) => handleDeletePrompt(promptId)}", "Prompt library must expose custom prompt delete in the main CRUD flow.", failures);
+    assertNotIncludes(appSource, "保存内容", "Prompt library must not split one save action into content save.", failures);
+    assertNotIncludes(appSource, "保存信息", "Prompt library must not split one save action into metadata save.", failures);
+    assertNotIncludes(appSource, "restoreSelectedBackup", "Prompt library must keep backup restore out of the main UI.", failures);
     assertIncludes(appSource, "<AlertDialog open", "Risky actions must use the shadcn AlertDialog confirmation flow.", failures);
     assertIncludes(appSource, "function UnifiedConfirmDialog", "Native confirms must stay replaced by the unified app dialog.", failures);
     assertIncludes(appSource, "requestConfirm", "Risky actions must route through the async confirmation flow.", failures);
-    assertIncludes(appSource, "<SheetTitle className=\"flex items-center gap-2\">", "Notification center must expose an accessible shadcn SheetTitle.", failures);
+    assertIncludes(appSource, "<SheetTitle className=\"flex min-w-0 items-center gap-2\">", "Notification center must expose an accessible shadcn SheetTitle.", failures);
     assertIncludes(appSource, "<SheetDescription className=\"sr-only\">查看运行任务和最近通知。</SheetDescription>", "Notification center must expose a non-visual accessible description.", failures);
     assertNotIncludes(appSource, "aria-labelledby=\"notification-center-title\"", "Notification center must not override the Radix-generated title id.", failures);
     assertIncludes(appSource, "data-ui-section=\"runtime-task-center\"", "Notification center must separate active runtime tasks from notification history.", failures);
     assertIncludes(appSource, "taskItems={runtimeTaskItems}", "Runtime task center items must be passed into the notification center.", failures);
+    assertIncludes(appSource, "className=\"flex w-[min(96vw,34rem)] min-w-0 max-w-[calc(100vw-0.75rem)] flex-col overflow-hidden p-0 sm:max-w-none [&>button]:hidden\"", "Notification center sheet must clamp horizontal overflow with enough readable width.", failures);
+    assertIncludes(appSource, "whitespace-pre-wrap break-words text-sm leading-6 text-muted-foreground [overflow-wrap:anywhere]", "Notification text must fully wrap long backend/provider messages inside the sheet.", failures);
+    assertNotIncludes(appSource, "mt-1 line-clamp-3 min-w-0 break-words text-sm leading-6 text-muted-foreground", "Notification history must not clamp long notices horizontally or vertically.", failures);
     assertIncludes(appSource, "function isRawHtmlErrorText", "Notification history must detect stale raw backend HTML error pages.", failures);
     assertIncludes(appSource, "isRawHtmlErrorText(text)", "Notification history must filter raw HTML errors before rendering persisted history.", failures);
     assertIncludes(appSource, "setError(\"\")", "Stale backend method-mismatch errors must be cleared from hot-reloaded app state.", failures);
@@ -156,6 +209,12 @@ function runRegression() {
     assertNoLegacyFyClassTokens(appSource, "App must not reintroduce old fy-* UI classes.", failures);
   }
 
+  if (modelConfigCardSource) {
+    assertIncludes(modelConfigCardSource, "const LOADING_ICON_CLASS_NAME = \"animate-spin text-success\";", "Model and format loading spinners must render with the green success token.", failures);
+    assertIncludes(modelConfigCardSource, "const MAX_REWRITE_CONCURRENCY = 8;", "Model config must expose the 8-way rewrite concurrency ceiling.", failures);
+    assertIncludes(modelConfigCardSource, "max={MAX_REWRITE_CONCURRENCY}", "Model config concurrency input must use the shared 8-way ceiling.", failures);
+  }
+
   if (inputSource && selectSource && textareaSource) {
     const fieldControlSource = [inputSource, selectSource, textareaSource].join("\n");
     assertIncludes(fieldControlSource, "focus-visible:shadow-[inset_0_0_0_1px_hsl(var(--ring)/0.22)]", "Form controls must use a subtle inset shadcn focus treatment that cannot be clipped by right-panel bounds.", failures);
@@ -167,14 +226,21 @@ function runRegression() {
 
   if (resultCardSource) {
     assertIncludes(resultCardSource, "export function DiffReviewCard", "ResultCard module must export the full-height Diff review surface.", failures);
-    assertIncludes(resultCardSource, "xl:grid-cols-3", "Output export actions should stay limited to Word, TXT, and risky-rerun actions.", failures);
+    assertIncludes(resultCardSource, "flex shrink-0 flex-wrap items-center gap-2", "Output export actions should stay compact and avoid dead spacing.", failures);
     assertNotIncludes(resultCardSource, "T.adoptAllRejected", "Output export actions must not expose removed candidate adoption.", failures);
     assertNotIncludes(appSource, "collectAdoptableRejectedCandidates", "Home must not compute removed candidate adoption state.", failures);
     assertIncludes(appSource, "buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions)", "Home Diff dashboard counts must follow review decisions.", failures);
+    assertIncludes(appSource, "!failedChunkIdSet.has(chunk.chunkId) && !highRiskChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved", "Home Diff dashboard must not double-count failed or high-risk chunks as ordinary needs-review.", failures);
     assertIncludes(appSource, "function normalizeReviewDecisionsForSave", "Review decisions must preserve explicit confirmation state when saved.", failures);
     assertIncludes(appSource, "return [chunkId, \"rewrite\" as ReviewDecision];", "Saved legacy default rewrites must reload as unresolved defaults.", failures);
-    assertIncludes(appSource, "decision.source === \"rejected_candidate\" && decision.confirmed !== true", "Legacy rejected candidate decisions must not hide unresolved high-risk candidates.", failures);
+    assertIncludes(appSource, "isFailedOutputDecision(decision) && decision.confirmed !== true", "Failed-output decisions must not hide unresolved high-risk chunks.", failures);
     assertIncludes(appSource, "return [[chunkId, \"rewrite_confirmed\" as ReviewDecision] as const];", "Explicit rewrite confirmations must be persisted distinctly from default rewrites.", failures);
+    assertIncludes(appSource, "if (decision === \"source_confirmed\")", "Only explicit source confirmations should be persisted.", failures);
+    assertNotIncludes(appSource, "if (decision === \"source\" || decision === \"source_confirmed\")", "Default safe-source choices must not be saved as confirmed.", failures);
+    assertIncludes(appSource, "function normalizeSavedReviewDecisionsForCompare", "Legacy saved source confirmations for high-risk failed outputs must be normalized against compare data.", failures);
+    assertIncludes(appSource, "highRiskChunkIds.has(chunkId) && decision === \"source_confirmed\" ? \"source\"", "Legacy source confirmations must not hide high-risk failed outputs.", failures);
+    assertNotIncludes(appSource, "[chunkId]: \"rewrite\" }));", "Single rerun must not force high-risk fallback chunks to default rewrite.", failures);
+    assertNotIncludes(appSource, "completedTargets.map((target) => [target.chunkId, \"rewrite\" as ReviewDecision])", "Batch rerun must not force high-risk fallback chunks to default rewrite.", failures);
     assertNotIncludes(appSource, "buildRejectedCandidateReviewDecision", "Candidate adoption decision builders must stay removed from the frontend.", failures);
     assertNotIncludes(appSource, "if (decision === \"rewrite\") return [chunkId, \"rewrite_confirmed\" as ReviewDecision];", "Default rewrite choices must not be promoted to confirmed on reload.", failures);
     assertNotIncludes(appSource, "function handleAdoptAllRejectedCandidates", "Home must not wire removed all-candidate adoption actions.", failures);
@@ -185,7 +251,7 @@ function runRegression() {
     assertIncludes(resultCardSource, "Card className=\"flex h-full min-h-0", "Diff review card must use a fixed-height shadcn Card shell.", failures);
     assertIncludes(resultCardSource, "sticky top-0 z-20", "Inline Diff toolbar must stay pinned while chunks scroll.", failures);
     assertIncludes(resultCardSource, "ToggleGroup", "Diff filters must use shadcn ToggleGroup.", failures);
-    assertIncludes(resultCardSource, "type DiffFilterMode = \"all\" | \"review\" | \"failed\";", "Diff filters must stay compact for users.", failures);
+    assertIncludes(resultCardSource, "type DiffFilterMode = \"all\" | \"review\" | \"highRisk\" | \"failed\";", "Diff filters must keep high-risk as a compact first-class mode.", failures);
     assertNotIncludes(resultCardSource, "\"candidate\"", "Diff filters must not reintroduce the removed candidate mode.", failures);
     assertIncludes(resultCardSource, "Empty className=\"min-h-0 flex-1 border bg-background/70\"", "Diff empty state must use shadcn Empty.", failures);
     assertIncludes(resultCardSource, "overflow-auto whitespace-pre-wrap break-words", "Diff text panes must constrain and wrap long paragraph content.", failures);
@@ -196,6 +262,13 @@ function runRegression() {
     assertNotIncludes(resultCardSource, "T.adoptRejected", "Rejected candidate one-click adoption must stay removed.", failures);
     assertNotIncludes(resultCardSource, "T.highRiskCandidate", "Rejected candidate high-risk UI must stay removed.", failures);
     assertNotIncludes(resultCardSource, "candidateAdoptableCount", "Bulk candidate adoption state must stay removed.", failures);
+    assertIncludes(resultCardSource, "isHighRiskFailedOutputChunk", "Failed hard-validation outputs must keep a separate high-risk Diff state.", failures);
+    assertIncludes(resultCardSource, "flags.includes(\"targeted_rerun_fallback\")", "Targeted rerun hard-validation fallbacks must also surface as high-risk failed outputs.", failures);
+    assertIncludes(appSource, "flags.includes(\"targeted_rerun_fallback\")", "Home Diff counters must include targeted rerun hard-validation fallbacks as high risk.", failures);
+    assertIncludes(resultCardSource, "!highRiskChunkIdSet.has(chunk.chunkId)", "Ordinary needs-review counts must not double-count high-risk failed outputs.", failures);
+    assertIncludes(resultCardSource, "高风险 {highRiskChunkIds.length}", "Diff panel must expose a high-risk filter for failed model outputs.", failures);
+    assertIncludes(resultCardSource, "source: \"failed_output\"", "Adopting a failed hard-validation output must save it as a confirmed failed-output decision.", failures);
+    assertIncludes(resultCardSource, "确认采用后才会导出此改写", "High-risk failed outputs must warn that export changes only after confirmation.", failures);
     assertIncludes(resultCardSource, "function getChunkReviewReasons", "Needs-review chunks must render concise visible reasons.", failures);
     assertIncludes(resultCardSource, "forceNeedsReview={needsReview}", "Diff-level review state must drive the visible quality badge.", failures);
     assertNotIncludes(resultCardSource, "<AlertTitle>报错</AlertTitle>", "Ordinary user UI must not expose raw fallback errors.", failures);
@@ -264,6 +337,7 @@ function runRegression() {
     assertIncludes(webServiceSource, "/api/document-scope-diagnostics", "Web service must call the document-scope diagnostics API.", failures);
     assertIncludes(webServiceSource, "function formatHttpErrorMessage", "Web service must centralize HTTP error display text.", failures);
     assertIncludes(webServiceSource, "function isHtmlErrorPage", "Web service must detect HTML error pages returned by Flask or proxies.", failures);
+    assertIncludes(webServiceSource, "const MAX_REWRITE_CONCURRENCY = 8;", "Web service config merge must keep the 8-way rewrite concurrency ceiling.", failures);
     assertIncludes(webServiceSource, "buildUnavailableScopeDiagnostics", "Missing document-scope diagnostics endpoints must degrade without breaking document restore.", failures);
     assertIncludes(webServiceSource, "buildEmptyHistoryArtifactQueryResponse", "Missing history artifact endpoints must degrade without showing startup errors.", failures);
     assertIncludes(webServiceSource, "isEndpointCompatibilityError", "Web service must recognize old-backend 404/405 compatibility gaps.", failures);

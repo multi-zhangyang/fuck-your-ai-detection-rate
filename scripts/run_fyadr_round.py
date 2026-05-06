@@ -8,6 +8,7 @@ from typing import Callable, Sequence
 from chunking import DEFAULT_CHUNK_LIMIT
 from fyadr_round_service import build_prompt_input, get_prompt_mapping, load_prompt, normalize_prompt_profile, normalize_prompt_sequence, run_round
 from llm_client import llm_completion, read_api_config
+from prompt_library import get_default_prompt_profile, list_prompt_workflows
 
 
 def _build_api_transform(
@@ -31,6 +32,12 @@ def _build_api_transform(
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    default_prompt_profile = get_default_prompt_profile()
+    workflow_help = ", ".join(
+        f"{item['id']}={item['label']}"
+        for item in list_prompt_workflows()
+        if item.get("visible", True) or item.get("legacy", False)
+    )
     parser = argparse.ArgumentParser(description="Run one segmented FYADR round")
     parser.add_argument("doc_id", help="Document id, usually origin-relative path")
     parser.add_argument("round", type=int, help="Round number for the selected prompt profile")
@@ -38,8 +45,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("output_path", type=Path, help="Output text file path")
     parser.add_argument("manifest_path", type=Path, help="Manifest json output path")
     parser.add_argument("--chunk-limit", type=int, default=DEFAULT_CHUNK_LIMIT)
-    parser.add_argument("--prompt-profile", default="cn_custom", help="Prompt profile: cn_custom by default; legacy cn and cn_prewrite remain supported.")
-    parser.add_argument("--prompt-sequence", default="", help="Comma-separated custom prompt ids for cn_custom.")
+    parser.add_argument(
+        "--prompt-profile",
+        default=default_prompt_profile,
+        help=f"Prompt workflow id. Default: {default_prompt_profile}. Available: {workflow_help}.",
+    )
+    parser.add_argument("--prompt-sequence", default="", help="Comma-separated prompt ids for customizable workflows.")
     parser.add_argument("--score-total", type=int, default=None)
     parser.add_argument("--api-key", default=None, help="LLM API key. Defaults to FYADR_API_KEY or OPENAI_API_KEY.")
     parser.add_argument("--model", default=None, help="LLM model name. Defaults to FYADR_MODEL.")

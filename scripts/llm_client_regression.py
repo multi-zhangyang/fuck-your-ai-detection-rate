@@ -4,9 +4,10 @@ import json
 import sys
 from io import BytesIO
 from datetime import datetime, timezone
+from email.message import Message
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT_DIR / "scripts"
@@ -15,7 +16,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import llm_client  # noqa: E402
 from ai_json import extract_json_object  # noqa: E402
-from llm_client import extract_response_text, llm_completion, strip_reasoning_blocks, test_llm_connection  # noqa: E402
+from llm_client import LLMRequestError, extract_response_text, llm_completion, strip_reasoning_blocks, test_llm_connection  # noqa: E402
 
 DEFAULT_REPORT_PATH = ROOT_DIR / "finish" / "regression" / "llm_client_regression_report.json"
 
@@ -233,6 +234,163 @@ def run_regression(report_path: Path) -> dict[str, Any]:
     finally:
         llm_client.request.urlopen = original_urlopen
         llm_client._RESPONSES_TO_CHAT_FALLBACK_BASE_URLS.clear()
+
+    sleep_calls: list[float] = []
+    calls = []
+
+    retry_after_headers = Message()
+    retry_after_headers["Retry-After"] = "7"
+
+    def fake_rate_limit_urlopen(http_request: Any, timeout: int = 0) -> FakeResponse:
+        calls.append(str(http_request.full_url))
+        raise HTTPError(
+            str(http_request.full_url),
+            429,
+            "Too Many Requests",
+            hdrs=retry_after_headers,
+            fp=BytesIO(b'{"error":{"message":"slow down"}}'),
+        )
+
+    original_sleep = llm_client.time.sleep
+    try:
+        llm_client.request.urlopen = fake_rate_limit_urlopen
+        llm_client.time.sleep = lambda value: sleep_calls.append(float(value))
+        try:
+            llm_completion(
+                "ping",
+                model="deepseek-v4-pro",
+                api_key="redacted",
+                base_url="https://example.com/v1",
+                api_type="chat_completions",
+                max_retries=1,
+            )
+        except LLMRequestError as exc:
+            checks.append({"name": "rate_limit_error_is_structured", "error": exc.to_dict(), "sleepCalls": sleep_calls})
+            _assert_equal("rate_limit_category", exc.category, "rate_limit", failures)
+            _assert_equal("rate_limit_status", str(exc.status_code), "429", failures)
+            _assert_equal("rate_limit_attempts", str(exc.attempts), "2", failures)
+            _assert_equal("rate_limit_retryable", str(exc.retryable), "True", failures)
+            if not sleep_calls or sleep_calls[0] < 7:
+                failures.append(f"rate_limit should honor Retry-After sleep, got {sleep_calls}")
+            if not exc.cooldown_seconds or exc.cooldown_seconds < 7:
+                failures.append(f"rate_limit should expose cooldown seconds, got {exc.cooldown_seconds}")
+        else:
+            failures.append("rate_limit request should raise LLMRequestError")
+    finally:
+        llm_client.request.urlopen = original_urlopen
+        llm_client.time.sleep = original_sleep
+
+    calls = []
+    sleep_calls = []
+    retry_events: list[dict[str, object]] = []
+    original_sleep = llm_client.time.sleep
+    original_uniform = llm_client.random.uniform
+
+    def fake_retryable_server_urlopen(http_request: Any, timeout: int = 0) -> FakeResponse:
+        calls.append(str(http_request.full_url))
+        if len(calls) == 1:
+            raise HTTPError(
+                str(http_request.full_url),
+                500,
+                "Internal Server Error",
+                hdrs=None,
+                fp=BytesIO(b'{"error":{"message":"empty upstream response"}}'),
+            )
+        return FakeResponse({"choices": [{"message": {"content": "retry ok"}}]})
+
+    try:
+        llm_client.request.urlopen = fake_retryable_server_urlopen
+        llm_client.time.sleep = lambda value: sleep_calls.append(float(value))
+        llm_client.random.uniform = lambda low, high: high
+        retry_text = llm_completion(
+            "ping",
+            model="deepseek-v4-pro",
+            api_key="redacted",
+            base_url="https://example.com/v1",
+            api_type="chat_completions",
+            max_retries=1,
+            retry_backoff_seconds=2,
+            retry_callback=retry_events.append,
+        )
+        checks.append({"name": "server_retry_uses_jittered_backoff", "calls": calls, "sleepCalls": sleep_calls, "retryEvents": retry_events, "actual": retry_text})
+        _assert_equal("server_retry_text", retry_text, "retry ok", failures)
+        _assert_equal("server_retry_call_count", str(len(calls)), "2", failures)
+        _assert_equal("server_retry_event_count", str(len(retry_events)), "1", failures)
+        if retry_events and retry_events[0].get("statusCode") != 500:
+            failures.append(f"server retry event should include statusCode, got {retry_events}")
+        if not sleep_calls or sleep_calls[0] <= 2:
+            failures.append(f"server retry should add jitter above base backoff, got {sleep_calls}")
+        if sleep_calls and sleep_calls[0] > 2.7:
+            failures.append(f"server retry jitter should stay bounded, got {sleep_calls}")
+    finally:
+        llm_client.request.urlopen = original_urlopen
+        llm_client.time.sleep = original_sleep
+        llm_client.random.uniform = original_uniform
+
+    calls = []
+    sleep_calls = []
+    original_sleep = llm_client.time.sleep
+    original_uniform = llm_client.random.uniform
+
+    def fake_many_502_urlopen(http_request: Any, timeout: int = 0) -> FakeResponse:
+        calls.append(str(http_request.full_url))
+        if len(calls) <= 5:
+            raise HTTPError(
+                str(http_request.full_url),
+                502,
+                "Bad Gateway",
+                hdrs=None,
+                fp=BytesIO(b'{"error":{"message":"upstream empty"}}'),
+            )
+        return FakeResponse({"choices": [{"message": {"content": "late retry ok"}}]})
+
+    try:
+        llm_client.request.urlopen = fake_many_502_urlopen
+        llm_client.time.sleep = lambda value: sleep_calls.append(float(value))
+        llm_client.random.uniform = lambda low, high: low
+        late_retry_text = llm_completion(
+            "ping",
+            model="deepseek-v4-pro",
+            api_key="redacted",
+            base_url="https://example.com/v1",
+            api_type="chat_completions",
+            max_retries=6,
+            retry_backoff_seconds=5,
+        )
+        checks.append({"name": "server_retry_recovers_after_repeated_502", "calls": calls, "sleepCalls": sleep_calls, "actual": late_retry_text})
+        _assert_equal("server_late_retry_text", late_retry_text, "late retry ok", failures)
+        _assert_equal("server_late_retry_call_count", str(len(calls)), "6", failures)
+        if sleep_calls[:5] != [5.0, 10.0, 20.0, 40.0, 60.0]:
+            failures.append(f"server late retry should use bounded exponential backoff, got {sleep_calls}")
+    finally:
+        llm_client.request.urlopen = original_urlopen
+        llm_client.time.sleep = original_sleep
+        llm_client.random.uniform = original_uniform
+
+    def fake_timeout_urlopen(http_request: Any, timeout: int = 0) -> FakeResponse:
+        raise URLError(TimeoutError("timed out"))
+
+    try:
+        llm_client.request.urlopen = fake_timeout_urlopen
+        llm_client.time.sleep = lambda value: None
+        try:
+            llm_completion(
+                "ping",
+                model="deepseek-v4-pro",
+                api_key="redacted",
+                base_url="https://example.com/v1",
+                api_type="chat_completions",
+                max_retries=0,
+            )
+        except LLMRequestError as exc:
+            checks.append({"name": "timeout_error_is_structured", "error": exc.to_dict()})
+            _assert_equal("timeout_category", exc.category, "timeout", failures)
+            _assert_equal("timeout_retryable", str(exc.retryable), "True", failures)
+        else:
+            failures.append("timeout request should raise LLMRequestError")
+    finally:
+        llm_client.request.urlopen = original_urlopen
+        llm_client.time.sleep = original_sleep
 
     calls = []
     llm_client._RESPONSES_TO_CHAT_FALLBACK_BASE_URLS.clear()

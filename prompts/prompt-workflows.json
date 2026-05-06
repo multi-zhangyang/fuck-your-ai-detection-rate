@@ -1,0 +1,49 @@
+[
+  {
+    "id": "cn",
+    "label": "中文双轮",
+    "description": "兼容旧双轮记录。",
+    "defaultSequence": [
+      "round1",
+      "round2"
+    ],
+    "customizable": false,
+    "sequenceLimit": 2,
+    "roundLimit": 2,
+    "chunkMetric": "char",
+    "legacy": true,
+    "visible": false
+  },
+  {
+    "id": "cn_prewrite",
+    "label": "中文三轮流程",
+    "description": "兼容旧三轮记录。",
+    "defaultSequence": [
+      "prewrite",
+      "round1",
+      "round2"
+    ],
+    "customizable": false,
+    "sequenceLimit": 3,
+    "roundLimit": 3,
+    "chunkMetric": "char",
+    "legacy": true,
+    "visible": false
+  },
+  {
+    "id": "cn_custom",
+    "label": "自定义组合",
+    "description": "当前改写流程。",
+    "defaultSequence": [
+      "prewrite",
+      "round1",
+      "round2"
+    ],
+    "customizable": true,
+    "sequenceLimit": 3,
+    "roundLimit": 12,
+    "chunkMetric": "char",
+    "legacy": false,
+    "visible": true
+  }
+]

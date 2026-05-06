@@ -252,8 +252,8 @@ def _run_detection_rerun_chain_smoke(report: dict[str, Any], export_path: Path) 
         failures.append("targeted rerun prompt did not enter detector micro-repair mode")
     if not isinstance(detector_profile, dict) or int(detector_profile.get("segmentCount", 0) or 0) < 1:
         failures.append("targeted rerun did not persist a detector profile")
-    if isinstance(rerun_chunk, dict) and rerun_chunk.get("rerunCandidateCount") != 1:
-        failures.append(f"targeted detector rerun should stay single-candidate, got {rerun_chunk.get('rerunCandidateCount')}")
+    if isinstance(rerun_chunk, dict) and ("rerunCandidateCount" in rerun_chunk or "rerunSelectedCandidate" in rerun_chunk):
+        failures.append("targeted detector rerun should not emit legacy candidate metadata")
 
     post_rerun_export_path = export_path.with_name(f"{export_path.stem}_post_rerun{export_path.suffix}")
     post_export_result = app_service.export_round_output(str(output_path), str(post_rerun_export_path), "docx")

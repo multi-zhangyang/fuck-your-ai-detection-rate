@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -13,9 +14,11 @@ from docx_pipeline import (
     _load_docx_snapshot,
     ensure_docx_processing_assets,
 )
+from prompt_library import DEFAULT_PROMPT_PROFILE, LEGACY_PROMPT_PROFILE
 
 
-DOCX_BODY_MAP_VERSION = 1
+DOCX_BODY_MAP_VERSION = 2
+DOCX_BODY_MAP_SCOPE_SIGNATURE_VERSION = 1
 
 
 @dataclass
@@ -43,6 +46,7 @@ class DocxBodyMap:
     prompt_profile: str
     round_number: int | None
     editable_unit_count: int
+    scope_signature: dict[str, Any]
     units: list[DocxBodyMapUnit]
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,6 +60,7 @@ class DocxBodyMap:
             "prompt_profile": self.prompt_profile,
             "round_number": self.round_number,
             "editable_unit_count": self.editable_unit_count,
+            "scope_signature": self.scope_signature,
             "units": [unit.to_dict() for unit in self.units],
         }
 
@@ -67,7 +72,7 @@ def build_docx_body_map(
     source_path: Path,
     *,
     snapshot_path: Path | None = None,
-    prompt_profile: str = "cn",
+    prompt_profile: str = DEFAULT_PROMPT_PROFILE,
     round_number: int | None = None,
 ) -> DocxBodyMap:
     normalized_source_path = source_path.resolve()
@@ -87,9 +92,10 @@ def build_docx_body_map(
         source_mtime_ns=snapshot.source_mtime_ns,
         snapshot_path=str(resolved_snapshot_path.resolve()),
         snapshot_version=snapshot.version,
-        prompt_profile=str(prompt_profile or "cn").strip().lower() or "cn",
+        prompt_profile=str(prompt_profile or DEFAULT_PROMPT_PROFILE).strip().lower() or DEFAULT_PROMPT_PROFILE,
         round_number=round_number,
         editable_unit_count=len(units),
+        scope_signature=_build_scope_signature(units),
         units=units,
     )
 
@@ -128,9 +134,10 @@ def load_docx_body_map(path: Path) -> DocxBodyMap | None:
         source_mtime_ns=int(data.get("source_mtime_ns", 0)),
         snapshot_path=str(data.get("snapshot_path", "")),
         snapshot_version=int(data.get("snapshot_version", 0)),
-        prompt_profile=str(data.get("prompt_profile", "cn") or "cn").strip().lower() or "cn",
+        prompt_profile=str(data.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() or LEGACY_PROMPT_PROFILE,
         round_number=_as_optional_int(data.get("round_number")),
         editable_unit_count=int(data.get("editable_unit_count", len(units))),
+        scope_signature=dict(data.get("scope_signature", {})) if isinstance(data.get("scope_signature"), dict) else {},
         units=units,
     )
 
@@ -151,6 +158,7 @@ def retag_docx_body_map(body_map: DocxBodyMap, *, prompt_profile: str, round_num
         prompt_profile=str(prompt_profile or body_map.prompt_profile).strip().lower() or body_map.prompt_profile,
         round_number=round_number,
         editable_unit_count=body_map.editable_unit_count,
+        scope_signature=dict(body_map.scope_signature),
         units=[
             DocxBodyMapUnit(
                 unit_id=unit.unit_id,
@@ -202,6 +210,7 @@ def update_docx_body_map_texts(
         prompt_profile=body_map.prompt_profile,
         round_number=round_number if round_number is not None else body_map.round_number,
         editable_unit_count=body_map.editable_unit_count,
+        scope_signature=dict(body_map.scope_signature) if body_map.scope_signature else _build_scope_signature(updated_units),
         units=updated_units,
     )
 
@@ -250,6 +259,12 @@ def validate_docx_body_map(
                     "message": f"Expected {expected_unit_count} editable units, got {len(body_map.units)}.",
                 }
             )
+        _validate_scope_signature(
+            body_map,
+            snapshot_editable_units=snapshot.editable_units(),
+            blocking_issues=blocking_issues,
+            warnings=warnings,
+        )
 
     for unit in body_map.units:
         if str(unit.target.get("kind", "")) != "paragraph":
@@ -289,6 +304,8 @@ def validate_docx_body_map(
         "promptProfile": body_map.prompt_profile,
         "round": body_map.round_number,
         "editableUnitCount": len(body_map.units),
+        "scopeSignaturePresent": bool(body_map.scope_signature),
+        "scopeFingerprint": str(body_map.scope_signature.get("fingerprint", "")) if isinstance(body_map.scope_signature, dict) else "",
         "blockingIssues": blocking_issues,
         "warnings": warnings,
     }
@@ -297,6 +314,48 @@ def validate_docx_body_map(
 def save_docx_body_map_validation(report: dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _validate_scope_signature(
+    body_map: DocxBodyMap,
+    *,
+    snapshot_editable_units: Sequence[DocxTextUnit],
+    blocking_issues: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+) -> None:
+    if not body_map.scope_signature:
+        warnings.append(
+            {
+                "code": "legacy_body_map_without_scope_signature",
+                "message": "This DOCX body map was created before frozen scope signatures were introduced.",
+            }
+        )
+        return
+
+    body_map_signature = _build_scope_signature(body_map.units)
+    expected_signature = _build_scope_signature(snapshot_editable_units)
+    stored_fingerprint = str(body_map.scope_signature.get("fingerprint", ""))
+    actual_fingerprint = str(body_map_signature.get("fingerprint", ""))
+    expected_fingerprint = str(expected_signature.get("fingerprint", ""))
+
+    if stored_fingerprint != actual_fingerprint:
+        blocking_issues.append(
+            {
+                "code": "body_map_scope_signature_mismatch",
+                "message": "The DOCX body map unit targets no longer match its frozen editable-scope signature.",
+                "storedFingerprint": stored_fingerprint,
+                "actualFingerprint": actual_fingerprint,
+            }
+        )
+    if stored_fingerprint != expected_fingerprint:
+        warnings.append(
+            {
+                "code": "snapshot_scope_signature_drift",
+                "message": "The current DOCX editable-scope signature differs from this round's frozen body map; export will rely on frozen paragraph targets.",
+                "storedFingerprint": stored_fingerprint,
+                "currentSnapshotFingerprint": expected_fingerprint,
+            }
+        )
 
 
 def _build_body_map_unit(text_unit: DocxTextUnit) -> DocxBodyMapUnit:
@@ -309,6 +368,35 @@ def _build_body_map_unit(text_unit: DocxTextUnit) -> DocxBodyMapUnit:
         current_text=text_unit.text,
         language=detect_chunk_language(text_unit.text),
     )
+
+
+def _build_scope_signature(units: Sequence[Any]) -> dict[str, Any]:
+    unit_indexes: list[int] = []
+    target_keys: list[str] = []
+    text_hashes: list[str] = []
+    style_names: list[str] = []
+    for unit in units:
+        unit_indexes.append(int(getattr(unit, "unit_index", len(unit_indexes))))
+        target = getattr(unit, "target", {})
+        target_keys.append(json.dumps(target if isinstance(target, dict) else {}, ensure_ascii=False, sort_keys=True))
+        original_text = str(getattr(unit, "original_text", getattr(unit, "text", "")))
+        text_hashes.append(hashlib.sha256(original_text.encode("utf-8")).hexdigest()[:16])
+        style_names.append(str(getattr(unit, "style_name", "")))
+
+    payload = {
+        "version": DOCX_BODY_MAP_SCOPE_SIGNATURE_VERSION,
+        "editableUnitCount": len(unit_indexes),
+        "startUnitIndex": unit_indexes[0] if unit_indexes else None,
+        "endUnitIndex": unit_indexes[-1] if unit_indexes else None,
+        "unitIndexes": unit_indexes,
+        "targetKeys": target_keys,
+        "originalTextHashes": text_hashes,
+        "styleNames": style_names,
+    }
+    payload["fingerprint"] = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+    return payload
 
 
 def _as_optional_int(value: Any) -> int | None:

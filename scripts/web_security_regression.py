@@ -111,7 +111,7 @@ def run_regression() -> dict[str, object]:
             _assert(blocked.status_code == 400, "read-output should reject paths outside the workspace allowlist")
             checks.append("read-output rejects outside paths")
 
-            prompt_preview = client.get("/api/read-output?outputPath=prompts/fyadr-cn-round1.md&maxChars=20")
+            prompt_preview = client.get("/api/read-output?outputPath=prompts/rewrite-pass-1.md&maxChars=20")
             _assert(prompt_preview.status_code == 200, "read-output should still allow prompt previews")
             checks.append("read-output still allows prompt previews")
 

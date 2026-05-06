@@ -42,7 +42,7 @@ def main() -> int:
     )
 
     if output_path.read_text(encoding="utf-8") != source_text:
-        raise AssertionError("validation fallback must keep source text when all candidates fail")
+        raise AssertionError("validation fallback must keep source text when all attempts fail")
     if len(prompts) != MAX_VALIDATION_ATTEMPTS:
         raise AssertionError(f"expected {MAX_VALIDATION_ATTEMPTS} validation attempts, got {len(prompts)}")
     if "[RETRY NOTE]" not in prompts[-1]:
@@ -59,9 +59,9 @@ def main() -> int:
         raise AssertionError("fallback chunk must expose fallbackMode=source")
     if "source_fallback" not in (quality.get("flags") or []):
         raise AssertionError("fallback chunk must be marked with source_fallback flag")
-    rejected_candidates = chunk.get("rejectedCandidates") or []
-    if not rejected_candidates or rejected_candidates[-1].get("outputText") != "错误输出":
-        raise AssertionError("fallback chunk must expose rejected model candidates for manual review")
+    failed_attempts = chunk.get("failedAttempts") or []
+    if not failed_attempts or failed_attempts[-1].get("outputText") != "错误输出":
+        raise AssertionError("fallback chunk must expose failed model outputs for manual review")
     if not quality.get("needsReview"):
         raise AssertionError("fallback chunk must require review")
     if compare.get("qualitySummary", {}).get("sourceFallbackCount") != 1:

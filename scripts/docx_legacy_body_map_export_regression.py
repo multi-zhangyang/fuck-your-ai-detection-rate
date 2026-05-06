@@ -105,7 +105,7 @@ def main() -> int:
         "rounds": [
             {
                 "round": 1,
-                "prompt": "prompts/fyadr-cn-classical.md",
+                "prompt": "prompts/classical-rewrite.md",
                 "prompt_profile": "cn_custom",
                 "prompt_sequence": ["classical"],
                 "input_path": str(SOURCE_PATH.relative_to(ROOT_DIR)).replace("\\", "/"),

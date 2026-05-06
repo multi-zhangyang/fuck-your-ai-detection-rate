@@ -12,7 +12,13 @@ SCRIPTS_DIR = ROOT_DIR / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from detection_report_parser import PAPERPASS_PROVIDER, SPEEDAI_PROVIDER, parse_detection_report_pdf  # noqa: E402
+from detection_report_parser import (  # noqa: E402
+    PAPERPASS_PROVIDER,
+    SPEEDAI_PROVIDER,
+    _build_match_text,
+    _normalize_segment_content,
+    parse_detection_report_pdf,
+)
 
 DEFAULT_REPORT_PATH = ROOT_DIR / "finish" / "regression" / "detection_report_regression_report.json"
 DEFAULT_CASES = [
@@ -67,10 +73,26 @@ def _validate_payload(payload: dict[str, Any], case: dict[str, Any]) -> list[str
     return failures
 
 
+def _validate_normalization_helpers() -> list[str]:
+    failures: list[str] = []
+    normalized = _normalize_segment_content(
+        "XG Boost uses SH AP explanations, F1 - Score metrics, Random Forest baselines, and AI System labels."
+    )
+    expected_fragments = ["XGBoost", "SHAP", "F1-Score", "Random Forest", "AI System"]
+    for fragment in expected_fragments:
+        if fragment not in normalized:
+            failures.append(f"normalizer should preserve or repair {fragment!r}; got {normalized!r}")
+    match_text = _build_match_text("Str eamlit and Stream lit are still compacted for matching")
+    if "streamlit" not in match_text:
+        failures.append(f"matchText should remain compact across report OCR spaces; got {match_text!r}")
+    return failures
+
+
 def run_regression(report_path: Path, *, strict_missing: bool = False) -> dict[str, Any]:
     failures: list[str] = []
     cases: list[dict[str, Any]] = []
     skipped: list[str] = []
+    failures.extend(_validate_normalization_helpers())
 
     for case in DEFAULT_CASES:
         pdf_path = Path(case["path"])

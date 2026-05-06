@@ -424,12 +424,17 @@ def rebuild_docx_from_body_map_units(
         target = getattr(unit, "target", None)
         if not isinstance(target, dict):
             raise ValueError("DOCX body map contains an invalid target.")
+        if str(target.get("kind", "")) != "paragraph":
+            raise ValueError("DOCX body map export may only rewrite top-level body paragraphs.")
         target_key = json.dumps(target, ensure_ascii=False, sort_keys=True)
         if target_key in seen_targets:
             raise ValueError(f"DOCX body map contains a duplicate target: {target}")
         seen_targets.add(target_key)
+        current_text = str(getattr(unit, "current_text", ""))
+        if "\n" in current_text or "\r" in current_text:
+            raise ValueError("DOCX body map export rejected a rewritten paragraph containing inline line breaks.")
         paragraph = _resolve_target_paragraph(document, target)
-        _replace_paragraph_text(paragraph, str(getattr(unit, "current_text", "")))
+        _replace_paragraph_text(paragraph, current_text)
         _polish_rewritten_paragraph(paragraph)
 
     export_path.parent.mkdir(parents=True, exist_ok=True)

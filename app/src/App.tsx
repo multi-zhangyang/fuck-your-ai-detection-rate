@@ -11,6 +11,7 @@ import {
   Home,
   BarChart3,
   Loader2,
+  Plus,
   RefreshCw,
   Route,
   Save,
@@ -68,11 +69,29 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Textarea } from "@/components/ui/textarea";
 import { useAppState } from "@/hooks/useAppState";
 import type { AppService } from "@/lib/appService";
+import {
+  DEFAULT_PROMPT_SEQUENCE,
+  formatPromptSequence,
+  getDefaultPromptProfile,
+  getPromptFlowSequence,
+  getPromptLabel,
+  getPromptOptionsFromPreviews,
+  getPromptOption,
+  getPromptProfileLabel,
+  getPromptSequenceLimit,
+  getPromptWorkflowsFromPreviews,
+  getRoundModelKey,
+  isPromptSequenceCustomizable,
+  normalizePromptId,
+  normalizePromptProfile,
+  normalizePromptSequence,
+} from "@/lib/promptRegistry";
 import { getTaskPhaseLabel, isTaskBlocking, isTaskRunningPhase, type TaskPhase } from "@/lib/taskState";
 import { cn } from "@/lib/utils";
-import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExportResult, FormatParserModelRoute, FormatRules, HistoryArtifactGovernanceMode, HistoryArtifactQueryFilters, HistoryArtifactQueryResponse, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptId, PromptPreviewResponse, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
+import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExportResult, FormatParserModelRoute, FormatRules, HistoryArtifactGovernanceMode, HistoryArtifactQueryFilters, HistoryArtifactQueryResponse, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptDeleteResult, PromptId, PromptOption, PromptPreviewResponse, PromptSaveResult, PromptWorkflow, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -100,6 +119,14 @@ const BATCH_RERUN_POLL_INTERVAL_MS = 1200;
 const AUTO_RUN_RETRY_DELAY_SECONDS = 10;
 const AUTO_RUN_RETRY_MAX_ATTEMPTS = 3;
 const AUTO_NEXT_ROUND_DELAY_SECONDS = 60;
+const MAX_REWRITE_CONCURRENCY = 8;
+const REWRITE_CONCURRENCY_LEVELS = [1, 2, 3, 4, 6, 8] as const;
+
+function normalizeRewriteConcurrency(value: unknown, fallback = 2): number {
+  const fallbackValue = Number(fallback) || 2;
+  const normalized = Number(value);
+  return Math.max(1, Math.min(MAX_REWRITE_CONCURRENCY, Number.isFinite(normalized) && normalized > 0 ? normalized : fallbackValue));
+}
 
 type Props = {
   service: AppService;
@@ -111,7 +138,7 @@ const WORKBENCH_NAV_ITEMS = [
   { view: "home", label: "工作台", icon: Home },
   { view: "quality", label: "改写检查", icon: BarChart3 },
   { view: "model", label: "模型配置", icon: Settings },
-  { view: "prompts", label: "提示词预览", icon: FileText },
+  { view: "prompts", label: "提示词", icon: FileText },
   { view: "format", label: "学校规范", icon: SlidersHorizontal },
   { view: "protection", label: "保护区地图", icon: ShieldCheck },
   { view: "history", label: "历史记录", icon: History },
@@ -211,6 +238,12 @@ type RuntimeTaskCenterItem = {
   cancelLabel?: string;
   onCancel?: () => void;
 };
+type RoundResetTarget = {
+  round: number;
+  mode: "checkpoint" | "completed";
+};
+
+const LOADING_ICON_CLASS_NAME = "animate-spin text-success";
 type ConfirmDialogTone = "neutral" | "info" | "warning" | "danger";
 type ConfirmDialogOptions = {
   title: string;
@@ -232,6 +265,7 @@ type StoredDetectionReport = {
 type DiffDashboardStats = {
   chunkCount: number;
   reviewCount: number;
+  highRiskCount: number;
   failedCount: number;
   preferredFilter: DiffFilterMode;
   preferredChunkId?: string;
@@ -240,66 +274,43 @@ type DiffFailureLike = {
   chunkId: string;
 };
 
-const PROMPT_OPTIONS: Array<{ id: PromptId; label: string }> = [
-  { id: "prewrite", label: "预改写" },
-  { id: "classical", label: "经典改写" },
-  { id: "round1", label: "一轮" },
-  { id: "round2", label: "二轮" },
-];
-
-const DEFAULT_PROMPT_SEQUENCE: PromptId[] = ["prewrite", "round1", "round2"];
-const ACTIVE_PROMPT_PROFILE: ModelConfig["promptProfile"] = "cn_custom";
-
-function normalizePromptSequence(value: unknown): PromptId[] {
-  const rawItems = Array.isArray(value) ? value : [];
-  const normalized = rawItems.filter((item): item is PromptId => PROMPT_OPTIONS.some((option) => option.id === item));
-  return normalized.length ? normalized.slice(0, 3) : DEFAULT_PROMPT_SEQUENCE;
+function normalizeStoredPromptSequence(value: unknown): PromptId[] {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => normalizePromptId(item))
+    .filter((item): item is PromptId => item !== null);
 }
 
 function readStoredPromptSequence(): PromptId[] {
   try {
-    return normalizePromptSequence(JSON.parse(localStorage.getItem(ACTIVE_PROMPT_SEQUENCE_KEY) || "[]"));
+    const stored = normalizeStoredPromptSequence(JSON.parse(localStorage.getItem(ACTIVE_PROMPT_SEQUENCE_KEY) || "[]"));
+    return stored.length ? stored : DEFAULT_PROMPT_SEQUENCE;
   } catch {
     return DEFAULT_PROMPT_SEQUENCE;
   }
 }
 
-function promptSequencesEqual(left: PromptId[] | undefined, right: PromptId[] | undefined): boolean {
-  const a = normalizePromptSequence(left);
-  const b = normalizePromptSequence(right);
+function promptSequencesEqual(
+  left: PromptId[] | undefined,
+  right: PromptId[] | undefined,
+  options?: PromptOption[],
+  promptProfile?: ModelConfig["promptProfile"],
+  workflows?: PromptWorkflow[],
+): boolean {
+  const a = normalizePromptSequence(left, options, promptProfile, workflows);
+  const b = normalizePromptSequence(right, options, promptProfile, workflows);
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
-function normalizeActiveModelConfig(config: ModelConfig): ModelConfig {
-  const promptSequence = normalizePromptSequence(config.promptSequence);
+function normalizeActiveModelConfig(config: ModelConfig, options?: PromptOption[], workflows?: PromptWorkflow[]): ModelConfig {
+  const promptProfile = normalizePromptProfile(config.promptProfile, workflows) ?? getDefaultPromptProfile(workflows);
+  const promptSequence = normalizePromptSequence(config.promptSequence, options, promptProfile, workflows);
   if (
-    config.promptProfile === ACTIVE_PROMPT_PROFILE
-    && promptSequencesEqual(config.promptSequence, promptSequence)
+    config.promptProfile === promptProfile
+    && promptSequencesEqual(config.promptSequence, promptSequence, options, promptProfile, workflows)
   ) {
     return config;
   }
-  return { ...config, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence };
-}
-
-function formatPromptSequence(sequence: PromptId[] | undefined): string {
-  const normalized = normalizePromptSequence(sequence);
-  return normalized.map((id) => PROMPT_OPTIONS.find((option) => option.id === id)?.label ?? id).join(" → ");
-}
-
-function getRoundModelKey(promptProfile: ModelConfig["promptProfile"], round?: number | null): string | null {
-  if (!round || round < 1 || round > 3) {
-    return null;
-  }
-  if (promptProfile === "cn" && round > 2) {
-    return null;
-  }
-  return `${promptProfile}:${round}`;
-}
-
-function getPromptFlowSequence(promptProfile: ModelConfig["promptProfile"], promptSequence?: PromptId[]): PromptId[] {
-  if (promptProfile === "cn_prewrite") return DEFAULT_PROMPT_SEQUENCE;
-  if (promptProfile === "cn") return ["round1", "round2"];
-  return normalizePromptSequence(promptSequence);
+  return { ...config, promptProfile, promptSequence };
 }
 
 function buildRoundModelFromProvider(provider: ModelProviderConfig, model: string, fallback: ModelConfig): RoundModelConfig {
@@ -361,14 +372,21 @@ function buildQualityStats(compareData: RoundCompareData | null, exportResult: E
   };
 }
 
-function buildCurrentRunAudit(roundResult: RoundResult | null, compareData: RoundCompareData | null, modelConfig: ModelConfig): RunAuditSummary {
+function buildCurrentRunAudit(
+  roundResult: RoundResult | null,
+  compareData: RoundCompareData | null,
+  modelConfig: ModelConfig,
+  promptOptions?: PromptOption[],
+  promptWorkflows?: PromptWorkflow[],
+): RunAuditSummary {
   const qualitySummary = (roundResult?.qualitySummary ?? compareData?.qualitySummary ?? {}) as NonNullable<RoundResult["qualitySummary"]>;
   const paragraphSplitSummary = compareData?.paragraphSplitSummary ?? qualitySummary.paragraphSplitSummary;
   const chunkCount = compareData?.chunkCount ?? qualitySummary.paragraphSplitSummary?.chunkCount ?? roundResult?.inputSegmentCount ?? null;
+  const promptProfile = compareData?.promptProfile ?? modelConfig.promptProfile;
   return {
     ...(roundResult?.runAudit ?? {}),
-    promptProfile: compareData?.promptProfile ?? modelConfig.promptProfile,
-    promptSequence: normalizePromptSequence(compareData?.promptSequence ?? modelConfig.promptSequence),
+    promptProfile,
+    promptSequence: normalizePromptSequence(compareData?.promptSequence ?? modelConfig.promptSequence, promptOptions, promptProfile, promptWorkflows),
     estimatedApiCalls: qualitySummary.estimatedApiCalls ?? chunkCount,
     chunkCount,
     paragraphCount: compareData?.paragraphCount ?? qualitySummary.paragraphSplitSummary?.paragraphCount ?? roundResult?.paragraphCount ?? null,
@@ -456,6 +474,18 @@ function normalizeDetectionDocumentKey(value: string | null | undefined): string
 function getAutoRunScopeKey(sourcePath: string, config: Pick<ModelConfig, "promptProfile" | "promptSequence">, round: number): string {
   const promptSequence = (config.promptSequence ?? []).join(">");
   return [normalizeDetectionDocumentKey(sourcePath), config.promptProfile, promptSequence, round].join("::");
+}
+
+function getAutoRunScopeKeyForStatus(
+  status: Pick<DocumentStatus, "sourcePath" | "promptProfile" | "promptSequence">,
+  config: Pick<ModelConfig, "promptProfile" | "promptSequence">,
+  round: number,
+  promptOptions?: PromptOption[],
+  promptWorkflows?: PromptWorkflow[],
+): string {
+  const promptProfile = status.promptProfile ?? config.promptProfile;
+  const promptSequence = normalizePromptSequence(status.promptSequence ?? config.promptSequence, promptOptions, promptProfile, promptWorkflows);
+  return getAutoRunScopeKey(status.sourcePath, { promptProfile, promptSequence }, round);
 }
 
 function isCountdownAutoAction(action: PendingAutoAction | null): action is PendingAutoRetryAction | PendingAutoNextRoundAction {
@@ -569,19 +599,33 @@ function compareDataMatchesDocument(compareData: RoundCompareData | null, docume
   }
   const compareDocKey = normalizeDetectionDocumentKey(compareData.docId);
   const documentDocKey = normalizeDetectionDocumentKey(document.docId);
-  if (compareDocKey && documentDocKey) {
-    return compareDocKey === documentDocKey;
+  if (compareDocKey && documentDocKey && compareDocKey === documentDocKey) {
+    return true;
   }
   const sourceKey = normalizeDetectionDocumentKey(document.sourcePath);
   const inputKey = normalizeDetectionDocumentKey(compareData.inputPath);
   const outputKey = normalizeDetectionDocumentKey(compareData.outputPath);
-  return Boolean(sourceKey && (documentRefsMatch(sourceKey, inputKey) || documentRefsMatch(sourceKey, outputKey)));
+  const currentInputKey = normalizeDetectionDocumentKey(document.currentInputPath);
+  const currentOutputKey = normalizeDetectionDocumentKey(document.currentOutputPath);
+  const latestOutputKey = normalizeDetectionDocumentKey(document.latestOutputPath);
+  return Boolean(
+    (sourceKey && (documentRefsMatch(sourceKey, inputKey) || documentRefsMatch(sourceKey, outputKey)))
+    || (currentInputKey && documentRefsMatch(currentInputKey, inputKey))
+    || (currentOutputKey && documentRefsMatch(currentOutputKey, outputKey))
+    || (latestOutputKey && documentRefsMatch(latestOutputKey, outputKey))
+  );
 }
 
-function persistActiveDocument(sourcePath: string, promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[] = DEFAULT_PROMPT_SEQUENCE) {
+function persistActiveDocument(
+  sourcePath: string,
+  promptProfile: ModelConfig["promptProfile"],
+  promptSequence: PromptId[] = DEFAULT_PROMPT_SEQUENCE,
+  promptOptions?: PromptOption[],
+  promptWorkflows?: PromptWorkflow[],
+) {
   localStorage.setItem(ACTIVE_DOCUMENT_KEY, sourcePath);
   localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, promptProfile);
-  localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(normalizePromptSequence(promptSequence)));
+  localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(normalizePromptSequence(promptSequence, promptOptions, promptProfile, promptWorkflows)));
 }
 
 function readAutoSnapshotSuppression(): AutoSnapshotSuppression | null {
@@ -591,15 +635,16 @@ function readAutoSnapshotSuppression(): AutoSnapshotSuppression | null {
       return null;
     }
     const parsed = JSON.parse(raw) as Partial<AutoSnapshotSuppression>;
-    if (!parsed.sourcePath || !isPromptProfile(parsed.promptProfile)) {
+    const promptProfile = String(parsed.promptProfile ?? "").trim().toLowerCase();
+    if (!parsed.sourcePath || !promptProfile) {
       localStorage.removeItem(AUTO_SNAPSHOT_SUPPRESSION_KEY);
       return null;
     }
     return {
       sourcePath: parsed.sourcePath,
       docId: parsed.docId ?? "",
-      promptProfile: parsed.promptProfile,
-      promptSequence: normalizePromptSequence(parsed.promptSequence),
+      promptProfile,
+      promptSequence: normalizeStoredPromptSequence(parsed.promptSequence),
       round: typeof parsed.round === "number" ? parsed.round : null,
       createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : "",
     };
@@ -609,12 +654,18 @@ function readAutoSnapshotSuppression(): AutoSnapshotSuppression | null {
   }
 }
 
-function suppressAutoSnapshotRestore(status: DocumentStatus, config: ModelConfig, round: number | null) {
+function suppressAutoSnapshotRestore(
+  status: DocumentStatus,
+  config: ModelConfig,
+  round: number | null,
+  promptOptions?: PromptOption[],
+  promptWorkflows?: PromptWorkflow[],
+) {
   const payload: AutoSnapshotSuppression = {
     sourcePath: status.sourcePath,
     docId: status.docId,
     promptProfile: config.promptProfile,
-    promptSequence: normalizePromptSequence(config.promptSequence),
+    promptSequence: normalizePromptSequence(config.promptSequence, promptOptions, config.promptProfile, promptWorkflows),
     round,
     createdAt: new Date().toISOString(),
   };
@@ -625,14 +676,19 @@ function clearAutoSnapshotSuppression() {
   localStorage.removeItem(AUTO_SNAPSHOT_SUPPRESSION_KEY);
 }
 
-function shouldSuppressAutoSnapshotRestore(status: DocumentStatus, config: ModelConfig): boolean {
+function shouldSuppressAutoSnapshotRestore(
+  status: DocumentStatus,
+  config: ModelConfig,
+  promptOptions?: PromptOption[],
+  promptWorkflows?: PromptWorkflow[],
+): boolean {
   const suppression = readAutoSnapshotSuppression();
   if (!suppression) {
     return false;
   }
   return (
     suppression.promptProfile === config.promptProfile
-    && promptSequencesEqual(suppression.promptSequence, config.promptSequence)
+    && promptSequencesEqual(suppression.promptSequence, config.promptSequence, promptOptions, config.promptProfile, promptWorkflows)
     && (
       documentRefsMatch(suppression.sourcePath, status.sourcePath)
       || documentRefsMatch(suppression.docId, status.docId)
@@ -660,9 +716,24 @@ function groupDetectionMatchesByChunk(matches: DetectionReportMatch[]): Record<s
 function isReviewDecisionResolved(decision?: ReviewDecision): boolean {
   if (!decision) return false;
   if (typeof decision === "object") {
-    return decision.source === "rejected_candidate" ? decision.confirmed === true : true;
+    return isFailedOutputDecision(decision) ? decision.confirmed === true : true;
   }
   return decision === "rewrite_confirmed" || decision === "source_confirmed";
+}
+
+function isFailedOutputDecision(decision: ReviewDecision): boolean {
+  return typeof decision === "object" && decision.source === "failed_output";
+}
+
+function isHighRiskFailedOutputChunk(chunk: RoundCompareData["chunks"][number]): boolean {
+  const flags = chunk.quality?.flags ?? [];
+  const hasFailedOutput = (chunk.failedAttempts ?? []).some((attempt) => typeof attempt?.outputText === "string" && attempt.outputText.trim());
+  const hasHardValidationFallback = chunk.fallbackMode === "source"
+    || flags.includes("source_fallback")
+    || flags.includes("targeted_rerun_fallback")
+    || chunk.rerunStatus === "fallback"
+    || Boolean(chunk.rerunFallbackMode);
+  return Boolean(hasFailedOutput && hasHardValidationFallback);
 }
 
 function buildDiffDashboardStats(
@@ -675,31 +746,48 @@ function buildDiffDashboardStats(
     return {
       chunkCount: 0,
       reviewCount: 0,
+      highRiskCount: 0,
       failedCount: 0,
       preferredFilter: "all",
     };
   }
-  const failureByChunk = new Map(failures.map((failure) => [failure.chunkId, failure]));
+  const failedChunkIds = failures.filter((failure) => !isReviewDecisionResolved(reviewDecisions[failure.chunkId])).map((failure) => failure.chunkId);
+  const failedChunkIdSet = new Set(failedChunkIds);
+  const highRiskChunkIds = compareData.chunks
+    .filter((chunk) => !failedChunkIdSet.has(chunk.chunkId) && isHighRiskFailedOutputChunk(chunk) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]))
+    .map((chunk) => chunk.chunkId);
+  const highRiskChunkIdSet = new Set(highRiskChunkIds);
   const reviewChunkIds = compareData.chunks
     .filter((chunk) => {
       const flags = chunk.quality?.flags ?? [];
       const reportMatches = matchesByChunk[chunk.chunkId] ?? [];
-      return !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]) && (Boolean(chunk.quality?.needsReview)
+      return !failedChunkIdSet.has(chunk.chunkId) && !highRiskChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]) && (Boolean(chunk.quality?.needsReview)
         || chunk.fallbackMode === "source"
         || flags.includes("source_fallback")
-        || failureByChunk.has(chunk.chunkId)
         || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review"));
     })
     .map((chunk) => chunk.chunkId);
-  const failedChunkIds = failures.filter((failure) => !isReviewDecisionResolved(reviewDecisions[failure.chunkId])).map((failure) => failure.chunkId);
-  const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : reviewChunkIds.length ? "review" : "all";
+  const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : highRiskChunkIds.length ? "highRisk" : reviewChunkIds.length ? "review" : "all";
   return {
     chunkCount: compareData.chunkCount ?? compareData.chunks.length,
     reviewCount: reviewChunkIds.length,
+    highRiskCount: highRiskChunkIds.length,
     failedCount: failedChunkIds.length,
     preferredFilter,
-    preferredChunkId: failedChunkIds[0] ?? reviewChunkIds[0],
+    preferredChunkId: failedChunkIds[0] ?? highRiskChunkIds[0] ?? reviewChunkIds[0],
   };
+}
+
+function formatDiffDashboardLabel(stats: DiffDashboardStats): string {
+  if (!stats.chunkCount) {
+    return "未生成";
+  }
+  const parts = [`${stats.chunkCount} 块`];
+  if (stats.reviewCount) parts.push(`${stats.reviewCount} 需处理`);
+  if (stats.highRiskCount) parts.push(`${stats.highRiskCount} 高风险`);
+  if (stats.failedCount) parts.push(`${stats.failedCount} 失败`);
+  if (parts.length === 1) parts.push("已稳定");
+  return parts.join(" · ");
 }
 
 function getRiskyDetectionMatches(matches: DetectionReportMatch[]): DetectionReportMatch[] {
@@ -838,6 +926,7 @@ function buildRoundResultFromBatchRerunResult(result: BatchRerunResult, current:
 type BatchRerunFailure = {
   chunkId: string;
   error: string;
+  failedAttempts?: RoundCompareData["chunks"][number]["failedAttempts"];
   rerunStatus?: string;
   rerunFallbackMode?: string;
   rerunFallbackError?: string;
@@ -856,7 +945,9 @@ function extractRerunFailureExtras(error: unknown): Partial<BatchRerunFailure> {
     return {};
   }
   const quality = asPlainRecord(failure.quality) as BatchRerunFailure["quality"] | null;
+  const failedAttempts = Array.isArray(failure.failedAttempts) ? failure.failedAttempts as BatchRerunFailure["failedAttempts"] : undefined;
   return {
+    ...(failedAttempts ? { failedAttempts } : {}),
     ...(typeof failure.rerunStatus === "string" ? { rerunStatus: failure.rerunStatus } : {}),
     ...(typeof failure.rerunFallbackMode === "string" ? { rerunFallbackMode: failure.rerunFallbackMode } : {}),
     ...(typeof failure.rerunFallbackError === "string" ? { rerunFallbackError: failure.rerunFallbackError } : {}),
@@ -903,8 +994,8 @@ function formatBatchRerunSummary(actionLabel: string, successCount: number, tota
   return `${actionLabel}全部失败：${formatBatchRerunFailures(failures)}。`;
 }
 
-function isPromptProfile(value: unknown): value is ModelConfig["promptProfile"] {
-  return value === "cn" || value === "cn_prewrite" || value === "cn_custom";
+function isPromptProfile(value: unknown, workflows?: PromptWorkflow[]): value is ModelConfig["promptProfile"] {
+  return Boolean(normalizePromptProfile(value, workflows));
 }
 
 function normalizeDocumentRef(value: string | null | undefined): string {
@@ -950,14 +1041,20 @@ function sortHistoryRounds(rounds: HistoryRound[], strategy: "round" | "timestam
     });
 }
 
-function historyRoundMatchesPrompt(roundItem: HistoryRound, promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[]): boolean {
+function historyRoundMatchesPrompt(
+  roundItem: HistoryRound,
+  promptProfile: ModelConfig["promptProfile"],
+  promptSequence: PromptId[],
+  promptOptions?: PromptOption[],
+  promptWorkflows?: PromptWorkflow[],
+): boolean {
   if ((roundItem.promptProfile || "cn") !== promptProfile) {
     return false;
   }
-  if (promptProfile !== "cn_custom") {
+  if (!isPromptSequenceCustomizable(promptProfile, promptWorkflows)) {
     return true;
   }
-  return promptSequencesEqual(roundItem.promptSequence, promptSequence);
+  return promptSequencesEqual(roundItem.promptSequence, promptSequence, promptOptions, promptProfile, promptWorkflows);
 }
 
 function getLatestHistoryRound(
@@ -965,9 +1062,11 @@ function getLatestHistoryRound(
   promptProfile: ModelConfig["promptProfile"],
   promptSequence: PromptId[],
   allowProfileFallback: boolean,
+  promptOptions?: PromptOption[],
+  promptWorkflows?: PromptWorkflow[],
 ): HistoryRound | null {
   const profileRound = sortHistoryRounds(
-    item.rounds.filter((roundItem) => historyRoundMatchesPrompt(roundItem, promptProfile, promptSequence)),
+    item.rounds.filter((roundItem) => historyRoundMatchesPrompt(roundItem, promptProfile, promptSequence, promptOptions, promptWorkflows)),
   )[0];
   if (profileRound || !allowProfileFallback) {
     return profileRound ?? null;
@@ -984,14 +1083,19 @@ function getPreferredHistoryRound(item: HistoryDocumentSummary): HistoryRound | 
   return latestByOutput ?? sortHistoryRounds(item.rounds, "timestamp")[0] ?? null;
 }
 
-function buildConfigForHistorySelection(item: HistoryDocumentSummary, fallbackConfig: ModelConfig): ModelConfig {
+function buildConfigForHistorySelection(
+  item: HistoryDocumentSummary,
+  fallbackConfig: ModelConfig,
+  promptOptions?: PromptOption[],
+  promptWorkflows?: PromptWorkflow[],
+): ModelConfig {
   const preferredRound = getPreferredHistoryRound(item);
-  const promptProfile = isPromptProfile(preferredRound?.promptProfile)
+  const promptProfile = isPromptProfile(preferredRound?.promptProfile, promptWorkflows)
     ? preferredRound.promptProfile
     : fallbackConfig.promptProfile;
-  const promptSequence = promptProfile === "cn_custom"
-    ? normalizePromptSequence(preferredRound?.promptSequence ?? fallbackConfig.promptSequence)
-    : normalizePromptSequence(fallbackConfig.promptSequence);
+  const promptSequence = isPromptSequenceCustomizable(promptProfile, promptWorkflows)
+    ? normalizePromptSequence(preferredRound?.promptSequence ?? fallbackConfig.promptSequence, promptOptions, promptProfile, promptWorkflows)
+    : normalizePromptSequence(fallbackConfig.promptSequence, promptOptions, promptProfile, promptWorkflows);
   return { ...fallbackConfig, promptProfile, promptSequence };
 }
 
@@ -999,17 +1103,19 @@ function resolveRestoredPromptProfile(
   storedPromptProfile: string | null,
   matchedItem: HistoryDocumentSummary | undefined,
   fallbackProfile: ModelConfig["promptProfile"],
+  promptWorkflows?: PromptWorkflow[],
 ): ModelConfig["promptProfile"] {
-  if (isPromptProfile(storedPromptProfile)) {
-    if (storedPromptProfile === ACTIVE_PROMPT_PROFILE) {
-      return ACTIVE_PROMPT_PROFILE;
+  const defaultProfile = getDefaultPromptProfile(promptWorkflows);
+  if (isPromptProfile(storedPromptProfile, promptWorkflows)) {
+    if (storedPromptProfile === defaultProfile || isPromptSequenceCustomizable(storedPromptProfile, promptWorkflows)) {
+      return storedPromptProfile;
     }
     if (matchedItem?.rounds.some((roundItem) => (roundItem.promptProfile || "cn") === storedPromptProfile)) {
       return storedPromptProfile;
     }
   }
   const latestRound = matchedItem ? sortHistoryRounds(matchedItem.rounds, "timestamp")[0] : null;
-  return isPromptProfile(latestRound?.promptProfile) ? latestRound.promptProfile : fallbackProfile;
+  return isPromptProfile(latestRound?.promptProfile, promptWorkflows) ? latestRound.promptProfile : fallbackProfile;
 }
 
 function mergeProgressIntoCompareData(current: RoundCompareData | null, progress: RoundProgress, fallback: RoundCompareData): RoundCompareData {
@@ -1050,7 +1156,7 @@ function getProgressPosition(progress: RoundProgress | null): number {
   if (!progress) {
     return 0;
   }
-  return progress.currentChunk ?? progress.completedChunks ?? 0;
+  return progress.completedChunks ?? progress.currentChunk ?? 0;
 }
 
 function mergeVisibleProgress(current: RoundProgress | null, next: RoundProgress): RoundProgress {
@@ -1061,6 +1167,20 @@ function mergeVisibleProgress(current: RoundProgress | null, next: RoundProgress
     return {
       ...current,
       phase: "cancel-requested",
+    };
+  }
+  if (!next.totalChunks && current.totalChunks && next.round === current.round) {
+    return {
+      ...current,
+      ...next,
+      currentChunk: next.currentChunk ?? current.currentChunk,
+      totalChunks: current.totalChunks,
+      completedChunks: next.completedChunks ?? current.completedChunks,
+      activeChunks: next.activeChunks ?? current.activeChunks,
+      queuedChunks: next.queuedChunks ?? current.queuedChunks,
+      concurrency: next.concurrency ?? current.concurrency,
+      configuredConcurrency: next.configuredConcurrency ?? current.configuredConcurrency,
+      estimatedApiCalls: next.estimatedApiCalls ?? current.estimatedApiCalls,
     };
   }
   if (current.round !== next.round || current.totalChunks !== next.totalChunks) {
@@ -1077,16 +1197,21 @@ function mergeVisibleProgress(current: RoundProgress | null, next: RoundProgress
   return next;
 }
 
-function createCheckpointProgress(status: RoundProgressStatus | null): RoundProgress | null {
+function createCheckpointProgress(status: RoundProgressStatus | null, configuredConcurrency?: number): RoundProgress | null {
   if (!status?.canResume || !status.round) {
     return null;
   }
+  const seededConcurrency = normalizeRewriteConcurrency(
+    configuredConcurrency ?? status.activeRun?.lastEvent?.configuredConcurrency ?? status.activeRun?.lastEvent?.concurrency,
+  );
   return {
     phase: "resuming-from-checkpoint",
     round: status.round,
     currentChunk: status.completedChunks,
     completedChunks: status.completedChunks,
     totalChunks: status.totalChunks || undefined,
+    concurrency: status.activeRun?.lastEvent?.concurrency ?? seededConcurrency,
+    configuredConcurrency: seededConcurrency,
     checkpointPath: status.checkpointPath,
     error: status.lastError || undefined,
     nextChunkId: status.nextChunkId,
@@ -1107,15 +1232,45 @@ function sameWorkspacePath(left: string | undefined | null, right: string | unde
 }
 
 
+function formatProviderErrorBrief(progress: RoundProgress): string {
+  const category = String(progress.errorCategory || "").trim();
+  const statusCode = progress.statusCode ? `HTTP ${progress.statusCode}` : "";
+  const attempts = progress.attempts ? `${progress.attempts}${progress.maxAttempts ? `/${progress.maxAttempts}` : ""} 次` : "";
+  const cooldown = progress.cooldownSeconds ? `冷却 ${Math.ceil(Number(progress.cooldownSeconds) || 0)}s` : "";
+  const label = category === "rate_limit"
+    ? "限流"
+    : category === "server"
+      ? "服务端异常"
+      : category === "timeout"
+        ? "超时"
+        : category === "network"
+          ? "网络异常"
+          : category === "auth"
+            ? "鉴权失败"
+            : category === "endpoint"
+              ? "接口不匹配"
+              : category === "response_parse"
+                ? "响应解析失败"
+                : "";
+  return [label, statusCode, attempts, cooldown].filter(Boolean).join("，");
+}
+
+
 function formatRuntimeStep(progress: RoundProgress | null, fallback: string): string {
   if (!progress) {
     return fallback;
   }
+  const completedChunks = progress.completedChunks ?? (progress.phase === "chunk-complete" ? progress.currentChunk : 0) ?? 0;
+  const remainingChunks = progress.totalChunks ? Math.max(0, progress.totalChunks - completedChunks) : 0;
+  const configuredConcurrency = progress.configuredConcurrency ?? progress.concurrency;
+  const concurrencyText = progress.concurrency
+    ? `，并发 ${progress.concurrency}${configuredConcurrency && configuredConcurrency !== progress.concurrency ? `/${configuredConcurrency}` : ""}`
+    : "";
   if (progress.phase === "chunking-ready" && progress.totalChunks) {
     const estimateText = progress.estimatedApiCalls
       ? `，预计约 ${progress.estimatedApiCalls} 次 API 调用`
       : "";
-    return `已完成切块，共 ${progress.totalChunks} 个分块${estimateText}，准备开始第 ${progress.round} 轮。`;
+    return `已完成切块，共 ${progress.totalChunks} 个分块${estimateText}${concurrencyText}。`;
   }
   if (progress.phase === "resuming-from-checkpoint" && progress.completedChunks && progress.totalChunks) {
     if (progress.resumeStage === "finalize_output") {
@@ -1126,15 +1281,22 @@ function formatRuntimeStep(progress: RoundProgress | null, fallback: string): st
     }
     return `检测到断点续跑，已复用 ${progress.completedChunks}/${progress.totalChunks} 个分块结果。`;
   }
-  if (progress.phase === "processing-chunk" && progress.currentChunk && progress.totalChunks) {
+  if (progress.phase === "processing-chunk" && progress.totalChunks) {
     const callText = progress.estimatedApiCalls ? `，预计约 ${progress.estimatedApiCalls} 次 API 调用` : "";
-    return `正在执行第 ${progress.round} 轮，第 ${progress.currentChunk}/${progress.totalChunks} 个分块${callText}。`;
+    return `正在执行第 ${progress.round} 轮，已完成 ${completedChunks}/${progress.totalChunks}，剩余 ${remainingChunks}${concurrencyText}${callText}。`;
   }
-  if (progress.phase === "chunk-complete" && progress.currentChunk && progress.totalChunks) {
-    return `第 ${progress.round} 轮已完成 ${progress.currentChunk}/${progress.totalChunks} 个分块。`;
+  if (progress.phase === "provider-retry-wait") {
+    const retryDelay = Math.ceil(Number(progress.retryDelaySeconds ?? 0) || 0);
+    const retryText = progress.attempts && progress.maxAttempts ? `第 ${progress.attempts}/${progress.maxAttempts} 次失败` : "请求失败";
+    const statusText = progress.statusCode ? `HTTP ${progress.statusCode}` : formatProviderErrorBrief(progress);
+    return `分块 ${progress.chunkId || "-"} 上游${statusText ? ` ${statusText}` : ""}，${retryText}，${retryDelay}s 后重试。`;
   }
-  if (progress.phase === "chunk-failed" && progress.currentChunk && progress.totalChunks) {
-    return `第 ${progress.round} 轮在第 ${progress.currentChunk}/${progress.totalChunks} 个分块失败，但当前进度已经保住。`;
+  if (progress.phase === "chunk-complete" && progress.totalChunks) {
+    return `第 ${progress.round} 轮已完成 ${completedChunks}/${progress.totalChunks} 个分块。`;
+  }
+  if (progress.phase === "chunk-failed" && progress.totalChunks) {
+    const errorBrief = formatProviderErrorBrief(progress);
+    return `第 ${progress.round} 轮有分块失败，已完成 ${completedChunks}/${progress.totalChunks} 个分块${errorBrief ? `；${errorBrief}` : ""}。`;
   }
   if (progress.phase === "cancel-requested") {
     return "正在中断当前轮次，已完成分块会保留。";
@@ -1145,21 +1307,93 @@ function formatRuntimeStep(progress: RoundProgress | null, fallback: string): st
   return fallback;
 }
 
-function describePromptProfile(promptProfile: ModelConfig["promptProfile"]): string {
-  if (promptProfile === "cn_custom") {
-    return "自定义组合";
-  }
-  if (promptProfile === "cn_prewrite") {
-    return "中文三轮预改写";
-  }
-  return "中文双轮";
+function describePromptProfile(promptProfile: ModelConfig["promptProfile"], promptWorkflows?: PromptWorkflow[]): string {
+  return getPromptProfileLabel(promptProfile, promptWorkflows);
 }
 
-function describeDocumentProgress(nextRound: number | null, hasNextRound: boolean): string {
-  if (hasNextRound && nextRound) {
-    return `当前可执行第 ${nextRound} 轮。`;
+function getPlannedRoundCount(config: Pick<ModelConfig, "promptProfile" | "promptSequence">, promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): number {
+  return getPromptFlowSequence(config.promptProfile, config.promptSequence, promptOptions, promptWorkflows).length;
+}
+
+function isManualContinuationRound(status: DocumentStatus, config: Pick<ModelConfig, "promptProfile" | "promptSequence">, promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): boolean {
+  return Boolean(status.hasNextRound && status.nextRound && status.nextRound > getPlannedRoundCount(config, promptOptions, promptWorkflows));
+}
+
+function getRoundResetTarget(
+  status: DocumentStatus | null,
+  checkpoint: RoundProgressStatus | null,
+  promptOptions?: PromptOption[],
+  promptWorkflows?: PromptWorkflow[],
+): RoundResetTarget | null {
+  if (!status) {
+    return null;
   }
-  return "当前文档已完成全部轮次。";
+  const checkpointMatches = Boolean(
+    checkpoint?.canResume
+    && checkpoint.round
+    && status.nextRound
+    && checkpoint.round === status.nextRound
+    && sameWorkspacePath(checkpoint.sourcePath, status.sourcePath)
+    && checkpoint.promptProfile === status.promptProfile
+    && promptSequencesEqual(checkpoint.promptSequence, status.promptSequence, promptOptions, status.promptProfile, promptWorkflows),
+  );
+  if (checkpointMatches && checkpoint?.round) {
+    return { round: checkpoint.round, mode: "checkpoint" };
+  }
+  const completedRounds = (status.completedRounds ?? [])
+    .filter((round): round is number => Number.isFinite(round))
+    .sort((left, right) => left - right);
+  const latestCompletedRound = completedRounds[completedRounds.length - 1];
+  if (latestCompletedRound) {
+    return { round: latestCompletedRound, mode: "completed" };
+  }
+  return status.nextRound ? { round: status.nextRound, mode: "checkpoint" } : null;
+}
+
+function roundCheckpointMatchesDocument(
+  checkpoint: RoundProgressStatus | null | undefined,
+  status: DocumentStatus | null | undefined,
+): boolean {
+  return Boolean(
+    checkpoint?.canResume
+    && checkpoint.round
+    && status?.nextRound
+    && checkpoint.round === status.nextRound
+    && sameWorkspacePath(checkpoint.sourcePath, status.sourcePath),
+  );
+}
+
+function describeDocumentProgress(status: Pick<DocumentStatus, "nextRound" | "hasNextRound" | "plannedRounds">, config: Pick<ModelConfig, "promptProfile" | "promptSequence">, promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): string {
+  if (status.hasNextRound && status.nextRound) {
+    const plannedRounds = status.plannedRounds ?? getPlannedRoundCount(config, promptOptions, promptWorkflows);
+    if (status.nextRound > plannedRounds) {
+      return `流程已完成，可追加第 ${status.nextRound} 轮。`;
+    }
+    return status.nextRound > 1 ? `可继续第 ${status.nextRound} 轮。` : `可执行第 ${status.nextRound} 轮。`;
+  }
+  return "已到轮次上限，可导出。";
+}
+
+function formatDocumentLoadStep(prefix: string, status: DocumentStatus, config: Pick<ModelConfig, "promptProfile" | "promptSequence">, promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): string {
+  return `${prefix}；${describeDocumentProgress(status, config, promptOptions, promptWorkflows)}`;
+}
+
+function formatRoundCompleteStep(round: number, status: DocumentStatus, config: Pick<ModelConfig, "promptProfile" | "promptSequence">, promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): string {
+  if (status.hasNextRound && status.nextRound) {
+    return isManualContinuationRound(status, config, promptOptions, promptWorkflows)
+      ? `第 ${round} 轮已完成，可追加第 ${status.nextRound} 轮。`
+      : `第 ${round} 轮已完成，可继续第 ${status.nextRound} 轮。`;
+  }
+  return `第 ${round} 轮已完成，可导出。`;
+}
+
+function formatRoundCompleteNotice(round: number, status: DocumentStatus, config: Pick<ModelConfig, "promptProfile" | "promptSequence">, promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): string {
+  if (status.hasNextRound && status.nextRound) {
+    return isManualContinuationRound(status, config, promptOptions, promptWorkflows)
+      ? `第 ${round} 轮已完成；满意可导出，不满意可追加第 ${status.nextRound} 轮。`
+      : `第 ${round} 轮已完成，可继续第 ${status.nextRound} 轮。`;
+  }
+  return `第 ${round} 轮已完成，可以直接导出。`;
 }
 
 function formatExportNotice(result: ExportResult, label?: string): string {
@@ -1263,7 +1497,7 @@ function isRawHtmlErrorText(text: string): boolean {
     || lowered.includes("405 method not allowed")
     || lowered.includes("method not allowed</title>")
     || text.includes("本地后端接口方法不匹配（HTTP 405）")
-    || text.includes("本地后端还没有加载提示词预览接口");
+    || text.includes("本地后端还没有加载提示词接口");
 }
 
 function dedupeNotifications(items: AppNotification[]): AppNotification[] {
@@ -1379,13 +1613,13 @@ function formatNotificationTime(value: string): string {
   return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
-function getProgressPercent(progress: RoundProgress | null, completedRounds: number, maxRounds: number): number {
+function getProgressPercent(progress: RoundProgress | null, completedRounds: number, plannedRounds: number): number {
   if (progress?.totalChunks) {
     const current = progress.currentChunk ?? progress.completedChunks ?? 0;
     return Math.max(6, Math.min(100, Math.round((current / progress.totalChunks) * 100)));
   }
-  if (maxRounds > 0) {
-    return Math.round((completedRounds / maxRounds) * 100);
+  if (plannedRounds > 0) {
+    return Math.round((Math.min(completedRounds, plannedRounds) / plannedRounds) * 100);
   }
   return 0;
 }
@@ -1574,6 +1808,7 @@ export function App({ service }: Props) {
   const autoRetryCountsRef = useRef<Record<string, number>>({});
   const latestDocumentStatusRef = useRef<DocumentStatus | null>(null);
   const latestModelConfigRef = useRef<ModelConfig | null>(null);
+  const autoSnapshotRestoreKeyRef = useRef("");
   const runningRef = useRef(false);
   const pendingAutoActionRef = useRef<PendingAutoAction | null>(null);
   const notificationMessageKeyRef = useRef("");
@@ -1648,6 +1883,8 @@ export function App({ service }: Props) {
     setBusy,
     setError,
   } = useAppState();
+  const promptOptions = useMemo(() => getPromptOptionsFromPreviews(promptPreviews), [promptPreviews]);
+  const promptWorkflows = useMemo(() => getPromptWorkflowsFromPreviews(promptPreviews, promptOptions), [promptPreviews, promptOptions]);
 
   function beginTask(
     phase: TaskPhase,
@@ -1805,7 +2042,7 @@ export function App({ service }: Props) {
       return;
     }
     setReviewDecisions((current) => {
-      const next = { ...buildDefaultReviewDecisions(activeCompareData), ...normalizeSavedReviewDecisions(current) };
+      const next = { ...buildDefaultReviewDecisions(activeCompareData), ...normalizeSavedReviewDecisionsForCompare(activeCompareData, current) };
       return JSON.stringify(current) === JSON.stringify(next) ? current : next;
     });
   }, [activeCompareData]);
@@ -1920,6 +2157,14 @@ export function App({ service }: Props) {
     });
   }
 
+  function clearPendingAutoActionForManualContextChange() {
+    const pending = pendingAutoActionRef.current;
+    if (pending?.scopeKey) {
+      clearAutoRetryScope(pending.scopeKey);
+    }
+    setPendingAutoAction(null);
+  }
+
   function scheduleManualIntervention(input: {
     sourcePath: string;
     round: number;
@@ -1980,6 +2225,9 @@ export function App({ service }: Props) {
 
   function scheduleAutoNextRound(status: DocumentStatus, completedRound: number, config: Pick<ModelConfig, "promptProfile" | "promptSequence">) {
     if (!status.hasNextRound || !status.nextRound) {
+      return;
+    }
+    if (isManualContinuationRound(status, config, promptOptions, promptWorkflows)) {
       return;
     }
     const scopeKey = getAutoRunScopeKey(status.sourcePath, config, status.nextRound);
@@ -2043,10 +2291,20 @@ export function App({ service }: Props) {
       return;
     }
 
+    const activeConfig = latestModelConfigRef.current ?? modelConfig;
     try {
-      status = await refreshDocumentState(action.sourcePath, latestModelConfigRef.current ?? modelConfig);
+      status = await refreshDocumentState(action.sourcePath, activeConfig);
     } catch {
       // Keep the countdown decision visible; the manual run button can retry the refresh path.
+    }
+
+    if (status) {
+      const activeScopeKey = getAutoRunScopeKeyForStatus(status, activeConfig, action.round, promptOptions, promptWorkflows);
+      if (activeScopeKey !== action.scopeKey) {
+        setPendingAutoAction((current) => (current?.id === action.id ? null : current));
+        setNotice("文档或改写流程已变化，已取消本次自动执行。");
+        return;
+      }
     }
 
     if (!status?.hasNextRound || status.nextRound !== action.round) {
@@ -2153,22 +2411,44 @@ export function App({ service }: Props) {
     if (!data?.chunks.length) {
       return {};
     }
-    return Object.fromEntries(data.chunks.map((chunk) => [chunk.chunkId, "rewrite" as ReviewDecision]));
+    return Object.fromEntries(data.chunks.map((chunk) => {
+      return [chunk.chunkId, (isHighRiskFailedOutputChunk(chunk) ? "source" : "rewrite") as ReviewDecision];
+    }));
+  }
+
+  function getDefaultReviewDecisionForChunk(data: RoundCompareData, chunkId: string): ReviewDecision {
+    const chunk = data.chunks.find((item) => item.chunkId === chunkId);
+    return chunk && isHighRiskFailedOutputChunk(chunk) ? "source" : "rewrite";
   }
 
   function normalizeSavedReviewDecisions(decisions: Record<string, ReviewDecision>): Record<string, ReviewDecision> {
     return Object.fromEntries(
       Object.entries(decisions).map(([chunkId, decision]) => {
         if (typeof decision === "object" && decision?.mode === "custom" && decision.text.trim()) {
-          if (decision.source === "rejected_candidate" && decision.confirmed !== true) {
-            return [chunkId, "rewrite" as ReviewDecision];
+          if (isFailedOutputDecision(decision) && decision.confirmed !== true) {
+            return [chunkId, "source" as ReviewDecision];
           }
           return [chunkId, decision];
         }
-        if (decision === "source" || decision === "source_confirmed") return [chunkId, "source_confirmed" as ReviewDecision];
+        if (decision === "source") return [chunkId, "source" as ReviewDecision];
+        if (decision === "source_confirmed") return [chunkId, "source_confirmed" as ReviewDecision];
         if (decision === "rewrite_confirmed") return [chunkId, "rewrite_confirmed" as ReviewDecision];
         return [chunkId, "rewrite" as ReviewDecision];
       }),
+    );
+  }
+
+  function normalizeSavedReviewDecisionsForCompare(data: RoundCompareData | null, decisions: Record<string, ReviewDecision>): Record<string, ReviewDecision> {
+    const normalized = normalizeSavedReviewDecisions(decisions);
+    if (!data?.chunks.length) {
+      return normalized;
+    }
+    const highRiskChunkIds = new Set(data.chunks.filter(isHighRiskFailedOutputChunk).map((chunk) => chunk.chunkId));
+    return Object.fromEntries(
+      Object.entries(normalized).map(([chunkId, decision]) => [
+        chunkId,
+        highRiskChunkIds.has(chunkId) && decision === "source_confirmed" ? "source" as ReviewDecision : decision,
+      ]),
     );
   }
 
@@ -2176,12 +2456,12 @@ export function App({ service }: Props) {
     return Object.fromEntries(
       Object.entries(decisions).flatMap(([chunkId, decision]) => {
         if (typeof decision === "object" && decision?.mode === "custom" && decision.text.trim()) {
-          if (decision.source === "rejected_candidate" && decision.confirmed !== true) {
+          if (isFailedOutputDecision(decision) && decision.confirmed !== true) {
             return [];
           }
           return [[chunkId, decision] as const];
         }
-        if (decision === "source" || decision === "source_confirmed") {
+        if (decision === "source_confirmed") {
           return [[chunkId, "source_confirmed" as ReviewDecision] as const];
         }
         if (decision === "rewrite_confirmed") {
@@ -2318,9 +2598,21 @@ export function App({ service }: Props) {
 
     async function bootstrapConfig() {
       try {
-        const config = normalizeActiveModelConfig(await service.loadModelConfig());
+        const loadedConfig = await service.loadModelConfig();
+        let loadedPrompts: PromptPreviewResponse | null = null;
+        try {
+          loadedPrompts = await service.getPromptPreviews();
+        } catch {
+          loadedPrompts = null;
+        }
+        const loadedPromptOptions = getPromptOptionsFromPreviews(loadedPrompts);
+        const loadedPromptWorkflows = getPromptWorkflowsFromPreviews(loadedPrompts, loadedPromptOptions);
+        const config = normalizeActiveModelConfig(loadedConfig, loadedPromptOptions, loadedPromptWorkflows);
         if (cancelled) {
           return;
+        }
+        if (loadedPrompts) {
+          setPromptPreviews(loadedPrompts);
         }
         setModelConfig(config);
         if (config.baseUrl && config.apiKey) {
@@ -2506,10 +2798,12 @@ export function App({ service }: Props) {
     }
 
     restoredDocumentRef.current = true;
-    const safeProfile = resolveRestoredPromptProfile(storedPromptProfile, matchedItem, modelConfig.promptProfile);
-    const nextSequence = safeProfile === "cn_custom" ? storedPromptSequence : modelConfig.promptSequence;
+    const safeProfile = resolveRestoredPromptProfile(storedPromptProfile, matchedItem, modelConfig.promptProfile, promptWorkflows);
+    const nextSequence = isPromptSequenceCustomizable(safeProfile, promptWorkflows)
+      ? normalizePromptSequence(storedPromptSequence, promptOptions, safeProfile, promptWorkflows)
+      : normalizePromptSequence(modelConfig.promptSequence, promptOptions, safeProfile, promptWorkflows);
     const nextConfig = { ...modelConfig, promptProfile: safeProfile, promptSequence: nextSequence };
-    if (nextConfig.promptProfile !== modelConfig.promptProfile || !promptSequencesEqual(nextConfig.promptSequence, modelConfig.promptSequence)) {
+    if (nextConfig.promptProfile !== modelConfig.promptProfile || !promptSequencesEqual(nextConfig.promptSequence, modelConfig.promptSequence, promptOptions, safeProfile, promptWorkflows)) {
       setModelConfig(nextConfig);
     }
 
@@ -2528,7 +2822,7 @@ export function App({ service }: Props) {
         if (taskTicket !== taskTicketRef.current) {
           return;
         }
-        if (shouldSuppressAutoSnapshotRestore(status, nextConfig)) {
+        if (shouldSuppressAutoSnapshotRestore(status, nextConfig, promptOptions, promptWorkflows)) {
           clearLoadedRoundSnapshot();
           setRuntimeStep("已恢复文档；上次放弃本轮后不会自动载入旧 Diff。");
           return;
@@ -2541,10 +2835,16 @@ export function App({ service }: Props) {
           return;
         }
         const loadedProfile = loadedSnapshot?.round?.promptProfile ?? loadedSnapshot?.compareData.promptProfile;
-        const loadedSequence = normalizePromptSequence(loadedSnapshot?.round?.promptSequence ?? loadedSnapshot?.compareData.promptSequence ?? nextConfig.promptSequence);
+        const loadedPromptProfile = isPromptProfile(loadedProfile, promptWorkflows) ? loadedProfile : nextConfig.promptProfile;
+        const loadedSequence = normalizePromptSequence(
+          loadedSnapshot?.round?.promptSequence ?? loadedSnapshot?.compareData.promptSequence ?? nextConfig.promptSequence,
+          promptOptions,
+          loadedPromptProfile,
+          promptWorkflows,
+        );
         if (
-          isPromptProfile(loadedProfile)
-          && (loadedProfile !== nextConfig.promptProfile || !promptSequencesEqual(loadedSequence, nextConfig.promptSequence))
+          isPromptProfile(loadedProfile, promptWorkflows)
+          && (loadedProfile !== nextConfig.promptProfile || !promptSequencesEqual(loadedSequence, nextConfig.promptSequence, promptOptions, loadedPromptProfile, promptWorkflows))
         ) {
           const syncedConfig = { ...nextConfig, promptProfile: loadedProfile, promptSequence: loadedSequence };
           setModelConfig(syncedConfig);
@@ -2572,7 +2872,7 @@ export function App({ service }: Props) {
         finishTask(taskTicket);
       }
     })();
-  }, [documentStatus, historyItems, historyListReady, modelConfig, modelConfigReady, setError, setModelConfig]);
+  }, [documentStatus, historyItems, historyListReady, modelConfig, modelConfigReady, promptOptions, promptWorkflows, setError, setModelConfig]);
 
   async function refreshDocumentState(sourcePath: string, config = modelConfig) {
     const [status, nextHistory, nextProtectionMap, nextScopeDiagnostics] = await Promise.all([
@@ -2586,9 +2886,31 @@ export function App({ service }: Props) {
     setProtectionMap(nextProtectionMap);
     setScopeDiagnostics(nextScopeDiagnostics);
     setDetectionReport(loadStoredDetectionReportForDocument(status.sourcePath, status.docId));
-    persistActiveDocument(status.sourcePath, status.promptProfile, status.promptSequence ?? config.promptSequence);
+    persistActiveDocument(status.sourcePath, status.promptProfile, status.promptSequence ?? config.promptSequence, promptOptions, promptWorkflows);
     await refreshRoundProgressStatus(status, config);
     return status;
+  }
+
+  async function handleRefreshCurrentDocumentStatus() {
+    if (!documentStatus?.sourcePath) {
+      setNotice("请先上传或选择一篇文档。");
+      return;
+    }
+    const refreshConfig = normalizeActiveModelConfig(latestModelConfigRef.current ?? modelConfig, promptOptions, promptWorkflows);
+    const taskTicket = beginTask("diagnosing", {
+      runtimeStep: "正在刷新轮次状态。",
+    });
+    try {
+      const status = await refreshDocumentState(documentStatus.sourcePath, refreshConfig);
+      const message = formatDocumentLoadStep("状态已刷新", status, refreshConfig, promptOptions, promptWorkflows);
+      setRuntimeStep(message);
+      setNotice(message);
+    } catch (appError) {
+      setError(stringifyError(appError));
+      setRuntimeStep("刷新状态失败");
+    } finally {
+      finishTask(taskTicket);
+    }
   }
 
   async function refreshRoundProgressStatus(status = documentStatus, config = modelConfig) {
@@ -2601,7 +2923,7 @@ export function App({ service }: Props) {
       return null;
     }
     const statusPromptProfile = status.promptProfile ?? config.promptProfile;
-    const statusPromptSequence = normalizePromptSequence(status.promptSequence ?? config.promptSequence);
+    const statusPromptSequence = normalizePromptSequence(status.promptSequence ?? config.promptSequence, promptOptions, statusPromptProfile, promptWorkflows);
     try {
       const nextStatus = await service.getRoundProgressStatus(
         status.sourcePath,
@@ -2792,13 +3114,13 @@ export function App({ service }: Props) {
         setActivePromptPreviewId(result.items[0].id);
       }
       if (!options.silent) {
-        setNotice("提示词预览已刷新。");
+        setNotice("提示词已刷新。");
       }
       return result;
     } catch (appError) {
       const status = (appError as { status?: number } | null)?.status;
       const message = status === 405
-        ? "本地后端还没有加载提示词预览接口，请停止当前 Web 服务后重新运行一键启动脚本。"
+        ? "本地后端还没有加载提示词接口，请停止当前 Web 服务后重新运行一键启动脚本。"
         : stringifyError(appError);
       setPromptPreviewError(message);
       if (!options.silent) {
@@ -2808,6 +3130,92 @@ export function App({ service }: Props) {
     } finally {
       setPromptPreviewBusy(false);
     }
+  }
+
+  function applyPromptSaveResult(result: PromptSaveResult) {
+    setPromptPreviewError("");
+    setPromptPreviews((current) => {
+      const currentItems = current?.items ?? [];
+      const nextItems = currentItems.some((item) => item.id === result.item.id)
+        ? currentItems.map((item) => (item.id === result.item.id ? result.item : item))
+        : [...currentItems, result.item];
+      return { ok: true, promptDir: result.promptDir, items: nextItems, workflows: current?.workflows };
+    });
+    setActivePromptPreviewId(result.item.id);
+  }
+
+  function applyPromptDeleteResult(result: PromptDeleteResult) {
+    setPromptPreviewError("");
+    setPromptPreviews((current) => ({ ok: true, promptDir: result.promptDir, items: result.items, workflows: result.workflows ?? current?.workflows }));
+    setActivePromptPreviewId(result.items[0]?.id ?? "");
+  }
+
+  async function handleSavePromptDraft(
+    promptId: PromptId,
+    payload: { label: string; description?: string; content: string; contentDirty: boolean; metaDirty: boolean },
+  ) {
+    let result: PromptSaveResult | null = null;
+    if (payload.metaDirty) {
+      result = await service.updatePromptMeta(promptId, { label: payload.label, description: payload.description });
+    }
+    if (payload.contentDirty) {
+      result = await service.savePrompt(promptId, payload.content);
+    }
+    if (result) {
+      applyPromptSaveResult(result);
+      setNotice("提示词已保存。");
+    }
+  }
+
+  async function handleRestoreDefaultPrompt(promptId: PromptId) {
+    const result = await service.restoreDefaultPrompt(promptId);
+    applyPromptSaveResult(result);
+    setNotice("已恢复默认提示词。");
+  }
+
+  async function handleCreatePrompt(payload: { label: string; description?: string; content: string }) {
+    const result = await service.createPrompt(payload);
+    applyPromptSaveResult(result);
+    setNotice("自定义提示词已创建。");
+  }
+
+  async function handleDeletePrompt(promptId: PromptId) {
+    const item = promptPreviews?.items.find((prompt) => prompt.id === promptId);
+    if (!item || item.builtIn) {
+      return;
+    }
+    const confirmed = await requestConfirm({
+      title: "删除提示词",
+      description: `删除「${item.label}」后会从改写流程选项中移除。`,
+      confirmLabel: "删除",
+      tone: "danger",
+    });
+    if (!confirmed) {
+      return;
+    }
+    const result = await service.deletePrompt(promptId);
+    applyPromptDeleteResult(result);
+    setNotice("提示词已删除。");
+  }
+
+  async function handleUpdatePromptWorkflow(workflowId: PromptWorkflow["id"], payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit">) {
+    const result = await service.updatePromptWorkflow(workflowId, payload);
+    const items = promptPreviews?.items ?? [];
+    setPromptPreviews((current) => ({ ok: true, promptDir: result.promptDir, items: current?.items ?? items, workflows: result.workflows }));
+    const updatedWorkflow = result.workflows.find((item) => item.id === workflowId);
+    const nextPromptOptions = getPromptOptionsFromPreviews({ ok: true, promptDir: result.promptDir, items, workflows: result.workflows });
+    const nextPromptWorkflows = getPromptWorkflowsFromPreviews({ ok: true, promptDir: result.promptDir, items, workflows: result.workflows }, nextPromptOptions);
+    if (updatedWorkflow && updatedWorkflow.id === getDefaultPromptProfile(nextPromptWorkflows)) {
+      const nextSequence = normalizePromptSequence(updatedWorkflow.defaultSequence, nextPromptOptions, updatedWorkflow.id, nextPromptWorkflows);
+      const nextConfig = { ...modelConfig, promptProfile: updatedWorkflow.id, promptSequence: nextSequence };
+      setModelConfig(nextConfig);
+      localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, nextConfig.promptProfile);
+      localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(nextConfig.promptSequence));
+      if (documentStatus?.sourcePath) {
+        await refreshDocumentState(documentStatus.sourcePath, nextConfig);
+      }
+    }
+    setNotice("改写流程已保存。");
   }
 
   async function handleCleanupTaskStateSnapshots() {
@@ -2855,12 +3263,19 @@ export function App({ service }: Props) {
       allowProfileFallback?: boolean;
     } = {},
   ) {
-    const candidateItems = options.historyItems ?? historyItems;
+    const searchableItems = options.historyItems ?? historyItems;
     const matchedItem = options.historyItem
-      ?? candidateItems.find((item) => historyItemMatchesDocument(item, status, status.sourcePath))
+      ?? searchableItems.find((item) => historyItemMatchesDocument(item, status, status.sourcePath))
       ?? null;
     const latestRound = matchedItem
-      ? getLatestHistoryRound(matchedItem, config.promptProfile, normalizePromptSequence(config.promptSequence), options.allowProfileFallback ?? false)
+      ? getLatestHistoryRound(
+        matchedItem,
+        config.promptProfile,
+        normalizePromptSequence(config.promptSequence, promptOptions, config.promptProfile, promptWorkflows),
+        options.allowProfileFallback ?? false,
+        promptOptions,
+        promptWorkflows,
+      )
       : null;
     const outputPath = latestRound?.outputPath || status.latestOutputPath;
     if (!outputPath) {
@@ -2878,7 +3293,7 @@ export function App({ service }: Props) {
     setLastExportResult(null);
     liveCompareRef.current = nextCompareData;
     setRoundResult(latestRound ? buildRoundResultFromHistoryRound(latestRound, nextCompareData) : buildRoundResultFromCompareData(nextCompareData));
-    setReviewDecisions({ ...buildDefaultReviewDecisions(nextCompareData), ...normalizeSavedReviewDecisions(savedReview.decisions) });
+      setReviewDecisions({ ...buildDefaultReviewDecisions(nextCompareData), ...normalizeSavedReviewDecisionsForCompare(nextCompareData, savedReview.decisions) });
     return { historyItem: matchedItem, round: latestRound, compareData: nextCompareData };
   }
 
@@ -2894,14 +3309,114 @@ export function App({ service }: Props) {
     setLastExportResult(null);
     liveCompareRef.current = nextCompareData;
     setRoundResult(buildRoundResultFromCompareData(nextCompareData));
-    setReviewDecisions({ ...buildDefaultReviewDecisions(nextCompareData), ...normalizeSavedReviewDecisions(savedReview.decisions) });
+      setReviewDecisions({ ...buildDefaultReviewDecisions(nextCompareData), ...normalizeSavedReviewDecisionsForCompare(nextCompareData, savedReview.decisions) });
     return nextCompareData;
   }
 
-  async function handlePromptProfileChange(_promptProfile: ModelConfig["promptProfile"]) {
-    const nextConfig = { ...modelConfig, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence: normalizePromptSequence(modelConfig.promptSequence) };
+  useEffect(() => {
+    if (!documentStatus?.sourcePath || currentRunToken || currentBatchRerunToken || taskPhase !== "idle") {
+      return;
+    }
+    if (activeCompareData?.chunks.length) {
+      autoSnapshotRestoreKeyRef.current = "";
+      return;
+    }
+    if (shouldSuppressAutoSnapshotRestore(documentStatus, modelConfig, promptOptions, promptWorkflows)) {
+      return;
+    }
+
+    const statusPromptProfile = documentStatus.promptProfile ?? modelConfig.promptProfile;
+    const statusPromptSequence = normalizePromptSequence(
+      documentStatus.promptSequence ?? modelConfig.promptSequence,
+      promptOptions,
+      statusPromptProfile,
+      promptWorkflows,
+    );
+    const matchedItem = historyItems.find((item) => historyItemMatchesDocument(item, documentStatus, documentStatus.sourcePath));
+    const latestRound = matchedItem
+      ? getLatestHistoryRound(
+        matchedItem,
+        statusPromptProfile,
+        statusPromptSequence,
+        true,
+        promptOptions,
+        promptWorkflows,
+      )
+      : null;
+    const outputPath = latestRound?.outputPath || documentStatus.latestOutputPath;
+    if (!outputPath) {
+      return;
+    }
+
+    const restoreKey = [
+      normalizeDetectionDocumentKey(documentStatus.sourcePath),
+      statusPromptProfile,
+      statusPromptSequence.join(","),
+      normalizeDetectionDocumentKey(outputPath),
+    ].join("::");
+    if (autoSnapshotRestoreKeyRef.current === restoreKey) {
+      return;
+    }
+    autoSnapshotRestoreKeyRef.current = restoreKey;
+
+    let canceled = false;
+    void (async () => {
+      try {
+        const restoreConfig = { ...modelConfig, promptProfile: statusPromptProfile, promptSequence: statusPromptSequence };
+        const loadedSnapshot = await loadLatestRoundSnapshot(documentStatus, restoreConfig, {
+          historyItems,
+          historyItem: matchedItem,
+          allowProfileFallback: true,
+        });
+        if (canceled || !loadedSnapshot) {
+          return;
+        }
+        const loadedProfile = loadedSnapshot.round?.promptProfile ?? loadedSnapshot.compareData.promptProfile;
+        const loadedPromptProfile = isPromptProfile(loadedProfile, promptWorkflows) ? loadedProfile : restoreConfig.promptProfile;
+        const loadedSequence = normalizePromptSequence(
+          loadedSnapshot.round?.promptSequence ?? loadedSnapshot.compareData.promptSequence ?? restoreConfig.promptSequence,
+          promptOptions,
+          loadedPromptProfile,
+          promptWorkflows,
+        );
+        if (
+          isPromptProfile(loadedProfile, promptWorkflows)
+          && (loadedProfile !== restoreConfig.promptProfile || !promptSequencesEqual(loadedSequence, restoreConfig.promptSequence, promptOptions, loadedPromptProfile, promptWorkflows))
+        ) {
+          const syncedConfig = { ...restoreConfig, promptProfile: loadedProfile, promptSequence: loadedSequence };
+          latestModelConfigRef.current = syncedConfig;
+          setModelConfig(syncedConfig);
+          localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, loadedProfile);
+          localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(loadedSequence));
+          await refreshDocumentState(documentStatus.sourcePath, syncedConfig);
+          if (canceled) {
+            return;
+          }
+        }
+        setRuntimeStep(`已恢复第 ${loadedSnapshot.compareData.round} 轮 Diff。`);
+      } catch (appError) {
+        if (!canceled) {
+          autoSnapshotRestoreKeyRef.current = "";
+          setNotice(`检测到已有结果，但 Diff 恢复失败：${stringifyError(appError)}`);
+        }
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, [activeCompareData?.chunks.length, currentBatchRerunToken, currentRunToken, documentStatus, historyItems, modelConfig, promptOptions, promptWorkflows, setModelConfig, setNotice, setRuntimeStep, taskPhase]);
+
+  async function handlePromptProfileChange(promptProfile: ModelConfig["promptProfile"]) {
+    const targetProfile = normalizePromptProfile(promptProfile, promptWorkflows) ?? getDefaultPromptProfile(promptWorkflows);
+    const nextConfig = {
+      ...modelConfig,
+      promptProfile: targetProfile,
+      promptSequence: normalizePromptSequence(modelConfig.promptSequence, promptOptions, targetProfile, promptWorkflows),
+    };
     setModelConfig(nextConfig);
     clearAutoSnapshotSuppression();
+    clearPendingAutoActionForManualContextChange();
     localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, nextConfig.promptProfile);
     localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(nextConfig.promptSequence));
     if (!documentStatus?.sourcePath) {
@@ -2924,9 +3439,15 @@ export function App({ service }: Props) {
   }
 
   async function handlePromptSequenceChange(promptSequence: PromptId[]) {
-    const nextConfig = { ...modelConfig, promptProfile: ACTIVE_PROMPT_PROFILE, promptSequence: normalizePromptSequence(promptSequence) };
+    const targetProfile = getDefaultPromptProfile(promptWorkflows);
+    const nextConfig = {
+      ...modelConfig,
+      promptProfile: targetProfile,
+      promptSequence: normalizePromptSequence(promptSequence, promptOptions, targetProfile, promptWorkflows),
+    };
     setModelConfig(nextConfig);
     clearAutoSnapshotSuppression();
+    clearPendingAutoActionForManualContextChange();
     localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, nextConfig.promptProfile);
     localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(nextConfig.promptSequence));
     if (!documentStatus?.sourcePath) {
@@ -2953,44 +3474,47 @@ export function App({ service }: Props) {
     try {
       setRuntimeStep("正在载入历史文档。");
       clearAutoSnapshotSuppression();
+      clearPendingAutoActionForManualContextChange();
       clearDocumentDerivedState({ includeDetectionReport: true });
-      const selectedConfig = buildConfigForHistorySelection(item, configOverride);
+      const selectedConfig = buildConfigForHistorySelection(item, configOverride, promptOptions, promptWorkflows);
       if (
         selectedConfig.promptProfile !== modelConfig.promptProfile
-        || !promptSequencesEqual(selectedConfig.promptSequence, modelConfig.promptSequence)
+        || !promptSequencesEqual(selectedConfig.promptSequence, modelConfig.promptSequence, promptOptions, selectedConfig.promptProfile, promptWorkflows)
       ) {
         setModelConfig(selectedConfig);
         localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, selectedConfig.promptProfile);
         localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(selectedConfig.promptSequence));
       }
-      let status = await refreshDocumentState(item.sourcePath, selectedConfig);
+      let statusConfig = selectedConfig;
+      let status = await refreshDocumentState(item.sourcePath, statusConfig);
       const loadedSnapshot = await loadLatestRoundSnapshot(status, selectedConfig, {
         historyItem: item,
         allowProfileFallback: true,
       });
       const loadedProfile = loadedSnapshot?.round?.promptProfile ?? loadedSnapshot?.compareData.promptProfile;
+      const loadedPromptProfile = isPromptProfile(loadedProfile, promptWorkflows) ? loadedProfile : selectedConfig.promptProfile;
       const loadedSequence = normalizePromptSequence(
         loadedSnapshot?.round?.promptSequence ?? loadedSnapshot?.compareData.promptSequence ?? selectedConfig.promptSequence,
+        promptOptions,
+        loadedPromptProfile,
+        promptWorkflows,
       );
       if (
-        isPromptProfile(loadedProfile)
-        && (loadedProfile !== selectedConfig.promptProfile || !promptSequencesEqual(loadedSequence, selectedConfig.promptSequence))
+        isPromptProfile(loadedProfile, promptWorkflows)
+        && (loadedProfile !== selectedConfig.promptProfile || !promptSequencesEqual(loadedSequence, selectedConfig.promptSequence, promptOptions, loadedPromptProfile, promptWorkflows))
       ) {
         const syncedConfig = { ...selectedConfig, promptProfile: loadedProfile, promptSequence: loadedSequence };
+        statusConfig = syncedConfig;
         setModelConfig(syncedConfig);
         localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, syncedConfig.promptProfile);
         localStorage.setItem(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(syncedConfig.promptSequence));
         status = await refreshDocumentState(status.sourcePath, syncedConfig);
       }
-      setNotice(`已切换到历史文档。${describeDocumentProgress(status.nextRound, status.hasNextRound)}`);
+      setNotice(`已切换到历史文档。${describeDocumentProgress(status, statusConfig, promptOptions, promptWorkflows)}`);
       setRuntimeStep(
         loadedSnapshot
-          ? status.hasNextRound
-            ? `历史文档已载入，并显示最新 Diff；可执行第 ${status.nextRound} 轮。`
-            : "历史文档已载入，并显示最新 Diff；全部轮次已完成。"
-          : status.hasNextRound
-            ? `历史文档已载入，但当前模式暂无 Diff；可执行第 ${status.nextRound} 轮。`
-            : "历史文档已载入，但当前模式暂无 Diff。"
+          ? formatDocumentLoadStep("历史文档已载入，并显示最新 Diff", status, statusConfig, promptOptions, promptWorkflows)
+          : formatDocumentLoadStep("历史文档已载入，但当前模式暂无 Diff", status, statusConfig, promptOptions, promptWorkflows)
       );
     } catch (appError) {
       setError(stringifyError(appError));
@@ -3225,13 +3749,13 @@ export function App({ service }: Props) {
     const taskTicket = beginTask("saving-config");
     try {
       setRuntimeStep("正在保存模型配置。");
-      const configToSave = normalizeActiveModelConfig(nextConfig ?? modelConfig);
+      const configToSave = normalizeActiveModelConfig(nextConfig ?? modelConfig, promptOptions, promptWorkflows);
       if (testConfig) {
         setRuntimeStep("正在测试模型连接，测试通过后保存。");
-        await service.testModelConnection(normalizeActiveModelConfig(testConfig));
+        await service.testModelConnection(normalizeActiveModelConfig(testConfig, promptOptions, promptWorkflows));
       }
       const saved = await service.saveModelConfig(configToSave);
-      const mergedSaved = normalizeActiveModelConfig({ ...saved, ...configToSave, roundModels: { ...(saved.roundModels ?? {}), ...(configToSave.roundModels ?? {}) } });
+      const mergedSaved = normalizeActiveModelConfig({ ...saved, ...configToSave, roundModels: { ...(saved.roundModels ?? {}), ...(configToSave.roundModels ?? {}) } }, promptOptions, promptWorkflows);
       setModelConfig(mergedSaved);
       if (documentStatus) {
         await refreshDocumentState(documentStatus.sourcePath, mergedSaved);
@@ -3239,7 +3763,7 @@ export function App({ service }: Props) {
       if (mergedSaved.baseUrl && mergedSaved.apiKey) {
         await refreshModelCatalog(mergedSaved, { silent: true });
       }
-      setNotice(`模型配置已保存，当前模式为 ${describePromptProfile(mergedSaved.promptProfile)}。`);
+      setNotice(`模型配置已保存，当前模式为 ${describePromptProfile(mergedSaved.promptProfile, promptWorkflows)}。`);
       setRuntimeStep("模型配置已保存");
     } catch (appError) {
       setError(stringifyError(appError));
@@ -3252,7 +3776,7 @@ export function App({ service }: Props) {
   async function handleTestConnection() {
     const taskTicket = beginTask("testing-config");
     try {
-      const onlineConfig = normalizeActiveModelConfig(modelConfig);
+      const onlineConfig = normalizeActiveModelConfig(modelConfig, promptOptions, promptWorkflows);
       setRuntimeStep("正在测试接口连通性。");
       const result = await service.testModelConnection(onlineConfig);
       const detailParts = [
@@ -3409,7 +3933,7 @@ export function App({ service }: Props) {
       saveStoredFormatRules(FORMAT_RULE_PENDING_KEY, result.rules);
       const fallbackWarning = result.rules.quality?.warnings?.find((item) => item.includes("AI 结构化解析未完成"));
       if (fallbackWarning) {
-        setNotice(`AI 解析未完成，已用本地规则抽取生成候选规范。请复核后再启用。`);
+        setNotice(`AI 解析未完成，已用本地规则抽取待确认规范。请复核后再启用。`);
         setRuntimeStep("学校格式规范已用本地规则兜底生成，待确认");
       } else {
         setNotice(`学校格式规范已解析：${result.rules.schoolName || "自定义规范"}。请确认后再启用。`);
@@ -3499,12 +4023,13 @@ export function App({ service }: Props) {
         runtimeStep: "正在载入文档状态。",
       });
       clearAutoSnapshotSuppression();
+      clearPendingAutoActionForManualContextChange();
       clearDocumentDerivedState({ includeDetectionReport: true });
       const status = await refreshDocumentState(picked.sourcePath);
       await refreshHistoryList();
       setHistoryPanelOpen(true);
-      setRuntimeStep(status.hasNextRound ? `文档已载入，可执行第 ${status.nextRound} 轮。` : "文档已载入，全部轮次已完成。");
-      setNotice(`已导入文档。${describeDocumentProgress(status.nextRound, status.hasNextRound)}`);
+      setRuntimeStep(formatDocumentLoadStep("文档已载入", status, modelConfig, promptOptions, promptWorkflows));
+      setNotice(`已导入文档。${describeDocumentProgress(status, modelConfig, promptOptions, promptWorkflows)}`);
     } catch (appError) {
       setError(stringifyError(appError));
       setRuntimeStep("读取文档失败");
@@ -3627,14 +4152,14 @@ export function App({ service }: Props) {
         setPreview(outputPreview);
         liveCompareRef.current = nextCompareData;
         setCompareData(nextCompareData);
-        setReviewDecisions({ ...buildDefaultReviewDecisions(nextCompareData), ...normalizeSavedReviewDecisions(savedReview.decisions) });
+        setReviewDecisions({ ...buildDefaultReviewDecisions(nextCompareData), ...normalizeSavedReviewDecisionsForCompare(nextCompareData, savedReview.decisions) });
       });
 
       const nextStatus = await refreshDocumentState(activeRun.sourcePath);
       await refreshHistoryList();
       setHistoryPanelOpen(true);
-      setRuntimeStep(nextStatus.hasNextRound ? `第 ${nextResult.round} 轮已完成，可继续执行第 ${nextStatus.nextRound} 轮。` : `第 ${nextResult.round} 轮已完成，全部轮次已结束。`);
-      setNotice(nextStatus.hasNextRound ? `第 ${nextResult.round} 轮已完成。你现在可以继续下一轮。` : `第 ${nextResult.round} 轮已完成，可以直接导出。`);
+      setRuntimeStep(formatRoundCompleteStep(nextResult.round, nextStatus, modelConfig, promptOptions, promptWorkflows));
+      setNotice(formatRoundCompleteNotice(nextResult.round, nextStatus, modelConfig, promptOptions, promptWorkflows));
       clearAutoRetryScope(getAutoRunScopeKey(activeRun.sourcePath, modelConfig, nextResult.round));
       scheduleAutoNextRound(nextStatus, nextResult.round, modelConfig);
     } catch (appError) {
@@ -3672,7 +4197,7 @@ export function App({ service }: Props) {
     }
   }
 
-  async function handleRunRound() {
+  async function handleRunRound(configOverride?: ModelConfig) {
     if (running) {
       setNotice("当前轮次正在运行中；如需停止，请先点击中断当前轮。");
       return;
@@ -3681,20 +4206,20 @@ export function App({ service }: Props) {
       setNotice("请先上传一个 txt 或 docx 文档。");
       return;
     }
-    if (!documentStatus.hasNextRound || documentStatus.isComplete || !documentStatus.nextRound) {
-      setNotice("当前文档已完成全部轮次。如需重跑，请先在历史记录中回滚。");
-      return;
-    }
-
-    const statusPromptSequence = normalizePromptSequence(documentStatus.promptSequence ?? modelConfig.promptSequence);
-    const runConfig = {
-      ...modelConfig,
-      promptProfile: documentStatus.promptProfile,
-      promptSequence: statusPromptSequence,
+    const baseModelConfig = normalizeActiveModelConfig(configOverride ?? latestModelConfigRef.current ?? modelConfig, promptOptions, promptWorkflows);
+    const selectedPromptProfile = normalizePromptProfile(baseModelConfig.promptProfile, promptWorkflows) ?? getDefaultPromptProfile(promptWorkflows);
+    const selectedPromptSequence = normalizePromptSequence(baseModelConfig.promptSequence, promptOptions, selectedPromptProfile, promptWorkflows);
+    let runConfig = {
+      ...baseModelConfig,
+      rewriteConcurrency: normalizeRewriteConcurrency(baseModelConfig.rewriteConcurrency),
+      promptProfile: selectedPromptProfile,
+      promptSequence: selectedPromptSequence,
     };
+    latestModelConfigRef.current = runConfig;
     if (
       runConfig.promptProfile !== modelConfig.promptProfile
-      || !promptSequencesEqual(runConfig.promptSequence, modelConfig.promptSequence)
+      || runConfig.rewriteConcurrency !== modelConfig.rewriteConcurrency
+      || !promptSequencesEqual(runConfig.promptSequence, modelConfig.promptSequence, promptOptions, runConfig.promptProfile, promptWorkflows)
     ) {
       setModelConfig(runConfig);
       localStorage.setItem(ACTIVE_PROMPT_PROFILE_KEY, runConfig.promptProfile);
@@ -3702,40 +4227,65 @@ export function App({ service }: Props) {
     }
     clearPendingAutoActionForSource(documentStatus.sourcePath);
     const taskTicket = beginTask("running-round", {
-      runtimeStep: `准备执行第 ${documentStatus.nextRound} 轮。`,
+      runtimeStep: "正在同步改写路线。",
     });
     let runSession: RunSession | null = null;
+    let launchStatus: DocumentStatus = documentStatus;
     try {
+      const savedConfig = await service.saveModelConfig(runConfig);
+      runConfig = {
+        ...savedConfig,
+        ...runConfig,
+        roundModels: { ...(savedConfig.roundModels ?? {}), ...(runConfig.roundModels ?? {}) },
+        rewriteConcurrency: normalizeRewriteConcurrency(runConfig.rewriteConcurrency),
+      };
+      latestModelConfigRef.current = runConfig;
+      setModelConfig(runConfig);
+      launchStatus = await refreshDocumentState(documentStatus.sourcePath, runConfig);
+      if (!launchStatus.hasNextRound || launchStatus.isComplete || !launchStatus.nextRound) {
+        setNotice("当前流程已完成，可导出；需要继续请先在改写流程里增加轮次。");
+        setRuntimeStep("流程已完成");
+        return;
+      }
       const checkpointStatus = roundProgressStatus
-        && sameWorkspacePath(roundProgressStatus.sourcePath, documentStatus.sourcePath)
-        && roundProgressStatus.round === documentStatus.nextRound
+        && sameWorkspacePath(roundProgressStatus.sourcePath, launchStatus.sourcePath)
+        && roundProgressStatus.round === launchStatus.nextRound
         && roundProgressStatus.promptProfile === runConfig.promptProfile
-        && promptSequencesEqual(roundProgressStatus.promptSequence, runConfig.promptSequence)
+        && promptSequencesEqual(roundProgressStatus.promptSequence, runConfig.promptSequence, promptOptions, runConfig.promptProfile, promptWorkflows)
         ? roundProgressStatus
-        : await refreshRoundProgressStatus(documentStatus, runConfig);
-      const checkpointProgress = createCheckpointProgress(checkpointStatus);
-      visibleProgressRef.current = checkpointProgress;
-      setProgress(checkpointProgress);
+        : await refreshRoundProgressStatus(launchStatus, runConfig);
+      const checkpointProgress = createCheckpointProgress(checkpointStatus, runConfig.rewriteConcurrency);
+      const initialProgress = checkpointProgress ?? {
+        phase: "run-starting",
+        round: launchStatus.nextRound,
+        completedChunks: 0,
+        activeChunks: 0,
+        queuedChunks: 0,
+        concurrency: runConfig.rewriteConcurrency,
+        configuredConcurrency: runConfig.rewriteConcurrency,
+      };
+      visibleProgressRef.current = initialProgress;
+      setProgress(initialProgress);
       setRerunFailures([]);
       setLastExportResult(null);
       await releaseProgressListener();
 
-      const liveCompareSeed = activeCompareData?.round === documentStatus.nextRound
+      const liveCompareSeed = activeCompareData?.round === launchStatus.nextRound
         ? activeCompareData
-        : createLiveCompareData(documentStatus, documentStatus.nextRound);
+        : createLiveCompareData(launchStatus, launchStatus.nextRound);
       liveCompareRef.current = liveCompareSeed;
       setCompareData(liveCompareSeed);
       setReviewDecisions({});
       setRoundResult(null);
       setPreview(null);
-      const runToken = await service.startRunRound(documentStatus.sourcePath, runConfig);
+      const runToken = await service.startRunRound(launchStatus.sourcePath, runConfig);
       if (!runToken) {
         throw new Error("无法创建运行任务。");
       }
       runSession = beginRunSession({
         runId: runToken,
-        sourcePath: documentStatus.sourcePath,
-        round: documentStatus.nextRound,
+        sourcePath: launchStatus.sourcePath,
+        round: launchStatus.nextRound,
         taskTicket,
         mode: "start",
       });
@@ -3748,7 +4298,6 @@ export function App({ service }: Props) {
           setProgress(visibleProgress);
         }
       } catch {
-        // Snapshot is only for smoother resume display; the SSE stream remains authoritative.
       }
       progressUnlistenRef.current = await service.listenRoundProgress((nextProgress) => {
         if (!isActiveRunSession(runSession)) {
@@ -3768,11 +4317,11 @@ export function App({ service }: Props) {
         setRuntimeStep(formatRuntimeStep(visibleProgress, "处理中"));
       }, runToken);
 
-      setRuntimeStep(checkpointProgress ? formatRuntimeStep(checkpointProgress, `准备续跑第 ${documentStatus.nextRound} 轮。`) : `准备执行第 ${documentStatus.nextRound} 轮。`);
-      setNotice(checkpointProgress ? checkpointProgress.resumeExplanation || "已识别断点，本次会从已完成分块后继续，不会重头跑。" : `本次运行将使用 ${describePromptProfile(runConfig.promptProfile)}，中途失败时会优先尝试断点续跑。`);
+      setRuntimeStep(checkpointProgress ? formatRuntimeStep(checkpointProgress, `准备续跑第 ${launchStatus.nextRound} 轮。`) : `准备执行第 ${launchStatus.nextRound} 轮。`);
+      setNotice(checkpointProgress ? checkpointProgress.resumeExplanation || "已识别断点，本次会从已完成分块后继续，不会重头跑。" : `本次运行将使用 ${describePromptProfile(runConfig.promptProfile, promptWorkflows)}，中途失败时会优先尝试断点续跑。`);
 
       clearAutoSnapshotSuppression();
-      const nextResult = await service.awaitRunRound(documentStatus.sourcePath, runConfig, runToken);
+      const nextResult = await service.awaitRunRound(launchStatus.sourcePath, runConfig, runToken);
       if (!isActiveRunSession(runSession)) {
         return;
       }
@@ -3789,15 +4338,15 @@ export function App({ service }: Props) {
         setPreview(outputPreview);
         liveCompareRef.current = nextCompareData;
         setCompareData(nextCompareData);
-        setReviewDecisions({ ...buildDefaultReviewDecisions(nextCompareData), ...normalizeSavedReviewDecisions(savedReview.decisions) });
+        setReviewDecisions({ ...buildDefaultReviewDecisions(nextCompareData), ...normalizeSavedReviewDecisionsForCompare(nextCompareData, savedReview.decisions) });
       });
 
-      const status = await refreshDocumentState(documentStatus.sourcePath, runConfig);
+      const status = await refreshDocumentState(launchStatus.sourcePath, runConfig);
       await refreshHistoryList();
       setHistoryPanelOpen(true);
-      setRuntimeStep(status.hasNextRound ? `第 ${nextResult.round} 轮已完成，可继续执行第 ${status.nextRound} 轮。` : `第 ${nextResult.round} 轮已完成，全部轮次已结束。`);
-      setNotice(status.hasNextRound ? `第 ${nextResult.round} 轮已完成。你现在可以继续下一轮，或先导出查看结果。` : `第 ${nextResult.round} 轮已完成，可以直接导出。`);
-      clearAutoRetryScope(getAutoRunScopeKey(documentStatus.sourcePath, runConfig, nextResult.round));
+      setRuntimeStep(formatRoundCompleteStep(nextResult.round, status, runConfig, promptOptions, promptWorkflows));
+      setNotice(formatRoundCompleteNotice(nextResult.round, status, runConfig, promptOptions, promptWorkflows));
+      clearAutoRetryScope(getAutoRunScopeKey(launchStatus.sourcePath, runConfig, nextResult.round));
       scheduleAutoNextRound(status, nextResult.round, runConfig);
     } catch (appError) {
       if (isActiveRunSession(runSession)) {
@@ -3818,18 +4367,17 @@ export function App({ service }: Props) {
         setRuntimeStep(resumable ? "执行中断，可尝试续跑" : "执行轮次失败");
       }
       let refreshedStatus: DocumentStatus | null = null;
-      if (documentStatus?.sourcePath) {
+      if (launchStatus?.sourcePath) {
         try {
-          refreshedStatus = await refreshDocumentState(documentStatus.sourcePath);
+          refreshedStatus = await refreshDocumentState(launchStatus.sourcePath, runConfig);
           await refreshHistoryList();
         } catch {
-          // Keep the original run error visible; refresh can be retried by the next action.
         }
       }
-      if (!userCanceled && resumable && documentStatus?.sourcePath && documentStatus.nextRound) {
+      if (!userCanceled && resumable && launchStatus?.sourcePath && launchStatus.nextRound) {
         scheduleAutoRetry({
-          sourcePath: documentStatus.sourcePath,
-          round: refreshedStatus?.nextRound || runSession?.round || documentStatus.nextRound,
+          sourcePath: launchStatus.sourcePath,
+          round: refreshedStatus?.nextRound || runSession?.round || launchStatus.nextRound,
           config: runConfig,
           reason: runMessage,
         });
@@ -3918,32 +4466,41 @@ export function App({ service }: Props) {
       setNotice("当前轮次正在运行中，请先中断后再放弃本轮断点。");
       return;
     }
-    if (!documentStatus?.nextRound) {
+    const resetTarget = getRoundResetTarget(documentStatus, roundProgressStatus, promptOptions, promptWorkflows);
+    if (!documentStatus || !resetTarget) {
       setNotice("当前没有可放弃进度的轮次。");
       return;
     }
+    const targetLabel = resetTarget.mode === "completed" ? `第 ${resetTarget.round} 轮结果` : `第 ${resetTarget.round} 轮断点进度`;
     const confirmed = await requestConfirm({
-      title: `放弃第 ${documentStatus.nextRound} 轮断点进度`,
-      description: "只会清理当前轮已完成的分块缓存；源文档、已完成轮次和历史记录都会保留。",
-      details: ["后续再次运行该轮时，会从该轮开头重新生成。", "刷新页面后不会自动载入旧 Diff；需要查看时可从历史记录手动打开。"],
+      title: `放弃${targetLabel}`,
+      description: resetTarget.mode === "completed"
+        ? "会删除该轮及后续轮次的结果记录与生成文件；源文档会保留。"
+        : "只会清理当前轮已完成的分块缓存；源文档和已完成轮次会保留。",
+      details: resetTarget.mode === "completed"
+        ? ["后续再次运行时，会从该轮重新开始。", "如果这是第 1 轮，启动按钮会回到开始第 1 轮。"]
+        : ["后续再次运行该轮时，会从该轮开头重新生成。", "刷新页面后不会自动载入旧 Diff；需要查看时可从历史记录手动打开。"],
       confirmLabel: "确认放弃",
-      cancelLabel: "保留断点",
+      cancelLabel: resetTarget.mode === "completed" ? "保留结果" : "保留断点",
       tone: "warning",
     });
     if (!confirmed) {
       return;
     }
     const taskTicket = beginTask("resetting-round");
-    const resetRoundNumber = documentStatus.nextRound;
+    const resetRoundNumber = resetTarget.round;
     try {
+      clearPendingAutoActionForSource(documentStatus.sourcePath);
       await releaseProgressListener();
       await service.resetRoundProgress(documentStatus.sourcePath, modelConfig.promptProfile, resetRoundNumber, modelConfig.promptSequence);
-      suppressAutoSnapshotRestore(documentStatus, modelConfig, resetRoundNumber);
+      suppressAutoSnapshotRestore(documentStatus, modelConfig, resetRoundNumber, promptOptions, promptWorkflows);
       setProgress(null);
       clearLoadedRoundSnapshot();
       await refreshDocumentState(documentStatus.sourcePath);
       await refreshHistoryList();
-      setNotice(`第 ${resetRoundNumber} 轮进度已放弃；刷新后不会自动恢复旧 Diff，历史记录仍可手动打开。`);
+      setNotice(resetTarget.mode === "completed"
+        ? `第 ${resetRoundNumber} 轮结果已放弃；可从第 ${resetRoundNumber} 轮重新开始。`
+        : `第 ${resetRoundNumber} 轮进度已放弃；刷新后不会自动恢复旧 Diff，历史记录仍可手动打开。`);
       setRuntimeStep("当前轮次进度已清理");
     } catch (appError) {
       setError(stringifyError(appError));
@@ -3968,10 +4525,11 @@ export function App({ service }: Props) {
       setLastExportResult(null);
       clearRerunFailure(chunkId);
       liveCompareRef.current = result.compare;
-      setReviewDecisions((current) => ({ ...buildDefaultReviewDecisions(result.compare), ...current, [chunkId]: "rewrite" }));
+      const nextDecision = getDefaultReviewDecisionForChunk(result.compare, chunkId);
+      setReviewDecisions((current) => ({ ...buildDefaultReviewDecisions(result.compare), ...current, [chunkId]: nextDecision }));
       const outputPreview = await service.readOutput(result.outputPath, PREVIEW_MAX_CHARS);
       setPreview(outputPreview);
-      setNotice(`块 ${chunkId} 已重跑完成，默认采用新改写。`);
+      setNotice(nextDecision === "source" ? `块 ${chunkId} 已标为高风险，默认保留安全文本。` : `块 ${chunkId} 已重跑完成，默认采用新改写。`);
       setRuntimeStep("局部重跑完成");
     } catch (appError) {
       const message = stringifyError(appError);
@@ -4031,7 +4589,7 @@ export function App({ service }: Props) {
       setReviewDecisions((current) => ({
         ...buildDefaultReviewDecisions(confirmedCompare),
         ...current,
-        ...Object.fromEntries(completedTargets.map((target) => [target.chunkId, "rewrite" as ReviewDecision])),
+        ...Object.fromEntries(completedTargets.map((target) => [target.chunkId, getDefaultReviewDecisionForChunk(confirmedCompare, target.chunkId)])),
       }));
     }
     if (result.successCount > 0) {
@@ -4132,7 +4690,12 @@ export function App({ service }: Props) {
   }
 
   async function handleExportCurrent(format: "txt" | "docx") {
-    if (!roundResult) {
+    if (roundCheckpointMatchesDocument(roundProgressStatus, documentStatus)) {
+      setNotice("当前轮还有断点未完成，先继续本轮再导出。");
+      return;
+    }
+    const outputPath = roundResult?.outputPath ?? activeCompareData?.outputPath;
+    if (!outputPath) {
       setNotice("请先执行至少一轮处理，再导出结果。");
       return;
     }
@@ -4146,7 +4709,7 @@ export function App({ service }: Props) {
     const taskTicket = beginTask("exporting");
     try {
       setRuntimeStep(`正在导出 ${format.toUpperCase()}。`);
-      const result = await service.exportRound(roundResult.outputPath, format);
+      const result = await service.exportRound(outputPath, format);
       setLastExportResult(result);
       setNotice(formatExportNotice(result));
       setRuntimeStep("导出完成");
@@ -4159,7 +4722,8 @@ export function App({ service }: Props) {
   }
 
   const runtimeLabel = formatRuntimeStep(progress, runtimeStep);
-  const progressPercent = getProgressPercent(progress, documentStatus?.completedRounds.length ?? 0, documentStatus?.maxRounds ?? 0);
+  const plannedProgressRounds = documentStatus?.plannedRounds ?? getPlannedRoundCount(modelConfig, promptOptions, promptWorkflows);
+  const progressPercent = getProgressPercent(progress, documentStatus?.completedRounds.length ?? 0, plannedProgressRounds);
   const runtimeTaskItems = useMemo<RuntimeTaskCenterItem[]>(() => {
     const items: RuntimeTaskCenterItem[] = [];
     const activeRunStatus = roundProgressStatus?.activeRun && !roundProgressStatus.activeRun.completed
@@ -4247,29 +4811,32 @@ export function App({ service }: Props) {
     }
 
     if (activeCompareData?.chunks.length) {
-      const failureByChunk = new Map(activeRerunFailures.map((failure) => [failure.chunkId, failure]));
+      const failedChunkIds = activeRerunFailures.filter((failure) => !isReviewDecisionResolved(reviewDecisions[failure.chunkId])).map((failure) => failure.chunkId);
+      const failedChunkIdSet = new Set(failedChunkIds);
+      const highRiskChunkIds = activeCompareData.chunks
+        .filter((chunk) => !failedChunkIdSet.has(chunk.chunkId) && isHighRiskFailedOutputChunk(chunk) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]))
+        .map((chunk) => chunk.chunkId);
+      const highRiskChunkIdSet = new Set(highRiskChunkIds);
       const reviewChunkIds = activeCompareData.chunks
         .filter((chunk) => {
           const flags = chunk.quality?.flags ?? [];
           const reportMatches = detectionMatchesByChunk[chunk.chunkId] ?? [];
-          return !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]) && (Boolean(chunk.quality?.needsReview)
+          return !failedChunkIdSet.has(chunk.chunkId) && !highRiskChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]) && (Boolean(chunk.quality?.needsReview)
             || chunk.fallbackMode === "source"
             || flags.includes("source_fallback")
-            || failureByChunk.has(chunk.chunkId)
             || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review"));
         })
         .map((chunk) => chunk.chunkId);
-      const failedChunkIds = activeRerunFailures.filter((failure) => !isReviewDecisionResolved(reviewDecisions[failure.chunkId])).map((failure) => failure.chunkId);
-      const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : "review";
-      const preferredChunkId = failedChunkIds[0] ?? reviewChunkIds[0];
-      if (reviewChunkIds.length || failedChunkIds.length) {
+      const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : highRiskChunkIds.length ? "highRisk" : "review";
+      const preferredChunkId = failedChunkIds[0] ?? highRiskChunkIds[0] ?? reviewChunkIds[0];
+      if (reviewChunkIds.length || highRiskChunkIds.length || failedChunkIds.length) {
         items.push({
-          id: `diff-action:${activeCompareData.outputPath || activeCompareData.docId}:${reviewChunkIds.length}:${failedChunkIds.length}`,
-          title: failedChunkIds.length ? "Diff 有优化失败" : "Diff 有内容需确认",
-          status: failedChunkIds.length ? "需处理" : "待审阅",
-          tone: failedChunkIds.length ? "red" : "amber",
+          id: `diff-action:${activeCompareData.outputPath || activeCompareData.docId}:${reviewChunkIds.length}:${highRiskChunkIds.length}:${failedChunkIds.length}`,
+          title: failedChunkIds.length ? "Diff 有优化失败" : highRiskChunkIds.length ? "Diff 有高风险" : "Diff 有内容需确认",
+          status: failedChunkIds.length ? "需处理" : highRiskChunkIds.length ? "高风险" : "待审阅",
+          tone: failedChunkIds.length || highRiskChunkIds.length ? "red" : "amber",
           running: false,
-          actionLabel: preferredFilter === "failed" ? "查看失败内容" : "只看待确认",
+          actionLabel: preferredFilter === "failed" ? "查看失败内容" : preferredFilter === "highRisk" ? "查看高风险" : "只看待确认",
           onAction: () => openDiffTaskTarget(preferredFilter, preferredChunkId),
         });
       }
@@ -4330,7 +4897,7 @@ export function App({ service }: Props) {
         || (
           sameWorkspacePath(roundProgressStatus.sourcePath, documentStatus.sourcePath)
           && roundProgressStatus.promptProfile === documentStatus.promptProfile
-          && promptSequencesEqual(roundProgressStatus.promptSequence, documentStatus.promptSequence)
+          && promptSequencesEqual(roundProgressStatus.promptSequence, documentStatus.promptSequence, promptOptions, documentStatus.promptProfile, promptWorkflows)
         )
       ),
     );
@@ -4349,9 +4916,10 @@ export function App({ service }: Props) {
     }
 
     return items;
-  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.promptProfile, documentStatus?.promptSequence, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, reviewDecisions, roundProgressStatus, taskPhase]);
+  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.promptProfile, documentStatus?.promptSequence, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, promptOptions, promptWorkflows, reviewDecisions, roundProgressStatus, taskPhase]);
   const activeRuntimeTaskCount = runtimeTaskItems.filter((item) => item.running).length;
   const statusAutoAction = !error && pendingAutoAction ? pendingAutoAction : null;
+  const hasActiveOperationFeedback = Boolean(activeRuntimeTaskCount || (uiBusy && !error));
 
   const modelPanel = (
     <ModelConfigCard
@@ -4393,19 +4961,22 @@ export function App({ service }: Props) {
     />
   );
   const activeViewMeta = WORKBENCH_NAV_ITEMS.find((item) => item.view === activeView) ?? WORKBENCH_NAV_ITEMS[0];
+  const operationStatusText = runtimeLabel && runtimeLabel !== "待命" ? runtimeLabel : runtimeStatus;
   const notificationStatusText = error
     ? error
     : statusAutoAction
       ? formatPendingAutoActionStatus(statusAutoAction)
       : notice
         ? notice
-        : unreadNotificationCount
-          ? `${unreadNotificationCount} 未读`
-          : activeRuntimeTaskCount
-            ? `${activeRuntimeTaskCount} 个运行中`
-            : "无未读";
-  const NotificationStatusIcon = error ? AlertCircle : statusAutoAction ? Signal : notice ? CheckCircle2 : Bell;
-  const hasStatusFeedback = Boolean(error || notice || statusAutoAction);
+        : activeRuntimeTaskCount
+          ? `${activeRuntimeTaskCount} 个运行中`
+          : uiBusy
+            ? operationStatusText
+            : unreadNotificationCount
+              ? `${unreadNotificationCount} 未读`
+              : "无未读";
+  const NotificationStatusIcon = error ? AlertCircle : statusAutoAction ? Signal : hasActiveOperationFeedback ? Loader2 : notice ? CheckCircle2 : Bell;
+  const hasStatusFeedback = Boolean(error || notice || statusAutoAction || hasActiveOperationFeedback);
   const notificationStatusLabel = error
     ? "错误反馈"
     : statusAutoAction
@@ -4414,13 +4985,16 @@ export function App({ service }: Props) {
         : "自动执行"
       : notice
         ? "操作反馈"
-        : unreadNotificationCount
-          ? "未读通知"
-          : activeRuntimeTaskCount
-            ? "运行通知"
+        : hasActiveOperationFeedback
+          ? "处理中"
+          : unreadNotificationCount
+            ? "未读通知"
             : "通知";
   const notificationStatusKind: NotificationKind | null = error ? "error" : notice ? "success" : null;
-
+  const showRoundRunStatus = Boolean(currentRunToken || taskPhase === "running-round" || taskPhase === "canceling-run");
+  const roundRunStatusProgress = progress ?? (showRoundRunStatus ? roundProgressStatus?.activeRun?.lastEvent ?? null : null);
+  const loadedCompletedResultRound = roundResult?.round ?? null;
+  const checkpointPendingForCurrentDocument = roundCheckpointMatchesDocument(roundProgressStatus, documentStatus) && !showRoundRunStatus;
   return (
     <SidebarProvider defaultOpen className="h-svh min-h-0 overflow-hidden">
       <AppSidebar
@@ -4462,44 +5036,53 @@ export function App({ service }: Props) {
               </div>
               <ThemeModeMenu />
             </div>
-            <div className="vercel-subbar flex h-10 min-w-0 items-center gap-2 overflow-hidden border-t px-4 text-xs md:overflow-x-auto">
-              <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 flex-1 justify-start px-2 text-xs md:flex-none md:shrink-0" onClick={() => setActiveView("home")}>
-                <FileText data-icon="inline-start" />
-                <span className="text-muted-foreground">当前文件</span>
-                <span className="min-w-0 max-w-[240px] truncate text-foreground">{documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : "未选择"}</span>
-              </Button>
-              <Separator orientation="vertical" className="hidden h-4 md:block" />
-              <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs md:inline-flex" onClick={() => setActiveView("model")}>
-                <Route data-icon="inline-start" />
-                <span className="text-muted-foreground">路线</span>
-                <span className="max-w-[260px] truncate text-foreground">{describePromptProfile(modelConfig.promptProfile)} · {formatPromptSequence(modelConfig.promptSequence)}</span>
-              </Button>
-              <Separator orientation="vertical" className="hidden h-4 md:block" />
-              <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs md:inline-flex" onClick={() => openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)}>
-                <Wand2 data-icon="inline-start" />
-                <span className="text-muted-foreground">Diff</span>
-                <span className="text-foreground">{diffDashboardStats.chunkCount ? `${diffDashboardStats.chunkCount} 块 · ${diffDashboardStats.reviewCount} 待处理` : "未生成"}</span>
-              </Button>
-              <Separator orientation="vertical" className="hidden h-4 md:block" />
+            <div className="vercel-subbar flex h-10 min-w-0 items-center gap-2 overflow-hidden border-t px-4 text-xs">
               <Button
                 type="button"
-                variant={notificationStatusKind === "error" ? "outlineDanger" : hasStatusFeedback ? "outlineSuccess" : unreadNotificationCount || activeRuntimeTaskCount ? "outline" : "ghost"}
+                variant="ghost"
                 size="sm"
-                className={cn(
-                  "h-8 min-w-0 flex-1 max-w-full justify-start px-3 text-xs md:min-w-[220px] md:max-w-[min(48vw,560px)] md:flex-none md:shrink-0",
-                  hasStatusFeedback && "border-primary/35 bg-primary/10 shadow-sm",
-                  notificationStatusKind === "error" && "border-destructive/40 bg-destructive/10",
-                )}
-                aria-label="打开通知与任务中心"
-                aria-live="polite"
-                onClick={openNotificationCenter}
+                data-ui-section="current-file-chip"
+                className="h-7 min-w-[22rem] max-w-[min(58vw,56rem)] shrink-0 justify-start overflow-x-auto px-2 text-xs"
+                onClick={() => setActiveView("home")}
               >
-                <NotificationStatusIcon data-icon="inline-start" />
-                <Badge variant={notificationStatusKind === "error" ? "danger" : hasStatusFeedback ? "secondary" : "outline"} className="shrink-0">
-                  {notificationStatusLabel}
-                </Badge>
-                <span className={cn("min-w-0 flex-1 truncate text-left text-foreground", hasStatusFeedback && "font-semibold")}>{notificationStatusText}</span>
+                <FileText data-icon="inline-start" />
+                <span className="text-muted-foreground">当前文件</span>
+                <span className="shrink-0 text-foreground">{documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : "未选择"}</span>
               </Button>
+              <div className="flex min-w-0 shrink-0 items-center gap-2">
+                <Separator orientation="vertical" className="hidden h-4 md:block" />
+                <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs md:inline-flex" onClick={() => setActiveView("model")}>
+                  <Route data-icon="inline-start" />
+                  <span className="text-muted-foreground">路线</span>
+                  <span className="max-w-[260px] truncate text-foreground">{getPromptProfileLabel(modelConfig.promptProfile, promptWorkflows)} · {formatPromptSequence(modelConfig.promptSequence, promptOptions, modelConfig.promptProfile, promptWorkflows)}</span>
+                </Button>
+                <Separator orientation="vertical" className="hidden h-4 md:block" />
+                <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs md:inline-flex" onClick={() => openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)}>
+                  <Wand2 data-icon="inline-start" />
+                  <span className="text-muted-foreground">Diff</span>
+                  <span className="text-foreground">{formatDiffDashboardLabel(diffDashboardStats)}</span>
+                </Button>
+                <Separator orientation="vertical" className="hidden h-4 md:block" />
+                <Button
+                  type="button"
+                  variant={notificationStatusKind === "error" ? "outlineDanger" : hasStatusFeedback ? "outlineSuccess" : unreadNotificationCount || activeRuntimeTaskCount ? "outline" : "ghost"}
+                  size="sm"
+                  className={cn(
+                    "h-8 min-w-[220px] max-w-[min(42vw,560px)] shrink-0 justify-start px-3 text-xs",
+                    hasStatusFeedback && "border-primary/35 bg-primary/10 shadow-sm",
+                    notificationStatusKind === "error" && "border-destructive/40 bg-destructive/10",
+                  )}
+                  aria-label="打开通知与任务中心"
+                  aria-live="polite"
+                  onClick={openNotificationCenter}
+                >
+                  <NotificationStatusIcon className={cn(hasActiveOperationFeedback && LOADING_ICON_CLASS_NAME)} data-icon="inline-start" />
+                  <Badge variant={notificationStatusKind === "error" ? "danger" : hasStatusFeedback ? "secondary" : "outline"} className="shrink-0">
+                    {notificationStatusLabel}
+                  </Badge>
+                  <span className={cn("min-w-0 flex-1 truncate text-left text-foreground", hasStatusFeedback && "font-semibold")}>{notificationStatusText}</span>
+                </Button>
+              </div>
             </div>
           </header>
 
@@ -4518,6 +5101,8 @@ export function App({ service }: Props) {
                       detectionMatchesByChunk={detectionMatchesByChunk}
                       diffFocusRequest={diffFocusRequest}
                       reviewDecisions={reviewDecisions}
+                      roundRunning={showRoundRunStatus}
+                      checkpointPending={checkpointPendingForCurrentDocument}
                       onReviewDecisionChange={updateReviewDecision}
                       onRerunChunk={(chunkId, userFeedback) => void handleRerunChunk(chunkId, userFeedback)}
                       onRerunRiskyChunks={() => void handleRerunRiskyChunks()}
@@ -4528,21 +5113,31 @@ export function App({ service }: Props) {
                       onExportDocx={() => void handleExportCurrent("docx")}
                     />
                     <div className="min-h-0 flex-1 overflow-hidden">
-                      <DiffReviewCard
-                        result={roundResult}
-                        compareData={activeCompareData}
-                        busy={uiBusy}
-                        rerunFailures={activeRerunFailures}
-                        detectionMatchesByChunk={detectionMatchesByChunk}
-                        diffFocusRequest={diffFocusRequest}
-                        reviewDecisions={reviewDecisions}
-                        onReviewDecisionChange={updateReviewDecision}
-                        onRerunChunk={(chunkId, userFeedback) => void handleRerunChunk(chunkId, userFeedback)}
-                        onRerunRiskyChunks={() => void handleRerunRiskyChunks()}
-                        batchRerunRunning={Boolean(currentBatchRerunToken)}
-                        batchRerunStatusText={runtimeLabel}
-                        onCancelBatchRerun={() => void handleCancelBatchRerun()}
-                      />
+                      {showRoundRunStatus ? (
+                        <RoundRunStatusCard
+                          progress={roundRunStatusProgress}
+                          configuredConcurrency={normalizeRewriteConcurrency(modelConfig.rewriteConcurrency)}
+                          runtimeLabel={runtimeLabel}
+                          cancelRequested={taskPhase === "canceling-run" || runSessionRef.current?.cancelRequested === true}
+                          onCancel={() => void handleCancelRunRound()}
+                        />
+                      ) : (
+                        <DiffReviewCard
+                          result={roundResult}
+                          compareData={activeCompareData}
+                          busy={uiBusy}
+                          rerunFailures={activeRerunFailures}
+                          detectionMatchesByChunk={detectionMatchesByChunk}
+                          diffFocusRequest={diffFocusRequest}
+                          reviewDecisions={reviewDecisions}
+                          onReviewDecisionChange={updateReviewDecision}
+                          onRerunChunk={(chunkId, userFeedback) => void handleRerunChunk(chunkId, userFeedback)}
+                          onRerunRiskyChunks={() => void handleRerunRiskyChunks()}
+                          batchRerunRunning={Boolean(currentBatchRerunToken)}
+                          batchRerunStatusText={runtimeLabel}
+                          onCancelBatchRerun={() => void handleCancelBatchRerun()}
+                        />
+                      )}
                     </div>
                   </div>
                   <ScrollArea
@@ -4556,17 +5151,24 @@ export function App({ service }: Props) {
                         modelConfig={modelConfig}
                         progress={progress}
                         roundProgressStatus={roundProgressStatus}
+                        loadedResultRound={loadedCompletedResultRound}
                         pendingAutoAction={pendingAutoAction}
                         promptProfile={modelConfig.promptProfile}
                         promptSequence={modelConfig.promptSequence}
+                        promptOptions={promptOptions}
+                        promptWorkflows={promptWorkflows}
                         onPromptProfileChange={(promptProfile) => void handlePromptProfileChange(promptProfile)}
                         onPromptSequenceChange={(promptSequence) => void handlePromptSequenceChange(promptSequence)}
-                        onModelConfigChange={setModelConfig}
+                        onModelConfigChange={(nextConfig) => {
+                          latestModelConfigRef.current = nextConfig;
+                          setModelConfig(nextConfig);
+                        }}
                         onSaveModelConfig={(nextConfig) => void handleSaveModelConfig(nextConfig)}
                         onRefreshAllProviderModels={() => void handleRefreshAllProviderModels()}
                         onRefreshProviderModels={(providerId) => void handleRefreshProviderModels(providerId)}
                         onPickFile={handlePickFile}
                         onRunRound={handleRunRound}
+                        onRefreshStatus={() => void handleRefreshCurrentDocumentStatus()}
                         onCancelRun={handleCancelRunRound}
                         onRejectAutoAction={() => rejectPendingAutoAction()}
                         onResetRound={handleResetCurrentRound}
@@ -4598,6 +5200,10 @@ export function App({ service }: Props) {
                   activePromptId={activePromptPreviewId}
                   onActivePromptIdChange={setActivePromptPreviewId}
                   onRefresh={() => void refreshPromptPreviews()}
+                  onSavePrompt={(promptId, payload) => handleSavePromptDraft(promptId, payload)}
+                  onRestoreDefaultPrompt={(promptId) => handleRestoreDefaultPrompt(promptId)}
+                  onCreatePrompt={(payload) => handleCreatePrompt(payload)}
+                  onDeletePrompt={(promptId) => handleDeletePrompt(promptId)}
                 />
               </div>
             ) : activeView === "format" ? (
@@ -4620,6 +5226,8 @@ export function App({ service }: Props) {
                 items={historyItems}
                 promptProfile={modelConfig.promptProfile}
                 promptSequence={modelConfig.promptSequence}
+                promptOptions={promptOptions}
+                promptWorkflows={promptWorkflows}
                 orphanScan={historyOrphanScan}
                 artifactQuery={historyArtifactQuery}
                 artifactMode={historyArtifactMode}
@@ -4857,6 +5465,10 @@ function PromptPreviewPage({
   activePromptId,
   onActivePromptIdChange,
   onRefresh,
+  onSavePrompt,
+  onRestoreDefaultPrompt,
+  onCreatePrompt,
+  onDeletePrompt,
 }: {
   value: PromptPreviewResponse | null;
   busy: boolean;
@@ -4864,36 +5476,131 @@ function PromptPreviewPage({
   activePromptId: PromptId;
   onActivePromptIdChange: (promptId: PromptId) => void;
   onRefresh: () => void;
+  onSavePrompt: (promptId: PromptId, payload: { label: string; description?: string; content: string; contentDirty: boolean; metaDirty: boolean }) => Promise<void>;
+  onRestoreDefaultPrompt: (promptId: PromptId) => Promise<void>;
+  onCreatePrompt: (payload: { label: string; description?: string; content: string }) => Promise<void>;
+  onDeletePrompt: (promptId: PromptId) => Promise<void>;
 }) {
+  const [draftContent, setDraftContent] = useState("");
+  const [draftLabel, setDraftLabel] = useState("");
+  const [draftDescription, setDraftDescription] = useState("");
+  const [createMode, setCreateMode] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [newDescription, setNewDescription] = useState("");
+  const [newContent, setNewContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [localError, setLocalError] = useState("");
   const items = value?.items ?? [];
   const activeItem = items.find((item) => item.id === activePromptId) ?? items[0] ?? null;
-  const contentLineCount = activeItem ? activeItem.content.split(/\r?\n/).length : 0;
+  const activeVersion = activeItem ? `${activeItem.id}:${activeItem.updatedAt}:${activeItem.content.length}` : "";
+  const editable = activeItem?.editable !== false;
+  const dirty = Boolean(activeItem && draftContent !== activeItem.content);
+  const metaDirty = Boolean(activeItem && (draftLabel !== activeItem.label || draftDescription !== activeItem.description));
+  const editorContent = createMode ? newContent : draftContent;
+  const contentLineCount = editorContent ? editorContent.split(/\r?\n/).length : 0;
+
+  useEffect(() => {
+    if (activeItem && !createMode) {
+      setDraftContent(activeItem.content);
+      setDraftLabel(activeItem.label);
+      setDraftDescription(activeItem.description);
+      setLocalError("");
+    }
+  }, [activeVersion, activeItem, createMode]);
+
+  async function saveActivePrompt() {
+    if (!activeItem || !editable || (!dirty && !metaDirty)) {
+      return;
+    }
+    setSaving(true);
+    setLocalError("");
+    try {
+      await onSavePrompt(activeItem.id, {
+        label: draftLabel,
+        description: draftDescription,
+        content: draftContent,
+        contentDirty: dirty,
+        metaDirty,
+      });
+    } catch (appError) {
+      setLocalError(stringifyError(appError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function restoreDefaultPrompt() {
+    if (!activeItem?.defaultAvailable) {
+      return;
+    }
+    setSaving(true);
+    setLocalError("");
+    try {
+      await onRestoreDefaultPrompt(activeItem.id);
+    } catch (appError) {
+      setLocalError(stringifyError(appError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createPrompt() {
+    setSaving(true);
+    setLocalError("");
+    try {
+      await onCreatePrompt({ label: newLabel, description: newDescription, content: newContent });
+      setCreateMode(false);
+      setNewLabel("");
+      setNewDescription("");
+      setNewContent("");
+    } catch (appError) {
+      setLocalError(stringifyError(appError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deletePrompt() {
+    if (!activeItem || activeItem.builtIn) {
+      return;
+    }
+    setSaving(true);
+    setLocalError("");
+    try {
+      await onDeletePrompt(activeItem.id);
+    } catch (appError) {
+      setLocalError(stringifyError(appError));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
-    <div className="grid h-full min-h-0 gap-5 overflow-hidden xl:grid-cols-[300px_minmax(0,1fr)]">
-      <Card className="h-full min-h-0 overflow-hidden">
-        <CardHeader className="pb-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="mb-2 flex items-center gap-2">
-                <Badge variant="secondary">只读</Badge>
-                <Badge variant="outline">Prompt</Badge>
-              </div>
-              <CardTitle className="text-lg">提示词预览</CardTitle>
-            </div>
-            <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={busy}>
-              {busy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
-              刷新
+    <div className="grid h-full min-h-0 gap-5 overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)]">
+      <Card className="flex h-full min-h-0 flex-col overflow-hidden">
+        <CardHeader className="flex shrink-0 flex-col gap-3 pb-3">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <CardTitle className="min-w-0 truncate text-lg">提示词</CardTitle>
+            <Badge variant="outline" className="shrink-0">{items.length} 个</Badge>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Button type="button" variant={createMode ? "secondary" : "outline"} size="sm" className="min-w-0" onClick={() => setCreateMode(true)} disabled={busy || saving}>
+              <Plus data-icon="inline-start" />
+              <span className="min-w-0 truncate">新建</span>
+            </Button>
+            <Button type="button" variant="outline" size="sm" className="min-w-0" onClick={onRefresh} disabled={busy || saving}>
+              {busy ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
+              <span className="min-w-0 truncate">刷新</span>
             </Button>
           </div>
         </CardHeader>
 
-        <CardContent className="flex h-[calc(100%-6.5rem)] min-h-0 flex-col gap-4 px-5 pb-5">
-          {error ? (
+        <CardContent className="flex min-h-0 flex-1 flex-col gap-4 px-5 pb-5">
+          {error || localError ? (
             <Alert variant="destructive">
               <AlertCircle />
               <AlertTitle>读取失败</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
+              <AlertDescription>{localError || error}</AlertDescription>
             </Alert>
           ) : null}
 
@@ -4907,15 +5614,18 @@ function PromptPreviewPage({
                       key={item.id}
                       type="button"
                       variant={active ? "secondary" : "outline"}
-                      className={cn("h-auto w-full justify-start px-3 py-3 text-left", active && "border-primary bg-muted")}
-                      onClick={() => onActivePromptIdChange(item.id)}
+                      className={cn("h-auto w-full justify-start rounded-md px-3 py-3 text-left", active && "border-primary bg-muted")}
+                      onClick={() => {
+                        setCreateMode(false);
+                        onActivePromptIdChange(item.id);
+                      }}
                     >
                       <span className="flex min-w-0 flex-1 flex-col gap-1">
                         <span className="flex items-center justify-between gap-3">
                           <span className="truncate font-semibold">{item.label}</span>
-                          <Badge variant={active ? "brand" : "outline"}>{item.id}</Badge>
+                          <Badge variant={item.builtIn ? "outline" : "secondary"} className="shrink-0">{item.builtIn ? "内置" : "自定义"}</Badge>
                         </span>
-                        <span className="truncate text-[11px] font-medium text-muted-foreground">{item.relativePath}</span>
+                        <span className="truncate text-[11px] font-medium text-muted-foreground">{item.fileName}</span>
                       </span>
                     </Button>
                   );
@@ -4926,7 +5636,7 @@ function PromptPreviewPage({
             <Empty className="min-h-[18rem] flex-1 border">
               <EmptyHeader>
                 <EmptyMedia variant="icon">
-                  {busy ? <Loader2 className="animate-spin" /> : <FileText />}
+                  {busy ? <Loader2 className={LOADING_ICON_CLASS_NAME} /> : <FileText />}
                 </EmptyMedia>
                 <EmptyTitle>{busy ? "正在读取提示词文件" : "暂无可预览的提示词"}</EmptyTitle>
               </EmptyHeader>
@@ -4936,7 +5646,49 @@ function PromptPreviewPage({
       </Card>
 
       <Card className="h-full min-h-0 overflow-hidden">
-        {activeItem ? (
+        {createMode ? (
+          <>
+            <CardHeader className="pb-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary">自定义</Badge>
+                    <Badge variant="outline">{contentLineCount} 行</Badge>
+                  </div>
+                  <CardTitle className="mt-2 text-xl">新建提示词</CardTitle>
+                </div>
+                <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:items-center">
+                  <Button type="button" variant="outline" size="sm" className="min-w-0" onClick={() => setCreateMode(false)} disabled={saving}>
+                    <span className="min-w-0 truncate">取消</span>
+                  </Button>
+                  <Button type="button" size="sm" className="min-w-0" onClick={() => void createPrompt()} disabled={saving || !newContent.trim()}>
+                    {saving ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <Save data-icon="inline-start" />}
+                    <span className="min-w-0 truncate">保存</span>
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="flex h-[calc(100%-7rem)] min-h-0 flex-col gap-3 px-5 pb-5">
+              <FieldGroup className="grid gap-3 md:grid-cols-2">
+                <Field>
+                  <FieldLabel>名称</FieldLabel>
+                  <Input value={newLabel} onChange={(event) => setNewLabel(event.target.value)} disabled={saving} placeholder="自定义提示词" />
+                </Field>
+                <Field>
+                  <FieldLabel>备注</FieldLabel>
+                  <Input value={newDescription} onChange={(event) => setNewDescription(event.target.value)} disabled={saving} placeholder="用途或风格" />
+                </Field>
+              </FieldGroup>
+              <Textarea
+                value={newContent}
+                onChange={(event) => setNewContent(event.target.value)}
+                disabled={saving}
+                className="min-h-0 flex-1 resize-none rounded-md border bg-muted font-mono text-[12px] leading-6"
+                placeholder="写入完整 prompt 内容"
+              />
+            </CardContent>
+          </>
+        ) : activeItem ? (
           <>
             <CardHeader className="pb-3">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -4945,18 +5697,52 @@ function PromptPreviewPage({
                     <Badge variant="outline">{activeItem.fileName}</Badge>
                     <Badge variant="outline">{formatBytes(activeItem.sizeBytes)}</Badge>
                     <Badge variant="outline">{contentLineCount} 行</Badge>
+                    <Badge variant={editable ? "secondary" : "outline"}>{editable ? "可编辑" : "锁定"}</Badge>
                   </div>
                   <CardTitle className="mt-2 text-xl">{activeItem.label}</CardTitle>
                 </div>
-                <Badge variant="secondary">{formatDateTime(activeItem.updatedAt)}</Badge>
+                <div className="flex shrink-0 flex-col gap-2 sm:items-end">
+                  <Badge variant="outline" className="w-fit max-w-full">{formatDateTime(activeItem.updatedAt)}</Badge>
+                  <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
+                    <Button type="button" variant="outline" size="sm" className="min-w-0" onClick={() => setDraftContent(activeItem.content)} disabled={saving || !dirty}>
+                      <span className="min-w-0 truncate">还原</span>
+                    </Button>
+                    {activeItem.builtIn ? (
+                      <Button type="button" variant="outline" size="sm" className="min-w-0" onClick={() => void restoreDefaultPrompt()} disabled={saving || !activeItem.defaultAvailable}>
+                        <RefreshCw data-icon="inline-start" />
+                        <span className="min-w-0 truncate">默认</span>
+                      </Button>
+                    ) : (
+                      <Button type="button" variant="destructive" size="sm" className="min-w-0" onClick={() => void deletePrompt()} disabled={saving}>
+                        <Trash2 data-icon="inline-start" />
+                        <span className="min-w-0 truncate">删除</span>
+                      </Button>
+                    )}
+                    <Button type="button" size="sm" className="min-w-0 sm:min-w-24" onClick={() => void saveActivePrompt()} disabled={saving || !editable || (!dirty && !metaDirty)}>
+                      {saving ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <Save data-icon="inline-start" />}
+                      <span className="min-w-0 truncate">保存</span>
+                    </Button>
+                  </div>
+                </div>
               </div>
             </CardHeader>
-            <CardContent className="flex h-[calc(100%-7rem)] min-h-0 flex-col px-5 pb-5">
-              <ScrollArea className="min-h-0 flex-1 rounded-md border bg-muted">
-                <pre className="p-4 text-[12px] leading-6 text-foreground">
-                  <code>{activeItem.content}</code>
-                </pre>
-              </ScrollArea>
+            <CardContent className="flex h-[calc(100%-7rem)] min-h-0 flex-col gap-3 px-5 pb-5">
+              <FieldGroup className="grid gap-3 md:grid-cols-2">
+                <Field>
+                  <FieldLabel>名称</FieldLabel>
+                  <Input value={draftLabel} onChange={(event) => setDraftLabel(event.target.value)} disabled={saving} />
+                </Field>
+                <Field>
+                  <FieldLabel>备注</FieldLabel>
+                  <Input value={draftDescription} onChange={(event) => setDraftDescription(event.target.value)} disabled={saving} />
+                </Field>
+              </FieldGroup>
+              <Textarea
+                value={draftContent}
+                onChange={(event) => setDraftContent(event.target.value)}
+                disabled={saving || !editable}
+                className="min-h-0 flex-1 resize-none rounded-md border bg-muted font-mono text-[12px] leading-6"
+              />
             </CardContent>
           </>
         ) : (
@@ -4964,7 +5750,7 @@ function PromptPreviewPage({
             <Empty className="min-h-[24rem] flex-1 border">
               <EmptyHeader>
                 <EmptyMedia variant="icon">
-                  {busy ? <Loader2 className="animate-spin" /> : <FileText />}
+                  {busy ? <Loader2 className={LOADING_ICON_CLASS_NAME} /> : <FileText />}
                 </EmptyMedia>
                 <EmptyTitle>{busy ? "正在读取提示词内容" : error ? "提示词读取失败" : "选择左侧提示词后查看内容"}</EmptyTitle>
               </EmptyHeader>
@@ -4982,9 +5768,12 @@ function HomeRunPanel({
   modelConfig,
   progress,
   roundProgressStatus,
+  loadedResultRound,
   pendingAutoAction,
   promptProfile,
   promptSequence,
+  promptOptions,
+  promptWorkflows,
   onPromptProfileChange,
   onPromptSequenceChange,
   onModelConfigChange,
@@ -4993,6 +5782,7 @@ function HomeRunPanel({
   onRefreshProviderModels,
   onPickFile,
   onRunRound,
+  onRefreshStatus,
   onCancelRun,
   onRejectAutoAction,
   onResetRound,
@@ -5003,9 +5793,12 @@ function HomeRunPanel({
   modelConfig: ModelConfig;
   progress: RoundProgress | null;
   roundProgressStatus: RoundProgressStatus | null;
+  loadedResultRound: number | null;
   pendingAutoAction: PendingAutoAction | null;
   promptProfile: ModelConfig["promptProfile"];
   promptSequence: PromptId[];
+  promptOptions: PromptOption[];
+  promptWorkflows: PromptWorkflow[];
   onPromptProfileChange: (promptProfile: ModelConfig["promptProfile"]) => void;
   onPromptSequenceChange: (promptSequence: PromptId[]) => void;
   onModelConfigChange: (modelConfig: ModelConfig) => void;
@@ -5013,7 +5806,8 @@ function HomeRunPanel({
   onRefreshAllProviderModels: () => void;
   onRefreshProviderModels: (providerId: string) => void;
   onPickFile: () => void;
-  onRunRound: () => void;
+  onRunRound: (modelConfig?: ModelConfig) => void;
+  onRefreshStatus: () => void;
   onCancelRun: () => void;
   onRejectAutoAction: () => void;
   onResetRound: () => void;
@@ -5039,14 +5833,34 @@ function HomeRunPanel({
 
   const hasDocument = Boolean(value);
   const hasPendingRound = Boolean(value?.hasNextRound);
-  const activeSequence = normalizePromptSequence(promptSequence);
-  const activeFlowSequence = getPromptFlowSequence(promptProfile, activeSequence);
+  const completedRounds = (value?.completedRounds ?? [])
+    .filter((round): round is number => Number.isFinite(round))
+    .sort((left, right) => left - right);
+  const latestCompletedRound = completedRounds[completedRounds.length - 1] ?? null;
+  const visibleResultRound = loadedResultRound ?? latestCompletedRound;
+  const hasVisibleResult = Boolean(visibleResultRound);
+  const resultAheadOfStatus = Boolean(value?.nextRound && visibleResultRound && visibleResultRound >= value.nextRound);
+  const editablePromptProfile = getDefaultPromptProfile(promptWorkflows);
+  const activeSequence = normalizePromptSequence(promptSequence, promptOptions, promptProfile, promptWorkflows);
+  const activeFlowSequence = getPromptFlowSequence(promptProfile, activeSequence, promptOptions, promptWorkflows);
+  const plannedRoundCount = activeFlowSequence.length;
+  const manualContinuationRound = Boolean(value?.hasNextRound && value.nextRound && value.nextRound > plannedRoundCount);
+  const promptSelectOptions = activeFlowSequence.reduce<PromptOption[]>((options, promptId) => {
+    if (options.some((item) => item.id === promptId)) {
+      return options;
+    }
+    return [...options, { id: promptId, label: promptId }];
+  }, promptOptions);
+  const sequenceLengthLimit = Math.max(1, Math.min(getPromptSequenceLimit(promptProfile, promptWorkflows), promptSelectOptions.length || 1));
+  const sequenceLengthOptions = Array.from({ length: sequenceLengthLimit }, (_, index) => index + 1);
   const providers = modelConfig.modelProviders ?? [];
   const enabledProviders = providers.filter((provider) => provider.enabled !== false);
   const providerOptions = enabledProviders;
-  const promptSummary = promptProfile === "cn_custom" ? formatPromptSequence(activeSequence) : describePromptProfile(promptProfile);
+  const promptSummary = isPromptSequenceCustomizable(promptProfile, promptWorkflows)
+    ? formatPromptSequence(activeSequence, promptSelectOptions, promptProfile, promptWorkflows)
+    : getPromptProfileLabel(promptProfile, promptWorkflows);
   const modelRouteSummary = activeFlowSequence.map((promptId, index) => {
-    const roundKey = getRoundModelKey(promptProfile, index + 1);
+    const roundKey = getRoundModelKey(promptProfile, index + 1, promptWorkflows);
     const roundModel = roundKey ? modelConfig.roundModels?.[roundKey] : undefined;
     const provider = findProviderForRoundModel(modelConfig, roundModel);
     const customRoute = Boolean(roundModel?.enabled);
@@ -5095,11 +5909,12 @@ function HomeRunPanel({
     : `默认 ${modelConfig.model || "未选"} · ${activeFlowSequence.length} 轮`;
   const modelRouteLines = modelRouteSummary.map((item) => `${item.index + 1}. ${item.providerLabel} · ${item.modelLabel}`);
   const activeRunStatus = roundProgressStatus?.activeRun && !roundProgressStatus.activeRun.completed ? roundProgressStatus.activeRun : null;
+  const checkpointOnCurrentRound = roundCheckpointMatchesDocument(roundProgressStatus, value);
   const resumableCheckpoint = roundProgressStatus?.canResume
     && sameWorkspacePath(roundProgressStatus.sourcePath, value?.sourcePath)
     && roundProgressStatus.round === value?.nextRound
-    && roundProgressStatus.promptProfile === value?.promptProfile
-    && promptSequencesEqual(roundProgressStatus.promptSequence, value?.promptSequence)
+    && roundProgressStatus.promptProfile === promptProfile
+    && promptSequencesEqual(roundProgressStatus.promptSequence, activeSequence, promptOptions, promptProfile, promptWorkflows)
     ? roundProgressStatus
     : null;
   const runRecoveryState = buildRunRecoveryPanelState({
@@ -5109,50 +5924,64 @@ function HomeRunPanel({
     resumableCheckpoint,
     nextRound: value?.nextRound,
   });
+  const rewriteConcurrency = normalizeRewriteConcurrency(modelConfig.rewriteConcurrency);
+  const currentRunCompletedChunks = progress?.completedChunks ?? progress?.currentChunk ?? 0;
   const currentRunProgressPercent = progress?.totalChunks
-    ? clampPercent(Math.round(((progress.completedChunks ?? 0) / progress.totalChunks) * 100))
+    ? clampPercent(Math.round((currentRunCompletedChunks / progress.totalChunks) * 100))
     : null;
   const checkpointRunLabel = resumableCheckpoint
     ? resumableCheckpoint.resumeActionLabel?.includes("收尾")
       ? "继续收尾"
-      : "继续本轮"
+      : `继续第 ${resumableCheckpoint.round ?? value?.nextRound ?? ""} 轮`
     : "";
-  const canRunNextRound = hasPendingRound && !busy && !running && !activeRunStatus && unavailableRouteCount === 0;
+  const waitingForStatusSync = Boolean(resultAheadOfStatus && !resumableCheckpoint && !checkpointOnCurrentRound);
+  const canRefreshStatus = hasDocument && !busy && !running && !activeRunStatus;
+  const canResetRound = Boolean(resumableCheckpoint || latestCompletedRound);
+  const canRunNextRound = hasPendingRound && !waitingForStatusSync && !busy && !running && !activeRunStatus && unavailableRouteCount === 0;
+  const nextRoundButtonText = value?.hasNextRound && value.nextRound
+    ? manualContinuationRound
+      ? `追加第 ${value.nextRound} 轮`
+      : value.nextRound > 1
+        ? `继续第 ${value.nextRound} 轮`
+        : `开始第 ${value.nextRound} 轮`
+    : "";
   const runButtonText = running
     ? `正在执行第 ${value?.nextRound ?? ""} 轮`
     : activeRunStatus
       ? "后台已有运行"
     : unavailableRouteCount
     ? "先修复模型路线"
-    : value?.hasNextRound
-      ? resumableCheckpoint
-        ? checkpointRunLabel
-        : `开始第 ${value.nextRound} 轮`
-      : value
-        ? "全部轮次已完成"
-        : "上传后开始第 1 轮";
-  const runHelperText = running
-    ? "中断保留断点。"
-    : activeRunStatus
-      ? "后台运行中。"
-    : hasDocument
-      ? value?.hasNextRound
+    : waitingForStatusSync
+      ? "刷新轮次状态"
+      : value?.hasNextRound
         ? resumableCheckpoint
-          ? resumableCheckpoint.resumeExplanation || "从断点继续。"
-          : "确认路线后执行。"
-        : "已完成，可导出。"
-      : "先导入论文。";
+          ? checkpointRunLabel
+          : nextRoundButtonText
+      : value
+        ? "已到上限，可导出"
+        : "上传后开始第 1 轮";
+  const primaryRunButtonDisabled = waitingForStatusSync ? !canRefreshStatus : !canRunNextRound;
+  const primaryRunButtonVariant = waitingForStatusSync || canRunNextRound ? "default" : "secondary";
+  const handlePrimaryRunAction = () => {
+    if (waitingForStatusSync) {
+      onRefreshStatus();
+      return;
+    }
+    onRunRound(modelConfigRef.current);
+  };
   const updateSequenceRound = (roundIndex: number, promptId: PromptId) => {
     const nextSequence = activeSequence.map((item, index) => (index === roundIndex ? promptId : item));
     onPromptSequenceChange(nextSequence);
   };
   const updateSequenceLength = (length: number) => {
-    const nextSequence = Array.from({ length }, (_, index) => activeSequence[index] ?? DEFAULT_PROMPT_SEQUENCE[index] ?? "round2");
+    const fallback = promptSelectOptions[0]?.id ?? "round1";
+    const nextLength = Math.max(1, Math.min(sequenceLengthLimit, length));
+    const nextSequence = Array.from({ length: nextLength }, (_, index) => activeSequence[index] ?? activeFlowSequence[index] ?? promptSelectOptions[index]?.id ?? fallback);
     onPromptSequenceChange(nextSequence);
   };
   const updateRoundProvider = (roundIndex: number, providerId: string) => {
     const currentConfig = modelConfigRef.current;
-    const roundKey = getRoundModelKey(promptProfile, roundIndex + 1);
+    const roundKey = getRoundModelKey(promptProfile, roundIndex + 1, promptWorkflows);
     if (!roundKey) return;
     const currentProviders = currentConfig.modelProviders ?? [];
     const nextRoundModels = { ...(currentConfig.roundModels ?? {}) };
@@ -5183,7 +6012,7 @@ function HomeRunPanel({
   };
   const updateRoundModel = (roundIndex: number, model: string) => {
     const currentConfig = modelConfigRef.current;
-    const roundKey = getRoundModelKey(promptProfile, roundIndex + 1);
+    const roundKey = getRoundModelKey(promptProfile, roundIndex + 1, promptWorkflows);
     if (!roundKey) return;
     const currentRound = currentConfig.roundModels?.[roundKey];
     const provider = currentRound?.enabled ? findProviderForRoundModel(currentConfig, currentRound) : null;
@@ -5212,7 +6041,7 @@ function HomeRunPanel({
     const currentConfig = modelConfigRef.current;
     const nextRoundModels = { ...(currentConfig.roundModels ?? {}) };
     activeFlowSequence.forEach((_, index) => {
-      const roundKey = getRoundModelKey(promptProfile, index + 1);
+      const roundKey = getRoundModelKey(promptProfile, index + 1, promptWorkflows);
       if (!roundKey) return;
       nextRoundModels[roundKey] = {
         ...(nextRoundModels[roundKey] ?? {
@@ -5229,6 +6058,12 @@ function HomeRunPanel({
       };
     });
     const nextConfig = { ...currentConfig, roundModels: nextRoundModels };
+    modelConfigRef.current = nextConfig;
+    onModelConfigChange(nextConfig);
+  };
+  const updateRewriteConcurrency = (nextValue: string) => {
+    const nextConcurrency = normalizeRewriteConcurrency(nextValue, rewriteConcurrency);
+    const nextConfig = { ...modelConfigRef.current, rewriteConcurrency: nextConcurrency };
     modelConfigRef.current = nextConfig;
     onModelConfigChange(nextConfig);
   };
@@ -5273,8 +6108,8 @@ function HomeRunPanel({
               type="button"
               variant="outline"
               onClick={() => {
-                if (promptProfile !== ACTIVE_PROMPT_PROFILE) {
-                  onPromptProfileChange(ACTIVE_PROMPT_PROFILE);
+                if (promptProfile !== editablePromptProfile) {
+                  onPromptProfileChange(editablePromptProfile);
                 }
                 setSetupEditor(setupEditor === "prompt" ? null : "prompt");
               }}
@@ -5290,7 +6125,7 @@ function HomeRunPanel({
               <div className="flex min-w-0 flex-wrap gap-1">
                 {activeFlowSequence.map((promptId, index) => (
                   <Badge key={`${promptId}-${index}-flow`} variant="secondary" className="max-w-full truncate text-[10px]">
-                    {index + 1}. {PROMPT_OPTIONS.find((option) => option.id === promptId)?.label ?? promptId}
+                    {index + 1}. {getPromptLabel(promptId, promptSelectOptions)}
                   </Badge>
                 ))}
               </div>
@@ -5327,20 +6162,35 @@ function HomeRunPanel({
         <section className={cn("flex min-w-0 max-w-full flex-col gap-3 overflow-hidden", running && "rounded-lg border border-destructive/30 bg-destructive/5 p-3")}>
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-sm font-semibold">{running ? "正在运行" : "执行动作"}</div>
-              {!runRecoveryState ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{runHelperText}</p> : null}
+              <div className="text-sm font-semibold">运行控制</div>
             </div>
             {value?.hasNextRound ? (
               <Badge variant={running ? "warning" : "outline"} className={running ? "border-destructive/30 bg-destructive/5 text-destructive" : ""}>
-                第 {value.nextRound} 轮
+                {manualContinuationRound ? `追加 ${value.nextRound}` : `第 ${value.nextRound} 轮`}
               </Badge>
             ) : null}
           </div>
           {hasDocument ? (
             <>
-              <RunRecoveryPanel state={runRecoveryState} />
+              <RunRecoveryPanel state={running ? null : runRecoveryState} />
               <AutoRunSignal action={pendingAutoAction} onReject={onRejectAutoAction} />
-              {progress?.totalChunks && !runRecoveryState && currentRunProgressPercent != null ? (
+              {hasVisibleResult && visibleResultRound && !running && !runRecoveryState ? (
+                <Alert className="min-w-0 overflow-hidden bg-background">
+                  <CheckCircle2 />
+                  <AlertTitle className="truncate text-sm">第 {visibleResultRound} 轮已完成</AlertTitle>
+                </Alert>
+              ) : null}
+              <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border bg-background p-2">
+                <div className="min-w-0 text-xs font-semibold text-muted-foreground">轮内并发</div>
+                  <ToggleGroup type="single" value={String(rewriteConcurrency)} onValueChange={updateRewriteConcurrency} disabled={busy || running} size="sm" className="shrink-0">
+                    {REWRITE_CONCURRENCY_LEVELS.map((item) => (
+                    <ToggleGroupItem key={item} value={String(item)} className="min-w-8">
+                      {item}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
+              {progress?.totalChunks && !running && !runRecoveryState && currentRunProgressPercent != null ? (
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
                     <span>运行进度</span>
@@ -5350,20 +6200,22 @@ function HomeRunPanel({
                 </div>
               ) : null}
               <div className="grid gap-2">
-                <Button
-                  variant={canRunNextRound ? "default" : "secondary"}
-                  className="h-11 w-full min-w-0 overflow-hidden"
-                  onClick={onRunRound}
-                  disabled={!canRunNextRound}
-                >
-                  {running ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Wand2 data-icon="inline-start" />}
-                  <span className="min-w-0 truncate">{runButtonText}</span>
-                </Button>
+                {!running ? (
+                  <Button
+                    variant={primaryRunButtonVariant}
+                    className="h-11 w-full min-w-0 overflow-hidden"
+                    onClick={handlePrimaryRunAction}
+                    disabled={primaryRunButtonDisabled}
+                  >
+                    {waitingForStatusSync ? <RefreshCw data-icon="inline-start" /> : <Wand2 data-icon="inline-start" />}
+                    <span className="min-w-0 truncate">{runButtonText}</span>
+                  </Button>
+                ) : null}
                 {running ? (
                   <Button className="h-10 min-w-0 overflow-hidden" variant="destructive" onClick={onCancelRun}><span className="min-w-0 truncate">中断当前轮</span></Button>
-                ) : value?.hasNextRound ? (
+                ) : canResetRound ? (
                   <Button className="h-10 min-w-0 overflow-hidden" variant="outline" onClick={onResetRound} disabled={busy}>
-                    <span className="min-w-0 truncate">放弃本轮进度</span>
+                    <span className="min-w-0 truncate">{latestCompletedRound && !resumableCheckpoint ? "放弃已完成结果" : "放弃本轮进度"}</span>
                   </Button>
                 ) : null}
               </div>
@@ -5391,13 +6243,13 @@ function HomeRunPanel({
           </DialogHeader>
           <Separator />
 
-          <ScrollArea className="shadcn-scroll-bound min-h-0 min-w-0 overflow-x-hidden px-6 pb-6">
+          <ScrollArea className="shadcn-scroll-bound h-full min-h-0 min-w-0 overflow-x-hidden px-6 pb-6">
             <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-x-hidden">
             {setupEditor === "prompt" ? (
               <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-hidden">
                 <div className="min-w-0 overflow-hidden rounded-lg border bg-background p-4">
-                    <div className="grid grid-cols-3 gap-2">
-                      {[1, 2, 3].map((length) => (
+                    <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(4.5rem,1fr))]">
+                      {sequenceLengthOptions.map((length) => (
                         <Button key={length} type="button" variant={activeSequence.length === length ? "default" : "outline"} size="sm" onClick={() => updateSequenceLength(length)} disabled={busy}>{length} 轮</Button>
                       ))}
                     </div>
@@ -5409,7 +6261,7 @@ function HomeRunPanel({
                             <SelectTrigger><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectGroup>
-                                {PROMPT_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}
+                                {promptSelectOptions.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}
                               </SelectGroup>
                             </SelectContent>
                           </Select>
@@ -5452,8 +6304,8 @@ function HomeRunPanel({
                 </Card>
                 <div className="grid min-w-0 gap-3">
                   {activeFlowSequence.map((promptId, index) => {
-                    const promptOption = PROMPT_OPTIONS.find((option) => option.id === promptId);
-                    const roundKey = getRoundModelKey(promptProfile, index + 1);
+                    const promptOption = getPromptOption(promptId, promptSelectOptions);
+                    const roundKey = getRoundModelKey(promptProfile, index + 1, promptWorkflows);
                     const roundModel = roundKey ? modelConfig.roundModels?.[roundKey] : undefined;
                     const provider = findProviderForRoundModel(modelConfig, roundModel);
                     const selectedProviderId = roundModel?.enabled && provider && provider.enabled !== false ? provider.id : "__default";
@@ -5538,6 +6390,91 @@ function HomeRunPanel({
       </Dialog>
     ) : null}
     </>
+  );
+}
+
+function RoundRunStatusCard({
+  progress,
+  configuredConcurrency,
+  runtimeLabel,
+  cancelRequested,
+  onCancel,
+}: {
+  progress: RoundProgress | null;
+  configuredConcurrency: number;
+  runtimeLabel: string;
+  cancelRequested: boolean;
+  onCancel: () => void;
+}) {
+  const totalChunks = Math.max(0, Number(progress?.totalChunks ?? 0) || 0);
+  const completedSource = progress?.completedChunks ?? (progress?.phase === "chunk-complete" ? progress.currentChunk : 0) ?? 0;
+  const completedChunks = Math.max(0, Number(completedSource) || 0);
+  const safeCompletedChunks = totalChunks ? Math.min(completedChunks, totalChunks) : completedChunks;
+  const activeChunks = Math.max(0, Number(progress?.activeChunks ?? 0) || 0);
+  const queuedChunks = Math.max(0, Number(progress?.queuedChunks ?? 0) || 0);
+  const remainingChunks = totalChunks ? Math.max(0, totalChunks - safeCompletedChunks) : activeChunks + queuedChunks;
+  const configuredConcurrencyValue = normalizeRewriteConcurrency(progress?.configuredConcurrency ?? configuredConcurrency);
+  const concurrency = normalizeRewriteConcurrency(progress?.concurrency, configuredConcurrencyValue);
+  const concurrencyLabel = concurrency === configuredConcurrencyValue ? String(concurrency) : `${concurrency}/${configuredConcurrencyValue}`;
+  const percent = totalChunks ? clampPercent(Math.round((safeCompletedChunks / totalChunks) * 100)) : 0;
+  const failed = progress?.phase === "chunk-failed";
+  const errorBrief = progress ? formatProviderErrorBrief(progress) : "";
+  const restoring = progress?.phase === "restoring-output";
+  const statusLabel = cancelRequested || progress?.phase === "cancel-requested"
+    ? "中断中"
+    : failed
+      ? "异常"
+      : restoring
+        ? "收尾"
+        : "运行中";
+
+  return (
+    <Card className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <CardHeader className="shrink-0 p-4 pb-3">
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle className="truncate text-base">轮次运行中</CardTitle>
+          </div>
+          <Badge variant={failed ? "danger" : cancelRequested ? "warning" : "secondary"} className="shrink-0">
+            {statusLabel}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-4 pt-0">
+        <Alert variant={failed ? "destructive" : "default"} className="min-w-0 overflow-hidden bg-background">
+          {failed ? <AlertCircle /> : <Activity />}
+          <AlertTitle className="truncate text-sm">{runtimeLabel || "等待进度"}</AlertTitle>
+          {totalChunks || errorBrief ? (
+            <AlertDescription className="flex flex-col gap-2 pt-2">
+              {errorBrief ? <span className="truncate text-xs">{errorBrief}</span> : null}
+              {totalChunks ? <Progress value={percent} className="h-2" /> : null}
+            </AlertDescription>
+          ) : null}
+        </Alert>
+
+        <div className="grid shrink-0 grid-cols-3 gap-2">
+          <div className="rounded-lg border bg-background p-3">
+            <div className="text-xs font-medium text-muted-foreground">已完成</div>
+            <div className="mt-1 text-lg font-semibold">{totalChunks ? `${safeCompletedChunks}/${totalChunks}` : safeCompletedChunks}</div>
+          </div>
+          <div className="rounded-lg border bg-background p-3">
+            <div className="text-xs font-medium text-muted-foreground">剩余</div>
+            <div className="mt-1 text-lg font-semibold">{remainingChunks}</div>
+          </div>
+          <div className="rounded-lg border bg-background p-3">
+            <div className="text-xs font-medium text-muted-foreground">并发</div>
+            <div className="mt-1 text-lg font-semibold">{concurrencyLabel}</div>
+          </div>
+        </div>
+
+        <div className="mt-auto shrink-0">
+          <Button type="button" variant="destructive" className="w-full min-w-0 overflow-hidden" onClick={onCancel} disabled={cancelRequested}>
+            {cancelRequested ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <X data-icon="inline-start" />}
+            <span className="min-w-0 truncate">{cancelRequested ? "正在中断" : "中断当前轮"}</span>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -5830,7 +6767,7 @@ function DiagnosticsPage({
                 {copied ? "已复制" : "复制诊断"}
               </Button>
               <Button size="sm" onClick={onRefresh} disabled={busy}>
-                {busy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
+                {busy ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
                 重新自检
               </Button>
             </div>
@@ -5938,7 +6875,8 @@ function DiagnosticsPage({
                     <DiagnosticRow label="密钥" value={value.config.hasApiKey ? "已填写" : "缺少 API Key"} />
                     <DiagnosticRow label="服务商仓库" value={`保存 ${value.config.providerCount} · 启用 ${value.config.enabledProviderCount}`} />
                     <DiagnosticRow label="轮次专属配置" value={`${value.config.customRoundCount} 轮`} />
-                    <DiagnosticRow label="超时/重试" value={`${value.config.requestTimeoutSeconds ?? "-"}s / ${value.config.maxRetries ?? "-"} 次`} />
+              <DiagnosticRow label="轮内并发" value={`${value.config.rewriteConcurrency ?? 2}/${value.config.maxRewriteConcurrency ?? MAX_REWRITE_CONCURRENCY}`} />
+              <DiagnosticRow label="超时/重试" value={`${value.config.effectiveRewriteTimeoutSeconds ?? value.config.requestTimeoutSeconds ?? "-"}s / ${value.config.maxRetries ?? "-"} 次`} />
                   </CardContent>
                 </Card>
 
@@ -6520,23 +7458,23 @@ function NotificationCenter({
       <SheetContent
         aria-modal={true}
         side="right"
-        className="flex w-[min(92vw,420px)] flex-col p-0 sm:max-w-none [&>button]:hidden"
+        className="flex w-[min(96vw,34rem)] min-w-0 max-w-[calc(100vw-0.75rem)] flex-col overflow-hidden p-0 sm:max-w-none [&>button]:hidden"
       >
-        <SheetHeader className="border-b px-4 py-4 text-left">
+        <SheetHeader className="min-w-0 overflow-hidden border-b px-4 py-4 text-left">
           <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <SheetTitle className="flex items-center gap-2">
+            <div className="min-w-0 overflow-hidden">
+              <SheetTitle className="flex min-w-0 items-center gap-2">
                 <Bell />
-                通知与任务中心
+                <span className="min-w-0 truncate">通知与任务中心</span>
               </SheetTitle>
               <SheetDescription className="sr-only">查看运行任务和最近通知。</SheetDescription>
             </div>
-            <Button variant="ghost" size="icon" onClick={onClose} aria-label="关闭通知与任务中心">
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={onClose} aria-label="关闭通知与任务中心">
               <X data-icon="inline-start" />
             </Button>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap gap-2 text-xs">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 overflow-hidden">
+            <div className="flex min-w-0 flex-wrap gap-2 text-xs">
               <Badge variant={runningTaskCount ? "warning" : "outline"}>{runningTaskCount} 运行中</Badge>
               <Badge variant="outline">{taskCountText}</Badge>
               <Badge variant="outline">{items.length} 通知</Badge>
@@ -6549,52 +7487,52 @@ function NotificationCenter({
           </div>
         </SheetHeader>
 
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="flex flex-col gap-5 p-4">
-            <section data-ui-section="runtime-task-center" className="flex flex-col gap-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+        <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-x-hidden">
+          <div className="flex min-w-0 max-w-full flex-col gap-5 overflow-x-hidden p-4">
+            <section data-ui-section="runtime-task-center" className="flex min-w-0 flex-col gap-3 overflow-hidden">
+              <div className="flex min-w-0 items-center justify-between gap-3 overflow-hidden">
+                <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
                   <Activity />
-                  运行任务
+                  <span className="min-w-0 truncate">运行任务</span>
                 </div>
-                <Badge variant={runningTaskCount ? "warning" : "outline"}>
+                <Badge className="shrink-0" variant={runningTaskCount ? "warning" : "outline"}>
                   {runningTaskCount ? `${runningTaskCount} 个运行中` : "无运行任务"}
                 </Badge>
               </div>
 
               {taskItems.length ? (
-                <div className="overflow-hidden rounded-lg border bg-card">
+                  <div className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-card">
                   {taskItems.map((item, index) => (
                     <Fragment key={item.id}>
                       {index ? <Separator /> : null}
                       <div className={cn("flex flex-col gap-3 p-3", item.tone === "red" && "bg-destructive/5")}>
-                        <div className="flex items-start gap-3">
+                        <div className="flex min-w-0 items-start gap-3 overflow-hidden">
                           <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">
-                            {item.running ? <Loader2 className="animate-spin" /> : <Clock3 />}
+                            {item.running ? <Loader2 className={LOADING_ICON_CLASS_NAME} /> : <Clock3 />}
                           </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0 truncate text-sm font-semibold">{item.title}</div>
+                          <div className="min-w-0 flex-1 overflow-hidden">
+                            <div className="flex min-w-0 items-start justify-between gap-3 overflow-hidden">
+                              <div className="min-w-0 break-words text-sm font-semibold leading-5">{item.title}</div>
                               <Badge className="shrink-0" variant={item.tone === "red" ? "danger" : "outline"}>{item.status}</Badge>
                             </div>
                             {typeof item.percent === "number" ? (
-                              <div className="mt-2 flex items-center gap-2">
-                                <Progress value={clampPercent(item.percent)} className="h-1.5 flex-1" />
+                              <div className="mt-2 flex min-w-0 items-center gap-2">
+                                <Progress value={clampPercent(item.percent)} className="h-1.5 min-w-0 flex-1" />
                                 <span className="w-10 shrink-0 text-right text-xs font-medium text-muted-foreground">{clampPercent(item.percent)}%</span>
                               </div>
                             ) : null}
                           </div>
                         </div>
                         {item.onAction || item.onCancel ? (
-                          <div className="flex flex-wrap justify-end gap-2">
+                          <div className="flex min-w-0 flex-wrap justify-end gap-2">
                             {item.onAction && item.actionLabel ? (
-                              <Button type="button" variant="outline" size="sm" onClick={item.onAction}>
-                                {item.actionLabel}
+                              <Button type="button" variant="outline" size="sm" className="max-w-full min-w-0 overflow-hidden" onClick={item.onAction}>
+                                <span className="min-w-0 truncate">{item.actionLabel}</span>
                               </Button>
                             ) : null}
                             {item.onCancel && item.cancelLabel ? (
-                              <Button type="button" variant="destructive" size="sm" onClick={item.onCancel}>
-                                {item.cancelLabel}
+                              <Button type="button" variant="destructive" size="sm" className="max-w-full min-w-0 overflow-hidden" onClick={item.onCancel}>
+                                <span className="min-w-0 truncate">{item.cancelLabel}</span>
                               </Button>
                             ) : null}
                           </div>
@@ -6613,36 +7551,36 @@ function NotificationCenter({
               )}
             </section>
 
-            <section className="flex flex-col gap-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <section className="flex min-w-0 flex-col gap-3 overflow-hidden">
+              <div className="flex min-w-0 items-center justify-between gap-3 overflow-hidden">
+                <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
                   <Bell />
-                  历史通知
+                  <span className="min-w-0 truncate">历史通知</span>
                 </div>
-                <Badge variant="outline">{items.length} 条</Badge>
+                <Badge className="shrink-0" variant="outline">{items.length} 条</Badge>
               </div>
 
               {items.length ? (
-                <div className="overflow-hidden rounded-lg border bg-card">
+                <div className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-card">
                   {items.map((item, index) => {
                     const isError = item.kind === "error";
                     return (
                       <Fragment key={item.id}>
                         {index ? <Separator /> : null}
-                        <div className={cn("p-3", isError && "bg-destructive/5")}>
-                          <div className="flex items-start gap-3">
+                        <div className={cn("min-w-0 max-w-full overflow-hidden p-3", isError && "bg-destructive/5")}>
+                          <div className="flex min-w-0 max-w-full items-start gap-3 overflow-hidden">
                             <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">
                               {isError ? <AlertCircle /> : <CheckCircle2 />}
                             </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="flex min-w-0 items-center gap-2">
+                            <div className="min-w-0 max-w-full flex-1 overflow-hidden">
+                              <div className="flex min-w-0 items-center justify-between gap-3 overflow-hidden">
+                                <div className="flex min-w-0 items-center gap-2 overflow-hidden">
                                   {!item.read ? <span className="size-2 shrink-0 rounded-full bg-primary" /> : null}
-                                  <div className="truncate text-sm font-semibold">{item.title}</div>
+                                  <div className="min-w-0 truncate text-sm font-semibold">{item.title}</div>
                                 </div>
                                 <div className="shrink-0 text-xs text-muted-foreground">{formatNotificationTime(item.time)}</div>
                               </div>
-                              <p className="mt-1 line-clamp-3 text-sm leading-6 text-muted-foreground">{item.text}</p>
+                              <p className="mt-1 min-w-0 max-w-full whitespace-pre-wrap break-words text-sm leading-6 text-muted-foreground [overflow-wrap:anywhere]">{item.text}</p>
                             </div>
                           </div>
                         </div>

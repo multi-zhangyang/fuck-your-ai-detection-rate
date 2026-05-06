@@ -25,9 +25,13 @@ import type {
   ModelCatalogResult,
   ModelConfig,
   OutputPreview,
-  PromptId,
+  PromptBackupsResult,
+  PromptDeleteResult,
   PromptPreviewItem,
   PromptPreviewResponse,
+  PromptSaveResult,
+  PromptWorkflow,
+  PromptWorkflowSaveResult,
   ReviewDecision,
   RoundCompareData,
   RoundProgress,
@@ -39,6 +43,7 @@ import type {
   BatchRerunStatus,
   BatchRerunTarget,
 } from "../types/app";
+import { ACTIVE_PROMPT_PROFILE, DEFAULT_PROMPT_OPTIONS, DEFAULT_PROMPT_SEQUENCE, DEFAULT_PROMPT_WORKFLOWS } from "./promptRegistry";
 
 const WEB_API_GLOBALS = globalThis as { __FYADR_WEB_API__?: string };
 const WEB_API_BASE = WEB_API_GLOBALS.__FYADR_WEB_API__ ?? import.meta.env.VITE_FYADR_API_BASE ?? "";
@@ -46,13 +51,7 @@ const FORMAT_RULE_PARSE_DEFAULT_TIMEOUT_MS = 300_000;
 const FORMAT_RULE_PARSE_MAX_TIMEOUT_MS = 1_815_000;
 const SAVED_SECRET_PLACEHOLDER = "__FYADR_SAVED_SECRET__";
 const MAX_UPLOAD_BYTES = 40 * 1024 * 1024;
-const PROMPT_PREVIEW_FALLBACKS: Array<{ id: PromptId; label: string; description: string; relativePath: string }> = [
-  { id: "prewrite", label: "预改写", description: "保守自然化", relativePath: "prompts/fyadr-cn-prewrite.md" },
-  { id: "classical", label: "经典改写", description: "解释性慢节奏", relativePath: "prompts/fyadr-cn-classical.md" },
-  { id: "round1", label: "一轮", description: "主体改写", relativePath: "prompts/fyadr-cn-round1.md" },
-  { id: "round2", label: "二轮", description: "最终降痕", relativePath: "prompts/fyadr-cn-round2.md" },
-];
-
+const MAX_REWRITE_CONCURRENCY = 8;
 type RequestJsonInit = RequestInit & {
   timeoutMs?: number;
 };
@@ -64,10 +63,11 @@ const defaultModelConfig: ModelConfig = {
   model: "",
   apiType: "chat_completions",
   temperature: 0.7,
-  promptProfile: "cn_custom",
-  promptSequence: ["prewrite", "round1", "round2"],
+  promptProfile: ACTIVE_PROMPT_PROFILE,
+  promptSequence: DEFAULT_PROMPT_SEQUENCE,
   requestTimeoutSeconds: 600,
   maxRetries: 3,
+  rewriteConcurrency: 2,
 };
 
 
@@ -157,7 +157,8 @@ function mergeModelConfig(...configs: Array<Partial<ModelConfig> | undefined>): 
   const promptSequence = Array.isArray(merged.promptSequence) && merged.promptSequence.length
     ? merged.promptSequence
     : defaultModelConfig.promptSequence;
-  return { ...defaultModelConfig, ...merged, promptSequence, roundModels };
+  const rewriteConcurrency = Math.max(1, Math.min(MAX_REWRITE_CONCURRENCY, Number(merged.rewriteConcurrency ?? defaultModelConfig.rewriteConcurrency) || defaultModelConfig.rewriteConcurrency));
+  return { ...defaultModelConfig, ...merged, promptSequence, rewriteConcurrency, roundModels };
 }
 
 function getUtf8Size(value: string): number {
@@ -259,23 +260,27 @@ function buildEmptyHistoryArtifactQueryResponse(
 
 async function loadPromptPreviewsViaReadOutput(): Promise<PromptPreviewResponse> {
   const items = await Promise.all(
-    PROMPT_PREVIEW_FALLBACKS.map(async (meta): Promise<PromptPreviewItem> => {
+    DEFAULT_PROMPT_OPTIONS.map(async (meta): Promise<PromptPreviewItem> => {
+      const relativePath = meta.relativePath ?? `prompts/${meta.id}.md`;
       const output = await requestJson<OutputPreview>(
-        `/api/read-output?outputPath=${encodeURIComponent(meta.relativePath)}&maxChars=100000`,
+        `/api/read-output?outputPath=${encodeURIComponent(relativePath)}&maxChars=100000`,
         { timeoutMs: 8_000 },
       );
       const content = output.text ?? "";
-      const fileName = meta.relativePath.split("/").pop() ?? meta.relativePath;
+      const fileName = relativePath.split("/").pop() ?? relativePath;
       return {
         ...meta,
+        description: meta.description ?? "",
+        relativePath,
         fileName,
         sizeBytes: getUtf8Size(content),
         updatedAt: "",
         content,
+        defaultAvailable: meta.defaultAvailable,
       };
     }),
   );
-  return { ok: true, promptDir: "prompts", items };
+  return { ok: true, promptDir: "prompts", items, workflows: DEFAULT_PROMPT_WORKFLOWS };
 }
 
 type RunStream = {
@@ -786,6 +791,63 @@ export const webService: AppService = {
     } catch {
       return loadPromptPreviewsViaReadOutput();
     }
+  },
+  async savePrompt(promptId: string, content: string): Promise<PromptSaveResult> {
+    return requestJson<PromptSaveResult>(`/api/prompts/${encodeURIComponent(promptId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+      timeoutMs: 15_000,
+    });
+  },
+  async updatePromptMeta(promptId: string, payload: { label: string; description?: string }): Promise<PromptSaveResult> {
+    return requestJson<PromptSaveResult>(`/api/prompts/${encodeURIComponent(promptId)}/meta`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      timeoutMs: 15_000,
+    });
+  },
+  async restoreDefaultPrompt(promptId: string): Promise<PromptSaveResult> {
+    return requestJson<PromptSaveResult>(`/api/prompts/${encodeURIComponent(promptId)}/restore-default`, {
+      method: "POST",
+      timeoutMs: 15_000,
+    });
+  },
+  async listPromptBackups(promptId: string): Promise<PromptBackupsResult> {
+    return requestJson<PromptBackupsResult>(`/api/prompts/${encodeURIComponent(promptId)}/backups`, {
+      timeoutMs: 15_000,
+    });
+  },
+  async restorePromptBackup(promptId: string, relativePath: string): Promise<PromptSaveResult> {
+    return requestJson<PromptSaveResult>(`/api/prompts/${encodeURIComponent(promptId)}/restore-backup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relativePath }),
+      timeoutMs: 15_000,
+    });
+  },
+  async createPrompt(payload: { label: string; description?: string; content: string }): Promise<PromptSaveResult> {
+    return requestJson<PromptSaveResult>("/api/prompts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      timeoutMs: 15_000,
+    });
+  },
+  async deletePrompt(promptId: string): Promise<PromptDeleteResult> {
+    return requestJson<PromptDeleteResult>(`/api/prompts/${encodeURIComponent(promptId)}`, {
+      method: "DELETE",
+      timeoutMs: 15_000,
+    });
+  },
+  async updatePromptWorkflow(workflowId: string, payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit">): Promise<PromptWorkflowSaveResult> {
+    return requestJson<PromptWorkflowSaveResult>(`/api/prompt-workflows/${encodeURIComponent(workflowId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      timeoutMs: 15_000,
+    });
   },
 
   async cleanupTaskStateSnapshots(mode = "expired", maxAgeHours = 168): Promise<TaskStateCleanupResult> {

@@ -13,7 +13,49 @@ from fyadr_round_service import (
 )
 
 
+def _assert_default_chunk_manifest_contract() -> None:
+    paragraph_text = (
+        "Alpha paragraph keeps its own rewrite boundary for checkpoint recovery.\n\n"
+        "Beta paragraph keeps its own rewrite boundary for targeted repair.\n\n"
+        "Gamma paragraph keeps its own rewrite boundary for export restore."
+    )
+    paragraph_manifest = build_manifest(paragraph_text, chunk_limit=1000, chunk_metric="char")
+    expected_ids = ["p0_c0", "p1_c0", "p2_c0"]
+    actual_ids = [chunk.chunk_id for chunk in paragraph_manifest.chunks]
+    if actual_ids != expected_ids:
+        raise AssertionError(f"default manifest must keep one chunk per short paragraph, got {actual_ids}")
+    if paragraph_manifest.paragraph_count != 3 or paragraph_manifest.chunk_count != 3:
+        raise AssertionError("default manifest must not merge short paragraphs into fewer chunks")
+    for index, paragraph in enumerate(paragraph_manifest.paragraphs):
+        if paragraph.chunk_ids != [expected_ids[index]]:
+            raise AssertionError(f"paragraph {index} should map only to {expected_ids[index]}")
+        if paragraph.split_reason != "paragraph-kept":
+            raise AssertionError(f"short paragraph {index} should stay paragraph-kept, got {paragraph.split_reason}")
+    for index, chunk in enumerate(paragraph_manifest.chunks):
+        if chunk.paragraph_index != index or chunk.chunk_index != 0:
+            raise AssertionError(f"chunk {chunk.chunk_id} should keep its original paragraph index")
+        if chunk.paragraph_indices is not None:
+            raise AssertionError("default manifest must not use merged paragraph_indices")
+
+    long_sentence = "The rewrite pipeline keeps one paragraph boundary during long text processing."
+    long_manifest = build_manifest(" ".join([long_sentence] * 5), chunk_limit=120, chunk_metric="char")
+    long_ids = [chunk.chunk_id for chunk in long_manifest.chunks]
+    if long_manifest.paragraph_count != 1 or long_manifest.chunk_count <= 1:
+        raise AssertionError("long paragraph should split only inside the same paragraph")
+    if long_ids != [f"p0_c{index}" for index in range(len(long_ids))]:
+        raise AssertionError(f"long paragraph chunk ids should remain p0_c*, got {long_ids}")
+    if long_manifest.paragraphs[0].chunk_ids != long_ids:
+        raise AssertionError("long paragraph manifest should map all split chunks back to paragraph 0")
+    for chunk in long_manifest.chunks:
+        if chunk.paragraph_index != 0:
+            raise AssertionError("long paragraph split must not cross into another paragraph")
+        if chunk.paragraph_indices is not None:
+            raise AssertionError("long paragraph split must not use merged paragraph_indices")
+
+
 def main() -> int:
+    _assert_default_chunk_manifest_contract()
+
     manifest = build_manifest(
         "First paragraph has enough local content for one chunk.\n\nSecond paragraph has enough local content for another chunk.",
         chunk_limit=48,
@@ -22,7 +64,7 @@ def main() -> int:
     if manifest.chunk_count < 1:
         raise AssertionError("regression manifest should contain at least one chunk")
 
-    work_dir = ROOT_DIR / "finish" / "regression" / "rewrite_candidate"
+    work_dir = ROOT_DIR / "finish" / "regression" / "single_output_retry"
     shutil.rmtree(work_dir, ignore_errors=True)
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -41,7 +83,7 @@ def main() -> int:
         return chunk_text
 
     result = run_round(
-        doc_id="rewrite-candidate-regression",
+        doc_id="single-output-retry-regression",
         round_number=1,
         input_path=source_path,
         output_path=output_path,
@@ -55,7 +97,7 @@ def main() -> int:
     if len(prompts) != 1:
         raise AssertionError(f"full-round rewrite should call the model once per valid chunk, got {len(prompts)} calls")
     if "[CANDIDATE DIRECTION]" in prompts[0]:
-        raise AssertionError("full-round prompt must not include candidate direction text")
+        raise AssertionError("full-round prompt must not include legacy candidate direction text")
     for legacy_key in ("rewriteCandidateMode", "candidateMaxPerChunk", "twoCandidateChunkCount", "candidateSelectionCount"):
         if legacy_key in quality_summary:
             raise AssertionError(f"quality summary should not expose removed candidate field {legacy_key}")
@@ -145,18 +187,22 @@ def main() -> int:
     targeted_output_path = work_dir / "targeted.txt"
     targeted_compare_path = get_round_compare_path(targeted_output_path)
     previous_output = source_text.replace("changing only sentence rhythm", "making only local wording repairs")
-    targeted_output_path.write_text(previous_output, encoding="utf-8")
+    untouched_source = (
+        "The second paragraph already passed review and stays outside the selected detector match."
+    )
+    untouched_output = untouched_source.replace("passed review", "passed manual review")
+    targeted_output_path.write_text("\n\n".join([previous_output, untouched_output]), encoding="utf-8")
     compare_payload = {
         "version": 2,
-        "docId": "rewrite-candidate-targeted-regression",
+        "docId": "single-output-targeted-regression",
         "round": 1,
         "promptProfile": "cn_custom",
         "promptSequence": ["classical"],
         "inputPath": str(targeted_output_path),
         "outputPath": str(targeted_output_path),
         "manifestPath": "",
-        "paragraphCount": 1,
-        "chunkCount": 1,
+        "paragraphCount": 2,
+        "chunkCount": 2,
         "qualitySummary": {},
         "validationEvents": [],
         "chunks": [
@@ -169,7 +215,17 @@ def main() -> int:
                 "inputCharCount": len(source_text),
                 "outputCharCount": len(previous_output),
                 "quality": _build_chunk_quality(source_text, previous_output),
-            }
+            },
+            {
+                "chunkId": "p1_c0",
+                "paragraphIndex": 1,
+                "chunkIndex": 0,
+                "inputText": untouched_source,
+                "outputText": untouched_output,
+                "inputCharCount": len(untouched_source),
+                "outputCharCount": len(untouched_output),
+                "quality": _build_chunk_quality(untouched_source, untouched_output),
+            },
         ],
     }
     targeted_compare_path.write_text(json.dumps(compare_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -201,9 +257,9 @@ def main() -> int:
         app_service._build_transform_from_model_config = original_builder
 
     if len(targeted_prompts) != 1:
-        raise AssertionError(f"targeted rerun should generate one candidate per attempt, got {len(targeted_prompts)} calls")
+        raise AssertionError(f"targeted rerun should generate one output per attempt, got {len(targeted_prompts)} calls")
     if "[CANDIDATE DIRECTION]" in targeted_prompts[0]:
-        raise AssertionError("targeted rerun prompt must not include multi-candidate direction text")
+        raise AssertionError("targeted rerun prompt must not include legacy multi-output direction text")
     if "[TARGETED REPAIR DIRECTION]" not in targeted_prompts[0]:
         raise AssertionError("targeted rerun prompt should keep a single repair direction")
     detector_prompt_markers = [
@@ -218,8 +274,22 @@ def main() -> int:
         if marker not in targeted_prompts[0]:
             raise AssertionError(f"targeted detector rerun prompt should include {marker!r}")
     chunk = targeted_result["chunk"]
-    if chunk.get("rerunCandidateCount") != 1 or chunk.get("rerunSelectedCandidate") != 1:
-        raise AssertionError("targeted rerun metadata should report one generated candidate")
+    updated_compare = json.loads(targeted_compare_path.read_text(encoding="utf-8"))
+    updated_chunks = updated_compare.get("chunks", [])
+    if updated_compare.get("paragraphCount") != 2 or updated_compare.get("chunkCount") != 2:
+        raise AssertionError("targeted rerun must keep compare paragraph and chunk counts unchanged")
+    if [item.get("chunkId") for item in updated_chunks] != ["p0_c0", "p1_c0"]:
+        raise AssertionError("targeted rerun must not add, remove, reorder, or merge chunks")
+    untouched_chunk = updated_chunks[1]
+    if untouched_chunk.get("outputText") != untouched_output:
+        raise AssertionError("targeted rerun must not modify non-target chunk output")
+    if any(str(key).startswith("rerun") for key in untouched_chunk):
+        raise AssertionError("targeted rerun metadata must stay on the selected chunk only")
+    output_paragraphs = targeted_output_path.read_text(encoding="utf-8").split("\n\n")
+    if output_paragraphs != [source_text, untouched_output]:
+        raise AssertionError("targeted rerun should restore output from existing chunks without changing segmentation")
+    if "rerunCandidateCount" in chunk or "rerunSelectedCandidate" in chunk:
+        raise AssertionError("targeted rerun metadata should not expose legacy candidate fields")
     detector_profile = chunk.get("rerunDetectorProfile")
     if not isinstance(detector_profile, dict):
         raise AssertionError("targeted detector rerun should store a parsed detector profile")
@@ -233,7 +303,7 @@ def main() -> int:
         if tag not in chunk.get("rerunStrategy", []):
             raise AssertionError(f"targeted detector rerun should expose strategy tag {tag!r}")
 
-    print("rewrite candidate regression passed")
+    print("single output retry regression passed")
     return 0
 
 
