@@ -10,7 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / "scripts"))
 
-from app_service import _normalize_review_decision_value, _select_review_text, export_round_output  # noqa: E402
+from app_service import _normalize_review_decision_value, _select_review_text, export_round_output, save_review_decisions  # noqa: E402
 from fyadr_round_service import get_round_compare_path  # noqa: E402
 
 REPORT_PATH = ROOT_DIR / "finish" / "regression" / "review_decisions_regression_report.json"
@@ -47,6 +47,8 @@ def run_regression() -> dict[str, Any]:
         "Confirmed failed-output choices must preserve confirmation.",
         failures,
     )
+    _assert(_select_review_text("original", "rewrite", legacy_failed_output) == "original", "Unconfirmed failed-output decisions must export safe source text.", failures)
+    _assert(_select_review_text("original", "rewrite", confirmed_failed_output) == "candidate", "Confirmed failed-output decisions must export the selected AI text.", failures)
 
     app_source = APP_SOURCE_PATH.read_text(encoding="utf-8") if APP_SOURCE_PATH.exists() else ""
     _assert("function normalizeReviewDecisionsForSave" in app_source, "Frontend must save review decisions with explicit-state semantics.", failures)
@@ -56,7 +58,8 @@ def run_regression() -> dict[str, Any]:
     _assert("if (decision === \"source_confirmed\")" in app_source, "Only explicit source confirmations should be persisted.", failures)
     _assert("if (decision === \"source\" || decision === \"source_confirmed\")" not in app_source, "Default source choices must not be saved as confirmed.", failures)
     _assert("function normalizeSavedReviewDecisionsForCompare" in app_source, "Saved decisions must be normalized against compare data.", failures)
-    _assert("highRiskChunkIds.has(chunkId) && decision === \"source_confirmed\" ? \"source\"" in app_source, "Legacy source confirmations must not hide high-risk failed outputs.", failures)
+    _assert("highRiskChunkIds.has(chunkId) && decision === \"source_confirmed\" ? \"source\"" not in app_source, "Confirmed source choices must not re-open handled high-risk failed outputs.", failures)
+    _assert("const validChunkIds = new Set(data.chunks.map((chunk) => chunk.chunkId));" in app_source, "Saved decisions should still be scoped to the loaded compare data.", failures)
     _assert(
         "if (decision === \"rewrite\") return [chunkId, \"rewrite_confirmed\" as ReviewDecision];" not in app_source,
         "Frontend must not promote default rewrite to confirmed on reload.",
@@ -72,8 +75,9 @@ def run_regression() -> dict[str, Any]:
 
     work_dir = ROOT_DIR / "finish" / "regression" / "review_decisions_recovery"
     work_dir.mkdir(parents=True, exist_ok=True)
-    output_path = work_dir / "recovered_output.txt"
-    export_path = work_dir / "recovered_export.txt"
+    output_path = work_dir / "failed_output_choice.txt"
+    export_path = work_dir / "failed_output_safe_export.txt"
+    adopted_export_path = work_dir / "failed_output_adopted_export.txt"
     source_text = (
         "（2）发送请求：通过OkHttpClient向文心一言API端点"
         "`https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions`"
@@ -85,7 +89,29 @@ def run_regression() -> dict[str, Any]:
         "去发送一个POST请求，请求头当中包含了`Content-Type: application/json`以及认证Token，请求体的格式是JSON消息数组。"
     )
     output_path.write_text(source_text, encoding="utf-8")
+    blocked_export_path = ROOT_DIR / "blocked_export_regression.txt"
+    blocked_export_path.unlink(missing_ok=True)
+    try:
+        export_round_output(str(output_path), str(blocked_export_path), "txt")
+        failures.append("Export path outside finish must be rejected.")
+    except ValueError as exc:
+        _assert("Export path must stay under allowed workspace directories" in str(exc), "Blocked export path should return a clear error.", failures)
+    _assert(not blocked_export_path.exists(), "Rejected export path must not be written.", failures)
+
+    invalid_format_parent = work_dir / "invalid_format_parent"
+    if invalid_format_parent.exists():
+        for child in invalid_format_parent.glob("*"):
+            child.unlink()
+        invalid_format_parent.rmdir()
+    try:
+        export_round_output(str(output_path), str(invalid_format_parent / "bad.invalid"), "pdf")
+        failures.append("Unsupported export format must be rejected before creating export directories.")
+    except ValueError as exc:
+        _assert("Unsupported export format" in str(exc), "Unsupported export format should return a clear error.", failures)
+    _assert(not invalid_format_parent.exists(), "Invalid export format must not create directories.", failures)
+
     compare_path = get_round_compare_path(output_path)
+    compare_path.with_name(f"{compare_path.stem}_review_decisions.json").unlink(missing_ok=True)
     compare_path.write_text(
         json.dumps(
             {
@@ -113,14 +139,22 @@ def run_regression() -> dict[str, Any]:
         encoding="utf-8",
     )
     export_round_output(str(output_path), str(export_path), "txt")
-    _assert(export_path.read_text(encoding="utf-8") == recovered_text, "Plain TXT export must recover valid failed outputs without requiring Diff to be opened first.", failures)
+    _assert(export_path.read_text(encoding="utf-8") == source_text, "TXT export must keep source fallback until the user explicitly adopts failed output.", failures)
+    save_review_decisions(
+        str(output_path),
+        {"p0_c0": {"mode": "custom", "source": "failed_output", "text": recovered_text, "confirmed": True}},
+    )
+    export_round_output(str(output_path), str(adopted_export_path), "txt")
+    _assert(adopted_export_path.read_text(encoding="utf-8") == recovered_text, "Confirmed failed-output decision must export the selected AI text.", failures)
 
-    targeted_output_path = work_dir / "targeted_recovered_output.txt"
-    targeted_export_path = work_dir / "targeted_recovered_export.txt"
+    targeted_output_path = work_dir / "targeted_failed_output_choice.txt"
+    targeted_export_path = work_dir / "targeted_safe_export.txt"
+    targeted_adopted_export_path = work_dir / "targeted_adopted_export.txt"
     targeted_source = "登录注册模块围绕账号创建、身份校验和会话保持展开，保证用户能够稳定访问平台功能。"
     targeted_recovered = "登录注册模块主要承接账号创建、身份核验与会话维持等流程，使用户可以持续、稳定地进入平台功能。"
     targeted_output_path.write_text(targeted_source, encoding="utf-8")
     targeted_compare_path = get_round_compare_path(targeted_output_path)
+    targeted_compare_path.with_name(f"{targeted_compare_path.stem}_review_decisions.json").unlink(missing_ok=True)
     targeted_compare_path.write_text(
         json.dumps(
             {
@@ -150,8 +184,14 @@ def run_regression() -> dict[str, Any]:
     )
     export_round_output(str(targeted_output_path), str(targeted_export_path), "txt")
     targeted_compare_after = json.loads(targeted_compare_path.read_text(encoding="utf-8"))
-    _assert(targeted_export_path.read_text(encoding="utf-8") == targeted_recovered, "Targeted rerun fallback TXT export must recover valid failed outputs.", failures)
-    _assert(targeted_compare_after.get("qualitySummary", {}).get("targetedRerunFallbackCount") == 0, "Recovered targeted fallbacks must leave the targeted fallback summary.", failures)
+    _assert(targeted_export_path.read_text(encoding="utf-8") == targeted_source, "Targeted fallback export must keep safe text until explicit failed-output adoption.", failures)
+    _assert(targeted_compare_after.get("qualitySummary", {}).get("targetedRerunFallbackCount") == 1, "Reading/exporting compare must not clear targeted fallback summary by itself.", failures)
+    save_review_decisions(
+        str(targeted_output_path),
+        {"p0_c0": {"mode": "custom", "source": "failed_output", "text": targeted_recovered, "confirmed": True}},
+    )
+    export_round_output(str(targeted_output_path), str(targeted_adopted_export_path), "txt")
+    _assert(targeted_adopted_export_path.read_text(encoding="utf-8") == targeted_recovered, "Confirmed targeted failed-output decision must export the selected AI text.", failures)
 
     report = {
         "ok": not failures,

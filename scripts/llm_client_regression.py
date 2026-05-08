@@ -119,6 +119,46 @@ def run_regression(report_path: Path) -> dict[str, Any]:
             "responses",
             "{\"styles\": {\"body_text\": {\"fontSizePt\": 12}}}",
         ),
+        (
+            "responses_text_parts_preserve_english_spacing",
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "Using"},
+                            {"type": "output_text", "text": "Qwen2.5-1.5B-Instruct"},
+                            {"type": "output_text", "text": "as"},
+                            {"type": "output_text", "text": "the base model, a LoRA adapter is"},
+                            {"type": "output_text", "text": "then constructed with approach,"},
+                            {"type": "output_text", "text": "500 samples employing"},
+                            {"type": "output_text", "text": "4-bit QLoRA."},
+                            {"type": "output_text", "text": "In addition, Key words: LoRA; QLoRA"},
+                        ],
+                    }
+                ],
+            },
+            "responses",
+            "Using Qwen2.5-1.5B-Instruct as the base model, a LoRA adapter is then constructed with approach, 500 samples employing 4-bit QLoRA. In addition, Key words: LoRA; QLoRA",
+        ),
+        (
+            "chat_content_parts_preserve_english_spacing",
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "Using"},
+                                {"type": "text", "text": "Qwen2.5-1.5B-Instruct"},
+                                {"type": "text", "text": "as the base model."},
+                            ],
+                        }
+                    }
+                ]
+            },
+            "chat_completions",
+            "Using Qwen2.5-1.5B-Instruct as the base model.",
+        ),
     ]
 
     for name, payload, api_type, expected in cases:

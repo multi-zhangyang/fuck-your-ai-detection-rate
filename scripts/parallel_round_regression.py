@@ -59,7 +59,7 @@ def _run_order_regression() -> None:
             transform,
             chunk_limit=1800,
             progress_callback=events.append,
-            max_concurrency=8,
+            max_concurrency=16,
         )
 
         expected_output = "\n\n".join(
@@ -75,9 +75,9 @@ def _run_order_regression() -> None:
         if completed_order and completed_order[0] == "p0_c0":
             raise AssertionError(f"regression did not exercise out-of-order completion: {completed_order}")
         run_audit = result.get("run_audit")
-        if not isinstance(run_audit, dict) or int(run_audit.get("rewriteConcurrency", 0) or 0) != 8:
+        if not isinstance(run_audit, dict) or int(run_audit.get("rewriteConcurrency", 0) or 0) != 16:
             raise AssertionError("run audit did not record effective rewrite concurrency")
-        if not any(int(event.get("configuredConcurrency", 0) or 0) == 8 for event in events):
+        if not any(int(event.get("configuredConcurrency", 0) or 0) == 16 for event in events):
             raise AssertionError("progress did not report configured rewrite concurrency")
         if not any(int(event.get("concurrency", 0) or 0) == 4 for event in events):
             raise AssertionError("progress did not report effective worker concurrency")

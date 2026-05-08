@@ -109,8 +109,8 @@ def run_regression() -> dict[str, Any]:
     finally:
         app_service.llm_completion = original_llm_completion
 
-    _assert(app_service.MAX_REWRITE_CONCURRENCY == 8, "rewrite concurrency ceiling must expose the 8-way tier")
-    checks.append("rewrite concurrency ceiling exposes the 8-way tier")
+    _assert(app_service.MAX_REWRITE_CONCURRENCY == 16, "rewrite concurrency ceiling must expose the 16-way tier")
+    checks.append("rewrite concurrency ceiling exposes the 16-way tier")
 
     return {
         "ok": True,

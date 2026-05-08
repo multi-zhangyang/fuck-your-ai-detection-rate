@@ -61,6 +61,10 @@ DEFAULT_PROMPT_WORKFLOWS: list[dict[str, Any]] = [
 DEFAULT_PROMPT_SEQUENCES = {str(item["id"]): list(item["defaultSequence"]) for item in DEFAULT_PROMPT_WORKFLOWS}
 SUPPORTED_PROMPT_PROFILES = set(DEFAULT_PROMPT_SEQUENCES)
 PROMPT_PROFILE_CHUNK_METRICS = {str(item["id"]): str(item["chunkMetric"]) for item in DEFAULT_PROMPT_WORKFLOWS}
+_PROMPT_REGISTRY_CACHE_KEY: tuple[int, int] | None = None
+_PROMPT_REGISTRY_CACHE: list[dict[str, Any]] | None = None
+_PROMPT_WORKFLOW_CACHE_KEY: tuple[tuple[int, int], tuple[int, int]] | None = None
+_PROMPT_WORKFLOW_CACHE: list[dict[str, Any]] | None = None
 DEFAULT_PROMPT_REGISTRY: list[dict[str, Any]] = [
     {
         "id": "prewrite",
@@ -114,9 +118,9 @@ def _prompt_path_from_relative(relative_path: str) -> Path:
     candidate = Path(normalized)
     if candidate.is_absolute() or ".." in candidate.parts:
         raise ValueError("Prompt path must be relative and stay inside prompts.")
-    target = (ROOT_DIR / candidate).resolve()
+    target = ROOT_DIR / candidate
     try:
-        target.relative_to(PROMPT_DIR.resolve())
+        target.relative_to(PROMPT_DIR)
     except ValueError as exc:
         raise ValueError("Prompt path must stay inside prompts.") from exc
     if target.suffix.lower() != ".md":
@@ -127,14 +131,41 @@ def _prompt_path_from_relative(relative_path: str) -> Path:
 def _default_path_from_relative(relative_path: str) -> Path:
     target = _prompt_path_from_relative(relative_path)
     try:
-        target.relative_to(PROMPT_DEFAULT_DIR.resolve())
+        target.relative_to(PROMPT_DEFAULT_DIR)
     except ValueError as exc:
         raise ValueError("Default prompt path must stay inside prompts/defaults.") from exc
     return target
 
 
 def _relative_prompt_path(path: Path) -> str:
-    return str(path.resolve().relative_to(ROOT_DIR)).replace("\\", "/")
+    target = path if path.is_absolute() else ROOT_DIR / path
+    return str(target.relative_to(ROOT_DIR)).replace("\\", "/")
+
+
+def _prompt_file_cache_key(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+        return int(stat.st_mtime_ns), int(stat.st_size)
+    except OSError:
+        return 0, -1
+
+
+def _clone_prompt_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cloned: list[dict[str, Any]] = []
+    for item in items:
+        next_item = dict(item)
+        if isinstance(next_item.get("defaultSequence"), list):
+            next_item["defaultSequence"] = list(next_item["defaultSequence"])
+        cloned.append(next_item)
+    return cloned
+
+
+def _clear_prompt_library_cache() -> None:
+    global _PROMPT_REGISTRY_CACHE_KEY, _PROMPT_REGISTRY_CACHE, _PROMPT_WORKFLOW_CACHE_KEY, _PROMPT_WORKFLOW_CACHE
+    _PROMPT_REGISTRY_CACHE_KEY = None
+    _PROMPT_REGISTRY_CACHE = None
+    _PROMPT_WORKFLOW_CACHE_KEY = None
+    _PROMPT_WORKFLOW_CACHE = None
 
 
 def _sanitize_prompt_meta(raw: dict[str, Any], *, fallback_order: int) -> dict[str, Any] | None:
@@ -172,6 +203,11 @@ def _sanitize_prompt_meta(raw: dict[str, Any], *, fallback_order: int) -> dict[s
 
 
 def load_prompt_registry() -> list[dict[str, Any]]:
+    global _PROMPT_REGISTRY_CACHE_KEY, _PROMPT_REGISTRY_CACHE
+    cache_key = _prompt_file_cache_key(PROMPT_REGISTRY_PATH)
+    if _PROMPT_REGISTRY_CACHE is not None and _PROMPT_REGISTRY_CACHE_KEY == cache_key:
+        return _clone_prompt_items(_PROMPT_REGISTRY_CACHE)
+
     raw_items: list[Any] = []
     if PROMPT_REGISTRY_PATH.exists():
         try:
@@ -194,8 +230,11 @@ def load_prompt_registry() -> list[dict[str, Any]]:
         items.append(item)
 
     if not items:
-        return [dict(item, order=index) for index, item in enumerate(DEFAULT_PROMPT_REGISTRY)]
-    return sorted(items, key=lambda item: int(item.get("order", 0)))
+        items = [dict(item, order=index) for index, item in enumerate(DEFAULT_PROMPT_REGISTRY)]
+    items = sorted(items, key=lambda item: int(item.get("order", 0)))
+    _PROMPT_REGISTRY_CACHE_KEY = cache_key
+    _PROMPT_REGISTRY_CACHE = _clone_prompt_items(items)
+    return _clone_prompt_items(items)
 
 
 def save_prompt_registry(items: list[dict[str, Any]]) -> None:
@@ -219,6 +258,7 @@ def save_prompt_registry(items: list[dict[str, Any]]) -> None:
         for item in normalized
     ]
     PROMPT_REGISTRY_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _clear_prompt_library_cache()
 
 
 def get_prompt_ids() -> set[str]:
@@ -370,9 +410,9 @@ def _backup_path_from_relative(prompt_id: str, relative_path: object) -> Path:
     candidate = Path(raw_path)
     if candidate.is_absolute() or ".." in candidate.parts:
         raise ValueError("Invalid backup path.")
-    target = (ROOT_DIR / candidate).resolve()
+    target = ROOT_DIR / candidate
     try:
-        target.relative_to(PROMPT_BACKUP_DIR.resolve())
+        target.relative_to(PROMPT_BACKUP_DIR)
     except ValueError as exc:
         raise ValueError("Backup path must stay inside prompt backups.") from exc
     if target.suffix.lower() != ".md" or not target.name.startswith(f"{prompt_id}-"):
@@ -549,6 +589,7 @@ def save_prompt_workflows(items: list[dict[str, Any]]) -> None:
         for item in items
     ]
     PROMPT_WORKFLOW_REGISTRY_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _clear_prompt_library_cache()
 
 
 def update_prompt_workflow(workflow_id: object, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -618,6 +659,11 @@ def update_prompt_workflow(workflow_id: object, payload: dict[str, Any]) -> list
 
 
 def load_prompt_workflows() -> list[dict[str, Any]]:
+    global _PROMPT_WORKFLOW_CACHE_KEY, _PROMPT_WORKFLOW_CACHE
+    cache_key = (_prompt_file_cache_key(PROMPT_WORKFLOW_REGISTRY_PATH), _prompt_file_cache_key(PROMPT_REGISTRY_PATH))
+    if _PROMPT_WORKFLOW_CACHE is not None and _PROMPT_WORKFLOW_CACHE_KEY == cache_key:
+        return _clone_prompt_items(_PROMPT_WORKFLOW_CACHE)
+
     raw_items: list[Any] = []
     if PROMPT_WORKFLOW_REGISTRY_PATH.exists():
         try:
@@ -642,7 +688,10 @@ def load_prompt_workflows() -> list[dict[str, Any]]:
     if DEFAULT_PROMPT_PROFILE not in seen:
         default_item = next(item for item in DEFAULT_PROMPT_WORKFLOWS if item["id"] == DEFAULT_PROMPT_PROFILE)
         items.append(dict(default_item, order=len(items)))
-    return sorted(items, key=lambda item: int(item.get("order", 0)))
+    items = sorted(items, key=lambda item: int(item.get("order", 0)))
+    _PROMPT_WORKFLOW_CACHE_KEY = cache_key
+    _PROMPT_WORKFLOW_CACHE = _clone_prompt_items(items)
+    return _clone_prompt_items(items)
 
 
 def list_prompt_workflows(*, include_legacy: bool = True) -> list[dict[str, Any]]:
@@ -754,7 +803,7 @@ def normalize_prompt_sequence(prompt_profile: str | None, prompt_sequence: objec
 
     if not normalized_sequence:
         return default_sequence
-    sequence_limit = int(workflow.get("sequenceLimit", DEFAULT_MAX_PROMPT_SEQUENCE_ROUNDS) or DEFAULT_MAX_PROMPT_SEQUENCE_ROUNDS)
+    sequence_limit = get_prompt_round_limit(normalized_profile)
     if len(normalized_sequence) > sequence_limit:
         raise ValueError(f"Custom prompt sequence supports at most {sequence_limit} rounds.")
     return normalized_sequence
@@ -768,18 +817,41 @@ def get_prompt_sequence_key(prompt_profile: str | None, prompt_sequence: object 
     return "custom_" + "_".join(sequence)
 
 
+def coerce_prompt_sequence(value: object | None) -> list[str]:
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    return [str(item or "").strip().lower() for item in raw_items if str(item or "").strip()]
+
+
+def prompt_sequence_match_rank(record_sequence: object | None, selected_sequence: object | None, round_number: int | None = None) -> int:
+    record = coerce_prompt_sequence(record_sequence)
+    selected = coerce_prompt_sequence(selected_sequence)
+    if not record or not selected:
+        return -1
+    if round_number is not None and int(round_number) > len(record):
+        return -1
+    if record == selected:
+        return 1000 + len(record)
+    if len(record) <= len(selected) and selected[:len(record)] == record:
+        return len(record)
+    return -1
+
+
 def get_prompt_mapping(prompt_profile: str | None, prompt_sequence: object | None = None) -> dict[int, str]:
     normalized_profile = normalize_prompt_profile(prompt_profile)
     sequence = normalize_prompt_sequence(normalized_profile, prompt_sequence)
-    round_limit = get_prompt_round_limit(normalized_profile)
     return {
-        round_number: _relative_prompt_path(resolve_prompt_path(get_prompt_id_for_round(normalized_profile, round_number, sequence)))
-        for round_number in range(1, round_limit + 1)
+        round_number: _relative_prompt_path(resolve_prompt_path(prompt_id))
+        for round_number, prompt_id in enumerate(sequence, start=1)
     }
 
 
 def get_max_rounds(prompt_profile: str | None, prompt_sequence: object | None = None) -> int:
-    return len(get_prompt_mapping(prompt_profile, prompt_sequence))
+    return len(normalize_prompt_sequence(prompt_profile, prompt_sequence))
 
 
 def get_prompt_id_for_round(prompt_profile: str | None, round_number: int, prompt_sequence: object | None = None) -> str:
@@ -790,7 +862,7 @@ def get_prompt_id_for_round(prompt_profile: str | None, round_number: int, promp
         raise ValueError("Round number must be greater than zero.")
     if round_number <= len(sequence):
         return sequence[round_number - 1]
-    return sequence[-1]
+    raise ValueError(f"Round {round_number} is outside the selected {len(sequence)} round prompt workflow.")
 
 
 def get_chunk_metric(prompt_profile: str | None, prompt_sequence: object | None = None) -> str:

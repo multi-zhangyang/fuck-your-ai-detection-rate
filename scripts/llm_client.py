@@ -610,6 +610,40 @@ def _normalize_text_fragment(value: object) -> str:
     return strip_reasoning_blocks(value).strip()
 
 
+def _needs_output_fragment_space(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left.isspace() or right.isspace():
+        return False
+    if not (left.isascii() and right.isascii()):
+        return False
+    if left.isalnum() and right.isalnum():
+        return True
+    if left in ",;:" and right.isalnum():
+        return True
+    if left in ".!?" and right.isalpha():
+        return True
+    if left.isalnum() and right in "([{":
+        return True
+    return False
+
+
+def _join_output_fragments(fragments: list[str]) -> str:
+    text = ""
+    for fragment in fragments:
+        normalized = str(fragment or "").strip()
+        if not normalized:
+            continue
+        if not text:
+            text = normalized
+            continue
+        if _needs_output_fragment_space(text[-1], normalized[0]):
+            text = f"{text} {normalized}"
+        else:
+            text = f"{text}{normalized}"
+    return text.strip()
+
+
 def strip_reasoning_blocks(text: str) -> str:
     cleaned = str(text or "")
     for pattern in REASONING_BLOCK_RE_LIST:
@@ -661,7 +695,7 @@ def _extract_text_from_content_parts(parts: object) -> str:
             visit(content_field)
 
     visit(parts)
-    return "".join(fragments).strip()
+    return _join_output_fragments(fragments)
 
 
 def _extract_text_from_tool_payload(value: object) -> str:
@@ -690,7 +724,7 @@ def _extract_text_from_tool_payload(value: object) -> str:
         add(node.get("input"))
 
     visit(value)
-    return "".join(fragments).strip()
+    return _join_output_fragments(fragments)
 
 
 def extract_response_text(data: dict[str, object], response_body: str, api_type: str) -> str:
@@ -713,7 +747,7 @@ def extract_response_text(data: dict[str, object], response_body: str, api_type:
                 if extracted:
                     collected_fragments.append(extracted)
             if collected_fragments:
-                return "".join(collected_fragments).strip()
+                return _join_output_fragments(collected_fragments)
 
         output_text = _normalize_text_fragment(data.get("output_text"))
         if output_text:

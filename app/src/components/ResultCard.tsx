@@ -93,6 +93,11 @@ type Props = {
 export function ResultCard({ result, compareData, busy, reviewDecisions, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportTxt, onExportDocx, roundRunning = false, checkpointPending = false }: Props) {
   const hasOutput = Boolean(result || compareData?.chunks.length);
   const outputReady = Boolean((result?.outputPath || compareData?.outputPath) && !checkpointPending);
+  const hasRerunnableReviewChunks = Boolean(compareData?.chunks.some((chunk) => {
+    return Boolean(chunk.quality?.needsReview)
+      && !isHighRiskFailedOutputChunk(chunk)
+      && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? getDefaultReviewDecisionForChunk(chunk));
+  }));
   return (
     <Card className={cn("flex h-auto min-h-[8rem] w-full shrink-0 flex-col overflow-hidden border-border bg-card shadow-sm", hasOutput && "min-h-0")}>
       <CardHeader className="shrink-0 border-b border-border bg-card px-5 py-3">
@@ -128,7 +133,7 @@ export function ResultCard({ result, compareData, busy, reviewDecisions, onRerun
                 <Download data-icon="inline-start" />
                 TXT
               </Button>
-              <Button className="h-11 min-w-40 px-4" variant="outline" onClick={onRerunRiskyChunks} disabled={!outputReady || !compareData?.chunks.some((chunk) => chunk.quality?.needsReview && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? "rewrite")) || busy}>
+              <Button className="h-11 min-w-40 px-4" variant="outline" onClick={onRerunRiskyChunks} disabled={!outputReady || !hasRerunnableReviewChunks || busy}>
                 {T.rerunRisky}
               </Button>
             </div>

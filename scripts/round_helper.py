@@ -16,7 +16,7 @@ from fyadr_round_service import (
     relative_to_root,
     run_round,
 )
-from prompt_library import DEFAULT_PROMPT_PROFILE, LEGACY_PROMPT_PROFILE, is_prompt_sequence_customizable
+from prompt_library import DEFAULT_PROMPT_PROFILE, LEGACY_PROMPT_PROFILE, is_prompt_sequence_customizable, prompt_sequence_match_rank
 from docx_bodymap import (
     build_docx_body_map,
     extract_body_map_paragraphs_from_output,
@@ -84,13 +84,10 @@ class DocumentRoundState:
     is_complete: bool
 
 
-def _round_sequence_key(round_item: dict, prompt_profile: str) -> str:
+def _round_sequence_match_rank(round_item: dict, prompt_profile: str, prompt_sequence: list[str]) -> int:
     if not is_prompt_sequence_customizable(prompt_profile):
-        return ""
-    sequence = round_item.get("prompt_sequence")
-    if not isinstance(sequence, list):
-        return ""
-    return ",".join(str(item or "").strip().lower() for item in sequence if str(item or "").strip())
+        return 0
+    return prompt_sequence_match_rank(round_item.get("prompt_sequence"), prompt_sequence, int(round_item.get("round", 0) or 0))
 
 
 def get_document_round_state(
@@ -100,7 +97,6 @@ def get_document_round_state(
 ) -> DocumentRoundState:
     normalized_prompt_profile = normalize_prompt_profile(prompt_profile)
     normalized_prompt_sequence = normalize_prompt_sequence(normalized_prompt_profile, prompt_sequence)
-    expected_sequence_key = ",".join(normalized_prompt_sequence) if is_prompt_sequence_customizable(normalized_prompt_profile) else ""
     max_rounds = get_max_rounds(normalized_prompt_profile, normalized_prompt_sequence)
     rounds = _get_rounds(doc_id)
     completed = sorted(
@@ -109,10 +105,7 @@ def get_document_round_state(
         if isinstance(round_item, dict)
         and isinstance(round_item.get("round"), int)
         and str(round_item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() == normalized_prompt_profile
-        and (
-            not is_prompt_sequence_customizable(normalized_prompt_profile)
-            or _round_sequence_key(round_item, normalized_prompt_profile) == expected_sequence_key
-        )
+        and _round_sequence_match_rank(round_item, normalized_prompt_profile, normalized_prompt_sequence) >= 0
         and 1 <= int(round_item.get("round")) <= max_rounds
     )
     for expected in range(1, max_rounds + 1):
@@ -382,19 +375,19 @@ def _get_round_item(
 ) -> dict | None:
     normalized_prompt_profile = normalize_prompt_profile(prompt_profile)
     normalized_prompt_sequence = normalize_prompt_sequence(normalized_prompt_profile, prompt_sequence)
-    expected_sequence_key = ",".join(normalized_prompt_sequence) if is_prompt_sequence_customizable(normalized_prompt_profile) else ""
     rounds = _get_rounds(doc_id)
+    best_item: dict | None = None
+    best_rank = -1
     for round_item in rounds:
-        if (
-            round_item.get("round") == round_number
-            and str(round_item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() == normalized_prompt_profile
-            and (
-                not is_prompt_sequence_customizable(normalized_prompt_profile)
-                or _round_sequence_key(round_item, normalized_prompt_profile) == expected_sequence_key
-            )
-        ):
-            return round_item
-    return None
+        if round_item.get("round") != round_number:
+            continue
+        if str(round_item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() != normalized_prompt_profile:
+            continue
+        rank = _round_sequence_match_rank(round_item, normalized_prompt_profile, normalized_prompt_sequence)
+        if rank > best_rank:
+            best_item = round_item
+            best_rank = rank
+    return best_item
 
 
 def _previous_round_output_path(

@@ -13,7 +13,6 @@ import {
   formatPromptSequence as formatPromptSequenceFromRegistry,
   getPromptFlowSequence,
   getPromptProfileLabel,
-  getPromptRoundLimit,
   isPromptSequenceCustomizable,
   normalizePromptSequence,
 } from "@/lib/promptRegistry";
@@ -124,7 +123,7 @@ function formatBytes(value?: number): string {
 }
 
 function getMaxRounds(promptProfile: ModelConfig["promptProfile"], promptSequence?: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): number {
-  return getPromptRoundLimit(promptProfile, promptWorkflows);
+  return getPlannedRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
 }
 
 function getPlannedRounds(promptProfile: ModelConfig["promptProfile"], promptSequence?: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): number {
@@ -133,15 +132,11 @@ function getPlannedRounds(promptProfile: ModelConfig["promptProfile"], promptSeq
 
 function getRoundStateText(completedRounds: number[], promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): string {
   const plannedRounds = getPlannedRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
-  const maxRounds = getMaxRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
   const plannedDone = completedRounds.filter((round) => round <= plannedRounds).length;
   if (plannedDone < plannedRounds) {
     return `${plannedDone}/${plannedRounds} 轮`;
   }
-  if (completedRounds.length < maxRounds) {
-    return "流程已完成";
-  }
-  return "已到上限";
+  return "可导出";
 }
 
 function getProfileLabel(promptProfile: ModelConfig["promptProfile"], promptWorkflows?: PromptWorkflow[]): string {
@@ -184,11 +179,10 @@ function getCompletedRounds(rounds: HistoryRound[], promptProfile: ModelConfig["
 }
 
 function getNextRoundText(completedRounds: number[], promptProfile: ModelConfig["promptProfile"], promptSequence: PromptId[], promptOptions?: PromptOption[], promptWorkflows?: PromptWorkflow[]): string {
-  const plannedRounds = getPlannedRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
   const maxRounds = getMaxRounds(promptProfile, promptSequence, promptOptions, promptWorkflows);
   for (let round = 1; round <= maxRounds; round += 1) {
     if (!completedRounds.includes(round)) {
-      return round > plannedRounds ? `追加第 ${round} 轮` : `第 ${round} 轮`;
+      return `第 ${round} 轮`;
     }
   }
   return "可导出";

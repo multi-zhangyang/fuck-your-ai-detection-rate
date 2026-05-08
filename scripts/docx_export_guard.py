@@ -7,7 +7,13 @@ from typing import Any, Sequence
 
 from docx_bodymap import DocxBodyMap, validate_docx_body_map
 from docx_pipeline import _is_snapshot_current, _load_docx_snapshot
-from fyadr_round_service import detect_chunk_language, normalize_chunk_output
+from fyadr_round_service import (
+    _extract_required_term_counts,
+    _extract_required_terms,
+    detect_chunk_language,
+    find_english_spacing_corruptions,
+    normalize_chunk_output,
+)
 
 
 MAX_REPORTED_ISSUES = 50
@@ -313,11 +319,66 @@ def _check_rewritten_paragraphs(
                 originalSample=_sample_text(original_text),
                 rewrittenSample=_sample_text(current_text),
             )
+        if original_language == "en":
+            _check_english_text_integrity(
+                original_text,
+                current_text,
+                paragraph_index=paragraph_index,
+                blocking_issues=blocking_issues,
+            )
         _check_length_ratio(
             original_text,
             current_text,
             paragraph_index=paragraph_index,
             warnings=warnings,
+        )
+
+
+def _check_english_text_integrity(
+    original_text: str,
+    current_text: str,
+    *,
+    paragraph_index: int,
+    blocking_issues: list[dict[str, Any]],
+) -> None:
+    corruptions = find_english_spacing_corruptions(original_text, current_text)
+    if corruptions:
+        _add_issue(
+            blocking_issues,
+            "english_spacing_corruption",
+            "English text lost required spaces between adjacent words, terms, numbers, or punctuation.",
+            paragraphIndex=paragraph_index,
+            samples=corruptions[:8],
+            originalSample=_sample_text(original_text),
+            rewrittenSample=_sample_text(current_text),
+        )
+    required_terms = _extract_required_terms(original_text)
+    if required_terms:
+        missing = sorted(term for term in required_terms if term not in current_text)
+        if missing:
+            _add_issue(
+                blocking_issues,
+                "english_required_term_missing",
+                "English output removed or truncated protected technical terms.",
+                paragraphIndex=paragraph_index,
+                missingTerms=missing[:8],
+                originalSample=_sample_text(original_text),
+                rewrittenSample=_sample_text(current_text),
+            )
+    required_term_counts = _extract_required_term_counts(original_text)
+    reduced_terms = sorted(
+        term for term, count in required_term_counts.items()
+        if count > 1 and current_text.count(term) < count
+    )
+    if reduced_terms:
+        _add_issue(
+            blocking_issues,
+            "english_required_term_count_reduced",
+            "English output reduced repeated protected technical terms.",
+            paragraphIndex=paragraph_index,
+            reducedTerms=reduced_terms[:8],
+            originalSample=_sample_text(original_text),
+            rewrittenSample=_sample_text(current_text),
         )
 
 
@@ -359,6 +420,7 @@ def _check_compare_payload(
         )
 
     seen_chunk_ids: set[str] = set()
+    seen_positions: set[tuple[int, int]] = set()
     chunks_by_paragraph: dict[int, list[int]] = {}
     for raw_chunk_index, raw_chunk in enumerate(raw_chunks):
         if not isinstance(raw_chunk, dict):
@@ -406,6 +468,17 @@ def _check_compare_payload(
                 chunkIndex=chunk_index,
             )
             continue
+        position = (paragraph_index, chunk_index)
+        if position in seen_positions:
+            _add_issue(
+                blocking_issues,
+                "duplicate_chunk_position",
+                "diff 中同一段落的 chunkIndex 重复，导出会造成正文重复或覆盖。",
+                chunkId=chunk_id,
+                paragraphIndex=paragraph_index,
+                chunkIndex=chunk_index,
+            )
+        seen_positions.add(position)
         chunks_by_paragraph.setdefault(paragraph_index, []).append(chunk_index)
 
         input_text = raw_chunk.get("inputText", "")
@@ -420,6 +493,17 @@ def _check_compare_payload(
                     chunkId=chunk_id,
                     paragraphIndex=paragraph_index,
                 )
+
+    if expected_paragraph_count >= 0:
+        missing_paragraph_indexes = sorted(set(range(expected_paragraph_count)) - set(chunks_by_paragraph))
+        if missing_paragraph_indexes:
+            _add_issue(
+                blocking_issues,
+                "compare_paragraph_missing",
+                "diff 缺少部分正文段落的 chunk 数据，导出会造成段落缺失或错位。",
+                missingParagraphIndexes=missing_paragraph_indexes[:20],
+                missingCount=len(missing_paragraph_indexes),
+            )
 
     for paragraph_index, chunk_indexes in chunks_by_paragraph.items():
         sorted_indexes = sorted(chunk_indexes)

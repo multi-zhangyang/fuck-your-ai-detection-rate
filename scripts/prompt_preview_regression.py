@@ -42,11 +42,15 @@ def run_regression() -> dict[str, object]:
         _assert(isinstance(custom_workflow, dict) and custom_workflow.get("customizable") is True, "Custom workflow must stay editable")
         _assert(custom_workflow.get("defaultSequence") == ["prewrite", "round1", "round2"], "Custom workflow default sequence changed unexpectedly")
         _assert(custom_workflow.get("sequenceLimit") == 3, "Custom workflow selected sequence limit changed unexpectedly")
-        _assert(custom_workflow.get("roundLimit") == 12, "Custom workflow must allow manual continuation after the selected sequence")
+        _assert(custom_workflow.get("roundLimit") == 12, "Custom workflow must allow users to explicitly extend the selected sequence")
         custom_mapping = get_prompt_mapping("cn_custom", ["prewrite", "round1", "round2"])
-        _assert(get_max_rounds("cn_custom", ["prewrite", "round1", "round2"]) == 12, "Custom workflow should expose continuation rounds")
-        _assert(custom_mapping[3] == custom_mapping[4] == custom_mapping[12], "Continuation rounds should reuse the last selected prompt")
-        _assert(get_prompt_id_for_round("cn_custom", 4, ["prewrite", "round1", "round2"]) == "round2", "Round 4 should continue with the expert rewrite prompt")
+        _assert(get_max_rounds("cn_custom", ["prewrite", "round1", "round2"]) == 3, "Custom workflow must run only the selected sequence")
+        _assert(sorted(custom_mapping) == [1, 2, 3], "Custom workflow mapping must not invent continuation rounds")
+        try:
+            get_prompt_id_for_round("cn_custom", 4, ["prewrite", "round1", "round2"])
+            raise AssertionError("Round 4 should be rejected unless the user explicitly extends the sequence")
+        except ValueError:
+            pass
         ids = [item.get("id") for item in items if isinstance(item, dict)]
         _assert(ids[: len(EXPECTED_IDS)] == EXPECTED_IDS, f"Built-in prompt preview ids changed unexpectedly: {ids}")
         labels = [item.get("label") for item in items if isinstance(item, dict)]

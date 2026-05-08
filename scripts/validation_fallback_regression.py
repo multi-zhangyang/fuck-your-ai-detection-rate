@@ -5,13 +5,26 @@ import shutil
 from pathlib import Path
 
 from fyadr_records import ROOT_DIR
-from fyadr_round_service import MAX_VALIDATION_ATTEMPTS, run_round
+from fyadr_round_service import MAX_VALIDATION_ATTEMPTS, normalize_chunk_output, run_round, validate_chunk_output
 
 
 def main() -> int:
     work_dir = ROOT_DIR / "finish" / "regression" / "validation_fallback"
     shutil.rmtree(work_dir, ignore_errors=True)
     work_dir.mkdir(parents=True, exist_ok=True)
+
+    english_source = (
+        "Using Qwen2.5-1.5B-Instruct as the base model, a LoRA adapter is then constructed "
+        "with approach, 500 samples employing 4-bit QLoRA. In addition, Key words: LoRA; QLoRA"
+    )
+    multiline_english_output = (
+        "Using Qwen2.5-1.5B-Instruct as the base model, a LoRA adapter is then constructed "
+        "with approach,\n500 samples employing\n4-bit QLoRA.\nIn addition, Key words: LoRA; QLoRA"
+    )
+    normalized_english_output = normalize_chunk_output(english_source, multiline_english_output)
+    if "approach, 500" not in normalized_english_output or "approach,500" in normalized_english_output:
+        raise AssertionError(f"English line joiner corrupted comma spacing: {normalized_english_output}")
+    validate_chunk_output(english_source, normalized_english_output, "english-line-joiner")
 
     source_path = work_dir / "source.txt"
     output_path = work_dir / "round1.txt"

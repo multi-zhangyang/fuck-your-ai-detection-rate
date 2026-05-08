@@ -1169,15 +1169,20 @@ def _split_text_for_runs(text: str, run_texts: list[str]) -> list[str]:
 
 
 def _replace_paragraph_text(paragraph: Paragraph, text: str) -> None:
+    normalized_text = _normalize_rewritten_text(str(text))
     text_runs = [run for run in paragraph.runs if run.text]
     if not text_runs:
-        if text.strip():
-            paragraph.add_run(text)
+        if normalized_text:
+            paragraph.add_run(normalized_text)
         return
 
-    split_parts = _split_text_for_runs(text, [run.text for run in text_runs])
+    split_parts = _split_text_for_runs(normalized_text, [run.text for run in text_runs])
     for run, part in zip(text_runs, split_parts):
         run.text = part
+    if "".join(run.text for run in text_runs) != normalized_text:
+        text_runs[0].text = normalized_text
+        for run in text_runs[1:]:
+            run.text = ""
 
 
 def _apply_default_document_layout(document: DocxDocument) -> None:
@@ -1205,9 +1210,11 @@ def _apply_default_paragraph_layout(paragraph: Paragraph) -> None:
 
 
 def _polish_rewritten_paragraph(paragraph: Paragraph) -> None:
+    normalized_text = _normalize_rewritten_text(paragraph.text)
+    if paragraph.text != normalized_text:
+        _replace_paragraph_text(paragraph, normalized_text)
     for run in paragraph.runs:
         if run.text:
-            run.text = _normalize_rewritten_text(run.text)
             _ensure_run_font_layout(run)
 
 

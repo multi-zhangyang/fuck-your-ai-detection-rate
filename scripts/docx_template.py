@@ -342,6 +342,14 @@ def apply_school_format_rules(
     applied_profiles: list[dict[str, Any]] = []
 
     for index, paragraph in enumerate(paragraphs):
+        actual_paragraph_index = paragraph_indexes_by_element.get(id(paragraph._element))
+        is_editable_top_level = (
+            not editable_only_mode
+            or (
+                actual_paragraph_index is not None
+                and actual_paragraph_index in editable_top_level_indexes
+            )
+        )
         role = _classify_template_role(
             paragraph,
             index=index,
@@ -349,9 +357,13 @@ def apply_school_format_rules(
             references_index=references_index,
             acknowledgement_index=acknowledgement_index,
         )
+        if editable_only_mode and is_editable_top_level:
+            if role is None:
+                role = "body_text"
+            elif role in {"heading_1", "heading_2", "heading_3", "heading_4", "caption", "note", "references_heading", "references_body", "toc_heading"}:
+                role = "numbered_body" if _looks_like_numbered_body_item(paragraph.text.strip()) else "body_text"
         if role is None:
             continue
-        actual_paragraph_index = paragraph_indexes_by_element.get(id(paragraph._element))
         if editable_only_mode:
             if (
                 body_scope_top_level_indexes is None
@@ -361,13 +373,6 @@ def apply_school_format_rules(
                 continue
         elif index < start_index and role not in CONTENT_LOCKED_FORMAT_ROLES:
             continue
-        is_editable_top_level = (
-            not editable_only_mode
-            or (
-                actual_paragraph_index is not None
-                and actual_paragraph_index in editable_top_level_indexes
-            )
-        )
         school_profile = _build_rule_profile_for_role(role, paragraph, active_rules)
         if school_profile is None:
             school_profile = _build_school_profile_for_role(role, paragraph)

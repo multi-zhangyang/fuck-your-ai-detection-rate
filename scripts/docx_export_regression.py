@@ -26,6 +26,7 @@ from app_service import export_round_output  # noqa: E402
 from format_rules import ACTIVE_RULES_PATH, extract_deterministic_format_rules, merge_deterministic_rules, save_active_format_rules  # noqa: E402
 from docx_audit import audit_docx_export, get_docx_audit_report_path  # noqa: E402
 from docx_bodymap import load_docx_body_map, validate_docx_body_map  # noqa: E402
+from docx_export_guard import run_docx_pre_export_guard  # noqa: E402
 from docx_pipeline import (  # noqa: E402
     _load_docx_snapshot,
     _looks_like_acknowledgement_heading,
@@ -36,9 +37,13 @@ from docx_pipeline import (  # noqa: E402
     _looks_like_keyword_line,
     _looks_like_note,
     _looks_like_references_heading,
+    _normalize_rewritten_text,
+    _polish_rewritten_paragraph,
+    _replace_paragraph_text,
     get_docx_scope_diagnostics_path,
     get_docx_snapshot_path,
 )
+from fyadr_round_service import _extract_required_terms, find_english_spacing_corruptions, validate_chunk_output  # noqa: E402
 from round_helper import run_document_round  # noqa: E402
 
 REGRESSION_DIR = ROOT_DIR / "finish" / "regression"
@@ -74,6 +79,200 @@ def add_paragraph(document: Any, text: str, *, style: str | None = None, align: 
         paragraph.alignment = align
     _set_paragraph_font(paragraph, size_pt=size_pt, bold=bold)
     return paragraph
+
+
+def _run_english_run_spacing_regression() -> dict[str, Any]:
+    document = Document()
+    paragraph = document.add_paragraph()
+    for run_text in ("old ", "text ", "with ", "many ", "runs ", "here ", "please"):
+        paragraph.add_run(run_text)
+    expected = (
+        "Using Qwen2.5-1.5B-Instruct as the base model, a LoRA adapter is then constructed "
+        "with approach, 500 samples employing 4-bit QLoRA. In addition, Key words: LoRA; QLoRA"
+    )
+    failures: list[str] = []
+    _replace_paragraph_text(paragraph, expected)
+    after_replace = paragraph.text
+    _polish_rewritten_paragraph(paragraph)
+    actual = paragraph.text
+    normalized_expected = _normalize_rewritten_text(expected)
+    if after_replace != normalized_expected:
+        failures.append("replace step changed English paragraph text")
+    if actual != normalized_expected:
+        failures.append("polish step changed English paragraph text")
+    required_fragments = (
+        "Using Qwen2.5-1.5B-Instruct",
+        "as the",
+        "is then constructed",
+        "approach, 500",
+        "employing 4-bit QLoRA. In addition",
+        "Key words: LoRA; QLoRA",
+    )
+    forbidden_fragments = (
+        "UsingQwen",
+        "asthe",
+        "isthen",
+        "approach,500",
+        "employing4-bit",
+        "QLoRA.In",
+    )
+    missing_fragments = [fragment for fragment in required_fragments if fragment not in actual]
+    leaked_fragments = [fragment for fragment in forbidden_fragments if fragment in actual]
+    if missing_fragments:
+        failures.append(f"missing fragments: {missing_fragments}")
+    if leaked_fragments:
+        failures.append(f"bad fragments leaked: {leaked_fragments}")
+    validate_chunk_output(normalized_expected, actual, "english-run-spacing")
+    bad_output = (
+        "UsingQwen2.5-1.5B-Instruct asthe base model, a LoRA adapter isthen constructed "
+        "with approach,500 samples employing4-bit QLoRA.In addition, Key words: LoRA; QL"
+    )
+    corruptions = find_english_spacing_corruptions(normalized_expected, bad_output)
+    if len(corruptions) < 5:
+        failures.append(f"spacing guard missed corruptions: {corruptions}")
+    terms = _extract_required_terms(normalized_expected)
+    if "LoRA" not in terms or "QLoRA" not in terms or "Qwen2.5-1.5B-Instruct" not in terms:
+        failures.append(f"term guard missed technical terms: {sorted(terms)}")
+    try:
+        validate_chunk_output(normalized_expected, bad_output, "english-run-spacing-bad")
+        failures.append("validation accepted corrupted English output")
+    except ValueError:
+        pass
+    bad_term_output = normalized_expected.replace("Key words: LoRA; QLoRA", "Key words: LoRA; QL")
+    try:
+        validate_chunk_output(normalized_expected, bad_term_output, "english-term-count-bad")
+        failures.append("validation accepted truncated English keyword term")
+    except ValueError:
+        pass
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "afterReplace": after_replace,
+        "actual": actual,
+        "detectedCorruptions": corruptions,
+        "requiredTerms": sorted(terms),
+    }
+
+
+def _run_compare_fallback_spacing_regression() -> dict[str, Any]:
+    payload = {
+        "paragraphCount": 1,
+        "chunkCount": 3,
+        "chunks": [
+            {
+                "chunkId": "p0_c0",
+                "paragraphIndex": 0,
+                "chunkIndex": 0,
+                "inputText": "Using Qwen2.5-1.5B-Instruct as",
+                "outputText": "Using Qwen2.5-1.5B-Instruct as",
+            },
+            {
+                "chunkId": "p0_c1",
+                "paragraphIndex": 0,
+                "chunkIndex": 1,
+                "inputText": "the base model,",
+                "outputText": "the base model,",
+            },
+            {
+                "chunkId": "p0_c2",
+                "paragraphIndex": 0,
+                "chunkIndex": 2,
+                "inputText": "500 samples employing 4-bit QLoRA.",
+                "outputText": "500 samples employing 4-bit QLoRA.",
+            },
+        ],
+    }
+    paragraphs = app_service._build_paragraphs_from_compare_payload(
+        REGRESSION_DIR / "missing_manifest_round.txt",
+        payload,
+    )
+    actual = paragraphs[0] if paragraphs else ""
+    failures: list[str] = []
+    for fragment in ("as the", "model, 500", "4-bit QLoRA"):
+        if fragment not in actual:
+            failures.append(f"missing fallback spacing fragment: {fragment}")
+    for fragment in ("asthe", "model,500", "4-bitQLoRA"):
+        if fragment in actual:
+            failures.append(f"fallback compare restore glued English text: {fragment}")
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "actual": actual,
+    }
+
+
+def _run_compare_payload_integrity_regression(
+    *,
+    source_path: Path,
+    snapshot_path: Path,
+    body_map: Any | None,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    fallback_output = REGRESSION_DIR / "compare_integrity_output.txt"
+    fallback_payload = {
+        "paragraphCount": 3,
+        "chunkCount": 2,
+        "chunks": [
+            {"chunkId": "p0_c0", "paragraphIndex": 0, "chunkIndex": 0, "inputText": "A", "outputText": "A"},
+            {"chunkId": "p2_c0", "paragraphIndex": 2, "chunkIndex": 0, "inputText": "C", "outputText": "C"},
+        ],
+    }
+    if app_service._build_paragraphs_from_compare_payload(fallback_output, fallback_payload) is not None:
+        failures.append("compare fallback accepted a payload with a missing paragraph")
+
+    duplicate_payload = {
+        "paragraphCount": 2,
+        "chunkCount": 3,
+        "chunks": [
+            {"chunkId": "p0_c0a", "paragraphIndex": 0, "chunkIndex": 0, "inputText": "A", "outputText": "A"},
+            {"chunkId": "p0_c0b", "paragraphIndex": 0, "chunkIndex": 0, "inputText": "B", "outputText": "B"},
+            {"chunkId": "p1_c0", "paragraphIndex": 1, "chunkIndex": 0, "inputText": "C", "outputText": "C"},
+        ],
+    }
+    if app_service._build_paragraphs_from_compare_payload(fallback_output, duplicate_payload) is not None:
+        failures.append("compare fallback accepted duplicate paragraph chunk positions")
+
+    if body_map is not None and len(body_map.units) >= 2:
+        paragraphs = body_map.current_texts()
+        fallback_output.write_text("\n\n".join(paragraphs), encoding="utf-8")
+        guard_payload = {
+            "paragraphCount": len(paragraphs),
+            "chunkCount": len(paragraphs) - 1,
+            "chunks": [
+                {
+                    "chunkId": f"p{index}_c0",
+                    "paragraphIndex": index,
+                    "chunkIndex": 0,
+                    "inputText": text,
+                    "outputText": text,
+                }
+                for index, text in enumerate(paragraphs)
+                if index != 1
+            ],
+        }
+        report = run_docx_pre_export_guard(
+            paragraphs,
+            source_path=source_path,
+            snapshot_path=snapshot_path,
+            export_path=REGRESSION_DIR / "compare_integrity_export.docx",
+            output_path=fallback_output,
+            body_map=body_map,
+            compare_payload=guard_payload,
+            mode="regression",
+            paragraph_source="compare-integrity",
+        )
+        issue_codes = {
+            str(issue.get("code", ""))
+            for issue in report.get("blockingIssues", [])
+            if isinstance(issue, dict)
+        }
+        if report.get("ok") or "compare_paragraph_missing" not in issue_codes:
+            failures.append(f"pre-export guard missed missing compare paragraph: {sorted(issue_codes)}")
+
+    return {
+        "ok": not failures,
+        "failures": failures,
+    }
 
 
 def create_regression_sample(path: Path) -> Path:
@@ -504,6 +703,7 @@ def _build_auto_numbered_detection_feedback(match: dict[str, Any]) -> str:
 
 def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Path, snapshot_path: Path) -> dict[str, Any]:
     failures: list[str] = []
+    rerun_marker = "AUTO_NUMBERED_RERUN_EXPORT_MARKER"
     compare_payload = app_service.read_round_compare(str(output_path))
     target_chunk = _find_auto_numbered_body_chunk(compare_payload)
     if target_chunk is None:
@@ -526,7 +726,7 @@ def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Pat
     def fake_builder(_model_config: dict[str, Any]):
         def smoke_transform(chunk_text: str, prompt_input: str, _round: int, _chunk_id: str) -> str:
             prompts.append(prompt_input)
-            return chunk_text
+            return f"{chunk_text} {rerun_marker}"
 
         return smoke_transform, "online"
 
@@ -564,6 +764,9 @@ def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Pat
         failures.append(f"auto-numbered post-rerun export preflight issues: {post_export.get('preflightIssueCount')}")
     if not bool(post_format_audit.get("ok")):
         failures.append(f"auto-numbered post-rerun format audit issues: {len(post_format_audit.get('issues', []) or [])}")
+    exported_text = "\n".join(paragraph.text for paragraph in Document(str(post_export_path.resolve())).paragraphs)
+    if rerun_marker not in exported_text:
+        failures.append("auto-numbered post-rerun export did not contain the rerun output text")
 
     return {
         "ok": not failures,
@@ -578,6 +781,7 @@ def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Pat
         "rerunDetectorProfile": detector_profile if isinstance(detector_profile, dict) else {},
         "postRerunExport": post_export,
         "postRerunFormatAudit": post_format_audit,
+        "postRerunMarkerExported": rerun_marker in exported_text,
     }
 
 
@@ -626,8 +830,18 @@ def run_regression(
     format_audit = _audit_exported_editable_format(export_path, snapshot_path)
     protection_scope_audit = _audit_snapshot_protection_scope(snapshot, strict_sample_expectations=strict_sample_scope)
     body_map_scope_contract = _audit_body_map_scope_contract(body_map, source_path=sample_path, snapshot_path=snapshot_path)
+    english_run_spacing = _run_english_run_spacing_regression()
+    compare_fallback_spacing = _run_compare_fallback_spacing_regression()
+    compare_payload_integrity = _run_compare_payload_integrity_regression(
+        source_path=sample_path,
+        snapshot_path=snapshot_path,
+        body_map=body_map,
+    )
 
     failures: list[str] = []
+    failures.extend(f"english run spacing: {failure}" for failure in english_run_spacing.get("failures", []) or [])
+    failures.extend(f"compare fallback spacing: {failure}" for failure in compare_fallback_spacing.get("failures", []) or [])
+    failures.extend(f"compare payload integrity: {failure}" for failure in compare_payload_integrity.get("failures", []) or [])
     if export_result.get("layoutMode") != "body-map-roundtrip":
         failures.append(f"unexpected layout mode: {export_result.get('layoutMode')}")
     if int(export_result.get("auditIssueCount", 0) or 0) != 0:
@@ -714,6 +928,9 @@ def run_regression(
         "formatAudit": format_audit,
         "protectionScopeAudit": protection_scope_audit,
         "bodyMapScopeContract": body_map_scope_contract,
+        "englishRunSpacing": english_run_spacing,
+        "compareFallbackSpacing": compare_fallback_spacing,
+        "comparePayloadIntegrity": compare_payload_integrity,
         "autoNumberedRerun": auto_numbered_rerun,
         "audit": {
             "ok": bool(audit_report.get("ok")),

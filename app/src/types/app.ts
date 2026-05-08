@@ -268,6 +268,13 @@ export type EnvironmentDiagnostics = {
   };
 };
 
+export type BackendRuntimeInfo = {
+  ok: boolean;
+  service: string;
+  createdAt: string;
+  maxRewriteConcurrency?: number;
+};
+
 export type RoundProgress = {
   phase: string;
   round: number;

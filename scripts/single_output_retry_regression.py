@@ -10,6 +10,7 @@ from fyadr_round_service import (
     _build_chunk_quality,
     get_round_compare_path,
     run_round,
+    validate_chunk_output,
 )
 
 
@@ -183,6 +184,63 @@ def main() -> int:
         raise AssertionError("compare payload should record the machine-style validation retry")
     if style_result.get("quality_summary", {}).get("validationRetryCount") != 1:
         raise AssertionError("quality summary should count the machine-style validation retry")
+
+    repeated_sentence_source = (
+        "The management platform coordinates farm users, task records, equipment status, environmental readings, and harvest reports through the backend service. "
+        "The export pipeline keeps the wording close to the source while changing sentence rhythm."
+    )
+    repeated_sentence_output = (
+        repeated_sentence_source
+        + " The management platform coordinates farm users, task records, equipment status, environmental readings, and harvest reports through the backend service."
+    )
+    try:
+        validate_chunk_output(repeated_sentence_source, repeated_sentence_output, "repetition-hard-guard")
+    except ValueError as exc:
+        if "repeated content" not in str(exc):
+            raise AssertionError(f"repetition guard raised the wrong validation error: {exc}") from exc
+    else:
+        raise AssertionError("chunk validation must reject newly repeated output content")
+
+    overlap_source_path = work_dir / "adjacent_overlap_source.txt"
+    overlap_output_path = work_dir / "adjacent_overlap_round1.txt"
+    overlap_manifest_path = work_dir / "adjacent_overlap_round1_manifest.json"
+    overlap_first = (
+        "The platform supports ordinary users, administrators, and farm workers. Administrators manage users, data, tasks, and equipment, "
+        "while farm workers receive tasks and record environmental and harvest data. The system aggregates farm information and monitors environmental data."
+    )
+    overlap_second = (
+        "Administrators manage users, data, tasks, and equipment, while farm workers receive work tasks and record environmental and harvest data. "
+        "The system aggregates farm information, assigns production tasks, and monitors environmental data for farm management."
+    )
+    overlap_source_path.write_text(f"{overlap_first}\n\n{overlap_second}", encoding="utf-8")
+
+    def overlap_transform(chunk_text: str, _prompt: str, _round_number: int, _chunk_id: str) -> str:
+        return chunk_text
+
+    overlap_result = run_round(
+        doc_id="adjacent-overlap-regression",
+        round_number=1,
+        input_path=overlap_source_path,
+        output_path=overlap_output_path,
+        manifest_path=overlap_manifest_path,
+        transform=overlap_transform,
+        prompt_profile="cn_custom",
+        prompt_sequence=["classical"],
+        chunk_limit=1000,
+    )
+    overlap_compare = json.loads(get_round_compare_path(overlap_output_path).read_text(encoding="utf-8"))
+    overlap_summary = overlap_compare.get("qualitySummary", {})
+    if int(overlap_summary.get("adjacentOverlapCount", 0) or 0) < 1:
+        raise AssertionError("adjacent semantic overlap must be reported in the compare quality summary")
+    overlap_flags = [
+        chunk.get("quality", {}).get("flags", [])
+        for chunk in overlap_compare.get("chunks", [])
+        if isinstance(chunk, dict)
+    ]
+    if not any("adjacent_semantic_overlap" in flags for flags in overlap_flags):
+        raise AssertionError("adjacent semantic overlap must mark affected chunks for review")
+    if int((overlap_result.get("quality_summary") or {}).get("adjacentOverlapCount", 0) or 0) < 1:
+        raise AssertionError("run result quality summary must expose adjacent semantic overlap")
 
     targeted_output_path = work_dir / "targeted.txt"
     targeted_compare_path = get_round_compare_path(targeted_output_path)

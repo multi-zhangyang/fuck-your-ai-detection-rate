@@ -478,17 +478,28 @@ def _split_text_by_original_ratios(output: str, original_parts: list[str]) -> li
 
 def _find_nearby_sentence_boundary(text: str, ideal_end: int, min_end: int, max_end: int) -> int:
     ideal_end = max(min_end, min(max_end, ideal_end))
-    boundaries = "。！？；!?;"
+    sentence_boundaries = "。！？；：.!?;:"
+    soft_boundaries = "，、, \t\r\n"
     best_index = -1
-    best_distance = len(text) + 1
+    best_rank: tuple[int, int] | None = None
     start = max(min_end, ideal_end - 120)
     end = min(max_end, ideal_end + 120)
-    for index in range(start, end):
-        if text[index - 1] in boundaries:
-            distance = abs(index - ideal_end)
-            if distance < best_distance:
-                best_distance = distance
-                best_index = index
+    for index in range(start, end + 1):
+        left = text[index - 1] if index > 0 else ""
+        right = text[index] if index < len(text) else ""
+        priority: int | None = None
+        if left in sentence_boundaries:
+            priority = 0
+        elif left in soft_boundaries or right in soft_boundaries:
+            priority = 1
+        elif not (left.isascii() and right.isascii() and left.isalnum() and right.isalnum()):
+            priority = 2
+        if priority is None:
+            continue
+        rank = (priority, abs(index - ideal_end))
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_index = index
     return best_index if best_index >= min_end else ideal_end
 
 
@@ -641,7 +652,7 @@ def _split_oversized_fragment(fragment: str, chunk_limit: int, chunk_metric: Chu
 def _split_oversized_text_by_safe_boundary(fragment: str, chunk_limit: int) -> list[str]:
     chunks: list[str] = []
     remaining = fragment.strip()
-    soft_boundaries = "。！？；;，、,:："
+    soft_boundaries = " \t。！？；;，、,:："
     while len(remaining) > chunk_limit:
         window = remaining[:chunk_limit]
         split_at = max(window.rfind(boundary) for boundary in soft_boundaries)

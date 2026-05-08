@@ -10,6 +10,7 @@ import type {
   DocumentStatus,
   EnvironmentDiagnostics,
   ExportResult,
+  BackendRuntimeInfo,
   BatchRerunResult,
   BatchRerunStatus,
   BatchRerunTarget,
@@ -50,6 +51,7 @@ export type PickedDocument = {
 };
 
 export interface AppService {
+  getBackendRuntime(): Promise<BackendRuntimeInfo>;
   getHealth(): Promise<EnvironmentDiagnostics>;
   getPromptPreviews(): Promise<PromptPreviewResponse>;
   savePrompt(promptId: string, content: string): Promise<PromptSaveResult>;

@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 import type { FormatRules, ModelCatalogResult, ModelConfig, ModelProviderConfig } from "@/types/app";
 
 const LOADING_ICON_CLASS_NAME = "animate-spin text-success";
-const MAX_REWRITE_CONCURRENCY = 8;
+const MAX_REWRITE_CONCURRENCY = 16;
 
 type ModelConfigCardProps = {
   value: ModelConfig;

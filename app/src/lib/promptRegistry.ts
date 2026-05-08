@@ -172,7 +172,7 @@ export function getPromptSequenceLimit(promptProfile: PromptProfile | undefined 
 
 export function getPromptRoundLimit(promptProfile: PromptProfile | undefined = ACTIVE_PROMPT_PROFILE, workflows?: PromptWorkflow[]): number {
   const workflow = getPromptWorkflow(promptProfile, workflows);
-  const sequenceLimit = getPromptSequenceLimit(promptProfile, workflows);
+  const sequenceLimit = Math.max(1, Number(workflow.sequenceLimit || workflow.defaultSequence.length || DEFAULT_PROMPT_SEQUENCE_LIMIT));
   return Math.max(sequenceLimit, Number(workflow.roundLimit || sequenceLimit));
 }
 
@@ -186,7 +186,8 @@ export function normalizePromptSequence(value: unknown, options?: PromptOption[]
   const workflow = getPromptWorkflow(promptProfile, workflows);
   const fallback = workflow.defaultSequence?.length ? workflow.defaultSequence : DEFAULT_PROMPT_SEQUENCE;
   const sequence = normalized.length ? normalized : fallback;
-  return sequence.slice(0, getPromptSequenceLimit(promptProfile, workflows));
+  const limit = workflow.customizable ? getPromptRoundLimit(promptProfile, workflows) : getPromptSequenceLimit(promptProfile, workflows);
+  return sequence.slice(0, limit);
 }
 
 export function getPromptFlowSequence(promptProfile: PromptProfile, promptSequence?: PromptId[], options?: PromptOption[], workflows?: PromptWorkflow[]): PromptId[] {
@@ -206,7 +207,10 @@ export function getRoundModelKey(promptProfile: PromptProfile, round?: number | 
 
 export function getPromptIdForRound(promptProfile: PromptProfile, round: number, promptSequence?: PromptId[], options?: PromptOption[], workflows?: PromptWorkflow[]): PromptId {
   const sequence = getPromptFlowSequence(promptProfile, promptSequence, options, workflows);
-  return sequence[Math.min(Math.max(1, round), sequence.length) - 1] ?? sequence[sequence.length - 1] ?? DEFAULT_PROMPT_SEQUENCE[0];
+  if (round < 1 || round > sequence.length) {
+    throw new Error(`Round ${round} is outside the selected ${sequence.length} round prompt workflow.`);
+  }
+  return sequence[round - 1] ?? DEFAULT_PROMPT_SEQUENCE[0];
 }
 
 export function getPromptProfileLabel(promptProfile: PromptProfile | undefined, workflows?: PromptWorkflow[]): string {

@@ -54,6 +54,10 @@ function checkPartialFailureContract(source, functionName, failures) {
   if (functionSource.includes("service.rerunChunk")) {
     failures.push(`${functionName} must not keep the old frontend per-chunk rerun loop.`);
   }
+  if (functionName === "handleRerunRiskyChunks") {
+    assertIncludes(functionSource, "!unresolvedFailureChunkIds.has(chunk.chunkId)", "Bulk needs-review rerun must not mix unresolved failed chunks into the request.", failures);
+    assertIncludes(functionSource, "!isHighRiskFailedOutputChunk(chunk)", "Bulk needs-review rerun must not mix high-risk failed outputs into ordinary needs-review requests.", failures);
+  }
 }
 
 function checkBackendTaskContract(appSource, resultCardSource, failures) {

@@ -119,8 +119,12 @@ function runRegression() {
     assertNotIncludes(appSource, "<OperationFeedbackBar", "The app shell must not render duplicate global loading surfaces.", failures);
     assertIncludes(appSource, "hasActiveOperationFeedback ? Loader2", "Top status feedback must use a spinner while work is running.", failures);
     assertIncludes(appSource, "const LOADING_ICON_CLASS_NAME = \"animate-spin text-success\";", "App loading spinners must render with the green success token.", failures);
-    assertIncludes(appSource, "const MAX_REWRITE_CONCURRENCY = 8;", "Frontend must expose the 8-way rewrite concurrency ceiling.", failures);
-    assertIncludes(appSource, "const REWRITE_CONCURRENCY_LEVELS = [1, 2, 3, 4, 6, 8] as const;", "Home concurrency selector must expose stable 1/2/3/4/6/8 tiers.", failures);
+    assertIncludes(appSource, "const MAX_REWRITE_CONCURRENCY = 16;", "Frontend must expose the 16-way rewrite concurrency ceiling.", failures);
+    assertIncludes(appSource, "const REWRITE_CONCURRENCY_LEVELS = [1, 2, 3, 4, 6, 8, 12, 16] as const;", "Home concurrency selector must expose stable 1/2/3/4/6/8/12/16 tiers.", failures);
+    assertIncludes(appSource, "assertBackendConcurrencyReady(runConfig.rewriteConcurrency)", "Round launch must verify the live backend supports the selected concurrency.", failures);
+    assertIncludes(appSource, "runtime.maxRewriteConcurrency", "Round launch guard must read the backend-reported concurrency ceiling.", failures);
+    assertIncludes(appSource, "const concurrencyLabel = String(configuredConcurrencyValue);", "Run status must show configured concurrency as the primary value.", failures);
+    assertIncludes(appSource, "const concurrencyDetail = actualConcurrency && actualConcurrency !== configuredConcurrencyValue", "Run status must surface effective worker count separately when it differs.", failures);
     assertIncludes(appSource, "onRunRound(modelConfigRef.current);", "Home run button must start with the latest selected concurrency.", failures);
     assertIncludes(appSource, "configuredConcurrency", "Round progress UI must distinguish configured concurrency from effective active workers.", failures);
     assertNotIncludes(appSource, "progress?.concurrency ?? 2", "Round run status must not fall back to a hard-coded concurrency value.", failures);
@@ -154,6 +158,10 @@ function runRegression() {
     assertIncludes(appSource, "<Dialog open={Boolean(setupEditor)}", "Setup editors must use centered shadcn Dialog.", failures);
     assertIncludes(appSource, "className={cn(\"shadcn-config-dialog", "Setup editors must share the shadcn dialog utility.", failures);
     assertNotIncludes(appSource, "<Sheet open={Boolean(setupEditor)}", "Setup editors must not reopen as right-side Sheets.", failures);
+    assertIncludes(appSource, "<Dialog open={Boolean(appendDraft)}", "Append round route picker must use a centered shadcn Dialog.", failures);
+    assertIncludes(appSource, "追加第 {appendRoundNumber} 轮", "Append dialog must clearly identify the single appended round.", failures);
+    assertIncludes(appSource, "开始追加", "Append dialog must keep one clear confirm action.", failures);
+    assertNotIncludes(appSource, "<Sheet open={Boolean(appendDraft)}", "Append round route picker must not open as a right-side Sheet.", failures);
     assertNotIncludes(appSource, "shadcn-config-sheet", "Setup editors must not use the removed config Sheet utility.", failures);
     assertIncludes(appSource, "const editablePromptProfile = getDefaultPromptProfile(promptWorkflows);", "Rewrite workflow action must derive the editable workflow from backend metadata.", failures);
     assertIncludes(appSource, "onPromptProfileChange(editablePromptProfile)", "Rewrite workflow action must switch to the editable workflow before editing.", failures);
@@ -211,8 +219,8 @@ function runRegression() {
 
   if (modelConfigCardSource) {
     assertIncludes(modelConfigCardSource, "const LOADING_ICON_CLASS_NAME = \"animate-spin text-success\";", "Model and format loading spinners must render with the green success token.", failures);
-    assertIncludes(modelConfigCardSource, "const MAX_REWRITE_CONCURRENCY = 8;", "Model config must expose the 8-way rewrite concurrency ceiling.", failures);
-    assertIncludes(modelConfigCardSource, "max={MAX_REWRITE_CONCURRENCY}", "Model config concurrency input must use the shared 8-way ceiling.", failures);
+    assertIncludes(modelConfigCardSource, "const MAX_REWRITE_CONCURRENCY = 16;", "Model config must expose the 16-way rewrite concurrency ceiling.", failures);
+    assertIncludes(modelConfigCardSource, "max={MAX_REWRITE_CONCURRENCY}", "Model config concurrency input must use the shared 16-way ceiling.", failures);
   }
 
   if (inputSource && selectSource && textareaSource) {
@@ -237,8 +245,9 @@ function runRegression() {
     assertIncludes(appSource, "return [[chunkId, \"rewrite_confirmed\" as ReviewDecision] as const];", "Explicit rewrite confirmations must be persisted distinctly from default rewrites.", failures);
     assertIncludes(appSource, "if (decision === \"source_confirmed\")", "Only explicit source confirmations should be persisted.", failures);
     assertNotIncludes(appSource, "if (decision === \"source\" || decision === \"source_confirmed\")", "Default safe-source choices must not be saved as confirmed.", failures);
-    assertIncludes(appSource, "function normalizeSavedReviewDecisionsForCompare", "Legacy saved source confirmations for high-risk failed outputs must be normalized against compare data.", failures);
-    assertIncludes(appSource, "highRiskChunkIds.has(chunkId) && decision === \"source_confirmed\" ? \"source\"", "Legacy source confirmations must not hide high-risk failed outputs.", failures);
+    assertIncludes(appSource, "function normalizeSavedReviewDecisionsForCompare", "Saved review decisions must be scoped to the loaded compare data.", failures);
+    assertIncludes(appSource, "const validChunkIds = new Set(data.chunks.map((chunk) => chunk.chunkId));", "Saved review decisions must drop stale chunks without reopening handled high-risk outputs.", failures);
+    assertNotIncludes(appSource, "highRiskChunkIds.has(chunkId) && decision === \"source_confirmed\" ? \"source\"", "Confirmed source choices must not re-open handled high-risk failed outputs.", failures);
     assertNotIncludes(appSource, "[chunkId]: \"rewrite\" }));", "Single rerun must not force high-risk fallback chunks to default rewrite.", failures);
     assertNotIncludes(appSource, "completedTargets.map((target) => [target.chunkId, \"rewrite\" as ReviewDecision])", "Batch rerun must not force high-risk fallback chunks to default rewrite.", failures);
     assertNotIncludes(appSource, "buildRejectedCandidateReviewDecision", "Candidate adoption decision builders must stay removed from the frontend.", failures);
@@ -333,11 +342,14 @@ function runRegression() {
   }
 
   if (appServiceSource && webServiceSource) {
+    assertIncludes(appServiceSource, "getBackendRuntime(): Promise<BackendRuntimeInfo>;", "App service contract must expose fast backend runtime capability checks.", failures);
+    assertIncludes(webServiceSource, "async getBackendRuntime(): Promise<BackendRuntimeInfo>", "Web service must implement fast backend runtime capability checks.", failures);
+    assertIncludes(webServiceSource, "requestJson<BackendRuntimeInfo>(\"/api/ping\", { timeoutMs: 3_000 })", "Backend runtime check must use the fast ping endpoint instead of slow diagnostics.", failures);
     assertIncludes(appServiceSource, "getDocumentScopeDiagnostics(sourcePath: string): Promise<DocumentScopeDiagnostics>;", "App service contract must expose document-scope diagnostics.", failures);
     assertIncludes(webServiceSource, "/api/document-scope-diagnostics", "Web service must call the document-scope diagnostics API.", failures);
     assertIncludes(webServiceSource, "function formatHttpErrorMessage", "Web service must centralize HTTP error display text.", failures);
     assertIncludes(webServiceSource, "function isHtmlErrorPage", "Web service must detect HTML error pages returned by Flask or proxies.", failures);
-    assertIncludes(webServiceSource, "const MAX_REWRITE_CONCURRENCY = 8;", "Web service config merge must keep the 8-way rewrite concurrency ceiling.", failures);
+    assertIncludes(webServiceSource, "const MAX_REWRITE_CONCURRENCY = 16;", "Web service config merge must keep the 16-way rewrite concurrency ceiling.", failures);
     assertIncludes(webServiceSource, "buildUnavailableScopeDiagnostics", "Missing document-scope diagnostics endpoints must degrade without breaking document restore.", failures);
     assertIncludes(webServiceSource, "buildEmptyHistoryArtifactQueryResponse", "Missing history artifact endpoints must degrade without showing startup errors.", failures);
     assertIncludes(webServiceSource, "isEndpointCompatibilityError", "Web service must recognize old-backend 404/405 compatibility gaps.", failures);

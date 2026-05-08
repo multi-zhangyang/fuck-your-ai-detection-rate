@@ -33,8 +33,8 @@ ROUND_COMPARE_VERSION = 2
 MAX_VALIDATION_ATTEMPTS = 2
 MAX_FAILED_OUTPUT_CHARS = 12000
 DEFAULT_ROUND_CONCURRENCY = 1
-MAX_ROUND_CONCURRENCY = 8
-CHECKPOINT_SOFT_MISMATCH_KEYS = {"prompt_sha256"}
+MAX_ROUND_CONCURRENCY = 16
+CHECKPOINT_SOFT_MISMATCH_KEYS: set[str] = set()
 STRUCTURED_REWRITE_TEXT_KEYS = (
     "rewrittenText",
     "rewritten_text",
@@ -49,6 +49,37 @@ STRUCTURED_REWRITE_TEXT_KEYS = (
 )
 LATIN_WORD_RE = re.compile(r"[A-Za-z]+(?:[-'][A-Za-z]+)*")
 LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
+ENGLISH_SPACING_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:[._+-][A-Za-z0-9]+)*")
+ENGLISH_GLUE_LEFT_WORDS = frozenset(
+    {
+        "a", "an", "the", "as", "is", "are", "was", "were", "be", "been", "being",
+        "in", "on", "at", "of", "to", "for", "with", "by", "from", "and", "or",
+        "but", "then", "using", "employing",
+    }
+)
+ENGLISH_GLUE_RIGHT_WORDS = frozenset(
+    {
+        "a", "an", "the", "as", "is", "are", "was", "were", "be", "been", "being",
+        "in", "on", "at", "of", "to", "for", "with", "by", "from", "and", "or",
+        "but", "then", "addition", "using", "employing",
+    }
+)
+CONTENT_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+CONTENT_STOPWORDS = frozenset(
+    {
+        "about", "above", "after", "again", "against", "along", "also", "among", "and",
+        "another", "any", "are", "around", "because", "been", "being", "between", "both",
+        "can", "could", "does", "doing", "each", "either", "from", "had", "has", "have",
+        "having", "into", "main", "make", "makes", "making", "many", "may", "might",
+        "more", "most", "much", "must", "one", "only", "other", "our", "out", "over",
+        "same", "should", "such", "than", "that", "the", "their", "them", "then",
+        "there", "these", "this", "those", "through", "thus", "under", "use", "used",
+        "uses", "using", "was", "were", "while", "with", "within", "would",
+    }
+)
+INTERNAL_REPETITION_SCORE_THRESHOLD = 0.72
+ADJACENT_OVERLAP_SCORE_THRESHOLD = 0.50
+ADJACENT_OVERLAP_WINDOW = 3
 CJK_CHAR_RE = re.compile(r"[\u3400-\u4DBF\u4E00-\u9FFF]")
 ASCII_WORD_CHAR_RE = re.compile(r"[A-Za-z0-9]")
 PARAGRAPH_BREAK_RE = re.compile(r"\n\s*\n")
@@ -77,6 +108,7 @@ TECH_VERSION_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:"
     r"(?:GPT|BERT|RoBERTa|YOLO|ResNet|VGG|LLaMA|Qwen|DeepSeek|CUDA|PyTorch|TensorFlow|Python|Node\.js|React|Vue|Vite|Flask|Django)\s*v?\d+(?:\.\d+)*[A-Za-z0-9._-]*"
     r"|(?:[A-Z][A-Za-z]*[A-Z][A-Za-z0-9]*(?:[-_][A-Za-z0-9.]+)+)"
+    r"|(?:[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*)"
     r"|(?:[A-Za-z]{2,}[.-]?\d+(?:\.\d+)*(?:[-_][A-Za-z0-9.]+)?)"
     r"|(?:(?:v|V)\d+(?:\.\d+){1,3})"
     r")(?![A-Za-z0-9])"
@@ -107,6 +139,7 @@ STYLE_VALIDATION_MAX_ISSUES = 4
 CODE_LIKE_TERM_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"[A-Za-z_][A-Za-z0-9_]*(?:[./:_-][A-Za-z0-9_]+)+"
+    r"|[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*"
     r"|[A-Z]{2,}[A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*"
     r"|Django|RESTful|API|JWT|ORM|S3|RGW|Ceph|MySQL|Vue|React|Flask|Python|Boto3|Vite|DOCX|PDF|AI|AIGC|GPT|GPTZero|Google|DeepSeek|Qwen|LLM|CSS|HTML|JSON|HTTP|REST|URL|OpenAI|LangChain"
     r")(?![A-Za-z0-9_])"
@@ -314,6 +347,10 @@ def _build_validation_repair_steps(validation_error: str) -> str:
         steps.append("- Keep citation markers in the same sentence-level position as the source.")
     if "language" in error or "english" in error:
         steps.append("- Keep the output language identical to the input language; English input must remain English.")
+    if "spacing" in error:
+        steps.append("- Preserve normal English spaces between adjacent words, terms, numbers, and punctuation.")
+    if "repeated content" in error:
+        steps.append("- Do not repeat the same claim, role description, or system function twice inside the output.")
     if "markdown" in error or "answer-style" in error:
         steps.append("- Output body text only; do not add headings, bullets, explanations, markdown, or labels.")
     if "machine-like writing style" in error or "connector" in error or "template" in error or "sentence rhythm" in error:
@@ -741,7 +778,7 @@ def _normalize_single_output_paragraph(paragraph: str) -> str:
 def _line_joiner(previous_char: str, next_char: str) -> str:
     if ASCII_WORD_CHAR_RE.match(previous_char) and ASCII_WORD_CHAR_RE.match(next_char):
         return " "
-    if previous_char in ".!?;:" and ASCII_WORD_CHAR_RE.match(next_char):
+    if previous_char in ".!?;:," and ASCII_WORD_CHAR_RE.match(next_char):
         return " "
     return ""
 
@@ -880,6 +917,80 @@ def _extract_required_terms(text: str) -> set[str]:
     return {term for term in terms if len(term) >= 2}
 
 
+def _is_count_sensitive_required_term(term: str) -> bool:
+    return len(term) >= 3 and (
+        any(char.isdigit() for char in term)
+        or any(char in term for char in ".-_/")
+        or (any(char.islower() for char in term) and any(char.isupper() for char in term))
+    )
+
+
+def _extract_required_term_counts(text: str) -> dict[str, int]:
+    return {
+        term: text.count(term)
+        for term in _extract_required_terms(text)
+        if _is_count_sensitive_required_term(term)
+    }
+
+
+def _is_spacing_sensitive_english_token(token: str) -> bool:
+    return (
+        any(char.isdigit() for char in token)
+        or any(char in token for char in ".-_/")
+        or (any(char.islower() for char in token) and any(char.isupper() for char in token))
+    )
+
+
+def _is_spacing_sensitive_english_pair(left_text: str, right_text: str, collapsed_separator: str) -> bool:
+    if collapsed_separator:
+        return True
+    return (
+        _is_spacing_sensitive_english_token(left_text)
+        or _is_spacing_sensitive_english_token(right_text)
+        or left_text.lower() in ENGLISH_GLUE_LEFT_WORDS
+        or right_text.lower() in ENGLISH_GLUE_RIGHT_WORDS
+    )
+
+
+def find_english_spacing_corruptions(input_text: str, output_text: str, *, limit: int = 8) -> list[str]:
+    if detect_chunk_language(input_text) != "en":
+        return []
+    input_lower = input_text.lower()
+    output_lower = output_text.lower()
+    findings: list[str] = []
+    seen: set[str] = set()
+    tokens = list(ENGLISH_SPACING_TOKEN_RE.finditer(input_text))
+    for left, right in zip(tokens, tokens[1:]):
+        separator = input_text[left.end() : right.start()]
+        if not separator or not any(char.isspace() for char in separator):
+            continue
+        left_text = left.group(0)
+        right_text = right.group(0)
+        if len(left_text) == 1 and len(right_text) == 1:
+            continue
+        collapsed_separator = re.sub(r"\s+", "", separator)
+        if not _is_spacing_sensitive_english_pair(left_text, right_text, collapsed_separator):
+            continue
+        candidates = (
+            [f"{left_text}{right_text}"]
+            if not collapsed_separator
+            else [f"{left_text}{collapsed_separator}{right_text}"]
+        )
+        if collapsed_separator:
+            candidates.append(f"{left_text}{right_text}")
+        for candidate in candidates:
+            candidate_lower = candidate.lower()
+            if len(candidate_lower) < 5 or candidate_lower in input_lower or candidate_lower in seen:
+                continue
+            if candidate_lower in output_lower:
+                findings.append(candidate[:90])
+                seen.add(candidate_lower)
+                break
+        if len(findings) >= limit:
+            break
+    return findings
+
+
 def _validate_required_numbers(input_text: str, output_text: str, chunk_id: str) -> None:
     input_numbers = _extract_required_numbers(input_text)
     if not input_numbers:
@@ -897,6 +1008,94 @@ def _validate_required_terms(input_text: str, output_text: str, chunk_id: str) -
     missing = sorted(term for term in required_terms if term not in output_text)
     if missing:
         raise ValueError(f"Chunk {chunk_id} changed or removed protected terms: {', '.join(missing[:8])}")
+    input_counts = _extract_required_term_counts(input_text)
+    changed_counts = sorted(
+        term for term, count in input_counts.items()
+        if count > 1 and output_text.count(term) < count
+    )
+    if changed_counts:
+        raise ValueError(f"Chunk {chunk_id} reduced protected term occurrences: {', '.join(changed_counts[:8])}")
+
+
+def _validate_english_spacing_stability(input_text: str, output_text: str, chunk_id: str) -> None:
+    corruptions = find_english_spacing_corruptions(input_text, output_text)
+    if corruptions:
+        raise ValueError(f"Chunk {chunk_id} removed English spacing: {', '.join(corruptions[:5])}")
+
+
+def _content_terms(text: str) -> set[str]:
+    terms = {
+        token.lower()
+        for token in CONTENT_TOKEN_RE.findall(text)
+        if len(token) >= 3 and token.lower() not in CONTENT_STOPWORDS
+    }
+    for cjk_block in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+        if len(cjk_block) <= 4:
+            terms.add(cjk_block)
+            continue
+        terms.update(cjk_block[index : index + 2] for index in range(0, len(cjk_block) - 1))
+    return terms
+
+
+def _content_overlap_score(left_text: str, right_text: str) -> tuple[float, list[str], int, int]:
+    left_terms = _content_terms(left_text)
+    right_terms = _content_terms(right_text)
+    smaller = min(len(left_terms), len(right_terms))
+    if smaller < 8:
+        return 0.0, [], len(left_terms), len(right_terms)
+    overlap = sorted(left_terms & right_terms)
+    return len(overlap) / smaller, overlap[:20], len(left_terms), len(right_terms)
+
+
+def _sample_for_validation(text: str, limit: int = 180) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    return compact[:limit]
+
+
+def _repetition_units(text: str) -> list[str]:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", str(text or "").strip()) if part.strip()]
+    if len(paragraphs) >= 2:
+        return paragraphs
+    return [sentence for sentence in _split_sentences_for_quality(text) if len(_content_terms(sentence)) >= 8]
+
+
+def find_internal_repetition_issues(text: str, *, limit: int = 4) -> list[dict[str, object]]:
+    units = _repetition_units(text)
+    issues: list[dict[str, object]] = []
+    for left_index, left_text in enumerate(units):
+        for right_index in range(left_index + 1, len(units)):
+            right_text = units[right_index]
+            score, overlap_terms, left_count, right_count = _content_overlap_score(left_text, right_text)
+            if score < INTERNAL_REPETITION_SCORE_THRESHOLD:
+                continue
+            issues.append(
+                {
+                    "leftIndex": left_index,
+                    "rightIndex": right_index,
+                    "score": round(score, 3),
+                    "overlapTerms": overlap_terms[:12],
+                    "leftTermCount": left_count,
+                    "rightTermCount": right_count,
+                    "leftSample": _sample_for_validation(left_text),
+                    "rightSample": _sample_for_validation(right_text),
+                }
+            )
+            if len(issues) >= limit:
+                return issues
+    return issues
+
+
+def _validate_repetition_stability(input_text: str, output_text: str, chunk_id: str) -> None:
+    output_issues = find_internal_repetition_issues(output_text, limit=1)
+    if not output_issues:
+        return
+    input_issues = find_internal_repetition_issues(input_text, limit=1)
+    if input_issues:
+        return
+    issue = output_issues[0]
+    raise ValueError(
+        f"Chunk {chunk_id} introduced repeated content: overlap score {issue.get('score')}"
+    )
 
 
 def _validate_language_stability(input_text: str, output_text: str, chunk_id: str) -> None:
@@ -991,6 +1190,8 @@ def validate_chunk_output(input_text: str, output_text: str, chunk_id: str) -> N
     _validate_structure_and_citations(input_text, normalized_output, chunk_id)
     _validate_required_numbers(input_text, normalized_output, chunk_id)
     _validate_required_terms(input_text, normalized_output, chunk_id)
+    _validate_english_spacing_stability(input_text, normalized_output, chunk_id)
+    _validate_repetition_stability(input_text, normalized_output, chunk_id)
     validate_factual_relation_stability(input_text, normalized_output, f"Chunk {chunk_id}")
     _validate_language_stability(input_text, normalized_output, chunk_id)
     _validate_length_stability(input_text, normalized_output, chunk_id)
@@ -1345,6 +1546,90 @@ def _serialize_failed_output(text: str) -> dict[str, object]:
     }
 
 
+def _collect_adjacent_overlap_pairs(manifest: ChunkManifest, chunk_outputs: dict[str, str]) -> list[dict[str, object]]:
+    pairs: list[dict[str, object]] = []
+    chunks = list(manifest.chunks)
+    for right_index, right_chunk in enumerate(chunks):
+        right_output = str(chunk_outputs.get(right_chunk.chunk_id, "") or "")
+        if not right_output.strip():
+            continue
+        left_start = max(0, right_index - ADJACENT_OVERLAP_WINDOW)
+        for left_chunk in chunks[left_start:right_index]:
+            if left_chunk.paragraph_index == right_chunk.paragraph_index:
+                continue
+            if abs(int(left_chunk.paragraph_index) - int(right_chunk.paragraph_index)) > 1:
+                continue
+            left_output = str(chunk_outputs.get(left_chunk.chunk_id, "") or "")
+            if not left_output.strip():
+                continue
+            output_score, overlap_terms, left_terms, right_terms = _content_overlap_score(left_output, right_output)
+            if output_score < ADJACENT_OVERLAP_SCORE_THRESHOLD:
+                continue
+            source_score, _, _, _ = _content_overlap_score(str(left_chunk.text), str(right_chunk.text))
+            pairs.append(
+                {
+                    "leftChunkId": left_chunk.chunk_id,
+                    "rightChunkId": right_chunk.chunk_id,
+                    "leftParagraphIndex": left_chunk.paragraph_index,
+                    "rightParagraphIndex": right_chunk.paragraph_index,
+                    "outputOverlapScore": round(output_score, 3),
+                    "sourceOverlapScore": round(source_score, 3),
+                    "sourceAlreadyOverlapped": source_score >= ADJACENT_OVERLAP_SCORE_THRESHOLD,
+                    "overlapTerms": overlap_terms[:12],
+                    "leftTermCount": left_terms,
+                    "rightTermCount": right_terms,
+                    "leftSample": _sample_for_validation(left_output),
+                    "rightSample": _sample_for_validation(right_output),
+                }
+            )
+            break
+    return pairs[:24]
+
+
+def _append_unique_quality_list(quality: dict[str, object], key: str, value: object) -> None:
+    items = list(quality.get(key) or [])
+    if value not in items:
+        items.append(value)
+    quality[key] = items
+
+
+def _mark_adjacent_overlap_quality(chunk_payload: dict[str, object], issue: dict[str, object]) -> None:
+    quality = chunk_payload.get("quality")
+    if not isinstance(quality, dict):
+        quality = {}
+        chunk_payload["quality"] = quality
+    flag = "adjacent_semantic_overlap"
+    _append_unique_quality_list(quality, "flags", flag)
+    _append_unique_quality_list(
+        quality,
+        "rewriteAdvice",
+        "Review the neighboring paragraph overlap; rerun or manually keep only the paragraph that should carry this claim.",
+    )
+    review_reasons = list(quality.get("reviewReasons") or [])
+    review_reasons.append(
+        {
+            "code": flag,
+            "level": "high" if not issue.get("sourceAlreadyOverlapped") else "medium",
+            "message": "Adjacent paragraph or chunk has highly similar content.",
+            "evidence": issue,
+        }
+    )
+    quality["reviewReasons"] = review_reasons
+    quality["needsReview"] = True
+
+
+def _annotate_adjacent_overlap_quality(
+    compare_chunks: list[dict[str, object]],
+    adjacent_pairs: list[dict[str, object]],
+) -> None:
+    chunks_by_id = {str(chunk.get("chunkId")): chunk for chunk in compare_chunks}
+    for issue in adjacent_pairs:
+        for key in ("leftChunkId", "rightChunkId"):
+            chunk = chunks_by_id.get(str(issue.get(key, "")))
+            if chunk is not None:
+                _mark_adjacent_overlap_quality(chunk, issue)
+
+
 def _build_round_compare_payload(
     *,
     doc_id: str,
@@ -1412,6 +1697,12 @@ def _build_round_compare_payload(
             chunk_payload["failedAttempts"] = failed_attempts[-4:]
         compare_chunks.append(chunk_payload)
 
+    adjacent_overlap_pairs = _collect_adjacent_overlap_pairs(manifest, chunk_outputs)
+    _annotate_adjacent_overlap_quality(compare_chunks, adjacent_overlap_pairs)
+    enriched_quality_summary = dict(quality_summary)
+    enriched_quality_summary["adjacentOverlapCount"] = len(adjacent_overlap_pairs)
+    enriched_quality_summary["adjacentOverlapPairs"] = adjacent_overlap_pairs[:12]
+
     return {
         "version": ROUND_COMPARE_VERSION,
         "docId": doc_id,
@@ -1425,7 +1716,7 @@ def _build_round_compare_payload(
         "chunkCount": manifest.chunk_count,
         "paragraphSplitSummary": _build_paragraph_split_summary(manifest),
         "validationEvents": validation_events,
-        "qualitySummary": quality_summary,
+        "qualitySummary": enriched_quality_summary,
         "chunks": compare_chunks,
         "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
@@ -1558,6 +1849,7 @@ def _build_chunk_quality(input_text: str, output_text: str) -> dict[str, object]
     risks = _assess_machine_like_risks(output_text)
     introduced_templates = _find_introduced_template_phrases(input_text, output_text)
     style_validation_issues = _collect_machine_style_validation_issues(input_text, output_text)
+    repetition_issues = find_internal_repetition_issues(output_text)
     flags: list[str] = []
     advisory_flags: list[str] = []
     review_reasons: list[dict[str, object]] = []
@@ -1612,6 +1904,17 @@ def _build_chunk_quality(input_text: str, output_text: str) -> dict[str, object]
         advisory_flags.append("machine_style_drift")
         review_reasons.extend(style_validation_issues)
         rewrite_advice.append("建议定向重跑：减少新引入的套路句、机械连接词和过整齐句长，保留原文事实边界。")
+    if repetition_issues:
+        flags.append("repeated_content")
+        review_reasons.append(
+            {
+                "code": "repeated_content",
+                "level": "high",
+                "message": "Output contains repeated or highly overlapping content.",
+                "evidence": repetition_issues[:3],
+            }
+        )
+        rewrite_advice.append("Review repeated sentences or paragraphs; rerun this chunk if the repetition was introduced by the model.")
     return {
         "expansionRatio": expansion_ratio,
         "missingCitationCount": len(missing_citations),
@@ -1620,6 +1923,8 @@ def _build_chunk_quality(input_text: str, output_text: str) -> dict[str, object]
         "introducedTemplatePhrases": introduced_templates[:5],
         "styleValidationIssueCount": len(style_validation_issues),
         "styleValidationIssues": style_validation_issues,
+        "repetitionIssueCount": len(repetition_issues),
+        "repetitionIssues": repetition_issues[:3],
         "machineLikeRiskCount": len(risks),
         "machineLikeRisks": risks,
         "protectedTokenCount": len(protected.tokens),
@@ -1691,6 +1996,7 @@ def _build_quality_summary(
         for chunk in manifest.chunks
         if _build_local_style_card(chunk.text, effective_style_profile)
     ]
+    adjacent_overlap_pairs = _collect_adjacent_overlap_pairs(manifest, chunk_outputs)
     citation_input_count = sum(len(_extract_citations(chunk.text)) for chunk in manifest.chunks)
     citation_output_count = sum(len(_extract_citations(chunk_outputs.get(chunk.chunk_id, ""))) for chunk in manifest.chunks)
     protected_token_count = 0
@@ -1715,6 +2021,7 @@ def _build_quality_summary(
             "citation-preservation",
             "number-preservation",
             "term-preservation",
+            "repetition-stability",
             "factual-order-and-binding-preservation",
             "length-stability",
             "machine-style-drift",
@@ -1728,6 +2035,8 @@ def _build_quality_summary(
         "styleCardVersion": STYLE_CARD_VERSION,
         "styleCardChunkCount": len(style_card_chunk_ids),
         "styleCardChunkIds": style_card_chunk_ids[:24],
+        "adjacentOverlapCount": len(adjacent_overlap_pairs),
+        "adjacentOverlapPairs": adjacent_overlap_pairs[:12],
         "globalStyleProfile": effective_style_profile,
         "validationRetryCount": len(retry_chunk_ids),
         "sourceFallbackCount": len(source_fallback_chunk_ids),
@@ -1925,7 +2234,6 @@ def run_round(
 
     text = normalized_input_path.read_text(encoding="utf-8")
     manifest = build_manifest(text, chunk_limit=chunk_limit, chunk_metric=chunk_metric)
-    save_manifest(manifest, normalized_manifest_path)
     api_call_estimate = _estimate_api_calls(manifest)
     global_style_profile = _build_global_style_profile(manifest)
     configured_concurrency = _clamp_round_concurrency(max_concurrency)
@@ -1961,6 +2269,7 @@ def run_round(
         signature=checkpoint_signature,
         manifest_chunks_by_id=manifest_chunks_by_id,
     )
+    save_manifest(manifest, normalized_manifest_path)
     pending_chunk_count = max(0, manifest.chunk_count - len(chunk_outputs))
     effective_concurrency = max(1, min(configured_concurrency, pending_chunk_count or 1))
     if progress_callback is not None:

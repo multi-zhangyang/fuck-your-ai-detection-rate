@@ -63,9 +63,12 @@ def run_regression() -> dict[str, object]:
             client = app.test_client()
 
             allowed = client.get("/api/ping", headers={"Origin": "http://127.0.0.1:1420"})
+            ping_payload = allowed.get_json()
             _assert(allowed.headers.get("Access-Control-Allow-Origin") == "http://127.0.0.1:1420", "local frontend origin should be allowed")
             _assert("X-Export-Path" in allowed.headers.get("Access-Control-Expose-Headers", ""), "export artifact path should be CORS-exposed")
+            _assert(ping_payload["maxRewriteConcurrency"] == web_app.MAX_REWRITE_CONCURRENCY, "ping should expose the live backend concurrency ceiling")
             checks.append("local frontend origin is allowed")
+            checks.append("ping exposes live backend concurrency ceiling")
 
             denied = client.get("/api/ping", headers={"Origin": "http://evil.example"})
             _assert("Access-Control-Allow-Origin" not in denied.headers, "unknown origins should not receive CORS access")

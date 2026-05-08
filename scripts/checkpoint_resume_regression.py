@@ -131,10 +131,32 @@ def main() -> int:
         round_number=1,
         prompt_sequence=["classical"],
     )
-    if not prompt_changed_status.get("canResume"):
-        raise AssertionError("prompt file edits must not force completed checkpoint chunks to rerun")
-    if prompt_changed_status.get("completedChunks") != 1:
-        raise AssertionError("prompt-only checkpoint drift must preserve completed chunk count")
+    if prompt_changed_status.get("canResume"):
+        raise AssertionError("prompt file edits must block stale checkpoint reuse")
+    prompt_changed_calls: list[str] = []
+
+    def prompt_changed_transform(chunk_text: str, _prompt: str, _round_number: int, chunk_id: str) -> str:
+        prompt_changed_calls.append(chunk_id)
+        return chunk_text
+
+    try:
+        run_round(
+            doc_id=status_context.doc_id,
+            round_number=1,
+            input_path=source_path,
+            output_path=output_path,
+            manifest_path=manifest_path,
+            transform=prompt_changed_transform,
+            prompt_profile="cn_custom",
+            prompt_sequence=["classical"],
+        )
+    except RuntimeError as exc:
+        if "Existing checkpoint does not match" not in str(exc) or "prompt_sha256" not in str(exc):
+            raise
+    else:
+        raise AssertionError("prompt-changed checkpoint with saved chunks must block a fresh run")
+    if prompt_changed_calls:
+        raise AssertionError(f"prompt-changed checkpoint must fail before model calls, got {prompt_changed_calls}")
     status_checkpoint_path.write_text(json.dumps(checkpoint_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     mismatched_payload = dict(checkpoint_payload)
@@ -151,6 +173,8 @@ def main() -> int:
     if "假续跑" not in str(mismatched_status.get("message", "")):
         raise AssertionError("incompatible checkpoint status must explain that false resume was blocked")
     blocked_calls: list[str] = []
+    manifest_sentinel = {"sentinel": "blocked checkpoint must not overwrite manifest"}
+    manifest_path.write_text(json.dumps(manifest_sentinel, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def blocked_transform(chunk_text: str, _prompt: str, _round_number: int, chunk_id: str) -> str:
         blocked_calls.append(chunk_id)
@@ -179,6 +203,9 @@ def main() -> int:
     still_mismatched = json.loads(status_checkpoint_path.read_text(encoding="utf-8"))
     if still_mismatched.get("input_sha256") != "mismatched-input":
         raise AssertionError("blocked incompatible checkpoint should remain intact until explicit reset")
+    manifest_after_block = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest_after_block != manifest_sentinel:
+        raise AssertionError("blocked incompatible checkpoint must not overwrite the previous manifest")
     status_checkpoint_path.write_text(json.dumps(checkpoint_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     all_done_payload = dict(checkpoint_payload)

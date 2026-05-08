@@ -12,6 +12,7 @@ import type {
   EnvironmentDiagnostics,
   ExportIssueSample,
   ExportResult,
+  BackendRuntimeInfo,
   FormatRules,
   FormatRulesResult,
   HistoryArtifactQueryFilters,
@@ -51,7 +52,7 @@ const FORMAT_RULE_PARSE_DEFAULT_TIMEOUT_MS = 300_000;
 const FORMAT_RULE_PARSE_MAX_TIMEOUT_MS = 1_815_000;
 const SAVED_SECRET_PLACEHOLDER = "__FYADR_SAVED_SECRET__";
 const MAX_UPLOAD_BYTES = 40 * 1024 * 1024;
-const MAX_REWRITE_CONCURRENCY = 8;
+const MAX_REWRITE_CONCURRENCY = 16;
 type RequestJsonInit = RequestInit & {
   timeoutMs?: number;
 };
@@ -781,6 +782,10 @@ function ensureRunStream(runToken: string): RunStream {
 }
 
 export const webService: AppService = {
+  async getBackendRuntime(): Promise<BackendRuntimeInfo> {
+    return requestJson<BackendRuntimeInfo>("/api/ping", { timeoutMs: 3_000 });
+  },
+
   async getHealth(): Promise<EnvironmentDiagnostics> {
     return requestJson<EnvironmentDiagnostics>("/api/health");
   },

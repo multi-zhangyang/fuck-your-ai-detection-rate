@@ -4,6 +4,7 @@ import inspect
 import json
 import os
 import shutil
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -176,6 +177,29 @@ class WebRunStateRegressionTest(unittest.TestCase):
         self.assertNotIn("roundModel", payload["state"]["lastEvent"])
         self.assertEqual(payload["state"]["result"]["roundModel"]["model"], "<configured>")
 
+    def test_task_state_atomic_write_handles_concurrent_writers(self) -> None:
+        output_path = TASK_STATE_TEST_DIR / "run_round_concurrent.json"
+        errors: list[BaseException] = []
+
+        def write_snapshot(index: int) -> None:
+            try:
+                web_app.write_json_atomic(output_path, {"index": index, "ok": True})
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=write_snapshot, args=(index,)) for index in range(16)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        temp_paths = list(TASK_STATE_TEST_DIR.glob("run_round_concurrent*.json.tmp"))
+
+        self.assertFalse(errors)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(temp_paths)
+
     def test_health_reports_interrupted_persisted_run_after_memory_loss(self) -> None:
         run_id, _ = web_app.register_run(str(self.sample_path))
         web_app.append_progress_event(run_id, {"phase": "chunk-complete", "round": 1, "chunkId": "p1_c0"})
@@ -249,7 +273,7 @@ class WebRunStateRegressionTest(unittest.TestCase):
         active_run_id, _ = web_app.register_run(str(self.sample_path))
         corrupt_path = TASK_STATE_TEST_DIR / "run_round_corrupt.json"
         stale_tmp_path = TASK_STATE_TEST_DIR / "batch_rerun_orphan.json.tmp"
-        active_tmp_path = TASK_STATE_TEST_DIR / f"run_round_{active_run_id}.json.tmp"
+        active_tmp_path = TASK_STATE_TEST_DIR / f"run_round_{active_run_id}.active-writer.json.tmp"
         corrupt_path.write_text("{not-json", encoding="utf-8")
         stale_tmp_path.write_text("{partial", encoding="utf-8")
         active_tmp_path.write_text("{partial-active", encoding="utf-8")
@@ -277,7 +301,7 @@ class WebRunStateRegressionTest(unittest.TestCase):
         active_run_id, _ = web_app.register_run(str(self.sample_path))
         corrupt_path = TASK_STATE_TEST_DIR / "run_round_corrupt.json"
         stale_tmp_path = TASK_STATE_TEST_DIR / "batch_rerun_orphan.json.tmp"
-        active_tmp_path = TASK_STATE_TEST_DIR / f"run_round_{active_run_id}.json.tmp"
+        active_tmp_path = TASK_STATE_TEST_DIR / f"run_round_{active_run_id}.active-writer.json.tmp"
         corrupt_path.write_text("{not-json", encoding="utf-8")
         stale_tmp_path.write_text("{partial", encoding="utf-8")
         active_tmp_path.write_text("{partial-active", encoding="utf-8")

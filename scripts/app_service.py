@@ -52,7 +52,7 @@ from fyadr_round_service import (
     _serialize_failed_output,
     _sha256_text,
 )
-from prompt_library import DEFAULT_PROMPT_PROFILE, LEGACY_PROMPT_PROFILE, get_prompt_id_for_round, is_prompt_sequence_customizable
+from prompt_library import DEFAULT_PROMPT_PROFILE, LEGACY_PROMPT_PROFILE, get_prompt_id_for_round, is_prompt_sequence_customizable, prompt_sequence_match_rank
 from docx_bodymap import load_docx_body_map, save_docx_body_map, update_docx_body_map_texts
 from docx_audit import audit_docx_export, get_docx_audit_report_path
 from docx_export_guard import (
@@ -83,7 +83,7 @@ DEFAULT_MAX_RETRIES = 3
 MIN_REWRITE_TRANSIENT_RETRIES = 6
 REWRITE_RETRY_BACKOFF_SECONDS = 5.0
 DEFAULT_REWRITE_CONCURRENCY = 2
-MAX_REWRITE_CONCURRENCY = 8
+MAX_REWRITE_CONCURRENCY = 16
 DEFAULT_PREVIEW_MAX_CHARS = 12000
 TARGETED_RERUN_VALIDATION_ATTEMPTS = 2
 DETECTION_FEEDBACK_MAX_SEGMENTS = 6
@@ -94,6 +94,7 @@ _PROVIDER_GUARD_STATE: dict[str, dict[str, Any]] = {}
 _PROVIDER_GUARD_LOCK = threading.Lock()
 API_READ_ALLOWED_ROOTS = tuple((ROOT_DIR / name).resolve() for name in ("finish", "origin", "prompts", "references"))
 API_OUTPUT_ALLOWED_ROOTS = ((ROOT_DIR / "finish").resolve(),)
+API_EXPORT_ALLOWED_ROOTS = ((ROOT_DIR / "finish").resolve(),)
 DETECTOR_MECHANICAL_CONNECTOR_RE = re.compile(
     r"(首先|其次|再次|最后|此外|同时|因此|所以|综上|总之|由此可见|值得注意的是|"
     r"\bfirstly\b|\bsecondly\b|\bfinally\b|\bin addition\b|\bfurthermore\b|\btherefore\b|\bin conclusion\b|\boverall\b)",
@@ -625,12 +626,6 @@ def _load_compare_payload_for_output(output_path: Path) -> dict[str, Any] | None
     if not isinstance(payload, dict):
         return None
     payload = _normalize_compare_failed_attempts(payload)
-    if _recover_valid_failed_outputs(payload):
-        try:
-            compare_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-        except OSError:
-            pass
-        _sync_compare_payload_to_text_artifacts(output_path, payload)
     return payload
 
 
@@ -670,80 +665,6 @@ def _normalize_compare_failed_attempts(payload: dict[str, Any]) -> dict[str, Any
         if failed_attempts:
             chunk["failedAttempts"] = failed_attempts
     return payload
-
-
-def _is_failed_output_fallback_chunk(chunk: dict[str, Any], flags: list[Any] | None = None) -> bool:
-    normalized_flags = {str(flag) for flag in (flags or [])}
-    return (
-        chunk.get("fallbackMode") == "source"
-        or "source_fallback" in normalized_flags
-        or "targeted_rerun_fallback" in normalized_flags
-        or chunk.get("rerunStatus") == "fallback"
-        or bool(chunk.get("rerunFallbackMode"))
-    )
-
-
-def _recover_valid_failed_outputs(compare_payload: dict[str, Any]) -> list[str]:
-    chunks = compare_payload.get("chunks")
-    if not isinstance(chunks, list):
-        return []
-    recovered_chunk_ids: list[str] = []
-    for chunk in chunks:
-        if not isinstance(chunk, dict):
-            continue
-        quality = chunk.get("quality") if isinstance(chunk.get("quality"), dict) else {}
-        flags = list(quality.get("flags") or []) if isinstance(quality, dict) else []
-        if not _is_failed_output_fallback_chunk(chunk, flags):
-            continue
-        input_text = str(chunk.get("inputText", ""))
-        chunk_id = str(chunk.get("chunkId", ""))
-        failed_attempts = _normalize_failed_attempts(chunk.get("failedAttempts"))
-        for attempt in reversed(failed_attempts):
-            output_text = str(attempt.get("outputText", "")).strip()
-            if not input_text.strip() or not output_text:
-                continue
-            try:
-                validate_chunk_output(input_text, output_text, chunk_id)
-            except ValueError:
-                continue
-            chunk["outputText"] = output_text
-            chunk["outputCharCount"] = len(output_text)
-            chunk["outputWordCount"] = len(re.findall(r"[A-Za-z0-9]+", output_text))
-            chunk["quality"] = _build_chunk_quality(input_text, output_text)
-            chunk["recoveredFromFailedAttempt"] = {
-                "attempt": attempt.get("attempt"),
-                "error": attempt.get("error", ""),
-                "recoveredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            }
-            for key in ("fallbackMode", "fallbackReason", "fallbackError", "fallbackAttempts", "fallbackAt"):
-                chunk.pop(key, None)
-            for key in ("rerunStatus", "rerunFallbackMode", "rerunFallbackError"):
-                chunk.pop(key, None)
-            recovered_chunk_ids.append(chunk_id)
-            break
-    if recovered_chunk_ids:
-        summary = compare_payload.get("qualitySummary")
-        if not isinstance(summary, dict):
-            summary = {}
-            compare_payload["qualitySummary"] = summary
-        source_fallback_ids = [
-            str(chunk_id)
-            for chunk_id in (summary.get("sourceFallbackChunkIds") or [])
-            if str(chunk_id) not in recovered_chunk_ids
-        ]
-        summary["sourceFallbackChunkIds"] = source_fallback_ids
-        summary["sourceFallbackCount"] = len(source_fallback_ids)
-        targeted_fallback_ids = [
-            str(chunk_id)
-            for chunk_id in (summary.get("targetedRerunFallbackChunkIds") or [])
-            if str(chunk_id) not in recovered_chunk_ids
-        ]
-        summary["targetedRerunFallbackChunkIds"] = targeted_fallback_ids
-        summary["targetedRerunFallbackCount"] = len(targeted_fallback_ids)
-        recovered_ids = list(dict.fromkeys([*(summary.get("recoveredFailedOutputChunkIds") or []), *recovered_chunk_ids]))
-        summary["recoveredFailedOutputChunkIds"] = recovered_ids[:24]
-        summary["recoveredFailedOutputCount"] = len(recovered_ids)
-    return recovered_chunk_ids
 
 
 def _load_manifest_for_compare(output_path: Path, compare_payload: dict[str, Any]):
@@ -790,6 +711,8 @@ def _select_review_text(input_text: Any, output_text: Any, decision: Any) -> str
     rewrite_text = output_text if isinstance(output_text, str) else ""
     normalized_decision = _normalize_review_decision_value(decision)
     if isinstance(normalized_decision, dict):
+        if normalized_decision.get("source") == "failed_output" and normalized_decision.get("confirmed") is not True:
+            return source_text
         return str(normalized_decision.get("text", ""))
     return source_text if normalized_decision in {"source", "source_confirmed"} else rewrite_text
 
@@ -806,12 +729,16 @@ def _restore_paragraphs_from_compare_manifest(
     if not isinstance(raw_chunks, list):
         return None
     chunk_results: dict[str, str] = {}
+    seen_chunk_ids: set[str] = set()
     for raw_chunk in raw_chunks:
         if not isinstance(raw_chunk, dict):
             continue
         chunk_id = str(raw_chunk.get("chunkId", "")).strip()
         if not chunk_id:
             continue
+        if chunk_id in seen_chunk_ids:
+            return None
+        seen_chunk_ids.add(chunk_id)
         input_text = raw_chunk.get("inputText", "")
         output_text = raw_chunk.get("outputText", "")
         selected_text = _select_review_text(input_text, output_text, (decisions or {}).get(chunk_id))
@@ -820,10 +747,17 @@ def _restore_paragraphs_from_compare_manifest(
             selected_text,
         )
     manifest_chunk_ids = [chunk.chunk_id for chunk in manifest.chunks]
-    if not manifest_chunk_ids or any(chunk_id not in chunk_results for chunk_id in manifest_chunk_ids):
+    manifest_chunk_id_set = set(manifest_chunk_ids)
+    if (
+        not manifest_chunk_ids
+        or any(chunk_id not in chunk_results for chunk_id in manifest_chunk_ids)
+        or any(chunk_id not in manifest_chunk_id_set for chunk_id in chunk_results)
+    ):
         return None
     restored_text = restore_text_from_chunks(manifest, chunk_results)
     paragraphs = split_text_to_paragraphs(restored_text)
+    if len(paragraphs) != manifest.paragraph_count:
+        return None
     return paragraphs or None
 
 
@@ -840,16 +774,34 @@ def _build_paragraphs_from_compare_payload(
     if not isinstance(raw_chunks, list):
         return None
 
+    expected_paragraph_count = _coerce_optional_nonnegative_int(compare_payload.get("paragraphCount"))
+    expected_chunk_count = _coerce_optional_nonnegative_int(compare_payload.get("chunkCount"))
+    if expected_chunk_count is not None and expected_chunk_count != len(raw_chunks):
+        return None
+
     paragraphs_by_index: dict[int, list[tuple[int, str]]] = {}
+    seen_chunk_ids: set[str] = set()
+    seen_positions: set[tuple[int, int]] = set()
     for raw_chunk in raw_chunks:
         if not isinstance(raw_chunk, dict):
-            continue
+            return None
         chunk_id = str(raw_chunk.get("chunkId", "")).strip()
+        if not chunk_id or chunk_id in seen_chunk_ids:
+            return None
+        seen_chunk_ids.add(chunk_id)
         try:
             paragraph_index = int(raw_chunk.get("paragraphIndex"))
             chunk_index = int(raw_chunk.get("chunkIndex"))
         except (TypeError, ValueError):
-            continue
+            return None
+        if paragraph_index < 0 or chunk_index < 0:
+            return None
+        if expected_paragraph_count is not None and paragraph_index >= expected_paragraph_count:
+            return None
+        position = (paragraph_index, chunk_index)
+        if position in seen_positions:
+            return None
+        seen_positions.add(position)
         input_text = raw_chunk.get("inputText", "")
         output_text = raw_chunk.get("outputText", "")
         selected_text = _select_review_text(input_text, output_text, (decisions or {}).get(chunk_id))
@@ -862,10 +814,82 @@ def _build_paragraphs_from_compare_payload(
     if not paragraphs_by_index:
         return None
 
+    if not _compare_paragraph_chunks_are_complete(paragraphs_by_index, expected_paragraph_count):
+        return None
+
+    if expected_paragraph_count is not None:
+        return [
+            _join_compare_chunk_texts(paragraphs_by_index[paragraph_index])
+            for paragraph_index in range(expected_paragraph_count)
+        ]
+
     return [
-        "".join(text.strip() for _, text in sorted(paragraphs_by_index[paragraph_index], key=lambda item: item[0]) if text.strip()).strip()
+        _join_compare_chunk_texts(paragraphs_by_index[paragraph_index])
         for paragraph_index in sorted(paragraphs_by_index)
     ]
+
+
+def _coerce_optional_nonnegative_int(value: Any) -> int | None:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized >= 0 else None
+
+
+def _compare_paragraph_chunks_are_complete(
+    paragraphs_by_index: dict[int, list[tuple[int, str]]],
+    expected_paragraph_count: int | None,
+) -> bool:
+    if expected_paragraph_count is not None and set(paragraphs_by_index) != set(range(expected_paragraph_count)):
+        return False
+    for chunks in paragraphs_by_index.values():
+        indexes = sorted(chunk_index for chunk_index, _ in chunks)
+        if indexes != list(range(len(indexes))):
+            return False
+    return True
+
+
+def _join_compare_chunk_texts(chunks: list[tuple[int, str]]) -> str:
+    ordered = [
+        text.strip()
+        for _, text in sorted(chunks, key=lambda item: item[0])
+        if text and text.strip()
+    ]
+    if not ordered:
+        return ""
+    text = ordered[0]
+    for part in ordered[1:]:
+        text = _join_compare_text_fragments(text, part)
+    return text.strip()
+
+
+def _join_compare_text_fragments(left: str, right: str) -> str:
+    left = left.strip()
+    right = right.strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    if _needs_compare_join_space(left[-1], right[0]):
+        return f"{left} {right}"
+    return f"{left}{right}"
+
+
+def _needs_compare_join_space(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left.isspace() or right.isspace():
+        return False
+    if not (left.isascii() and right.isascii()):
+        return False
+    if left.isalnum() and right.isalnum():
+        return True
+    if left in ".!?;:," and right.isalnum():
+        return True
+    if left.isalnum() and right in "([{":
+        return True
+    return False
 
 
 def _sync_compare_payload_to_text_artifacts(
@@ -947,13 +971,10 @@ def _round_model_key(prompt_profile: str, round_number: int) -> str:
     return f"{normalize_prompt_profile(prompt_profile)}:{int(round_number)}"
 
 
-def _record_prompt_sequence_key(item: dict[str, Any], prompt_profile: str) -> str:
+def _record_prompt_sequence_match_rank(item: dict[str, Any], prompt_profile: str, prompt_sequence: list[str]) -> int:
     if not is_prompt_sequence_customizable(prompt_profile):
-        return ""
-    sequence = item.get("prompt_sequence")
-    if not isinstance(sequence, list):
-        return ""
-    return ",".join(str(value or "").strip().lower() for value in sequence if str(value or "").strip())
+        return 0
+    return prompt_sequence_match_rank(item.get("prompt_sequence"), prompt_sequence, int(item.get("round", 0) or 0))
 
 
 def _record_matches_prompt(
@@ -966,7 +987,7 @@ def _record_matches_prompt(
         return False
     if not is_prompt_sequence_customizable(normalized_profile):
         return True
-    return _record_prompt_sequence_key(item, normalized_profile) == ",".join(prompt_sequence)
+    return _record_prompt_sequence_match_rank(item, normalized_profile, prompt_sequence) >= 0
 
 
 def _source_to_doc_id(source_path: str) -> tuple[Path, str]:
@@ -1198,12 +1219,14 @@ def get_document_status(
     rounds = entry.get("rounds", []) if isinstance(entry, dict) else []
     normalized_prompt_profile = round_state.prompt_profile
     normalized_prompt_sequence = round_state.prompt_sequence
+    max_rounds = get_max_rounds(normalized_prompt_profile, normalized_prompt_sequence)
     completed_rounds = [
         item.get("round")
         for item in rounds
         if isinstance(item, dict)
         and isinstance(item.get("round"), int)
         and _record_matches_prompt(item, normalized_prompt_profile, normalized_prompt_sequence)
+        and 1 <= int(item.get("round")) <= max_rounds
     ]
     completed_rounds.sort()
     latest_output_path = ""
@@ -1230,6 +1253,7 @@ def get_document_status(
                 if isinstance(item, dict)
                 and isinstance(item.get("round"), int)
                 and _record_matches_prompt(item, normalized_prompt_profile, normalized_prompt_sequence)
+                and 1 <= int(item.get("round")) <= max_rounds
             ),
             key=lambda item: item["round"],
             default=None,
@@ -1245,7 +1269,7 @@ def get_document_status(
         "completedRounds": completed_rounds,
         "nextRound": round_state.next_round,
         "plannedRounds": len(normalized_prompt_sequence),
-        "maxRounds": get_max_rounds(normalized_prompt_profile, normalized_prompt_sequence),
+        "maxRounds": max_rounds,
         "hasNextRound": round_state.next_round is not None,
         "isComplete": round_state.is_complete,
         "currentInputPath": str(current_input_path),
@@ -2156,9 +2180,12 @@ def run_round_for_app(
     prompt_profile = normalize_prompt_profile(model_config.get("promptProfile", DEFAULT_PROMPT_PROFILE))
     prompt_sequence = normalize_prompt_sequence(prompt_profile, model_config.get("promptSequence"))
     status = get_document_status(source_path, prompt_profile=prompt_profile, prompt_sequence=prompt_sequence)
+    max_rounds = get_max_rounds(prompt_profile, prompt_sequence)
     if bool(status.get("isComplete")):
-        raise ValueError(f"Document already completed all {get_max_rounds(prompt_profile, prompt_sequence)} rounds.")
+        raise ValueError(f"Document already completed all {max_rounds} rounds.")
     effective_round = int(round_number or status.get("nextRound") or 1)
+    if effective_round < 1 or effective_round > max_rounds:
+        raise ValueError(f"Round {effective_round} is outside the selected {max_rounds} round prompt workflow.")
     effective_model_config = _resolve_round_model_config(model_config, prompt_profile, effective_round)
 
     base_url = str(effective_model_config.get("baseUrl", "")).strip()
@@ -2404,17 +2431,20 @@ def list_available_models(model_config: dict[str, Any]) -> dict[str, Any]:
 
 
 def export_round_output(output_path: str, export_path: str, target_format: str) -> dict[str, Any]:
+    normalized_target_format = str(target_format or "").strip().lower()
+    if normalized_target_format not in {"txt", "docx"}:
+        raise ValueError(f"Unsupported export format: {target_format}")
     normalized_output_path = _resolve_api_path(output_path, allowed_roots=API_OUTPUT_ALLOWED_ROOTS, label="Output path")
     if not normalized_output_path.exists():
         raise ValueError(f"Output file does not exist: {normalized_output_path}")
     if not normalized_output_path.is_file():
         raise ValueError(f"Output path is not a file: {normalized_output_path}")
-    normalized_export_path = Path(export_path).resolve()
+    normalized_export_path = _resolve_api_path(export_path, allowed_roots=API_EXPORT_ALLOWED_ROOTS, label="Export path")
     normalized_export_path.parent.mkdir(parents=True, exist_ok=True)
     review_decisions = load_review_decisions(str(normalized_output_path)).get("decisions", {})
     if not isinstance(review_decisions, dict):
         review_decisions = {}
-    if target_format == "txt":
+    if normalized_target_format == "txt":
         if review_decisions:
             blocks = _build_reviewed_paragraphs_from_compare(normalized_output_path, review_decisions)
             normalized_export_path.write_text("\n\n".join(blocks), encoding="utf-8")
@@ -2430,7 +2460,7 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
             "path": str(normalized_export_path),
         }
 
-    if target_format == "docx":
+    if normalized_target_format == "docx":
         origin_docx_bundle = _find_origin_docx_for_output(normalized_output_path)
         layout_mode = "plain_text_docx"
         paragraph_source = "text"
@@ -2625,13 +2655,6 @@ def read_round_compare(output_path: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid compare data payload: {compare_path}")
     payload = _normalize_compare_failed_attempts(payload)
-    recovered_chunk_ids = _recover_valid_failed_outputs(payload)
-    if recovered_chunk_ids:
-        compare_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-        try:
-            _sync_compare_payload_to_text_artifacts(normalized_output_path, payload)
-        except Exception as exc:
-            payload["recoveryWarning"] = str(exc)
     return payload
 
 

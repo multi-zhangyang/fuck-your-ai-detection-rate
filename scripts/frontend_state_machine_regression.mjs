@@ -79,6 +79,19 @@ function runRegression() {
     assertIncludes(appSource, "function clearPendingAutoActionForManualContextChange(", "Manual document or route changes must cancel pending automatic actions.", failures);
     assertIncludes(appSource, "function rejectPendingAutoAction(", "Users must be able to reject pending automatic actions.", failures);
     assertIncludes(appSource, "function AutoRunSignal(", "Home run panel must render a visible countdown signal.", failures);
+    assertIncludes(appSource, "const canAppendRound = Boolean(", "Completed custom workflows must expose an explicit append action.", failures);
+    assertIncludes(appSource, "const appendRoundLimit = Math.max(sequenceLengthLimit, getPromptRoundLimit", "Append capacity must be separate from the 1/2/3 main workflow selector.", failures);
+    assertIncludes(appSource, "Math.min(getPromptSequenceLimit(promptProfile, promptWorkflows), DEFAULT_PROMPT_SEQUENCE.length)", "Main workflow selector must stay on the simple 1/2/3 choices.", failures);
+    assertIncludes(appSource, "const [appendDraft, setAppendDraft] = useState<null | {", "Append rounds must use a dedicated single-round draft instead of mutating the main workflow picker.", failures);
+    assertIncludes(appSource, "openAppendRoundDialog();", "Append action must open the single-round config dialog before starting.", failures);
+    assertIncludes(appSource, "<Dialog open={Boolean(appendDraft)}", "Append round configuration must use a centered Dialog.", failures);
+    assertIncludes(appSource, "开始追加", "Append dialog must expose a single confirm action.", failures);
+    assertIncludes(appSource, "promptSequence: nextSequence", "Append action must extend the custom prompt sequence before starting a run.", failures);
+    assertIncludes(appSource, "const lastRoundKey = getRoundModelKey(promptProfile, activeSequence.length, promptWorkflows);", "Append default route must read the active prompt profile, not a hard-coded editable profile.", failures);
+    assertIncludes(appSource, "const roundKey = getRoundModelKey(promptProfile, nextRound, promptWorkflows);", "Append round model key must be scoped to the active prompt profile.", failures);
+    assertNotIncludes(appSource, "getRoundModelKey(editablePromptProfile", "Append route logic must not use the editor default profile.", failures);
+    assertNotIncludes(appSource, "promptProfile: editablePromptProfile", "Append action must not rewrite the active prompt profile implicitly.", failures);
+    assertIncludes(appSource, "onRunRound(nextConfig);", "Append action must start with the extended prompt route, not the stale completed route.", failures);
     assertIncludes(appSource, "function createCheckpointProgress(", "Resumable checkpoints must seed visible progress.", failures);
     assertIncludes(appSource, "function buildRunRecoveryPanelState(", "Run recovery state must be derived by one helper.", failures);
     assertIncludes(appSource, "function RunRecoveryPanel(", "Home page must expose a visible run recovery panel.", failures);
@@ -111,15 +124,22 @@ function runRegression() {
     assertIncludes(appSource, "const statusPromptProfile = status.promptProfile ?? config.promptProfile;", "Checkpoint status refresh must use the document status route.", failures);
     assertIncludes(appSource, "const statusPromptSequence = normalizePromptSequence(status.promptSequence ?? config.promptSequence, promptOptions, statusPromptProfile, promptWorkflows);", "Checkpoint status refresh must use the document status prompt sequence.", failures);
     assertIncludes(appSource, "requestId === roundProgressRequestRef.current", "Checkpoint status refresh must ignore stale responses.", failures);
-    assertIncludes(appSource, "流程已完成，可追加第 ${status.nextRound} 轮。", "Completed selected workflows must be presented as exportable with optional manual continuation.", failures);
-    assertIncludes(appSource, "已到轮次上限，可导出。", "The UI must reserve final completion wording for the true round cap.", failures);
+    assertNotIncludes(appSource, "流程已完成，可追加第 ${status.nextRound} 轮。", "Completed selected workflows must not expose an automatic append round.", failures);
+    assertIncludes(appSource, "流程已完成，可导出。", "Completed selected workflows must be presented as exportable.", failures);
     assertIncludes(appSource, "autoSnapshotRestoreKeyRef", "Completed results must have a guarded automatic Diff restore path after refresh or interrupted restoration.", failures);
     assertIncludes(appSource, "loadLatestRoundSnapshot(documentStatus, restoreConfig", "Missing visible Diff should be restored from the latest persisted round instead of leaving the home page empty.", failures);
     assertIncludes(appSource, "latestOutputKey && documentRefsMatch(latestOutputKey, outputKey)", "Diff ownership must accept the latest output path instead of relying only on docId.", failures);
+    assertIncludes(appSource, "function promptSequenceCoversSelectedRoute(", "Diff and history route matching must support appended custom workflows without treating unrelated routes as active.", failures);
+    assertIncludes(appSource, "comparePromptProfile !== documentPromptProfile", "Diff ownership must reject compare payloads from another prompt profile before trusting docId.", failures);
+    assertIncludes(appSource, "promptSequenceCoversSelectedRoute(\n      compareData.promptSequence,\n      document.promptSequence,", "Diff ownership must reject stale compare payloads from another custom prompt sequence.", failures);
+    assertIncludes(appSource, "compareDataMatchesDocument(compareData, documentStatus, promptOptions, promptWorkflows)", "Active Diff selection must pass route metadata into compare ownership checks.", failures);
+    assertIncludes(appSource, "promptSequenceCoversSelectedRoute(roundItem.promptSequence, promptSequence, roundItem.round", "History lookup must keep prefix rounds visible after a user appends one more custom round.", failures);
     assertIncludes(appSource, "const loadedCompletedResultRound = roundResult?.round ?? null;", "Home run panel must only treat completed round results as loaded results.", failures);
     assertIncludes(appSource, "loadedResultRound={loadedCompletedResultRound}", "Checkpoint Diff snapshots must not be passed to the run panel as completed results.", failures);
     assertIncludes(appSource, "function roundCheckpointMatchesDocument", "Current-round checkpoints must be detected separately from completed results.", failures);
-    assertIncludes(appSource, "const checkpointPendingForCurrentDocument = roundCheckpointMatchesDocument(roundProgressStatus, documentStatus) && !showRoundRunStatus;", "Incomplete checkpoints must keep export and output status guarded after refresh.", failures);
+    assertIncludes(appSource, "const checkpointPendingForCurrentDocument = roundCheckpointMatchesDocument(roundProgressStatus, documentStatus, promptOptions, promptWorkflows) && !showRoundRunStatus;", "Incomplete checkpoints must keep export and output status guarded after refresh.", failures);
+    assertIncludes(appSource, "checkpoint.promptProfile === status.promptProfile", "Checkpoint matching must reject stale checkpoints from another prompt route.", failures);
+    assertIncludes(appSource, "promptSequencesEqual(checkpoint.promptSequence, status.promptSequence, promptOptions, status.promptProfile, promptWorkflows)", "Checkpoint matching must include the current custom prompt sequence.", failures);
     assertIncludes(appSource, "const waitingForStatusSync = Boolean(resultAheadOfStatus && !resumableCheckpoint && !checkpointOnCurrentRound);", "Current-round checkpoints must not strand the primary button in status-sync mode.", failures);
     assertIncludes(appSource, "放弃已完成结果", "Reset copy must distinguish completed results from resumable in-progress checkpoints.", failures);
 
@@ -129,6 +149,7 @@ function runRegression() {
     assertIncludes(handleRunRoundSource, "const selectedPromptSequence = normalizePromptSequence(baseModelConfig.promptSequence, promptOptions, selectedPromptProfile, promptWorkflows);", "Starting a round must keep the user-selected workflow route.", failures);
     assertNotIncludes(handleRunRoundSource, "documentStatus.promptSequence ?? baseModelConfig.promptSequence", "Starting a round must not collapse the selected workflow to a stale document route.", failures);
     assertIncludes(handleRunRoundSource, "launchStatus = await refreshDocumentState(documentStatus.sourcePath, runConfig);", "Starting a round must refresh document state with the selected route before deciding the next round.", failures);
+    assertIncludes(handleRunRoundSource, "launchStatus.nextRound > launchPlannedRounds", "Starting a round must reject backend continuation beyond the selected workflow.", failures);
     assertIncludes(handleRunRoundSource, "await service.saveModelConfig(runConfig);", "Starting a round must persist the selected run settings before creating the backend run.", failures);
     assertIncludes(handleRunRoundSource, "promptSequencesEqual(runConfig.promptSequence, modelConfig.promptSequence, promptOptions, runConfig.promptProfile, promptWorkflows)", "Starting a round must sync route state before creating a backend run.", failures);
     assertIncludes(handleRunRoundSource, "roundProgressStatus.promptProfile === runConfig.promptProfile", "Checkpoint reuse must reject checkpoints from another prompt profile.", failures);
@@ -162,10 +183,12 @@ function runRegression() {
     const handleResetCurrentRoundSource = extractFunctionSource(appSource, "handleResetCurrentRound");
     assertIncludes(handleResetCurrentRoundSource, "const resetTarget = getRoundResetTarget(documentStatus, roundProgressStatus, promptOptions, promptWorkflows);", "Reset action must use the derived reset target.", failures);
     assertIncludes(handleResetCurrentRoundSource, "const resetRoundNumber = resetTarget.round;", "Reset action must call the backend with the derived round number.", failures);
-    assertIncludes(handleResetCurrentRoundSource, "service.resetRoundProgress(documentStatus.sourcePath, modelConfig.promptProfile, resetRoundNumber, modelConfig.promptSequence)", "Reset action must not call resetRoundProgress with documentStatus.nextRound directly.", failures);
+    assertIncludes(handleResetCurrentRoundSource, "const resetPromptProfile = documentStatus.promptProfile ?? modelConfig.promptProfile;", "Reset action must use the current document route, not stale global config.", failures);
+    assertIncludes(handleResetCurrentRoundSource, "await service.resetRoundProgress(documentStatus.sourcePath, resetPromptProfile, resetRoundNumber, resetPromptSequence);", "Reset action must clear the active document route and derived round number.", failures);
     assertNotIncludes(handleResetCurrentRoundSource, "documentStatus.nextRound", "Reset action must not treat the next runnable round as the round to discard.", failures);
 
     const handleExportCurrentSource = extractFunctionSource(appSource, "handleExportCurrent");
+    assertIncludes(handleExportCurrentSource, "roundCheckpointMatchesDocument(roundProgressStatus, documentStatus, promptOptions, promptWorkflows)", "Export guard must only block for checkpoints on the active prompt route.", failures);
     assertIncludes(handleExportCurrentSource, "const outputPath = roundResult?.outputPath ?? activeCompareData?.outputPath;", "Current export must use persisted compare output when roundResult has not been rebuilt yet.", failures);
     assertIncludes(handleExportCurrentSource, "service.exportRound(outputPath, format)", "Current export must call the backend with the recovered output path.", failures);
     assertNotIncludes(handleExportCurrentSource, "if (!roundResult)", "Current export must not disappear just because roundResult is missing after refresh.", failures);

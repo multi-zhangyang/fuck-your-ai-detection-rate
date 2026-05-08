@@ -387,7 +387,10 @@ def task_state_run_id_from_path(path: Path) -> str:
     for prefix in TASK_STATE_SNAPSHOT_PREFIXES:
         if name.startswith(prefix):
             suffix = ".json.tmp" if name.endswith(".json.tmp") else ".json"
-            return name[len(prefix):-len(suffix)] if name.endswith(suffix) else ""
+            if not name.endswith(suffix):
+                return ""
+            run_id = name[len(prefix):-len(suffix)]
+            return run_id.split(".", 1)[0] if suffix == ".json.tmp" else run_id
     return ""
 
 
@@ -708,9 +711,25 @@ def ensure_task_state_store_ready(
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp_path.replace(path)
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    last_error: OSError | None = None
+    for attempt in range(8):
+        tmp_path = path.with_name(
+            f"{path.stem}.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}{path.suffix}.tmp"
+        )
+        try:
+            tmp_path.write_text(text, encoding="utf-8")
+            tmp_path.replace(path)
+            return
+        except OSError as exc:
+            last_error = exc
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            time.sleep(min(0.25, 0.02 * (attempt + 1)))
+    if last_error is not None:
+        raise last_error
 
 
 def register_run(source_path: str) -> tuple[str, ProgressState]:
@@ -916,6 +935,8 @@ def persist_run_state(run_id: str) -> None:
     state = RUN_STATES.get(run_id)
     if not state:
         return
+    with state.condition:
+        snapshot = serialize_run_state_for_task_snapshot(run_id, state)
     try:
         write_json_atomic(
             run_round_state_path(run_id),
@@ -923,7 +944,7 @@ def persist_run_state(run_id: str) -> None:
                 "kind": "runRound",
                 "version": 1,
                 "persistedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "state": serialize_run_state_for_task_snapshot(run_id, state),
+                "state": snapshot,
             },
         )
     except OSError:
@@ -1183,6 +1204,8 @@ def persist_batch_rerun_state(run_id: str) -> None:
     state = BATCH_RERUN_STATES.get(run_id)
     if not state:
         return
+    with state.condition:
+        snapshot = serialize_batch_rerun_state(run_id, state)
     try:
         write_json_atomic(
             batch_rerun_state_path(run_id),
@@ -1190,7 +1213,7 @@ def persist_batch_rerun_state(run_id: str) -> None:
                 "kind": "batchRerun",
                 "version": 1,
                 "persistedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "state": serialize_batch_rerun_state(run_id, state),
+                "state": snapshot,
             },
         )
     except OSError:
@@ -1479,7 +1502,7 @@ def build_environment_diagnostics() -> dict[str, Any]:
             "label": "轮内并发",
             "ok": 1 <= rewrite_concurrency <= MAX_REWRITE_CONCURRENCY,
             "level": "success",
-            "message": f"当前轮内并发 {rewrite_concurrency}/{MAX_REWRITE_CONCURRENCY}，默认建议 2；自建服务商可按稳定性调到 8。",
+            "message": f"当前轮内并发 {rewrite_concurrency}/{MAX_REWRITE_CONCURRENCY}，默认建议 2；自建服务商可按稳定性调到 16。",
         },
         {
             "key": "paths",
@@ -1854,6 +1877,7 @@ def get_ping() -> Response:
         {
             "ok": True,
             "service": "fyadr-web",
+            "maxRewriteConcurrency": MAX_REWRITE_CONCURRENCY,
             "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
     )

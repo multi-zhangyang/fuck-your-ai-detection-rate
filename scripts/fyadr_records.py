@@ -65,6 +65,7 @@ from prompt_library import (
     is_prompt_sequence_customizable,
     normalize_prompt_profile,
     normalize_prompt_sequence,
+    prompt_sequence_match_rank,
 )
 
 # Paths are computed relative to this file: scripts/ -> workspace root.
@@ -1353,9 +1354,19 @@ def _round_filter(
             return False
         if normalized_prompt_sequence is None:
             return True
-        return ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"), normalized_prompt_profile)) == normalized_sequence_key
+        return _record_sequence_covers_selected_route(item, normalized_prompt_profile, normalized_prompt_sequence)
 
     return normalized_prompt_profile, normalized_prompt_sequence, normalized_sequence_key, round_matches
+
+
+def _record_sequence_covers_selected_route(item: Dict[str, Any], prompt_profile: str, selected_sequence: Optional[List[str]]) -> bool:
+    if selected_sequence is None or not is_prompt_sequence_customizable(prompt_profile):
+        return True
+    return prompt_sequence_match_rank(
+        item.get("prompt_sequence"),
+        selected_sequence,
+        int(item.get("round", 0) or 0),
+    ) >= 0
 
 
 def _build_delete_impact(
@@ -1698,7 +1709,7 @@ def delete_rounds(
     if not isinstance(rounds, list):
         rounds = []
 
-    normalized_prompt_profile, normalized_prompt_sequence, normalized_sequence_key, round_matches = _round_filter(
+    normalized_prompt_profile, normalized_prompt_sequence, _, round_matches = _round_filter(
         from_round,
         prompt_profile,
         prompt_sequence,
@@ -1734,7 +1745,7 @@ def delete_rounds(
                     _normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE)) == normalized_prompt_profile
                     and (
                         normalized_prompt_sequence is None
-                        or ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"), normalized_prompt_profile)) == normalized_sequence_key
+                        or _record_sequence_covers_selected_route(item, normalized_prompt_profile, normalized_prompt_sequence)
                     )
                 )
             )
@@ -1806,7 +1817,7 @@ def delete_rounds(
             and _normalize_prompt_profile(item.get("prompt_profile", LEGACY_PROMPT_PROFILE)) == normalized_prompt_profile
             and (
                 normalized_prompt_sequence is None
-                or ",".join(_normalize_prompt_sequence(item.get("prompt_sequence"), normalized_prompt_profile)) == normalized_sequence_key
+                or _record_sequence_covers_selected_route(item, normalized_prompt_profile, normalized_prompt_sequence)
             )
         ]
 

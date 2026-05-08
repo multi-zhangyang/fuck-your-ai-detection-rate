@@ -5,6 +5,8 @@ import tempfile
 from copy import deepcopy
 
 import app_service
+import fyadr_records
+import round_helper
 from app_config import SAVED_SECRET_PLACEHOLDER, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
 from app_service import _resolve_round_model_config, find_conflicting_history_route
 
@@ -255,6 +257,150 @@ def test_route_conflict_detects_stale_custom_sequence() -> None:
         app_service.list_records = original_list_records
 
 
+def test_status_ignores_rounds_outside_selected_custom_sequence() -> None:
+    original_app_records = app_service.list_records
+    original_round_records = round_helper.load_records_normalized
+    source_path = app_service.ROOT_DIR / "origin" / "round-boundary-status.txt"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("round boundary regression", encoding="utf-8")
+    records = {
+        "origin/round-boundary-status.txt": {
+            "origin_path": "origin/round-boundary-status.txt",
+            "rounds": [
+                {
+                    "round": 1,
+                    "prompt_profile": "cn_custom",
+                    "prompt_sequence": ["classical", "classical"],
+                    "output_path": "finish/intermediate/round-boundary-status_round1.txt",
+                },
+                {
+                    "round": 2,
+                    "prompt_profile": "cn_custom",
+                    "prompt_sequence": ["classical", "classical"],
+                    "output_path": "finish/intermediate/round-boundary-status_round2.txt",
+                },
+                {
+                    "round": 3,
+                    "prompt_profile": "cn_custom",
+                    "prompt_sequence": ["classical", "classical"],
+                    "output_path": "finish/intermediate/round-boundary-status_round3.txt",
+                },
+            ],
+        }
+    }
+    try:
+        app_service.list_records = lambda: records
+        round_helper.load_records_normalized = lambda: records
+        status = app_service.get_document_status(
+            str(source_path),
+            prompt_profile="cn_custom",
+            prompt_sequence=["classical", "classical"],
+        )
+        assert status["completedRounds"] == [1, 2]
+        assert status["nextRound"] is None
+        assert status["hasNextRound"] is False
+        assert status["isComplete"] is True
+        assert status["maxRounds"] == 2
+        assert status["latestOutputPath"].endswith("round-boundary-status_round2.txt")
+    finally:
+        app_service.list_records = original_app_records
+        round_helper.load_records_normalized = original_round_records
+        source_path.unlink(missing_ok=True)
+
+
+def test_appended_sequence_continues_from_prefix_rounds() -> None:
+    original_app_records = app_service.list_records
+    original_round_records = round_helper.load_records_normalized
+    source_path = app_service.ROOT_DIR / "origin" / "round-prefix-append.txt"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("round prefix append regression", encoding="utf-8")
+    records = {
+        "origin/round-prefix-append.txt": {
+            "origin_path": "origin/round-prefix-append.txt",
+            "rounds": [
+                {
+                    "round": 1,
+                    "prompt_profile": "cn_custom",
+                    "prompt_sequence": ["classical", "classical"],
+                    "output_path": "finish/intermediate/round-prefix-append_round1.txt",
+                },
+                {
+                    "round": 2,
+                    "prompt_profile": "cn_custom",
+                    "prompt_sequence": ["classical", "classical"],
+                    "output_path": "finish/intermediate/round-prefix-append_round2.txt",
+                },
+            ],
+        }
+    }
+    try:
+        app_service.list_records = lambda: records
+        round_helper.load_records_normalized = lambda: records
+        appended_sequence = ["classical", "classical", "classical"]
+        status = app_service.get_document_status(
+            str(source_path),
+            prompt_profile="cn_custom",
+            prompt_sequence=appended_sequence,
+        )
+        assert status["completedRounds"] == [1, 2]
+        assert status["nextRound"] == 3
+        assert status["hasNextRound"] is True
+        assert status["isComplete"] is False
+        assert status["latestOutputPath"].endswith("round-prefix-append_round2.txt")
+        context = round_helper.build_round_context(
+            source_path,
+            round_number=3,
+            prompt_profile="cn_custom",
+            prompt_sequence=appended_sequence,
+        )
+        assert str(context.input_text_path).endswith("round-prefix-append_round2.txt")
+    finally:
+        app_service.list_records = original_app_records
+        round_helper.load_records_normalized = original_round_records
+        source_path.unlink(missing_ok=True)
+
+
+def test_delete_preview_cleans_prefix_rounds_for_appended_routes() -> None:
+    original_load_records = fyadr_records.load_records_normalized
+    records = {
+        "origin/round-prefix-delete.txt": {
+            "origin_path": "origin/round-prefix-delete.txt",
+            "rounds": [
+                {
+                    "round": 1,
+                    "prompt_profile": "cn_custom",
+                    "prompt_sequence": ["classical", "classical"],
+                    "output_path": "finish/intermediate/round-prefix-delete_round1.txt",
+                },
+                {
+                    "round": 2,
+                    "prompt_profile": "cn_custom",
+                    "prompt_sequence": ["classical", "classical"],
+                    "output_path": "finish/intermediate/round-prefix-delete_round2.txt",
+                },
+                {
+                    "round": 3,
+                    "prompt_profile": "cn_custom",
+                    "prompt_sequence": ["classical", "classical", "round2"],
+                    "output_path": "finish/intermediate/round-prefix-delete_round3.txt",
+                },
+            ],
+        }
+    }
+    try:
+        fyadr_records.load_records_normalized = lambda: records
+        preview = fyadr_records.preview_delete_document(
+            "origin/round-prefix-delete.txt",
+            from_round=2,
+            prompt_profile="cn_custom",
+            prompt_sequence=["classical", "classical", "round2"],
+            mode="records_only",
+        )
+        assert preview["affectedRounds"] == [2, 3]
+    finally:
+        fyadr_records.load_records_normalized = original_load_records
+
+
 def json_dump(value: object) -> str:
     import json
 
@@ -270,6 +416,9 @@ def main() -> int:
     test_provider_repository_is_not_capped_at_fifty()
     test_redacted_config_preserves_saved_secrets()
     test_route_conflict_detects_stale_custom_sequence()
+    test_status_ignores_rounds_outside_selected_custom_sequence()
+    test_appended_sequence_continues_from_prefix_rounds()
+    test_delete_preview_cleans_prefix_rounds_for_appended_routes()
     print("model route regression passed")
     return 0
 

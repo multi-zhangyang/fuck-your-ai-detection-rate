@@ -21,7 +21,7 @@ from fyadr_records import RECORDS_PATH  # noqa: E402
 
 
 DEFAULT_REPORT_PATH = ROOT_DIR / "finish" / "regression" / "round_concurrency_benchmark_report.json"
-DEFAULT_CONCURRENCY_LEVELS = [1, 2, 4, 8]
+DEFAULT_CONCURRENCY_LEVELS = [1, 2, 4, 8, 16]
 
 
 def _backup(path: Path) -> bytes | None:
@@ -191,7 +191,7 @@ def run_benchmark(*, chunk_count: int, delay_ms: int, concurrency_levels: list[i
 
     performance_warnings: list[str] = []
     by_concurrency = {int(case["concurrency"]): case for case in cases}
-    for concurrency, threshold in ((2, 0.98), (4, 0.98), (8, 0.98)):
+    for concurrency, threshold in ((2, 0.98), (4, 0.98), (8, 0.98), (16, 0.98)):
         case = by_concurrency.get(concurrency)
         if case and int(case["apiWindowMs"]) >= baseline_api_window * threshold:
             performance_warnings.append(
@@ -216,7 +216,7 @@ def run_benchmark(*, chunk_count: int, delay_ms: int, concurrency_levels: list[i
         "notes": [
             "本脚本使用本地 mock 慢请求，不消耗真实 API。",
             "真实服务商仍可能受并发限流、网关超时、模型排队影响。",
-            "当前产品默认 2、最高 8，属于偏稳的本地工具策略。",
+            "当前产品默认 2、最高 16，用户可按自建服务商稳定性选择并发档位。",
         ],
     }
 
