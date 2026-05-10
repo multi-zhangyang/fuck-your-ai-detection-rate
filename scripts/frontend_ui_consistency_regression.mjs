@@ -154,7 +154,7 @@ function runRegression() {
     assertNotIncludes(appSource, "所选流程已完成，可追加", "Home run controls must not show verbose selected-workflow helper copy.", failures);
     assertNotIncludes(appSource, "左侧可查看 Diff 和导出", "Loaded result alert must stay compact and not repeat obvious actions.", failures);
     assertIncludes(appSource, "第 {visibleResultRound} 轮已完成", "Loaded result alert should use short completion wording.", failures);
-    assertIncludes(appSource, "<DetectionReportPanel", "External report controls must stay in the right operation stack.", failures);
+    assertNotIncludes(appSource, "<DetectionReportPanel", "External detection report controls must stay removed.", failures);
     assertIncludes(appSource, "<Dialog open={Boolean(setupEditor)}", "Setup editors must use centered shadcn Dialog.", failures);
     assertIncludes(appSource, "className={cn(\"shadcn-config-dialog", "Setup editors must share the shadcn dialog utility.", failures);
     assertNotIncludes(appSource, "<Sheet open={Boolean(setupEditor)}", "Setup editors must not reopen as right-side Sheets.", failures);
@@ -235,9 +235,19 @@ function runRegression() {
   if (resultCardSource) {
     assertIncludes(resultCardSource, "export function DiffReviewCard", "ResultCard module must export the full-height Diff review surface.", failures);
     assertIncludes(resultCardSource, "flex shrink-0 flex-wrap items-center gap-2", "Output export actions should stay compact and avoid dead spacing.", failures);
+    assertIncludes(resultCardSource, "function ExportHealthPanel", "Output card must summarize export health in one compact panel.", failures);
+    assertIncludes(resultCardSource, "function ExportHealthDetailsDialog", "Export health must expose report details without sending users to JSON files.", failures);
+    assertIncludes(resultCardSource, "function ExportFailurePanel", "Blocked DOCX exports must show structured failure feedback in the result area.", failures);
+    assertIncludes(resultCardSource, "导出拦截", "Blocked DOCX export feedback must use a compact visible label.", failures);
+    assertIncludes(resultCardSource, "导出健康", "Output card must label the combined export health panel clearly.", failures);
+    assertIncludes(resultCardSource, "guardIssueCount + auditIssueCount + preflightBlockingCount + ooxmlAuditIssueCount", "Export health must combine blocking guard, audit, preflight, and OOXML issue counts.", failures);
+    assertIncludes(resultCardSource, "guardWarningCount + preflightWarningCount", "Export health must surface non-blocking guard and preflight warnings.", failures);
+    assertIncludes(resultCardSource, "buildExportHealthSection", "Export health details must format report samples consistently.", failures);
     assertNotIncludes(resultCardSource, "T.adoptAllRejected", "Output export actions must not expose removed candidate adoption.", failures);
     assertNotIncludes(appSource, "collectAdoptableRejectedCandidates", "Home must not compute removed candidate adoption state.", failures);
-    assertIncludes(appSource, "buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions)", "Home Diff dashboard counts must follow review decisions.", failures);
+    assertIncludes(appSource, "buildDiffDashboardStats(activeCompareData, activeRerunFailures, reviewDecisions)", "Home Diff dashboard counts must follow review decisions.", failures);
+    assertIncludes(appSource, "extractExportFailure(appError)", "Export failures must preserve structured backend issue details.", failures);
+    assertIncludes(appSource, "exportFailure={lastExportFailure}", "Result card must receive the latest structured export failure.", failures);
     assertIncludes(appSource, "!failedChunkIdSet.has(chunk.chunkId) && !highRiskChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved", "Home Diff dashboard must not double-count failed or high-risk chunks as ordinary needs-review.", failures);
     assertIncludes(appSource, "function normalizeReviewDecisionsForSave", "Review decisions must preserve explicit confirmation state when saved.", failures);
     assertIncludes(appSource, "return [chunkId, \"rewrite\" as ReviewDecision];", "Saved legacy default rewrites must reload as unresolved defaults.", failures);

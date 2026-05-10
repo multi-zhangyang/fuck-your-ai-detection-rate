@@ -116,6 +116,19 @@ DIGIT_CHAR_RE = re.compile(r"\d")
 FORMULA_SYMBOL_RE = re.compile(r"[=≈≠≤≥±×÷∑Σ√∫∞α-ωΑ-ΩμσλθπφψωΔδβγ_^\[\]{}<>]")
 FORMULA_STYLE_HINTS = ("equation", "公式")
 SHORT_HEADING_RE = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff\s（）()、：:·/+\-]{2,36}$")
+REFERENCE_ENTRY_RE = re.compile(
+    r"^\s*(?:"
+    r"\[\d+\]"
+    r"|\d+\s*[.．]\s+"
+    r"|[A-Z][A-Za-z\-]+,\s*(?:[A-Z]\.|[A-Z][A-Za-z\-]+)"
+    r"|doi\s*[:：]"
+    r"|https?://"
+    r")",
+    re.IGNORECASE,
+)
+POST_ACKNOWLEDGEMENT_TAIL_MARKER_RE = re.compile(
+    r"(?:参考文献|附录|appendix|references|bibliography|声明|承诺书|作者简介|个人简历|任务书|开题报告)"
+)
 HEADING_KEYWORDS = (
     "研究背景",
     "研究意义",
@@ -400,13 +413,17 @@ def rebuild_docx_from_snapshot(
         )
 
     document = Document(str(source_path.resolve()))
+    expected_targets: list[tuple[dict[str, Any], str]] = []
     for unit, rewritten_text in zip(editable_units, rewritten_paragraphs):
         paragraph = _resolve_target_paragraph(document, unit.target)
         _replace_paragraph_text(paragraph, rewritten_text)
         _polish_rewritten_paragraph(paragraph)
+        _verify_rewritten_paragraph_text(paragraph, rewritten_text, target=unit.target)
+        expected_targets.append((dict(unit.target), str(rewritten_text)))
 
     export_path.parent.mkdir(parents=True, exist_ok=True)
     document.save(str(export_path))
+    _verify_saved_rewritten_targets(export_path, expected_targets)
 
 
 def rebuild_docx_from_body_map_units(
@@ -420,6 +437,7 @@ def rebuild_docx_from_body_map_units(
 
     document = Document(str(source_path.resolve()))
     seen_targets: set[str] = set()
+    expected_targets: list[tuple[dict[str, Any], str]] = []
     for unit in body_map_units:
         target = getattr(unit, "target", None)
         if not isinstance(target, dict):
@@ -436,9 +454,12 @@ def rebuild_docx_from_body_map_units(
         paragraph = _resolve_target_paragraph(document, target)
         _replace_paragraph_text(paragraph, current_text)
         _polish_rewritten_paragraph(paragraph)
+        _verify_rewritten_paragraph_text(paragraph, current_text, target=target)
+        expected_targets.append((dict(target), current_text))
 
     export_path.parent.mkdir(parents=True, exist_ok=True)
     document.save(str(export_path))
+    _verify_saved_rewritten_targets(export_path, expected_targets)
 
 
 def _split_text_into_blocks(text: str) -> list[str]:
@@ -747,13 +768,15 @@ def _find_scope_diagnostic_issues(
             message="No acknowledgement heading was found; the body scope ends at the first back-matter marker or the document end.",
         )
     elif boundary_index is None:
-        _add_scope_issue(
-            issues,
-            code="missing_post_acknowledgement_boundary",
-            severity="warning",
-            message="Acknowledgements were found, but no following references/back-matter boundary was detected.",
-            unit=units[acknowledgement_index],
-        )
+        risky_tail_units = _find_unbounded_post_acknowledgement_tail_units(units, acknowledgement_index)
+        if risky_tail_units:
+            _add_scope_issue(
+                issues,
+                code="unbounded_post_acknowledgement_tail",
+                severity="error",
+                message="Acknowledgements were found, but later text looks like references, appendix, declaration, or other protected back matter.",
+                unit=risky_tail_units[0],
+            )
 
     for unit in units:
         index = unit.unit_index
@@ -829,12 +852,35 @@ def _find_rewrite_scope_end_index(units: list[DocxTextUnit], start_index: int) -
 
 
 def _looks_like_post_acknowledgement_boundary(unit: DocxTextUnit) -> bool:
+    if _looks_like_references_heading(unit.text):
+        return True
     if _looks_like_back_matter_heading(unit.text):
         return True
     normalized_style = _normalize_style_name(unit.style_name)
     if normalized_style.startswith("heading") or normalized_style.startswith("标题"):
         return _looks_like_heading(unit.text, style_name=unit.style_name)
     return False
+
+
+def _find_unbounded_post_acknowledgement_tail_units(
+    units: list[DocxTextUnit],
+    acknowledgement_index: int,
+) -> list[DocxTextUnit]:
+    risky_units: list[DocxTextUnit] = []
+    for unit in units[acknowledgement_index + 1:]:
+        text = (unit.text or "").strip()
+        normalized = _normalize_marker_text(text)
+        if not normalized:
+            continue
+        if _looks_like_references_heading(text) or _looks_like_back_matter_heading(text):
+            risky_units.append(unit)
+        elif REFERENCE_ENTRY_RE.search(text):
+            risky_units.append(unit)
+        elif POST_ACKNOWLEDGEMENT_TAIL_MARKER_RE.search(normalized):
+            risky_units.append(unit)
+        if len(risky_units) >= 5:
+            break
+    return risky_units
 
 
 def _looks_like_abstract_start(text: str) -> bool:
@@ -1183,6 +1229,35 @@ def _replace_paragraph_text(paragraph: Paragraph, text: str) -> None:
         text_runs[0].text = normalized_text
         for run in text_runs[1:]:
             run.text = ""
+
+
+def _verify_rewritten_paragraph_text(paragraph: Paragraph, expected_text: str, *, target: dict[str, Any]) -> None:
+    expected = _normalize_rewritten_text(str(expected_text))
+    actual = paragraph.text
+    if actual != expected:
+        raise ValueError(
+            "DOCX export text verification failed for "
+            f"{target}: expected {_preview_text(expected)!r}, got {_preview_text(actual)!r}."
+        )
+
+
+def _verify_saved_rewritten_targets(export_path: Path, expected_targets: Sequence[tuple[dict[str, Any], str]]) -> None:
+    saved_document = Document(str(export_path.resolve()))
+    try:
+        for target, expected_text in expected_targets:
+            paragraph = _resolve_target_paragraph(saved_document, target)
+            _verify_rewritten_paragraph_text(paragraph, expected_text, target=target)
+    except Exception:
+        try:
+            export_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _preview_text(text: str, limit: int = 120) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    return compact[:limit] + ("..." if len(compact) > limit else "")
 
 
 def _apply_default_document_layout(document: DocxDocument) -> None:

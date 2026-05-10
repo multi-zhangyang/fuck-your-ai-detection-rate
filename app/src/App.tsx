@@ -92,7 +92,7 @@ import {
 } from "@/lib/promptRegistry";
 import { getTaskPhaseLabel, isTaskBlocking, isTaskRunningPhase, type TaskPhase } from "@/lib/taskState";
 import { cn } from "@/lib/utils";
-import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DetectionReport, DetectionReportMatch, DetectionReportProvider, DocumentStatus, EnvironmentDiagnostics, ExportResult, FormatParserModelRoute, FormatRules, HistoryArtifactGovernanceMode, HistoryArtifactQueryFilters, HistoryArtifactQueryResponse, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptDeleteResult, PromptId, PromptOption, PromptPreviewResponse, PromptSaveResult, PromptWorkflow, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
+import type { BatchRerunResult, BatchRerunStatus, BatchRerunTarget, DeleteHistoryOptions, DocumentStatus, EnvironmentDiagnostics, ExportFailureDetails, ExportIssueSample, ExportResult, FormatParserModelRoute, FormatRules, HistoryArtifactGovernanceMode, HistoryArtifactQueryFilters, HistoryArtifactQueryResponse, HistoryDeleteImpact, HistoryDeleteMode, HistoryDocumentSummary, HistoryOrphanScanResult, HistoryRound, ModelCatalogResult, ModelConfig, ModelProviderConfig, PromptDeleteResult, PromptId, PromptOption, PromptPreviewResponse, PromptSaveResult, PromptWorkflow, RerunChunkResult, ReviewDecision, RoundCompareData, RoundModelConfig, RoundProgress, RoundProgressStatus, RoundResult, RunAuditSummary } from "@/types/app";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -114,7 +114,6 @@ const ACTIVE_DOCUMENT_KEY = "fyadr.activeDocument";
 const ACTIVE_PROMPT_PROFILE_KEY = "fyadr.activePromptProfile";
 const ACTIVE_PROMPT_SEQUENCE_KEY = "fyadr.activePromptSequence";
 const AUTO_SNAPSHOT_SUPPRESSION_KEY = "fyadr.autoSnapshotSuppression";
-const DETECTION_REPORT_KEY = "fyadr.detectionReport";
 const NOTIFICATION_HISTORY_KEY = "fyadr.notificationHistory";
 const BATCH_RERUN_POLL_INTERVAL_MS = 1200;
 const AUTO_RUN_RETRY_DELAY_SECONDS = 10;
@@ -257,12 +256,6 @@ type ConfirmDialogOptions = {
 type ConfirmDialogState = ConfirmDialogOptions & {
   id: number;
 };
-type StoredDetectionReport = {
-  documentSourcePath: string;
-  documentDocId: string;
-  report: DetectionReport;
-  savedAt: string;
-};
 type DiffDashboardStats = {
   chunkCount: number;
   reviewCount: number;
@@ -389,6 +382,7 @@ function buildQualityStats(compareData: RoundCompareData | null, exportResult: E
     guardIssueCount: exportResult?.guardIssueCount ?? 0,
     preflightIssueCount: exportResult?.preflightIssueCount ?? 0,
     auditIssueCount: exportResult?.auditIssueCount ?? 0,
+    ooxmlAuditIssueCount: exportResult?.ooxmlAuditIssueCount ?? 0,
   };
 }
 
@@ -428,6 +422,7 @@ function buildExportRiskMessages(compareData: RoundCompareData | null, exportRes
   if (stats.guardIssueCount > 0) messages.push(`${stats.guardIssueCount} 个导出硬审计问题`);
   if (stats.preflightIssueCount > 0) messages.push(`${stats.preflightIssueCount} 个排版预检问题`);
   if (stats.auditIssueCount > 0) messages.push(`${stats.auditIssueCount} 个保护区审计问题`);
+  if (stats.ooxmlAuditIssueCount > 0) messages.push(`${stats.ooxmlAuditIssueCount} 个 Word 结构审计问题`);
   return messages;
 }
 
@@ -560,59 +555,6 @@ function isResumableRunMessage(message: string): boolean {
     || message.includes("续跑");
 }
 
-function readStoredDetectionReport(): StoredDetectionReport | null {
-  try {
-    const raw = localStorage.getItem(DETECTION_REPORT_KEY);
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw);
-    if (
-      parsed
-      && typeof parsed === "object"
-      && typeof parsed.documentSourcePath === "string"
-      && parsed.report
-      && Array.isArray(parsed.report.segments)
-    ) {
-      return parsed as StoredDetectionReport;
-    }
-    localStorage.removeItem(DETECTION_REPORT_KEY);
-    return null;
-  } catch {
-    localStorage.removeItem(DETECTION_REPORT_KEY);
-    return null;
-  }
-}
-
-function loadStoredDetectionReportForDocument(sourcePath: string | null | undefined, docId?: string | null): DetectionReport | null {
-  const stored = readStoredDetectionReport();
-  if (!stored || !sourcePath) {
-    return null;
-  }
-  const currentSourceKey = normalizeDetectionDocumentKey(sourcePath);
-  const currentDocKey = normalizeDetectionDocumentKey(docId);
-  const storedSourceKey = normalizeDetectionDocumentKey(stored.documentSourcePath);
-  const storedDocKey = normalizeDetectionDocumentKey(stored.documentDocId);
-  if (storedSourceKey === currentSourceKey || Boolean(currentDocKey && storedDocKey === currentDocKey)) {
-    return stored.report;
-  }
-  return null;
-}
-
-function saveStoredDetectionReport(report: DetectionReport | null, document: DocumentStatus | null) {
-  if (report && document) {
-    const payload: StoredDetectionReport = {
-      documentSourcePath: document.sourcePath,
-      documentDocId: document.docId,
-      report,
-      savedAt: new Date().toISOString(),
-    };
-    localStorage.setItem(DETECTION_REPORT_KEY, JSON.stringify(payload));
-  } else {
-    localStorage.removeItem(DETECTION_REPORT_KEY);
-  }
-}
-
 function compareDataMatchesDocument(
   compareData: RoundCompareData | null,
   document: DocumentStatus | null,
@@ -739,23 +681,6 @@ function shouldSuppressAutoSnapshotRestore(
   );
 }
 
-function isDetectionHighRisk(segment: DetectionReportMatch["segment"]): boolean {
-  if (segment.sourceProvider === "paperpass") return segment.probability >= 70;
-  return segment.probability >= 90;
-}
-
-function isDetectionRerunRisk(segment: DetectionReportMatch["segment"]): boolean {
-  if (segment.sourceProvider === "paperpass") return segment.probability >= 60;
-  return segment.probability >= 70;
-}
-
-function groupDetectionMatchesByChunk(matches: DetectionReportMatch[]): Record<string, DetectionReportMatch[]> {
-  return matches.reduce<Record<string, DetectionReportMatch[]>>((current, match) => {
-    current[match.chunkId] = [...(current[match.chunkId] ?? []), match];
-    return current;
-  }, {});
-}
-
 function isReviewDecisionResolved(decision?: ReviewDecision): boolean {
   if (!decision) return false;
   if (typeof decision === "object") {
@@ -782,7 +707,6 @@ function isHighRiskFailedOutputChunk(chunk: RoundCompareData["chunks"][number]):
 function buildDiffDashboardStats(
   compareData: RoundCompareData | null,
   failures: DiffFailureLike[],
-  matchesByChunk: Record<string, DetectionReportMatch[]>,
   reviewDecisions: Record<string, ReviewDecision>,
 ): DiffDashboardStats {
   if (!compareData?.chunks.length) {
@@ -803,11 +727,9 @@ function buildDiffDashboardStats(
   const reviewChunkIds = compareData.chunks
     .filter((chunk) => {
       const flags = chunk.quality?.flags ?? [];
-      const reportMatches = matchesByChunk[chunk.chunkId] ?? [];
       return !failedChunkIdSet.has(chunk.chunkId) && !highRiskChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]) && (Boolean(chunk.quality?.needsReview)
         || chunk.fallbackMode === "source"
-        || flags.includes("source_fallback")
-        || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review"));
+        || flags.includes("source_fallback"));
     })
     .map((chunk) => chunk.chunkId);
   const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : highRiskChunkIds.length ? "highRisk" : reviewChunkIds.length ? "review" : "all";
@@ -831,44 +753,6 @@ function formatDiffDashboardLabel(stats: DiffDashboardStats): string {
   if (stats.failedCount) parts.push(`${stats.failedCount} 失败`);
   if (parts.length === 1) parts.push("已稳定");
   return parts.join(" · ");
-}
-
-function getRiskyDetectionMatches(matches: DetectionReportMatch[]): DetectionReportMatch[] {
-  return matches
-    .filter((match) => isDetectionRerunRisk(match.segment) && match.confidence === "strong")
-    .sort((left, right) => right.segment.probability - left.segment.probability);
-}
-
-function groupRiskyDetectionMatches(matches: DetectionReportMatch[]): DetectionReportMatch[][] {
-  const grouped = getRiskyDetectionMatches(matches).reduce<Record<string, DetectionReportMatch[]>>((current, match) => {
-    current[match.chunkId] = [...(current[match.chunkId] ?? []), match];
-    return current;
-  }, {});
-  return Object.values(grouped).sort((left, right) => {
-    const leftMax = Math.max(...left.map((match) => match.segment.probability));
-    const rightMax = Math.max(...right.map((match) => match.segment.probability));
-    return rightMax - leftMax;
-  });
-}
-
-function buildDetectionRerunFeedback(chunkId: string, matches: DetectionReportMatch[], report: DetectionReport | null): string {
-  const providerLabel = report?.providerLabel || report?.provider || matches[0]?.segment.sourceProvider || "未知报告";
-  const scopeNotes = report?.summary.checkedScopeNotes?.length
-    ? `报告范围提醒：${report.summary.checkedScopeNotes.join("；")}`
-    : "";
-  const riskLines = matches
-    .slice(0, 4)
-    .map((match) => {
-      const page = match.segment.page ? `第 ${match.segment.page} 页，` : "";
-      return `#${match.segment.index}：${page}${match.segment.probability}% ${match.segment.riskLevel || "风险片段"}，匹配度 ${Math.round(match.score * 100)}%，摘录：${match.segment.content.slice(0, 220)}`;
-    })
-    .join("\n");
-  return [
-    `外部报告反馈：来源 ${providerLabel}，当前 Diff 块 ${chunkId} 被强命中。处理方式为“局部小幅扰动”，不是重写整段。`,
-    scopeNotes,
-    riskLines,
-    "重写要求：保留原文事实、术语、数值、引用、编号和段落角色；不要翻译英文；不要合并自然段；不要扩写新观点；不要把段落写得更完整。只调整句子入口、连接方式、局部词序和少量模板词，字数与原块接近。优先削弱报告暴露的具体模式：百科式定义、泛化技术说明、整齐总分结构、空泛价值判断、机械连接词、实验/图表脱节。",
-  ].filter(Boolean).join("\n");
 }
 
 function saveStoredFormatRules(key: string, rules: FormatRules | null) {
@@ -979,6 +863,49 @@ type BatchRerunFailure = {
 
 function asPlainRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function normalizeExportIssueSample(value: unknown): ExportIssueSample | null {
+  const record = asPlainRecord(value);
+  if (!record) return null;
+  const message = typeof record.message === "string" ? record.message.trim() : "";
+  const code = typeof record.code === "string" ? record.code.trim() : "";
+  const severity = typeof record.severity === "string" ? record.severity.trim() : "";
+  const location = typeof record.location === "string" ? record.location.trim() : "";
+  const sample = typeof record.sample === "string" ? record.sample.trim() : "";
+  if (!message && !code && !sample) return null;
+  return {
+    code: code || undefined,
+    severity: severity || undefined,
+    message: message || code || "检查项",
+    location: location || undefined,
+    sample: sample || undefined,
+  };
+}
+
+function normalizeExportFailureDetails(value: unknown): ExportFailureDetails | null {
+  const record = asPlainRecord(value);
+  if (!record) return null;
+  const samples = Array.isArray(record.samples)
+    ? record.samples.map(normalizeExportIssueSample).filter((item): item is ExportIssueSample => Boolean(item))
+    : [];
+  const message = typeof record.message === "string" ? record.message.trim() : "";
+  const label = typeof record.label === "string" ? record.label.trim() : "";
+  if (!message && !label && !samples.length) return null;
+  return {
+    stage: typeof record.stage === "string" ? record.stage : undefined,
+    label: label || undefined,
+    message: message || label || "导出被拦截",
+    reportPath: typeof record.reportPath === "string" ? record.reportPath : undefined,
+    issueCount: Number(record.issueCount) || 0,
+    warningCount: Number(record.warningCount) || 0,
+    samples,
+  };
+}
+
+function extractExportFailure(error: unknown): ExportFailureDetails | null {
+  const payload = asPlainRecord((error as { payload?: unknown } | null)?.payload);
+  return normalizeExportFailureDetails(payload?.exportFailure);
 }
 
 function extractRerunFailureExtras(error: unknown): Partial<BatchRerunFailure> {
@@ -1740,13 +1667,6 @@ function getErrorRecoveryPlan(message: string): { target: WorkbenchView; actionL
       tone: "amber",
     };
   }
-  if (message.includes("报告") || message.includes("PDF") || message.includes("PaperPass") || message.includes("SpeedAI")) {
-    return {
-      target: "home",
-      actionLabel: "回主页看报告",
-      tone: "amber",
-    };
-  }
   if (message.includes("导出") || message.includes("Word") || message.includes("审计")) {
     return {
       target: "quality",
@@ -1820,6 +1740,13 @@ function isDiscardableRestoreError(message: string): boolean {
 }
 
 function formatExportError(error: unknown): string {
+  const exportFailure = extractExportFailure(error);
+  if (exportFailure) {
+    const label = exportFailure.label || "导出检查";
+    const issueText = exportFailure.issueCount ? `${exportFailure.issueCount} 个问题` : "";
+    const firstSample = exportFailure.samples?.[0]?.message || "";
+    return ["导出已拦截", label, issueText, firstSample].filter(Boolean).join("：");
+  }
   const message = stringifyError(error);
   if (message.includes("Output file does not exist") || message.includes("No such file or directory")) {
     return "导出失败：这条历史记录指向的项目输出文件已经不存在。请在历史记录里修复索引或清理缺失资产；如果这是当前文档，就重新执行对应轮次。";
@@ -1882,9 +1809,8 @@ export function App({ service }: Props) {
   const [taskPhase, setTaskPhase] = useState<TaskPhase>("idle");
   const [modelConfigReady, setModelConfigReady] = useState(false);
   const [historyListReady, setHistoryListReady] = useState(false);
-  const [detectionReport, setDetectionReport] = useState<DetectionReport | null>(() => loadStoredDetectionReportForDocument(localStorage.getItem(ACTIVE_DOCUMENT_KEY)));
-  const [detectionMatches, setDetectionMatches] = useState<DetectionReportMatch[]>([]);
   const [diagnostics, setDiagnostics] = useState<EnvironmentDiagnostics | null>(null);
+  const [lastExportFailure, setLastExportFailure] = useState<ExportFailureDetails | null>(null);
   const [promptPreviews, setPromptPreviews] = useState<PromptPreviewResponse | null>(null);
   const [promptPreviewBusy, setPromptPreviewBusy] = useState(false);
   const [promptPreviewError, setPromptPreviewError] = useState("");
@@ -2049,33 +1975,6 @@ export function App({ service }: Props) {
     [compareData, documentStatus, promptOptions, promptWorkflows],
   );
 
-  useEffect(() => {
-    let canceled = false;
-    const outputPath = activeCompareData?.outputPath;
-    if (!detectionReport || !outputPath) {
-      setDetectionMatches([]);
-      return () => {
-        canceled = true;
-      };
-    }
-    service.buildDetectionMatches(outputPath, detectionReport)
-      .then((matches) => {
-        if (!canceled) {
-          setDetectionMatches(matches);
-        }
-      })
-      .catch((appError) => {
-        if (!canceled) {
-          setDetectionMatches([]);
-          setNotice(`检测报告匹配失败：${stringifyError(appError)}`);
-        }
-      });
-    return () => {
-      canceled = true;
-    };
-  }, [activeCompareData, detectionReport, service, setNotice]);
-
-  const detectionMatchesByChunk = useMemo(() => groupDetectionMatchesByChunk(detectionMatches), [detectionMatches]);
   const activeRerunFailureScopeKey = useMemo(() => getRerunFailureScopeKey(activeCompareData), [activeCompareData]);
   const activeRerunFailures = useMemo(() => {
     if (!activeRerunFailureScopeKey) {
@@ -2084,9 +1983,12 @@ export function App({ service }: Props) {
     const activeChunkIds = new Set(activeCompareData?.chunks.map((chunk) => chunk.chunkId) ?? []);
     return rerunFailures.filter((failure) => failure.scopeKey === activeRerunFailureScopeKey && activeChunkIds.has(failure.chunkId));
   }, [activeCompareData, activeRerunFailureScopeKey, rerunFailures]);
+  useEffect(() => {
+    setLastExportFailure(null);
+  }, [activeCompareData?.outputPath, roundResult?.outputPath]);
   const diffDashboardStats = useMemo(
-    () => buildDiffDashboardStats(activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions),
-    [activeCompareData, activeRerunFailures, detectionMatchesByChunk, reviewDecisions],
+    () => buildDiffDashboardStats(activeCompareData, activeRerunFailures, reviewDecisions),
+    [activeCompareData, activeRerunFailures, reviewDecisions],
   );
   useEffect(() => {
     if (!activeCompareData?.chunks.length) {
@@ -2816,10 +2718,6 @@ export function App({ service }: Props) {
   }, [service, setError, setHistoryItems]);
 
   useEffect(() => {
-    setHistoryOrphanScan(null);
-  }, [detectionReport?.sourcePath]);
-
-  useEffect(() => {
     return () => {
       void releaseProgressListener();
     };
@@ -2931,7 +2829,6 @@ export function App({ service }: Props) {
     setHistory(nextHistory);
     setProtectionMap(nextProtectionMap);
     setScopeDiagnostics(nextScopeDiagnostics);
-    setDetectionReport(loadStoredDetectionReportForDocument(status.sourcePath, status.docId));
     persistActiveDocument(status.sourcePath, status.promptProfile, status.promptSequence ?? config.promptSequence, promptOptions, promptWorkflows);
     await refreshRoundProgressStatus(status, config);
     return status;
@@ -3008,9 +2905,6 @@ export function App({ service }: Props) {
     }
     if (lastExportResult?.path) {
       protectedPaths.push(lastExportResult.path);
-    }
-    if (detectionReport?.sourcePath) {
-      protectedPaths.push(detectionReport.sourcePath);
     }
     return Array.from(new Set(protectedPaths));
   }
@@ -3281,7 +3175,7 @@ export function App({ service }: Props) {
     }
   }
 
-  function clearDocumentDerivedState(options: { includeDetectionReport?: boolean } = {}) {
+  function clearDocumentDerivedState() {
     setRoundResult(null);
     setProgress(null);
     setPreview(null);
@@ -3291,9 +3185,6 @@ export function App({ service }: Props) {
     setRerunFailures([]);
     liveCompareRef.current = null;
     setReviewDecisions({});
-    if (options.includeDetectionReport) {
-      setDetectionReport(null);
-    }
   }
 
   function clearLoadedRoundSnapshot() {
@@ -3521,7 +3412,7 @@ export function App({ service }: Props) {
       setRuntimeStep("正在载入历史文档。");
       clearAutoSnapshotSuppression();
       clearPendingAutoActionForManualContextChange();
-      clearDocumentDerivedState({ includeDetectionReport: true });
+      clearDocumentDerivedState();
       const selectedConfig = buildConfigForHistorySelection(item, configOverride, promptOptions, promptWorkflows);
       if (
         selectedConfig.promptProfile !== modelConfig.promptProfile
@@ -3758,8 +3649,7 @@ export function App({ service }: Props) {
           setHistory(null);
           setProtectionMap(null);
           setScopeDiagnostics(null);
-          clearDocumentDerivedState({ includeDetectionReport: true });
-          saveStoredDetectionReport(null, null);
+          clearDocumentDerivedState();
         } else {
           const matchedItem = items.find((item) => item.docId === docId);
           if (matchedItem) {
@@ -4070,7 +3960,7 @@ export function App({ service }: Props) {
       });
       clearAutoSnapshotSuppression();
       clearPendingAutoActionForManualContextChange();
-      clearDocumentDerivedState({ includeDetectionReport: true });
+      clearDocumentDerivedState();
       const status = await refreshDocumentState(picked.sourcePath);
       await refreshHistoryList();
       setHistoryPanelOpen(true);
@@ -4082,51 +3972,6 @@ export function App({ service }: Props) {
     } finally {
       finishTask(taskTicket);
     }
-  }
-
-  async function handlePickDetectionReport(providerHint: DetectionReportProvider) {
-    const providerName = providerHint === "paperpass" ? "PaperPass" : "SpeedAI";
-    if (!documentStatus) {
-      setNotice("请先上传或切换到要匹配的论文，再上传对应外部报告。");
-      setRuntimeStep("待命");
-      return;
-    }
-    const taskTicket = beginTask("picking-report", {
-      globalBusy: false,
-      runtimeStep: `正在选择 ${providerName} 外部报告 PDF。`,
-    });
-    try {
-      const report = await service.pickDetectionReport(providerHint);
-      if (!report) {
-        setRuntimeStep("待命");
-        setNotice("已取消选择外部报告。");
-        return;
-      }
-      transitionTask(taskTicket, "parsing-report", {
-        globalBusy: true,
-        runtimeStep: `正在解析 ${providerName} 外部报告 PDF。`,
-      });
-      setDetectionReport(report);
-      saveStoredDetectionReport(report, documentStatus);
-      const highOrMedium = report.segments.filter((segment) => isDetectionRerunRisk(segment)).length;
-      setRuntimeStep("外部报告已解析");
-      if (report.segments.length === 0) {
-        setNotice(`已上传 ${providerName}，但没有解析到风险片段。请确认来源选项与 PDF 类型一致，或将该报告作为总分记录使用。`);
-      } else {
-        setNotice(`已解析 ${report.providerLabel || providerName}：${report.segments.length} 个片段，${highOrMedium} 个需处理风险片段。`);
-      }
-    } catch (appError) {
-      setError(stringifyError(appError));
-      setRuntimeStep("外部报告解析失败");
-    } finally {
-      finishTask(taskTicket);
-    }
-  }
-
-  function handleClearDetectionReport() {
-    setDetectionReport(null);
-    saveStoredDetectionReport(null, null);
-    setNotice("已清除外部报告。");
   }
 
   async function attachActiveRun(activeRun: EnvironmentDiagnostics["activeRuns"][number]) {
@@ -4736,31 +4581,6 @@ export function App({ service }: Props) {
     await runBatchRerunTask("重跑需处理块", outputPath, riskyChunkIds.map((chunkId) => ({ chunkId })));
   }
 
-  async function handleRerunDetectionMatchedChunks() {
-    const outputPath = roundResult?.outputPath ?? activeCompareData?.outputPath;
-    const riskyMatchGroups = groupRiskyDetectionMatches(detectionMatches);
-    const riskyMatchTargets = riskyMatchGroups
-      .map((matchGroup) => ({
-        matchGroup,
-        chunkId: matchGroup[0]?.chunkId ?? "",
-        maxRisk: Math.max(...matchGroup.map((match) => match.segment.probability)),
-      }))
-      .filter((target) => target.chunkId);
-    if (!outputPath || riskyMatchTargets.length === 0) {
-      setNotice("外部报告还没有强命中可自动重跑的 Diff 块；疑似命中和仅参考只用于定位，避免误改。");
-      return;
-    }
-    await runBatchRerunTask(
-      "按外部报告反馈重跑",
-      outputPath,
-      riskyMatchTargets.map(({ matchGroup, chunkId }) => ({
-        chunkId,
-        userFeedback: buildDetectionRerunFeedback(chunkId, matchGroup, detectionReport),
-      })),
-      "建议重新导出 Word 后再上传新报告复查。",
-    );
-  }
-
   async function handleExportFromHistory(item: { round: number; outputPath: string }, format: "txt" | "docx") {
     if (!item.outputPath) {
       setNotice("当前历史记录没有可导出的输出路径。");
@@ -4768,12 +4588,15 @@ export function App({ service }: Props) {
     }
     const taskTicket = beginTask("exporting");
     try {
+      setLastExportFailure(null);
       setRuntimeStep(`正在导出第 ${item.round} 轮 ${format.toUpperCase()}。`);
       const result = await service.exportRound(item.outputPath, format);
       setLastExportResult(result);
+      setLastExportFailure(null);
       setNotice(formatExportNotice(result, `第 ${item.round} 轮`));
       setRuntimeStep(`第 ${item.round} 轮导出完成`);
     } catch (appError) {
+      setLastExportFailure(extractExportFailure(appError));
       setError(formatExportError(appError));
       setRuntimeStep(`第 ${item.round} 轮导出失败`);
     } finally {
@@ -4800,12 +4623,15 @@ export function App({ service }: Props) {
     }
     const taskTicket = beginTask("exporting");
     try {
+      setLastExportFailure(null);
       setRuntimeStep(`正在导出 ${format.toUpperCase()}。`);
       const result = await service.exportRound(outputPath, format);
       setLastExportResult(result);
+      setLastExportFailure(null);
       setNotice(formatExportNotice(result));
       setRuntimeStep("导出完成");
     } catch (appError) {
+      setLastExportFailure(extractExportFailure(appError));
       setError(formatExportError(appError));
       setRuntimeStep("导出失败");
     } finally {
@@ -4912,11 +4738,9 @@ export function App({ service }: Props) {
       const reviewChunkIds = activeCompareData.chunks
         .filter((chunk) => {
           const flags = chunk.quality?.flags ?? [];
-          const reportMatches = detectionMatchesByChunk[chunk.chunkId] ?? [];
           return !failedChunkIdSet.has(chunk.chunkId) && !highRiskChunkIdSet.has(chunk.chunkId) && !isReviewDecisionResolved(reviewDecisions[chunk.chunkId]) && (Boolean(chunk.quality?.needsReview)
             || chunk.fallbackMode === "source"
-            || flags.includes("source_fallback")
-            || reportMatches.some((match) => match.confidence === "strong" || match.confidence === "review"));
+            || flags.includes("source_fallback"));
         })
         .map((chunk) => chunk.chunkId);
       const preferredFilter: DiffFilterMode = failedChunkIds.length ? "failed" : highRiskChunkIds.length ? "highRisk" : "review";
@@ -5008,7 +4832,7 @@ export function App({ service }: Props) {
     }
 
     return items;
-  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, detectionMatchesByChunk, diagnostics, documentStatus?.promptProfile, documentStatus?.promptSequence, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, promptOptions, promptWorkflows, reviewDecisions, roundProgressStatus, taskPhase]);
+  }, [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, diagnostics, documentStatus?.promptProfile, documentStatus?.promptSequence, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, promptOptions, promptWorkflows, reviewDecisions, roundProgressStatus, taskPhase]);
   const activeRuntimeTaskCount = runtimeTaskItems.filter((item) => item.running).length;
   const statusAutoAction = !error && pendingAutoAction ? pendingAutoAction : null;
   const hasActiveOperationFeedback = Boolean(activeRuntimeTaskCount || (uiBusy && !error));
@@ -5188,9 +5012,9 @@ export function App({ service }: Props) {
                       preview={preview}
                       compareData={activeCompareData}
                       exportResult={lastExportResult}
+                      exportFailure={lastExportFailure}
                       busy={uiBusy}
                       rerunFailures={activeRerunFailures}
-                      detectionMatchesByChunk={detectionMatchesByChunk}
                       diffFocusRequest={diffFocusRequest}
                       reviewDecisions={reviewDecisions}
                       roundRunning={showRoundRunStatus}
@@ -5219,7 +5043,6 @@ export function App({ service }: Props) {
                           compareData={activeCompareData}
                           busy={uiBusy}
                           rerunFailures={activeRerunFailures}
-                          detectionMatchesByChunk={detectionMatchesByChunk}
                           diffFocusRequest={diffFocusRequest}
                           reviewDecisions={reviewDecisions}
                           onReviewDecisionChange={updateReviewDecision}
@@ -5265,15 +5088,6 @@ export function App({ service }: Props) {
                         onRejectAutoAction={() => rejectPendingAutoAction()}
                         onResetRound={handleResetCurrentRound}
                         running={running}
-                      />
-                      <DetectionReportPanel
-                        report={detectionReport}
-                        matches={detectionMatches}
-                        documentLabel={documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : ""}
-                        busy={uiBusy}
-                        onPickReport={handlePickDetectionReport}
-                        onClearReport={handleClearDetectionReport}
-                        onRerunMatchedChunks={() => void handleRerunDetectionMatchedChunks()}
                       />
                     </div>
                   </ScrollArea>
@@ -7440,223 +7254,6 @@ function DiagnosticRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-function DetectionReportPanel({
-  report,
-  matches,
-  documentLabel,
-  busy,
-  onPickReport,
-  onClearReport,
-  onRerunMatchedChunks,
-}: {
-  report: DetectionReport | null;
-  matches: DetectionReportMatch[];
-  documentLabel: string;
-  busy: boolean;
-  onPickReport: (providerHint: DetectionReportProvider) => void;
-  onClearReport: () => void;
-  onRerunMatchedChunks: () => void;
-}) {
-  const [matchFilter, setMatchFilter] = useState<"strong" | "review" | "unmatched" | "all">("strong");
-  const providerLabel = report?.providerLabel || report?.provider || "外部报告";
-  const riskySegments = report?.segments.filter((segment) => isDetectionRerunRisk(segment)) ?? [];
-  const highSegments = report?.segments.filter((segment) => isDetectionHighRisk(segment)) ?? [];
-  const strongMatches = matches.filter((match) => match.confidence === "strong");
-  const reviewMatches = matches.filter((match) => match.confidence === "review");
-  const weakMatches = matches.filter((match) => match.confidence === "weak");
-  const strongMatchedRisky = riskySegments.filter((segment) => strongMatches.some((match) => match.segment.index === segment.index));
-  const unmatchedRisky = riskySegments.filter((segment) => !matches.some((match) => match.segment.index === segment.index));
-  const overallRisk = report?.summary.weightedOverallRiskProbability ?? report?.summary.overallRiskProbability;
-  const hasParsedSegments = Boolean(report?.segments.length);
-  const reportSourceLabel = report?.sourcePath ? formatDocLabel(report.sourcePath) : "";
-  const riskSegmentSummaries = riskySegments.map((segment) => {
-    const matchedItems = matches.filter((item) => item.segment.index === segment.index);
-    const strongItems = matchedItems.filter((item) => item.confidence === "strong");
-    const reviewItems = matchedItems.filter((item) => item.confidence === "review");
-    const weakItems = matchedItems.filter((item) => item.confidence === "weak");
-    const bestMatch = matchedItems[0];
-    const matchState = strongItems.length ? "strong" : reviewItems.length ? "review" : matchedItems.length ? "weak" : "unmatched";
-    return {
-      segment,
-      strongCount: strongItems.length,
-      reviewCount: reviewItems.length,
-      weakCount: weakItems.length,
-      bestMatch,
-      matchState,
-    };
-  });
-  const visibleSegmentSummaries = riskSegmentSummaries.filter((item) => {
-    if (matchFilter === "all") return true;
-    if (matchFilter === "unmatched") return item.matchState === "unmatched" || item.matchState === "weak";
-    return item.matchState === matchFilter;
-  });
-  useEffect(() => {
-    if (report && strongMatchedRisky.length === 0 && matchFilter === "strong") {
-      setMatchFilter(reviewMatches.length ? "review" : unmatchedRisky.length || weakMatches.length ? "unmatched" : "all");
-    }
-  }, [report, strongMatchedRisky.length, reviewMatches.length, unmatchedRisky.length, weakMatches.length, matchFilter]);
-  return (
-    <Card className="min-h-0 w-full min-w-0 max-w-full overflow-hidden">
-      <CardHeader className="min-w-0 pb-3">
-        <div className="flex min-w-0 items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
-              <Badge variant="secondary">检测反馈</Badge>
-              {report
-                ? <Badge variant={hasParsedSegments ? (highSegments.length ? "warning" : "success") : "warning"} className="max-w-full truncate">{hasParsedSegments ? `${providerLabel} ${overallRisk ?? "-"}%` : "未解析到片段"}</Badge>
-                : <Badge variant="outline">未接入</Badge>}
-            </div>
-            <CardTitle className="text-lg">外部报告</CardTitle>
-          </div>
-        </div>
-        <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onPickReport("speedai")}
-              disabled={busy || !documentLabel}
-              className={cn("min-w-0 overflow-hidden", report?.provider === "speedai" && "ring-2 ring-primary/25")}
-            >
-              <FileText data-icon="inline-start" />
-              <span className="min-w-0 truncate">上传 SpeedAI</span>
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onPickReport("paperpass")}
-              disabled={busy || !documentLabel}
-              className={cn("min-w-0 overflow-hidden", report?.provider === "paperpass" && "ring-2 ring-primary/25")}
-            >
-              <FileText data-icon="inline-start" />
-              <span className="min-w-0 truncate">上传 PaperPass</span>
-            </Button>
-          </div>
-      </CardHeader>
-
-      <CardContent className="flex min-h-0 min-w-0 max-w-full flex-col gap-3 overflow-hidden">
-        {report ? (
-          <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-hidden">
-            <div className="grid min-w-0 grid-cols-2 gap-2 text-center text-xs">
-              <div className="rounded-md border bg-muted/50 p-3 text-foreground">
-                <div className="text-lg font-black">{report.segments.length}</div>
-                <div>报告片段</div>
-              </div>
-              <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-destructive">
-                <div className="text-lg font-black">{highSegments.length}</div>
-                <div>高风险</div>
-              </div>
-              <div className="rounded-md border bg-muted/50 p-3 text-foreground">
-                <div className="text-lg font-black">{strongMatchedRisky.length}</div>
-                <div>强命中</div>
-              </div>
-              <div className="rounded-md border border-primary/25 bg-muted/60 p-3 text-foreground">
-                <div className="text-lg font-black">{reviewMatches.length + weakMatches.length + unmatchedRisky.length}</div>
-                <div>需人工看</div>
-              </div>
-            </div>
-
-            <div className="min-w-0 overflow-hidden rounded-md border bg-muted/50 p-3">
-              <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span className="min-w-0 flex-1 truncate">来源：<b className="text-foreground">{providerLabel}</b>{reportSourceLabel ? ` · ${reportSourceLabel}` : ""}</span>
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  {hasParsedSegments ? (
-                    <Button size="sm" className="min-w-0 overflow-hidden" onClick={onRerunMatchedChunks} disabled={busy || strongMatchedRisky.length === 0}>
-                      <RefreshCw data-icon="inline-start" />
-                      <span className="min-w-0 truncate">重跑强命中 {strongMatchedRisky.length}</span>
-                    </Button>
-                  ) : null}
-                  <Button variant="ghost" size="sm" className="min-w-0 overflow-hidden" onClick={onClearReport} disabled={busy}>
-                    <Trash2 data-icon="inline-start" />
-                    <span className="min-w-0 truncate">清除</span>
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            {!hasParsedSegments ? (
-              <Alert variant="destructive">
-                <AlertCircle />
-                <AlertTitle>没有解析到风险片段</AlertTitle>
-                <AlertDescription>请确认报告格式或重新上传。</AlertDescription>
-              </Alert>
-            ) : (
-              <div className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden rounded-md border bg-muted/40 p-3">
-                <div className="flex min-w-0 items-center justify-between gap-3">
-                  <div className="text-sm font-semibold text-foreground">报告片段</div>
-                  <Badge variant="outline" className="shrink-0">{visibleSegmentSummaries.length} 条</Badge>
-                </div>
-                <ToggleGroup
-                  type="single"
-                  value={matchFilter}
-                  onValueChange={(value) => value && setMatchFilter(value as typeof matchFilter)}
-                  className="!grid min-w-0 grid-cols-2 overflow-hidden"
-                >
-                  {[
-                    { key: "strong" as const, label: `强命中 ${strongMatchedRisky.length}` },
-                    { key: "review" as const, label: `疑似 ${reviewMatches.length}` },
-                    { key: "unmatched" as const, label: `未确认 ${unmatchedRisky.length + weakMatches.length}` },
-                    { key: "all" as const, label: `全部 ${riskySegments.length}` },
-                  ].map((item) => (
-                    <ToggleGroupItem
-                      key={item.key}
-                      value={item.key}
-                      className="h-9 min-w-0 overflow-hidden px-2 text-xs"
-                    >
-                      <span className="min-w-0 truncate">{item.label}</span>
-                    </ToggleGroupItem>
-                  ))}
-                </ToggleGroup>
-
-                {visibleSegmentSummaries.length ? (
-                  <ScrollArea className="shadcn-scroll-bound h-72 min-w-0 overflow-x-hidden pr-1">
-                    <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-x-hidden">
-                      {visibleSegmentSummaries.map(({ segment, strongCount, reviewCount, weakCount, bestMatch, matchState }) => (
-                    <Alert key={segment.index} className={cn("min-w-0 overflow-hidden", matchState === "review" && "border-primary/25 bg-muted/60")}>
-                      <AlertCircle />
-                      <AlertTitle className="min-w-0">
-                      <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2">
-                        <Badge variant={isDetectionHighRisk(segment) ? "warning" : "outline"}>#{segment.index} {segment.probability}%</Badge>
-                        {segment.page ? <Badge variant="outline">第 {segment.page} 页</Badge> : null}
-                        <Badge variant="outline">{segment.riskLevel || "未知风险"}</Badge>
-                        {strongCount ? <Badge variant="success">强命中 {strongCount}</Badge> : reviewCount ? <Badge variant="warning">疑似 {reviewCount}</Badge> : weakCount ? <Badge variant="outline">弱匹配 {weakCount}</Badge> : <Badge variant="outline">未匹配</Badge>}
-                        {bestMatch ? <Badge variant="secondary">最高 {Math.round(bestMatch.score * 100)}%</Badge> : null}
-                      </div>
-                      </AlertTitle>
-                      <AlertDescription className="grid min-w-0 gap-2">
-                        <span className="line-clamp-3 min-w-0 break-words text-foreground">{segment.content}</span>
-                      </AlertDescription>
-                    </Alert>
-                      ))}
-                    </div>
-                  </ScrollArea>
-                ) : (
-                  <Empty className="min-h-[12rem] border">
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon">
-                        <FileText />
-                      </EmptyMedia>
-                      <EmptyTitle>当前分层为空</EmptyTitle>
-                    </EmptyHeader>
-                  </Empty>
-                )}
-              </div>
-            )}
-          </div>
-        ) : (
-          <Empty className="min-h-[18rem] border">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <FileText />
-              </EmptyMedia>
-              <EmptyTitle>未接入外部报告</EmptyTitle>
-            </EmptyHeader>
-          </Empty>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 function QualityReportPage({ compareData, exportResult }: { compareData: RoundCompareData | null; exportResult: ExportResult | null }) {
   const stats = buildQualityStats(compareData, exportResult);
   const riskMessages = buildExportRiskMessages(compareData, exportResult);

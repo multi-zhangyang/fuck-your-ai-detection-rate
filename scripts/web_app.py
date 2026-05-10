@@ -18,11 +18,10 @@ from flask import Flask, Response, jsonify, request, send_file, stream_with_cont
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from app_config import get_app_config_path, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
-from detection_report_parser import parse_detection_report_pdf
 from app_service import (
+    ExportRoundError,
     MAX_REWRITE_CONCURRENCY,
     MIN_REWRITE_REQUEST_TIMEOUT_SECONDS,
-    build_detection_matches_for_output,
     backup_history_database_governance,
     check_history_database_governance,
     compact_history_database_governance,
@@ -78,7 +77,6 @@ from prompt_library import (
 ROOT_DIR = Path(__file__).resolve().parents[1]
 ORIGIN_DIR = ROOT_DIR / "origin"
 EXPORT_DIR = ROOT_DIR / "finish" / "web_exports"
-DETECTION_REPORT_DIR = ROOT_DIR / "finish" / "detection_reports"
 TASK_STATE_DIR = ROOT_DIR / "finish" / "intermediate" / "task_states"
 RUN_STATE_TTL_SECONDS = 1800
 SSE_KEEPALIVE_INTERVAL_SECONDS = 15
@@ -157,7 +155,6 @@ app.config["MAX_CONTENT_LENGTH"] = _read_byte_limit_env("FYADR_MAX_REQUEST_BYTES
 def ensure_workspace_dirs() -> None:
     ORIGIN_DIR.mkdir(parents=True, exist_ok=True)
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    DETECTION_REPORT_DIR.mkdir(parents=True, exist_ok=True)
     TASK_STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -230,16 +227,6 @@ def write_uploaded_binary_file(filename: str, content_base64: str) -> Path:
     safe_name = sanitize_filename(filename)
     target_path = ORIGIN_DIR / safe_name
     target_path.write_bytes(_decode_upload_base64(content_base64, label="Document upload"))
-    return target_path
-
-
-def write_uploaded_detection_report(filename: str, content_base64: str) -> Path:
-    ensure_workspace_dirs()
-    safe_name = sanitize_filename(filename)
-    if not safe_name.lower().endswith(".pdf"):
-        raise ValueError("Detection report must be a PDF file.")
-    target_path = DETECTION_REPORT_DIR / safe_name
-    target_path.write_bytes(_decode_upload_base64(content_base64, label="Detection report"))
     return target_path
 
 
@@ -1472,7 +1459,6 @@ def build_environment_diagnostics() -> dict[str, Any]:
         summarize_workspace_path(ORIGIN_DIR, label="源文档目录", kind="origin"),
         summarize_workspace_path(ROOT_DIR / "finish" / "intermediate", label="中间产物目录", kind="intermediate"),
         summarize_workspace_path(EXPORT_DIR, label="项目导出目录", kind="exports"),
-        summarize_workspace_path(DETECTION_REPORT_DIR, label="检测报告目录", kind="detectionReports"),
         summarize_workspace_path(config_path, label="本地配置文件", kind="config"),
     ]
     checks = [
@@ -1765,9 +1751,11 @@ def add_cors_headers(response: Response) -> Response:
         "X-Export-Paragraph-Source, X-Export-Format-Mode, X-Export-Format-Scope, "
         "X-Export-Content-Locked-Style-Count, X-Export-Table-Style-Count, X-Export-Table-Border-Count, "
         "X-Export-Validation-Path, X-Export-Audit-Path, X-Export-Audit-Issue-Count, "
-        "X-Export-Preflight-Path, X-Export-Preflight-Issue-Count, "
-        "X-Export-Guard-Path, X-Export-Guard-Issue-Count, "
-        "X-Export-Guard-Issue-Samples, X-Export-Audit-Issue-Samples, X-Export-Preflight-Issue-Samples"
+        "X-Export-Ooxml-Audit-Path, X-Export-Ooxml-Audit-Issue-Count, "
+        "X-Export-Preflight-Path, X-Export-Preflight-Issue-Count, X-Export-Preflight-Warning-Count, "
+        "X-Export-Guard-Path, X-Export-Guard-Issue-Count, X-Export-Guard-Warning-Count, "
+        "X-Export-Guard-Issue-Samples, X-Export-Audit-Issue-Samples, "
+        "X-Export-Ooxml-Audit-Issue-Samples, X-Export-Preflight-Issue-Samples"
     )
     response.headers["Cache-Control"] = "no-cache"
     return response
@@ -1988,19 +1976,6 @@ def post_upload_document() -> tuple[Response, int] | Response:
             content = str(payload.get("content", ""))
             target_path = write_uploaded_file(filename, content)
         return jsonify({"sourcePath": str(target_path), "filename": target_path.name}), 201
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/detection-report", methods=["POST"])
-def post_detection_report() -> tuple[Response, int] | Response:
-    try:
-        payload = request.get_json(silent=True) or {}
-        filename = str(payload.get("filename", "")).strip()
-        content_base64 = str(payload.get("contentBase64", ""))
-        provider_hint = str(payload.get("providerHint", "")).strip().lower()
-        target_path = write_uploaded_detection_report(filename, content_base64)
-        return jsonify(parse_detection_report_pdf(target_path, provider_hint=provider_hint)), 201
     except Exception as exc:
         return error_response(str(exc))
 
@@ -2239,21 +2214,6 @@ def get_read_output() -> tuple[Response, int] | Response:
 def get_read_compare() -> tuple[Response, int] | Response:
     try:
         return jsonify(read_round_compare(require_query_value("outputPath")))
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/detection-matches", methods=["POST"])
-def post_detection_matches() -> tuple[Response, int] | Response:
-    try:
-        payload = request.get_json(silent=True) or {}
-        output_path = str(payload.get("outputPath", "")).strip()
-        report = payload.get("report")
-        if not output_path:
-            raise ValueError("outputPath is required.")
-        if not isinstance(report, dict):
-            raise ValueError("report must be an object.")
-        return jsonify({"matches": build_detection_matches_for_output(output_path, report)})
     except Exception as exc:
         return error_response(str(exc))
 
@@ -2535,14 +2495,26 @@ def get_export_round() -> tuple[Response, int] | Response:
         response.headers["X-Export-Validation-Path"] = make_ascii_header_value(result.get("validationPath", ""))
         response.headers["X-Export-Audit-Path"] = make_ascii_header_value(result.get("auditPath", ""))
         response.headers["X-Export-Audit-Issue-Count"] = str(result.get("auditIssueCount", ""))
+        response.headers["X-Export-Ooxml-Audit-Path"] = make_ascii_header_value(result.get("ooxmlAuditPath", ""))
+        response.headers["X-Export-Ooxml-Audit-Issue-Count"] = str(result.get("ooxmlAuditIssueCount", ""))
         response.headers["X-Export-Preflight-Path"] = make_ascii_header_value(result.get("preflightPath", ""))
         response.headers["X-Export-Preflight-Issue-Count"] = str(result.get("preflightIssueCount", ""))
+        response.headers["X-Export-Preflight-Warning-Count"] = str(result.get("preflightWarningCount", ""))
         response.headers["X-Export-Guard-Path"] = make_ascii_header_value(result.get("guardPath", ""))
         response.headers["X-Export-Guard-Issue-Count"] = str(result.get("guardIssueCount", ""))
+        response.headers["X-Export-Guard-Warning-Count"] = str(result.get("guardWarningCount", ""))
         response.headers["X-Export-Guard-Issue-Samples"] = make_ascii_header_json(result.get("guardIssueSamples", []))
         response.headers["X-Export-Audit-Issue-Samples"] = make_ascii_header_json(result.get("auditIssueSamples", []))
+        response.headers["X-Export-Ooxml-Audit-Issue-Samples"] = make_ascii_header_json(result.get("ooxmlAuditIssueSamples", []))
         response.headers["X-Export-Preflight-Issue-Samples"] = make_ascii_header_json(result.get("preflightIssueSamples", []))
         return response
+    except ExportRoundError as exc:
+        return error_response(
+            str(exc),
+            status=400,
+            code="docx_export_blocked",
+            exportFailure=exc.export_failure,
+        )
     except Exception as exc:
         return error_response(str(exc))
 

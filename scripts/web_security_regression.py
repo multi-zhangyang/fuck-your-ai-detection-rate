@@ -66,8 +66,10 @@ def run_regression() -> dict[str, object]:
             ping_payload = allowed.get_json()
             _assert(allowed.headers.get("Access-Control-Allow-Origin") == "http://127.0.0.1:1420", "local frontend origin should be allowed")
             _assert("X-Export-Path" in allowed.headers.get("Access-Control-Expose-Headers", ""), "export artifact path should be CORS-exposed")
+            _assert("X-Export-Guard-Warning-Count" in allowed.headers.get("Access-Control-Expose-Headers", ""), "export warning counts should be CORS-exposed")
             _assert(ping_payload["maxRewriteConcurrency"] == web_app.MAX_REWRITE_CONCURRENCY, "ping should expose the live backend concurrency ceiling")
             checks.append("local frontend origin is allowed")
+            checks.append("export warning counts are CORS-exposed")
             checks.append("ping exposes live backend concurrency ceiling")
 
             denied = client.get("/api/ping", headers={"Origin": "http://evil.example"})
@@ -99,6 +101,31 @@ def run_regression() -> dict[str, object]:
             _assert(export_path_header, "export-round should expose the generated artifact path")
             _assert(unquote(export_path_header).endswith("export-source.txt"), "export path header should carry the generated artifact path")
             checks.append("export-round exposes the generated artifact path")
+
+            try:
+                def fake_blocked_export(_output_path: str, _export_path: str, _target_format: str) -> dict[str, object]:
+                    raise web_app.ExportRoundError(
+                        "DOCX export blocked",
+                        {
+                            "stage": "guard",
+                            "label": "导出前保护",
+                            "message": "DOCX export blocked",
+                            "issueCount": 1,
+                            "warningCount": 0,
+                            "reportPath": "finish/regression/export.guard.json",
+                            "samples": [{"code": "english_spacing_corruption", "message": "English spacing changed."}],
+                        },
+                    )
+
+                web_app.export_round_output = fake_blocked_export
+                blocked_export_response = client.get("/api/export-round?outputPath=finish/regression/export-source.txt&targetFormat=docx")
+            finally:
+                web_app.export_round_output = original_export_round_output
+            blocked_export_payload = blocked_export_response.get_json()
+            _assert(blocked_export_response.status_code == 400, "blocked DOCX exports should return a structured error")
+            _assert(blocked_export_payload["code"] == "docx_export_blocked", "blocked DOCX exports should expose an error code")
+            _assert(blocked_export_payload["exportFailure"]["samples"][0]["code"] == "english_spacing_corruption", "blocked DOCX exports should expose issue samples")
+            checks.append("blocked DOCX exports expose structured issue samples")
 
             missing_output = ROOT_DIR / "finish" / "regression" / "missing-export-source.txt"
             missing_output.unlink(missing_ok=True)

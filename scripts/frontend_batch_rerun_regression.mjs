@@ -232,7 +232,9 @@ function runRegression() {
     checkRequestErrorPayloadContract(webServiceSource, failures);
     checkExportIssueSampleContract(webServiceSource, failures);
     checkPartialFailureContract(source, "handleRerunRiskyChunks", failures);
-    checkPartialFailureContract(source, "handleRerunDetectionMatchedChunks", failures);
+    assertNotIncludes(source, "handleRerunDetectionMatchedChunks", "Removed external detection-report rerun handler must stay absent.", failures);
+    assertNotIncludes(source, "detectionMatches", "Removed external detection-report match state must stay absent.", failures);
+    assertNotIncludes(resultCardSource, "DetectionReport", "Removed external detection-report UI must stay absent.", failures);
   }
 
   const report = {
@@ -257,6 +259,7 @@ function runRegression() {
       "diff panel keeps compact user-facing filters",
       "batch rerun status stays visible in result area",
       "export audit samples stay available in service payload",
+      "external detection-report rerun entry stays removed",
     ],
   };
   mkdirSync(dirname(REPORT_PATH), { recursive: true });

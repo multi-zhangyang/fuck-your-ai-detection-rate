@@ -36,6 +36,12 @@ from docx_pipeline import (
 from format_rules import PAGE_FORMAT_FIELDS, STYLE_FORMAT_FIELDS, load_active_format_rules
 
 
+class DocxFormatPreflightError(ValueError):
+    def __init__(self, message: str, report: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.report = report
+
+
 DOCX_TEMPLATE_PROFILE_VERSION = 5
 FONT_CN_SONG = "宋体"
 FONT_CN_HEI = "黑体"
@@ -403,9 +409,10 @@ def apply_school_format_rules(
 
     preflight_report = _write_school_format_preflight_report(normalized_export_path, applied_profiles, active_rules)
     if preflight_report["blockingIssues"]:
-        raise ValueError(
+        raise DocxFormatPreflightError(
             "DOCX formatting aborted: school format preflight found high-risk layout issues. "
-            f"Report: {preflight_report['path']}"
+            f"Report: {preflight_report['path']}",
+            preflight_report,
         )
 
     content_fingerprint_after = _collect_document_text_fingerprint(document)
@@ -423,6 +430,7 @@ def apply_school_format_rules(
         "schoolName": str(active_rules.get("schoolName", "")),
         "preflightPath": str(preflight_report.get("path", "")),
         "preflightIssueCount": int(preflight_report.get("issueCount", 0) or 0),
+        "preflightWarningCount": int(preflight_report.get("warningCount", 0) or 0),
     }
 
 
@@ -1067,11 +1075,13 @@ def _write_school_format_preflight_report(
                 "sample": text[:160],
             })
     blocking = [issue for issue in issues if issue.get("severity") == "blocker"]
+    warning_count = sum(1 for issue in issues if issue.get("severity") == "warning")
     report_path = _school_format_preflight_report_path(export_path)
     report = {
         "ok": not blocking,
         "path": str(report_path),
         "issueCount": len(issues),
+        "warningCount": warning_count,
         "blockingIssues": blocking,
         "issues": issues,
         "appliedCount": len(applied_profiles),

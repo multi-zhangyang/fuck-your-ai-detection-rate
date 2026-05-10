@@ -24,10 +24,12 @@ if str(ROOT_DIR) not in sys.path:
 import app_service  # noqa: E402
 from app_service import export_round_output  # noqa: E402
 from format_rules import ACTIVE_RULES_PATH, extract_deterministic_format_rules, merge_deterministic_rules, save_active_format_rules  # noqa: E402
-from docx_audit import audit_docx_export, get_docx_audit_report_path  # noqa: E402
+from docx_audit import audit_docx_export, audit_docx_ooxml_integrity, get_docx_audit_report_path, get_docx_ooxml_audit_report_path  # noqa: E402
 from docx_bodymap import load_docx_body_map, validate_docx_body_map  # noqa: E402
 from docx_export_guard import run_docx_pre_export_guard  # noqa: E402
 from docx_pipeline import (  # noqa: E402
+    build_docx_scope_diagnostics,
+    build_docx_snapshot,
     _load_docx_snapshot,
     _looks_like_acknowledgement_heading,
     _looks_like_back_matter_heading,
@@ -43,7 +45,7 @@ from docx_pipeline import (  # noqa: E402
     get_docx_scope_diagnostics_path,
     get_docx_snapshot_path,
 )
-from fyadr_round_service import _extract_required_terms, find_english_spacing_corruptions, validate_chunk_output  # noqa: E402
+from fyadr_round_service import _extract_required_terms, find_english_spacing_corruptions, find_sentence_surface_issues, validate_chunk_output  # noqa: E402
 from round_helper import run_document_round  # noqa: E402
 
 REGRESSION_DIR = ROOT_DIR / "finish" / "regression"
@@ -151,6 +153,106 @@ def _run_english_run_spacing_regression() -> dict[str, Any]:
         "actual": actual,
         "detectedCorruptions": corruptions,
         "requiredTerms": sorted(terms),
+    }
+
+
+def _run_sentence_surface_integrity_regression() -> dict[str, Any]:
+    source = "本文采用YOLOv8模型进行识别，并在移动端完成部署。"
+    valid_output = "本文选用YOLOv8模型完成识别任务，并在移动端实现部署。"
+    cases = {
+        "truncated": "本文采用YOLOv8模型进行识别，并在移动端完成",
+        "wrapper": "改写后：本文采用YOLOv8模型进行识别，并在移动端完成部署。",
+        "unbalanced": "本文采用（YOLOv8模型进行识别，并在移动端完成部署。",
+        "repeated_punctuation": "本文采用YOLOv8模型进行识别，，并在移动端完成部署。",
+    }
+    failures: list[str] = []
+    clean_issues = find_sentence_surface_issues(source, valid_output)
+    if clean_issues:
+        failures.append(f"surface guard rejected valid output: {clean_issues}")
+    validate_chunk_output(source, valid_output, "sentence-surface-valid")
+    detected: dict[str, list[str]] = {}
+    for name, output in cases.items():
+        issues = find_sentence_surface_issues(source, output)
+        detected[name] = [str(issue.get("code", "")) for issue in issues]
+        if not issues:
+            failures.append(f"surface guard missed {name}")
+        try:
+            validate_chunk_output(source, output, f"sentence-surface-{name}")
+            failures.append(f"chunk validation accepted {name}")
+        except ValueError:
+            pass
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "validIssues": clean_issues,
+        "detected": detected,
+    }
+
+
+def _build_ack_boundary_sample(path: Path, tail: list[str]) -> dict[str, Any]:
+    document = Document()
+    add_paragraph(document, "测试论文", style="Title", align=WD_ALIGN_PARAGRAPH.CENTER, size_pt=16, bold=True)
+    add_paragraph(document, "摘 要", align=WD_ALIGN_PARAGRAPH.CENTER, size_pt=16, bold=True)
+    add_paragraph(document, "本文测试正文边界识别能力，确保摘要到致谢结束范围内的正文可以改写。")
+    add_paragraph(document, "致 谢", align=WD_ALIGN_PARAGRAPH.CENTER, size_pt=16, bold=True)
+    add_paragraph(document, "感谢导师与同学在论文写作过程中的帮助。")
+    for item in tail:
+        add_paragraph(document, item)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document.save(path)
+    snapshot = build_docx_snapshot(path)
+    diagnostics = build_docx_scope_diagnostics(snapshot)
+    return {
+        "path": str(path),
+        "diagnostics": diagnostics,
+        "editableTexts": [unit.text for unit in snapshot.units if unit.editable],
+        "protectedTexts": [unit.text for unit in snapshot.units if not unit.editable],
+    }
+
+
+def _run_acknowledgement_boundary_regression() -> dict[str, Any]:
+    failures: list[str] = []
+    doc_end_case = _build_ack_boundary_sample(REGRESSION_DIR / "ack_boundary_doc_end.docx", [])
+    doc_end_issues = [
+        str(issue.get("code", ""))
+        for issue in doc_end_case["diagnostics"].get("issues", [])
+        if isinstance(issue, dict)
+    ]
+    if doc_end_case["diagnostics"].get("errorCount") != 0:
+        failures.append(f"acknowledgement-at-document-end should not be an error: {doc_end_issues}")
+    if "missing_post_acknowledgement_boundary" in doc_end_issues:
+        failures.append("acknowledgement-at-document-end should not warn about a missing post-ack boundary")
+
+    references_case = _build_ack_boundary_sample(
+        REGRESSION_DIR / "ack_boundary_references.docx",
+        ["参考文献", "[1] Zhang A. A sample reference entry."],
+    )
+    references_scope = references_case["diagnostics"].get("scope", {})
+    if references_scope.get("postAcknowledgementBoundaryIndex") is None:
+        failures.append("normal-style references heading after acknowledgement should be detected as a boundary")
+    if any("参考文献" in text for text in references_case["editableTexts"]):
+        failures.append("references heading after acknowledgement should not be editable")
+    if any("[1] Zhang" in text for text in references_case["editableTexts"]):
+        failures.append("reference entries after acknowledgement should not be editable")
+
+    risky_tail_case = _build_ack_boundary_sample(
+        REGRESSION_DIR / "ack_boundary_unbounded_tail.docx",
+        ["[1] Zhang A. A sample reference entry without an explicit heading."],
+    )
+    risky_codes = [
+        str(issue.get("code", ""))
+        for issue in risky_tail_case["diagnostics"].get("issues", [])
+        if isinstance(issue, dict)
+    ]
+    if "unbounded_post_acknowledgement_tail" not in risky_codes:
+        failures.append(f"unbounded post-ack reference-like tail should be an error: {risky_codes}")
+
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "docEndIssueCodes": doc_end_issues,
+        "referencesBoundaryIndex": references_scope.get("postAcknowledgementBoundaryIndex"),
+        "riskyTailIssueCodes": risky_codes,
     }
 
 
@@ -467,6 +569,101 @@ def _audit_exported_editable_format(export_path: Path, snapshot_path: Path) -> d
     return {"ok": not issues, "checked": len(checks), "issues": issues, "sampleChecks": checks[:8], "margins": margins}
 
 
+def _audit_exported_text_integrity(export_path: Path, body_map: Any) -> dict[str, Any]:
+    if body_map is None:
+        return {"ok": False, "checked": 0, "issues": [{"type": "missing_body_map"}]}
+    document = Document(str(export_path.resolve()))
+    issues: list[dict[str, Any]] = []
+    checks: list[dict[str, Any]] = []
+    for unit_index, unit in enumerate(getattr(body_map, "units", []) or []):
+        target = getattr(unit, "target", {})
+        if not isinstance(target, dict) or str(target.get("kind", "")) != "paragraph":
+            issues.append({"type": "unsupported_target", "unitIndex": unit_index, "target": target})
+            continue
+        paragraph_index = int(target.get("paragraph_index", -1))
+        if paragraph_index < 0 or paragraph_index >= len(document.paragraphs):
+            issues.append({"type": "target_out_of_range", "unitIndex": unit_index, "target": target})
+            continue
+        expected = _normalize_rewritten_text(str(getattr(unit, "current_text", "")))
+        actual = document.paragraphs[paragraph_index].text
+        check = {
+            "unitIndex": unit_index,
+            "paragraphIndex": paragraph_index,
+            "expectedPreview": expected[:90],
+            "actualPreview": actual[:90],
+        }
+        checks.append(check)
+        if actual != expected:
+            issues.append({"type": "exported_text_changed", **check})
+    return {
+        "ok": not issues,
+        "checked": len(checks),
+        "issues": issues[:20],
+        "sampleChecks": checks[:8],
+    }
+
+
+def _run_export_text_integrity_block_regression(output_path: Path, export_path: Path) -> dict[str, Any]:
+    failures: list[str] = []
+    body_map_path = output_path.with_name(f"{output_path.stem}_body_map.json")
+    body_map = load_docx_body_map(body_map_path)
+    if body_map is None or not getattr(body_map, "units", None):
+        return {"ok": False, "failures": [f"missing body map for integrity block check: {body_map_path}"]}
+
+    first_unit = body_map.units[0]
+    target = getattr(first_unit, "target", {})
+    blocked_export_path = export_path.with_name(f"{export_path.stem}_text_integrity_blocked{export_path.suffix}")
+    original_rebuild = app_service.rebuild_docx_from_body_map_units
+
+    def corrupting_rebuild(*args: Any, **kwargs: Any) -> Any:
+        result = original_rebuild(*args, **kwargs)
+        target_path = Path(str(kwargs.get("export_path", blocked_export_path)))
+        document = Document(str(target_path.resolve()))
+        paragraph = app_service._resolve_target_paragraph(document, target)
+        _replace_paragraph_text(paragraph, f"{paragraph.text} TEXT_INTEGRITY_CORRUPTION")
+        document.save(target_path)
+        return result
+
+    try:
+        app_service.rebuild_docx_from_body_map_units = corrupting_rebuild
+        try:
+            export_round_output(str(output_path), str(blocked_export_path), "docx")
+            failures.append("export accepted a corrupted rewritten DOCX target")
+            export_failure: dict[str, Any] = {}
+        except app_service.ExportRoundError as exc:
+            export_failure = exc.export_failure
+            if export_failure.get("stage") != "text-integrity":
+                failures.append(f"unexpected export failure stage: {export_failure.get('stage')}")
+            report_path = Path(str(export_failure.get("reportPath", ""))) if export_failure.get("reportPath") else None
+            if report_path is None or not report_path.exists():
+                failures.append("text integrity block did not write a report")
+            else:
+                report = _read_json(report_path)
+                issue_codes = {
+                    str(issue.get("code", ""))
+                    for issue in report.get("issues", [])
+                    if isinstance(issue, dict)
+                }
+                if "docx_exported_text_changed" not in issue_codes:
+                    failures.append(f"text integrity report missed changed-text issue: {sorted(issue_codes)}")
+        except Exception as exc:
+            failures.append(f"unexpected text integrity block exception: {type(exc).__name__}: {exc}")
+            export_failure = {}
+    finally:
+        app_service.rebuild_docx_from_body_map_units = original_rebuild
+        try:
+            blocked_export_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "stage": export_failure.get("stage", ""),
+        "reportPath": str(export_failure.get("reportPath", "")),
+    }
+
+
 def _audit_snapshot_protection_scope(snapshot: Any | None, *, strict_sample_expectations: bool) -> dict[str, Any]:
     if snapshot is None:
         return {"ok": False, "issues": [{"type": "missing_snapshot"}]}
@@ -658,50 +855,16 @@ def _find_auto_numbered_body_chunk(compare_payload: dict[str, Any]) -> dict[str,
     return max(auto_numbered_chunks, key=lambda chunk: len(_chunk_text(chunk)))
 
 
-def _build_auto_numbered_detection_report(chunk: dict[str, Any]) -> dict[str, Any]:
-    text = _chunk_text(chunk)
-    return {
-        "provider": "paperpass",
-        "providerLabel": "PaperPass",
-        "sourcePath": "auto-numbered-body.synthetic.pdf",
-        "pageCount": 1,
-        "summary": {
-            "overallRiskProbability": 86,
-            "weightedOverallRiskProbability": 86,
-            "segmentCount": 1,
-            "checkedScopeNotes": ["Synthetic report segment for auto-numbered body paragraph coverage."],
-        },
-        "segments": [
-            {
-                "index": 1,
-                "content": text,
-                "matchText": text,
-                "probability": 86,
-                "riskLevel": "高风险",
-                "charCount": len(text),
-                "sourceProvider": "paperpass",
-            }
-        ],
-    }
-
-
-def _build_auto_numbered_detection_feedback(match: dict[str, Any]) -> str:
-    segment = match.get("segment") if isinstance(match.get("segment"), dict) else {}
-    probability = segment.get("probability", 0)
-    try:
-        score = float(match.get("score", 0) or 0)
-    except (TypeError, ValueError):
-        score = 0.0
-    score_percent = round(score * 100 if score <= 1.5 else score)
-    excerpt = " ".join(str(segment.get("content") or segment.get("matchText") or "").split())[:360]
+def _build_auto_numbered_rerun_feedback(chunk: dict[str, Any]) -> str:
+    excerpt = " ".join(_chunk_text(chunk).split())[:360]
     return (
-        "外部检测报告反馈：来源 PaperPass，当前 Diff 块为自动编号正文段落且被强命中。\n"
-        f"#{segment.get('index', 1)}，{round(float(probability or 0))}% 高风险，匹配度 {score_percent}%，摘录：{excerpt}\n"
-        "重写要求：保留编号、冒号、术语、事实和段落角色，只改写编号后的正文表达。"
+        "AUTO_NUMBERED_RERUN_USER_FEEDBACK: rewrite this auto-numbered body paragraph.\n"
+        f"Excerpt: {excerpt}\n"
+        "Preserve the numbering prefix, facts, citations, and document formatting."
     )
 
 
-def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Path, snapshot_path: Path) -> dict[str, Any]:
+def _run_auto_numbered_targeted_rerun_smoke(output_path: Path, export_path: Path, snapshot_path: Path) -> dict[str, Any]:
     failures: list[str] = []
     rerun_marker = "AUTO_NUMBERED_RERUN_EXPORT_MARKER"
     compare_payload = app_service.read_round_compare(str(output_path))
@@ -709,16 +872,7 @@ def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Pat
     if target_chunk is None:
         return {"ok": False, "failures": ["no auto-numbered body compare chunk was available"]}
     target_chunk_id = str(target_chunk.get("chunkId", ""))
-    report = _build_auto_numbered_detection_report(target_chunk)
-    matches = app_service.build_detection_matches_for_output(str(output_path), report)
-    target_matches = [
-        match
-        for match in matches
-        if str(match.get("chunkId", "")) == target_chunk_id and str(match.get("confidence", "")) == "strong"
-    ]
-    if not target_matches:
-        failures.append(f"auto-numbered report segment did not strongly match {target_chunk_id}")
-    best_match = target_matches[0] if target_matches else (matches[0] if matches else {"segment": report["segments"][0], "score": 0})
+    user_feedback = _build_auto_numbered_rerun_feedback(target_chunk)
 
     prompts: list[str] = []
     original_builder = app_service._build_transform_from_model_config
@@ -726,7 +880,7 @@ def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Pat
     def fake_builder(_model_config: dict[str, Any]):
         def smoke_transform(chunk_text: str, prompt_input: str, _round: int, _chunk_id: str) -> str:
             prompts.append(prompt_input)
-            return f"{chunk_text} {rerun_marker}"
+            return f"{chunk_text} {rerun_marker}。"
 
         return smoke_transform, "online"
 
@@ -735,35 +889,40 @@ def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Pat
         rerun_result = app_service.rerun_compare_chunk(
             str(output_path),
             target_chunk_id,
-        {"baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
-            _build_auto_numbered_detection_feedback(best_match),
+            {"baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
+            user_feedback,
         )
     finally:
         app_service._build_transform_from_model_config = original_builder
 
     rerun_chunk = rerun_result.get("chunk") if isinstance(rerun_result, dict) else {}
-    detector_profile = rerun_chunk.get("rerunDetectorProfile") if isinstance(rerun_chunk, dict) else None
     output_text = str(rerun_chunk.get("outputText", "")) if isinstance(rerun_chunk, dict) else ""
     if not AUTO_NUMBERED_BODY_RE.search(output_text):
         failures.append("targeted rerun did not preserve the auto-numbered paragraph prefix")
-    if not prompts or "[DETECTOR MICRO-REPAIR MODE]" not in prompts[0]:
-        failures.append("auto-numbered targeted rerun did not enter detector micro-repair mode")
-    if not prompts or "detector-anchor-preservation" not in prompts[0]:
-        failures.append("auto-numbered targeted rerun prompt did not preserve detector anchors")
-    if not isinstance(detector_profile, dict) or int(detector_profile.get("segmentCount", 0) or 0) != 1:
-        failures.append("auto-numbered targeted rerun did not persist one detector segment")
+    if not prompts or "AUTO_NUMBERED_RERUN_USER_FEEDBACK" not in prompts[0]:
+        failures.append("auto-numbered targeted rerun prompt did not include the user feedback")
+    if prompts and "[DETECTOR MICRO-REPAIR MODE]" in prompts[0]:
+        failures.append("auto-numbered targeted rerun should not enter removed detection-report mode")
     if isinstance(rerun_chunk, dict) and ("rerunCandidateCount" in rerun_chunk or "rerunSelectedCandidate" in rerun_chunk):
         failures.append("auto-numbered targeted rerun should not emit legacy candidate metadata")
+    if isinstance(rerun_chunk, dict) and "rerunDetectorProfile" in rerun_chunk:
+        failures.append("auto-numbered targeted rerun should not persist removed detection-report metadata")
 
     post_export_path = export_path.with_name(f"{export_path.stem}_auto_numbered_post_rerun{export_path.suffix}")
     post_export = app_service.export_round_output(str(output_path), str(post_export_path), "docx")
     post_format_audit = _audit_exported_editable_format(post_export_path, snapshot_path)
+    post_body_map = load_docx_body_map(output_path.with_name(f"{output_path.stem}_body_map.json"))
+    post_text_integrity = _audit_exported_text_integrity(post_export_path, post_body_map)
     if int(post_export.get("auditIssueCount", 0) or 0) != 0:
         failures.append(f"auto-numbered post-rerun export audit issues: {post_export.get('auditIssueCount')}")
+    if int(post_export.get("ooxmlAuditIssueCount", 0) or 0) != 0:
+        failures.append(f"auto-numbered post-rerun export OOXML audit issues: {post_export.get('ooxmlAuditIssueCount')}")
     if int(post_export.get("preflightIssueCount", 0) or 0) != 0:
         failures.append(f"auto-numbered post-rerun export preflight issues: {post_export.get('preflightIssueCount')}")
     if not bool(post_format_audit.get("ok")):
         failures.append(f"auto-numbered post-rerun format audit issues: {len(post_format_audit.get('issues', []) or [])}")
+    if not bool(post_text_integrity.get("ok")):
+        failures.append(f"auto-numbered post-rerun text integrity issues: {len(post_text_integrity.get('issues', []) or [])}")
     exported_text = "\n".join(paragraph.text for paragraph in Document(str(post_export_path.resolve())).paragraphs)
     if rerun_marker not in exported_text:
         failures.append("auto-numbered post-rerun export did not contain the rerun output text")
@@ -773,14 +932,12 @@ def _run_auto_numbered_detection_rerun_smoke(output_path: Path, export_path: Pat
         "failures": failures,
         "targetChunkId": target_chunk_id,
         "targetText": _chunk_text(target_chunk),
-        "matchCount": len(matches),
-        "strongTargetMatchCount": len(target_matches),
-        "promptContainsDetectorMode": bool(prompts and "[DETECTOR MICRO-REPAIR MODE]" in prompts[0]),
-        "promptContainsAnchorCard": bool(prompts and "detector-anchor-preservation" in prompts[0]),
+        "promptContainsUserFeedback": bool(prompts and "AUTO_NUMBERED_RERUN_USER_FEEDBACK" in prompts[0]),
         "prefixPreserved": bool(AUTO_NUMBERED_BODY_RE.search(output_text)),
-        "rerunDetectorProfile": detector_profile if isinstance(detector_profile, dict) else {},
         "postRerunExport": post_export,
         "postRerunFormatAudit": post_format_audit,
+        "postRerunTextIntegrity": post_text_integrity,
+        "postRerunOoxmlAuditIssueCount": int(post_export.get("ooxmlAuditIssueCount", 0) or 0),
         "postRerunMarkerExported": rerun_marker in exported_text,
     }
 
@@ -800,12 +957,16 @@ def run_regression(
 
     previous_rules_bytes, applied_rules = _activate_school_spec_for_regression(school_spec_path)
     auto_numbered_rerun = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
+    export_text_integrity_block = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
+    body_map = None
     try:
         round_result = run_document_round(sample_path, identity_transform, round_number=1, prompt_profile="cn")
         output_path = Path(str(round_result["output_path"]))
         export_result = export_round_output(str(output_path), str(export_path), "docx")
+        body_map = load_docx_body_map(Path(str(round_result.get("body_map_path", ""))))
         if strict_sample_scope:
-            auto_numbered_rerun = _run_auto_numbered_detection_rerun_smoke(
+            export_text_integrity_block = _run_export_text_integrity_block_regression(output_path, export_path)
+            auto_numbered_rerun = _run_auto_numbered_targeted_rerun_smoke(
                 output_path,
                 export_path,
                 get_docx_snapshot_path(sample_path),
@@ -817,7 +978,8 @@ def run_regression(
     snapshot = _load_docx_snapshot(snapshot_path)
     scope_diagnostics_path = get_docx_scope_diagnostics_path(sample_path)
     scope_diagnostics = _read_json(scope_diagnostics_path)
-    body_map = load_docx_body_map(Path(str(round_result.get("body_map_path", ""))))
+    if body_map is None:
+        body_map = load_docx_body_map(Path(str(round_result.get("body_map_path", ""))))
     audit_report = _read_json(export_result.get("auditPath"))
     if not audit_report:
         audit_report = audit_docx_export(
@@ -826,11 +988,22 @@ def run_regression(
             snapshot_path=snapshot_path,
             report_path=get_docx_audit_report_path(export_path),
         )
+    ooxml_audit_report = _read_json(export_result.get("ooxmlAuditPath"))
+    if not ooxml_audit_report:
+        ooxml_audit_report = audit_docx_ooxml_integrity(
+            export_path,
+            source_path=sample_path,
+            snapshot_path=snapshot_path,
+            report_path=get_docx_ooxml_audit_report_path(export_path),
+        )
     preflight_report = _read_json(export_result.get("preflightPath"))
     format_audit = _audit_exported_editable_format(export_path, snapshot_path)
+    exported_text_integrity = _audit_exported_text_integrity(export_path, body_map)
     protection_scope_audit = _audit_snapshot_protection_scope(snapshot, strict_sample_expectations=strict_sample_scope)
     body_map_scope_contract = _audit_body_map_scope_contract(body_map, source_path=sample_path, snapshot_path=snapshot_path)
     english_run_spacing = _run_english_run_spacing_regression()
+    sentence_surface_integrity = _run_sentence_surface_integrity_regression()
+    acknowledgement_boundary = _run_acknowledgement_boundary_regression()
     compare_fallback_spacing = _run_compare_fallback_spacing_regression()
     compare_payload_integrity = _run_compare_payload_integrity_regression(
         source_path=sample_path,
@@ -840,12 +1013,23 @@ def run_regression(
 
     failures: list[str] = []
     failures.extend(f"english run spacing: {failure}" for failure in english_run_spacing.get("failures", []) or [])
+    failures.extend(f"sentence surface integrity: {failure}" for failure in sentence_surface_integrity.get("failures", []) or [])
+    failures.extend(f"acknowledgement boundary: {failure}" for failure in acknowledgement_boundary.get("failures", []) or [])
     failures.extend(f"compare fallback spacing: {failure}" for failure in compare_fallback_spacing.get("failures", []) or [])
     failures.extend(f"compare payload integrity: {failure}" for failure in compare_payload_integrity.get("failures", []) or [])
+    failures.extend(f"export text integrity block: {failure}" for failure in export_text_integrity_block.get("failures", []) or [])
     if export_result.get("layoutMode") != "body-map-roundtrip":
         failures.append(f"unexpected layout mode: {export_result.get('layoutMode')}")
     if int(export_result.get("auditIssueCount", 0) or 0) != 0:
         failures.append(f"audit issues: {export_result.get('auditIssueCount')}")
+    if int(export_result.get("ooxmlAuditIssueCount", 0) or 0) != 0:
+        failures.append(f"OOXML audit issues: {export_result.get('ooxmlAuditIssueCount')}")
+    if not bool(ooxml_audit_report.get("ok")):
+        failures.append(f"OOXML audit report issues: {ooxml_audit_report.get('issueCount')}")
+    if not str(export_result.get("ooxmlAuditPath", "")).strip():
+        failures.append("missing OOXML audit path")
+    elif not Path(str(export_result.get("ooxmlAuditPath"))).exists():
+        failures.append("OOXML audit report file does not exist")
     if snapshot is None:
         failures.append("missing docx snapshot")
     elif snapshot.editable_unit_count <= 0:
@@ -858,6 +1042,8 @@ def run_regression(
         failures.append(f"preflight issues: {export_result.get('preflightIssueCount')}")
     if not bool(format_audit.get("ok")):
         failures.append(f"format audit issues: {len(format_audit.get('issues', []) or [])}")
+    if not bool(exported_text_integrity.get("ok")):
+        failures.append(f"exported text integrity issues: {len(exported_text_integrity.get('issues', []) or [])}")
     if not bool(protection_scope_audit.get("ok")):
         failures.append(f"protection scope audit issues: {len(protection_scope_audit.get('issues', []) or [])}")
     if not bool(body_map_scope_contract.get("ok")):
@@ -875,8 +1061,8 @@ def run_regression(
         if strict_sample_scope and scope_payload.get("postAcknowledgementBoundaryIndex") is None:
             failures.append("scope diagnostics missing post-acknowledgement boundary")
     if not bool(auto_numbered_rerun.get("ok", True)):
-        failures.extend(f"auto-numbered detection rerun: {failure}" for failure in auto_numbered_rerun.get("failures", []) or [])
-    for sample_key in ("guardIssueSamples", "auditIssueSamples", "preflightIssueSamples"):
+        failures.extend(f"auto-numbered targeted rerun: {failure}" for failure in auto_numbered_rerun.get("failures", []) or [])
+    for sample_key in ("guardIssueSamples", "auditIssueSamples", "ooxmlAuditIssueSamples", "preflightIssueSamples"):
         if sample_key not in export_result:
             failures.append(f"missing export issue sample field: {sample_key}")
         elif not isinstance(export_result.get(sample_key), list):
@@ -923,20 +1109,30 @@ def run_regression(
         "exportIssueSamples": {
             "guard": len(export_result.get("guardIssueSamples", []) or []),
             "audit": len(export_result.get("auditIssueSamples", []) or []),
+            "ooxmlAudit": len(export_result.get("ooxmlAuditIssueSamples", []) or []),
             "preflight": len(export_result.get("preflightIssueSamples", []) or []),
         },
         "formatAudit": format_audit,
+        "exportedTextIntegrity": exported_text_integrity,
         "protectionScopeAudit": protection_scope_audit,
         "bodyMapScopeContract": body_map_scope_contract,
         "englishRunSpacing": english_run_spacing,
+        "sentenceSurfaceIntegrity": sentence_surface_integrity,
+        "acknowledgementBoundary": acknowledgement_boundary,
         "compareFallbackSpacing": compare_fallback_spacing,
         "comparePayloadIntegrity": compare_payload_integrity,
+        "exportTextIntegrityBlock": export_text_integrity_block,
         "autoNumberedRerun": auto_numbered_rerun,
         "audit": {
             "ok": bool(audit_report.get("ok")),
             "issueCount": int(audit_report.get("issueCount", 0) or 0),
             "protectedChecked": int(audit_report.get("protectedChecked", 0) or 0),
             "tableIssueCount": len(audit_report.get("tableStructureIssues", []) or []),
+        },
+        "ooxmlAudit": {
+            "ok": bool(ooxml_audit_report.get("ok")),
+            "issueCount": int(ooxml_audit_report.get("issueCount", 0) or 0),
+            "path": str(export_result.get("ooxmlAuditPath", "")),
         },
         "preflight": {
             "issueCount": int(export_result.get("preflightIssueCount", 0) or 0),

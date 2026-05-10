@@ -1,15 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Download, FileOutput, RotateCcw, SplitSquareHorizontal } from "lucide-react";
+import { AlertCircle, Download, FileOutput, RotateCcw, SplitSquareHorizontal } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import type { CustomReviewDecision, DetectionReportMatch, ExportResult, OutputPreview, ReviewDecision, RoundCompareData, RoundResult } from "@/types/app";
+import type { CustomReviewDecision, ExportFailureDetails, ExportIssueSample, ExportResult, OutputPreview, ReviewDecision, RoundCompareData, RoundResult } from "@/types/app";
 
 const T = {
   noResult: "还没有结果",
@@ -73,9 +75,9 @@ type Props = {
   preview: OutputPreview | null;
   compareData: RoundCompareData | null;
   exportResult: ExportResult | null;
+  exportFailure?: ExportFailureDetails | null;
   busy: boolean;
   rerunFailures?: RerunFailure[];
-  detectionMatchesByChunk?: Record<string, DetectionReportMatch[]>;
   diffFocusRequest?: DiffFocusRequest | null;
   reviewDecisions: Record<string, ReviewDecision>;
   onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void;
@@ -90,7 +92,7 @@ type Props = {
   checkpointPending?: boolean;
 };
 
-export function ResultCard({ result, compareData, busy, reviewDecisions, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportTxt, onExportDocx, roundRunning = false, checkpointPending = false }: Props) {
+export function ResultCard({ result, compareData, exportResult, exportFailure = null, busy, reviewDecisions, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportTxt, onExportDocx, roundRunning = false, checkpointPending = false }: Props) {
   const hasOutput = Boolean(result || compareData?.chunks.length);
   const outputReady = Boolean((result?.outputPath || compareData?.outputPath) && !checkpointPending);
   const hasRerunnableReviewChunks = Boolean(compareData?.chunks.some((chunk) => {
@@ -137,6 +139,8 @@ export function ResultCard({ result, compareData, busy, reviewDecisions, onRerun
                 {T.rerunRisky}
               </Button>
             </div>
+            <ExportHealthPanel exportResult={exportResult} />
+            <ExportFailurePanel value={exportFailure} />
 
             {!result ? <LiveHint running={roundRunning} /> : null}
           </>
@@ -155,7 +159,188 @@ export function ResultCard({ result, compareData, busy, reviewDecisions, onRerun
   );
 }
 
-export function DiffReviewCard({ result, compareData, busy, rerunFailures = [], detectionMatchesByChunk = {}, diffFocusRequest = null, reviewDecisions, onReviewDecisionChange, onRerunChunk, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun }: Pick<Props, "result" | "compareData" | "busy" | "rerunFailures" | "detectionMatchesByChunk" | "diffFocusRequest" | "reviewDecisions" | "onReviewDecisionChange" | "onRerunChunk" | "onRerunRiskyChunks" | "batchRerunRunning" | "batchRerunStatusText" | "onCancelBatchRerun">) {
+type ExportHealthBadgeVariant = "default" | "secondary" | "outline" | "success" | "warning" | "danger";
+type ExportHealthSection = {
+  label: string;
+  value: string;
+  variant: ExportHealthBadgeVariant;
+  path?: string;
+  samples: string[];
+  emptyText: string;
+};
+
+function ExportHealthPanel({ exportResult }: { exportResult: ExportResult | null }) {
+  const hasDocxExport = exportResult?.format === "docx" && Boolean(exportResult.path);
+  if (!hasDocxExport) return null;
+  const guardIssueCount = Number(exportResult?.guardIssueCount ?? 0) || 0;
+  const guardWarningCount = Number(exportResult?.guardWarningCount ?? 0) || 0;
+  const auditIssueCount = Number(exportResult?.auditIssueCount ?? 0) || 0;
+  const preflightIssueCount = Number(exportResult?.preflightIssueCount ?? 0) || 0;
+  const preflightWarningCount = Number(exportResult?.preflightWarningCount ?? 0) || 0;
+  const preflightBlockingCount = Math.max(0, preflightIssueCount - preflightWarningCount);
+  const ooxmlAuditIssueCount = Number(exportResult?.ooxmlAuditIssueCount ?? 0) || 0;
+  const blockingIssueCount = guardIssueCount + auditIssueCount + preflightBlockingCount + ooxmlAuditIssueCount;
+  const warningCount = guardWarningCount + preflightWarningCount;
+  const statusLabel = blockingIssueCount > 0 ? "需确认" : warningCount > 0 ? "有提示" : "结构通过";
+  const statusVariant: ExportHealthBadgeVariant = blockingIssueCount > 0 ? "danger" : warningCount > 0 ? "warning" : "secondary";
+  const sections: ExportHealthSection[] = [
+    buildExportHealthSection("保护", guardIssueCount, guardWarningCount, exportResult?.guardPath, exportResult?.guardIssueSamples),
+    buildExportHealthSection("审计", auditIssueCount, 0, exportResult?.auditPath, exportResult?.auditIssueSamples),
+    buildExportHealthSection("预检", preflightBlockingCount, preflightWarningCount, exportResult?.preflightPath, exportResult?.preflightIssueSamples),
+    buildExportHealthSection("结构", ooxmlAuditIssueCount, 0, exportResult?.ooxmlAuditPath, exportResult?.ooxmlAuditIssueSamples),
+  ];
+  return (
+    <Alert className="shrink-0" variant={blockingIssueCount > 0 ? "destructive" : "default"}>
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <AlertTitle>导出健康</AlertTitle>
+            <Badge variant={statusVariant}>{statusLabel}</Badge>
+          </div>
+          <AlertDescription className="mt-2 flex flex-wrap gap-2 text-xs">
+            {sections.map((item) => (
+              <span key={item.label} className="inline-flex items-center gap-1">
+                <span className="text-muted-foreground">{item.label}</span>
+                <Badge variant={item.variant}>{item.value}</Badge>
+              </span>
+            ))}
+          </AlertDescription>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <ExportHealthDetailsDialog sections={sections} statusLabel={statusLabel} statusVariant={statusVariant} />
+        </div>
+      </div>
+    </Alert>
+  );
+}
+
+function ExportHealthDetailsDialog({ sections, statusLabel, statusVariant }: { sections: ExportHealthSection[]; statusLabel: string; statusVariant: ExportHealthBadgeVariant }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline">详情</Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[min(86vh,42rem)] overflow-hidden sm:max-w-2xl">
+        <DialogHeader>
+          <div className="flex flex-wrap items-center gap-2">
+            <DialogTitle>导出健康详情</DialogTitle>
+            <Badge variant={statusVariant}>{statusLabel}</Badge>
+          </div>
+          <DialogDescription>保护、审计、预检、结构</DialogDescription>
+        </DialogHeader>
+        <ScrollArea className="max-h-[min(64vh,30rem)] pr-3">
+          <div className="flex flex-col gap-3">
+            {sections.map((section) => (
+              <div key={section.label} className="rounded-md border border-border bg-card p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-medium">{section.label}</div>
+                  <Badge variant={section.variant}>{section.value}</Badge>
+                </div>
+                {section.samples.length ? (
+                  <div className="mt-3 flex flex-col gap-2 text-xs text-muted-foreground">
+                    {section.samples.map((sample, index) => (
+                      <div key={`${section.label}-${index}`} className="break-words rounded-md bg-muted px-2 py-1.5">
+                        {sample}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-3 text-xs text-muted-foreground">{section.emptyText}</div>
+                )}
+                {section.path ? <div className="mt-2 break-all text-xs text-muted-foreground">{section.path}</div> : null}
+              </div>
+            ))}
+          </div>
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ExportFailurePanel({ value }: { value: ExportFailureDetails | null }) {
+  if (!value) return null;
+  const issueCount = Number(value.issueCount ?? 0) || 0;
+  const warningCount = Number(value.warningCount ?? 0) || 0;
+  const samples = (value.samples ?? []).map(formatExportIssueSample).filter(Boolean).slice(0, 3);
+  const label = value.label || "导出检查";
+  return (
+    <Alert variant="destructive" className="shrink-0">
+      <AlertCircle />
+      <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <AlertTitle>导出拦截</AlertTitle>
+            <Badge variant="danger">{label}</Badge>
+            {issueCount || warningCount ? <Badge variant="outline">{formatExportIssueCount(issueCount, warningCount)}</Badge> : null}
+          </div>
+          <AlertDescription className="mt-2 flex flex-col gap-1 text-xs">
+            <span className="break-words">{samples[0] || value.message}</span>
+            {value.reportPath ? <span className="break-all text-muted-foreground">{value.reportPath}</span> : null}
+          </AlertDescription>
+        </div>
+        <ExportFailureDetailsDialog value={value} samples={samples} />
+      </div>
+    </Alert>
+  );
+}
+
+function ExportFailureDetailsDialog({ value, samples }: { value: ExportFailureDetails; samples: string[] }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline">详情</Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[min(86vh,36rem)] overflow-hidden sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>导出拦截详情</DialogTitle>
+          <DialogDescription>{value.label || "导出检查"}</DialogDescription>
+        </DialogHeader>
+        <ScrollArea className="max-h-[min(58vh,24rem)] pr-3">
+          <div className="flex flex-col gap-3 text-sm">
+            <div className="break-words text-muted-foreground">{value.message}</div>
+            {samples.length ? (
+              <div className="flex flex-col gap-2">
+                {samples.map((sample, index) => (
+                  <div key={index} className="break-words rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+                    {sample}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {value.reportPath ? <div className="break-all text-xs text-muted-foreground">{value.reportPath}</div> : null}
+          </div>
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function buildExportHealthSection(label: string, issueCount: number, warningCount: number, path: string | undefined, samples: ExportIssueSample[] | undefined): ExportHealthSection {
+  return {
+    label,
+    value: formatExportIssueCount(issueCount, warningCount),
+    variant: getExportIssueVariant(issueCount, warningCount),
+    path,
+    samples: (samples ?? []).map(formatExportIssueSample).filter(Boolean).slice(0, 3),
+    emptyText: "暂无问题",
+  };
+}
+
+function formatExportIssueSample(sample: ExportIssueSample): string {
+  return [sample.code, sample.message, sample.location, sample.sample].filter(Boolean).join(" · ");
+}
+
+function getExportIssueVariant(issueCount: number, warningCount: number): ExportHealthBadgeVariant {
+  if (issueCount > 0) return "danger";
+  return warningCount > 0 ? "warning" : "secondary";
+}
+
+function formatExportIssueCount(issueCount: number, warningCount: number): string {
+  if (issueCount > 0) return `${issueCount} 项`;
+  return warningCount > 0 ? `${warningCount} 条提示` : "通过";
+}
+
+export function DiffReviewCard({ result, compareData, busy, rerunFailures = [], diffFocusRequest = null, reviewDecisions, onReviewDecisionChange, onRerunChunk, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun }: Pick<Props, "result" | "compareData" | "busy" | "rerunFailures" | "diffFocusRequest" | "reviewDecisions" | "onReviewDecisionChange" | "onRerunChunk" | "onRerunRiskyChunks" | "batchRerunRunning" | "batchRerunStatusText" | "onCancelBatchRerun">) {
   return (
     <Card className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden border-border bg-card shadow-sm">
       <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 pb-4 pt-3">
@@ -172,13 +357,13 @@ export function DiffReviewCard({ result, compareData, busy, rerunFailures = [], 
             </div>
           </Alert>
         ) : null}
-        <RewriteDiffPanel data={compareData} busy={busy} rerunFailures={rerunFailures} detectionMatchesByChunk={detectionMatchesByChunk} diffFocusRequest={diffFocusRequest} reviewDecisions={reviewDecisions} onReviewDecisionChange={onReviewDecisionChange} onRerunChunk={onRerunChunk} />
+        <RewriteDiffPanel data={compareData} busy={busy} rerunFailures={rerunFailures} diffFocusRequest={diffFocusRequest} reviewDecisions={reviewDecisions} onReviewDecisionChange={onReviewDecisionChange} onRerunChunk={onRerunChunk} />
       </CardContent>
     </Card>
   );
 }
 
-function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, diffFocusRequest, reviewDecisions, onReviewDecisionChange, onRerunChunk }: { data: RoundCompareData | null; busy: boolean; rerunFailures: RerunFailure[]; detectionMatchesByChunk: Record<string, DetectionReportMatch[]>; diffFocusRequest: DiffFocusRequest | null; reviewDecisions: Record<string, ReviewDecision>; onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void; onRerunChunk: (chunkId: string, userFeedback?: string) => void }) {
+function RewriteDiffPanel({ data, busy, rerunFailures, diffFocusRequest, reviewDecisions, onReviewDecisionChange, onRerunChunk }: { data: RoundCompareData | null; busy: boolean; rerunFailures: RerunFailure[]; diffFocusRequest: DiffFocusRequest | null; reviewDecisions: Record<string, ReviewDecision>; onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void; onRerunChunk: (chunkId: string, userFeedback?: string) => void }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chunkRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const restoredKeyRef = useRef("");
@@ -203,7 +388,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   const citationRiskChunkIds = allChunks.filter((chunk) => hasChunkCitationRisk(chunk)).map((chunk) => chunk.chunkId);
   const citationRiskChunkIdSet = new Set(citationRiskChunkIds);
   const reviewChunkIds = allChunks
-    .filter((chunk) => !failedChunkIdSet.has(chunk.chunkId) && !highRiskChunkIdSet.has(chunk.chunkId) && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? getDefaultReviewDecisionForChunk(chunk)) && isReviewChunk(chunk, detectionMatchesByChunk[chunk.chunkId] ?? []))
+    .filter((chunk) => !failedChunkIdSet.has(chunk.chunkId) && !highRiskChunkIdSet.has(chunk.chunkId) && !isReviewDecisionConfirmed(reviewDecisions[chunk.chunkId] ?? getDefaultReviewDecisionForChunk(chunk)) && isReviewChunk(chunk))
     .map((chunk) => chunk.chunkId);
   const reviewChunkIdSet = new Set(reviewChunkIds);
   const shownChunks = filterMode === "failed"
@@ -365,25 +550,12 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
       >
         <div className="grid gap-4">
           {shownChunks.length ? shownChunks.map((chunk) => {
-            const detectionMatches = detectionMatchesByChunk[chunk.chunkId] ?? [];
             const rerunFailure = rerunFailureByChunk.get(chunk.chunkId);
             const needsReview = reviewChunkIdSet.has(chunk.chunkId);
             const hasChangedText = changedChunkIdSet.has(chunk.chunkId);
             const hasNumberRisk = numberRiskChunkIdSet.has(chunk.chunkId);
             const hasCitationRisk = citationRiskChunkIdSet.has(chunk.chunkId);
             const hasHighRiskFailedOutput = highRiskChunkIdSet.has(chunk.chunkId);
-            const strongMatches = detectionMatches.filter((match) => match.confidence === "strong");
-            const reviewMatches = detectionMatches.filter((match) => match.confidence === "review");
-            const matchTone = strongMatches.length ? "strong" : reviewMatches.length ? "review" : "weak";
-            const matchTitle = matchTone === "strong" ? "外部报告强命中" : matchTone === "review" ? "外部报告疑似命中" : "外部报告仅参考";
-            const matchClassName = matchTone === "strong"
-              ? "border-destructive/30 bg-destructive/5 text-destructive"
-              : matchTone === "review"
-                ? "border-primary/20 bg-muted/60 text-foreground"
-                : "border-border bg-muted/50 text-muted-foreground";
-            const reviewReasonHints = detectionMatches
-              .filter((match) => match.confidence === "strong" || match.confidence === "review")
-              .map((match) => match.reason || `${match.label} ${match.segment.probability}%`);
             const decision = reviewDecisions[chunk.chunkId] ?? getDefaultReviewDecisionForChunk(chunk);
             const displayOutput = getDecisionDisplayOutput(chunk, decision);
             return (
@@ -412,22 +584,6 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                     </AlertDescription>
                   </Alert>
                 ) : null}
-                {detectionMatches.length ? (
-                  <div className={`xl:col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-xs ${matchClassName}`}>
-                    <span className="font-semibold">{matchTitle}</span>
-                    {detectionMatches.slice(0, 3).map((match) => (
-                      <Badge key={`${match.segment.index}-${match.confidence}`} variant={match.confidence === "strong" ? "success" : match.confidence === "review" ? "warning" : "outline"}>
-                        #{match.segment.index} {match.segment.probability}% · {match.label} {Math.round(match.score * 100)}%
-                      </Badge>
-                    ))}
-                    {detectionMatches[0]?.reason ? <span className="basis-full text-[11px] opacity-80">{detectionMatches[0].reason}</span> : null}
-                    {detectionMatches[0]?.evidence.matchedFragments?.[0] ? (
-                    <span className="basis-full break-all rounded-md bg-muted px-2 py-1 text-[11px] opacity-80">
-                        命中句段：{detectionMatches[0].evidence.matchedFragments[0]}
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
                 {hasHighRiskFailedOutput ? (
                   <Alert variant="destructive" className="xl:col-span-2 py-3 text-xs leading-5">
                     <AlertTitle>{T.highRiskRewrite}</AlertTitle>
@@ -446,7 +602,7 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
                 <TextPane title={T.source} text={chunk.inputText} />
                 <TextPane title={displayOutput.title} text={displayOutput.text} tone={displayOutput.tone} />
                 <div className="xl:col-span-2 min-w-0">
-                  <ChunkQualityBar chunk={chunk} busy={busy} decision={decision} forceNeedsReview={needsReview} reviewReasonHints={reviewReasonHints} onDecisionChange={(decision) => onReviewDecisionChange(chunk.chunkId, decision)} onRerun={(userFeedback) => onRerunChunk(chunk.chunkId, userFeedback)} />
+                  <ChunkQualityBar chunk={chunk} busy={busy} decision={decision} forceNeedsReview={needsReview} onDecisionChange={(decision) => onReviewDecisionChange(chunk.chunkId, decision)} onRerun={(userFeedback) => onRerunChunk(chunk.chunkId, userFeedback)} />
                 </div>
               </div>
             );
@@ -467,11 +623,8 @@ function RewriteDiffPanel({ data, busy, rerunFailures, detectionMatchesByChunk, 
   );
 }
 
-function isReviewChunk(chunk: RoundCompareData["chunks"][number], detectionMatches: DetectionReportMatch[]): boolean {
-  const flags = chunk.quality?.flags ?? [];
-  const hasLocalReview = Boolean(chunk.quality?.needsReview) || isHardValidationFallbackChunk(chunk);
-  const hasReportReview = detectionMatches.some((match) => match.confidence === "strong" || match.confidence === "review");
-  return hasLocalReview || hasReportReview;
+function isReviewChunk(chunk: RoundCompareData["chunks"][number]): boolean {
+  return Boolean(chunk.quality?.needsReview) || isHardValidationFallbackChunk(chunk);
 }
 
 function getDiffFilterEmptyState(mode: DiffFilterMode): { title: string } {

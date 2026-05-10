@@ -996,6 +996,16 @@ export type ExportIssueSample = {
   sample?: string;
 };
 
+export type ExportFailureDetails = {
+  stage?: string;
+  label?: string;
+  message: string;
+  reportPath?: string;
+  issueCount?: number;
+  warningCount?: number;
+  samples?: ExportIssueSample[];
+};
+
 export type ExportResult = {
   format: "txt" | "docx";
   path: string;
@@ -1009,12 +1019,17 @@ export type ExportResult = {
   validationPath?: string;
   auditPath?: string;
   auditIssueCount?: number;
+  ooxmlAuditPath?: string;
+  ooxmlAuditIssueCount?: number;
   preflightPath?: string;
   preflightIssueCount?: number;
+  preflightWarningCount?: number;
   guardPath?: string;
   guardIssueCount?: number;
+  guardWarningCount?: number;
   guardIssueSamples?: ExportIssueSample[];
   auditIssueSamples?: ExportIssueSample[];
+  ooxmlAuditIssueSamples?: ExportIssueSample[];
   preflightIssueSamples?: ExportIssueSample[];
 };
 
@@ -1055,73 +1070,4 @@ export type OutputPreview = {
   truncated: boolean;
   totalChars: number;
   previewChars: number;
-};
-
-export type DetectionRiskBucket = {
-  words: number;
-  percentage: number;
-};
-
-export type DetectionReportProvider = "speedai" | "paperpass";
-
-export type DetectionReportSegment = {
-  index: number;
-  content: string;
-  matchText?: string;
-  probability: number;
-  riskLevel: string;
-  charCount: number;
-  page?: number;
-  markerY?: number;
-  sourceProvider?: string;
-};
-
-export type DetectionReport = {
-  provider?: string;
-  providerLabel?: string;
-  sourcePath: string;
-  pageCount: number;
-  summary: {
-    title: string;
-    author: string;
-    reportId: string;
-    checkedAt: string;
-    model: string;
-    totalWords: number | null;
-    overallRiskProbability: number | null;
-    weightedOverallRiskProbability?: number | null;
-    segmentCount?: number | null;
-    checkedScopeNotes?: string[];
-    riskBuckets: {
-      high: DetectionRiskBucket | null;
-      medium: DetectionRiskBucket | null;
-      low: DetectionRiskBucket | null;
-      none: DetectionRiskBucket | null;
-      unchecked?: DetectionRiskBucket | null;
-    };
-  };
-  segments: DetectionReportSegment[];
-};
-
-export type DetectionReportMatch = {
-  segment: DetectionReportSegment;
-  chunkId: string;
-  score: number;
-  confidence: "strong" | "review" | "weak";
-  label: string;
-  reason: string;
-  evidence: {
-    directScore: number;
-    windowScore: number;
-    directFragmentScore: number;
-    windowFragmentScore: number;
-    directWeightedAnchorScore?: number;
-    windowWeightedAnchorScore?: number;
-    weightedAnchorScore?: number;
-    weightedAnchorHitCount?: number;
-    runnerUpScore: number;
-    scoreGap: number;
-    matchedAnchors: string[];
-    matchedFragments: string[];
-  };
 };

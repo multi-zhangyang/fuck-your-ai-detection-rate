@@ -1,9 +1,6 @@
 import type {
   DeleteHistoryResult,
   DeleteHistoryOptions,
-  DetectionReport,
-  DetectionReportMatch,
-  DetectionReportProvider,
   DocumentHistory,
   DocumentProtectionMap,
   DocumentScopeDiagnostics,
@@ -68,8 +65,6 @@ export interface AppService {
   listModels(config: ModelConfig, signal?: AbortSignal): Promise<ModelCatalogResult>;
   testModelConnection(config: ModelConfig): Promise<TestConnectionResult>;
   pickInputFile(): Promise<PickedDocument | null>;
-  pickDetectionReport(providerHint?: DetectionReportProvider): Promise<DetectionReport | null>;
-  buildDetectionMatches(outputPath: string, report: DetectionReport): Promise<DetectionReportMatch[]>;
   getDocumentStatus(sourcePath: string, modelConfig: ModelConfig): Promise<DocumentStatus>;
   getDocumentHistory(sourcePath: string): Promise<DocumentHistory>;
   getDocumentProtectionMap(sourcePath: string): Promise<DocumentProtectionMap>;

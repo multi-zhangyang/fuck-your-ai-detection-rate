@@ -2,9 +2,6 @@ import type { AppService, PickedDocument } from "./appService";
 import type {
   DeleteHistoryResult,
   DeleteHistoryOptions,
-  DetectionReport,
-  DetectionReportMatch,
-  DetectionReportProvider,
   DocumentHistory,
   DocumentProtectionMap,
   DocumentScopeDiagnostics,
@@ -606,14 +603,22 @@ async function exportResponseToResult(response: Response, targetFormat: "txt" | 
   const auditPath = decodeHeaderValue(response.headers.get("X-Export-Audit-Path"));
   const auditIssueCountHeader = response.headers.get("X-Export-Audit-Issue-Count") || "0";
   const auditIssueCount = Number(auditIssueCountHeader) || 0;
+  const ooxmlAuditPath = decodeHeaderValue(response.headers.get("X-Export-Ooxml-Audit-Path"));
+  const ooxmlAuditIssueCountHeader = response.headers.get("X-Export-Ooxml-Audit-Issue-Count") || "0";
+  const ooxmlAuditIssueCount = Number(ooxmlAuditIssueCountHeader) || 0;
   const preflightPath = decodeHeaderValue(response.headers.get("X-Export-Preflight-Path"));
   const preflightIssueCountHeader = response.headers.get("X-Export-Preflight-Issue-Count") || "0";
   const preflightIssueCount = Number(preflightIssueCountHeader) || 0;
+  const preflightWarningCountHeader = response.headers.get("X-Export-Preflight-Warning-Count") || "0";
+  const preflightWarningCount = Number(preflightWarningCountHeader) || 0;
   const guardPath = decodeHeaderValue(response.headers.get("X-Export-Guard-Path"));
   const guardIssueCountHeader = response.headers.get("X-Export-Guard-Issue-Count") || "0";
   const guardIssueCount = Number(guardIssueCountHeader) || 0;
+  const guardWarningCountHeader = response.headers.get("X-Export-Guard-Warning-Count") || "0";
+  const guardWarningCount = Number(guardWarningCountHeader) || 0;
   const guardIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Guard-Issue-Samples"));
   const auditIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Audit-Issue-Samples"));
+  const ooxmlAuditIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Ooxml-Audit-Issue-Samples"));
   const preflightIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Preflight-Issue-Samples"));
   downloadBlob(blob, filename);
   return {
@@ -629,12 +634,17 @@ async function exportResponseToResult(response: Response, targetFormat: "txt" | 
     validationPath,
     auditPath,
     auditIssueCount,
+    ooxmlAuditPath,
+    ooxmlAuditIssueCount,
     preflightPath,
     preflightIssueCount,
+    preflightWarningCount,
     guardPath,
     guardIssueCount,
+    guardWarningCount,
     guardIssueSamples,
     auditIssueSamples,
+    ooxmlAuditIssueSamples,
     preflightIssueSamples,
   };
 }
@@ -928,30 +938,6 @@ export const webService: AppService = {
     return requestJson<DocumentStatus>(
       `/api/document-status?sourcePath=${encodeURIComponent(sourcePath)}&promptProfile=${encodeURIComponent(modelConfig.promptProfile)}${promptSequenceQuery}`,
     );
-  },
-
-  async pickDetectionReport(providerHint?: DetectionReportProvider): Promise<DetectionReport | null> {
-    const file = await pickSingleFile(".pdf,application/pdf");
-    if (!file) {
-      return null;
-    }
-    assertFileSize(file, "Detection report");
-    return requestJson<DetectionReport>("/api/detection-report", {
-      method: "POST",
-      body: JSON.stringify({
-        filename: file.name,
-        contentBase64: await readFileAsBase64(file),
-        providerHint,
-      }),
-    });
-  },
-
-  async buildDetectionMatches(outputPath: string, report: DetectionReport): Promise<DetectionReportMatch[]> {
-    const payload = await requestJson<{ matches: DetectionReportMatch[] }>("/api/detection-matches", {
-      method: "POST",
-      body: JSON.stringify({ outputPath, report }),
-    });
-    return payload.matches ?? [];
   },
 
   async getDocumentHistory(sourcePath: string): Promise<DocumentHistory> {

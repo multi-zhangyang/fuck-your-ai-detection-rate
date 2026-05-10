@@ -73,8 +73,6 @@ def build_commands(
 ) -> list[dict[str, Any]]:
     commands: list[dict[str, Any]] = [
         {"name": "format rules regression", "command": [sys.executable, "scripts/format_rules_regression.py"]},
-        {"name": "detection report parser regression", "command": [sys.executable, "scripts/detection_report_regression.py", *(("--strict-missing",) if strict_samples else ())]},
-        {"name": "detection matching regression", "command": ["node", "scripts/detection_matching_regression.mjs"]},
         {"name": "batch rerun task regression", "command": [sys.executable, "scripts/batch_rerun_task_regression.py"]},
         {"name": "frontend batch rerun regression", "command": ["node", "scripts/frontend_batch_rerun_regression.mjs"]},
         {"name": "frontend state machine regression", "command": ["node", "scripts/frontend_state_machine_regression.mjs"]},

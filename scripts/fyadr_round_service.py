@@ -151,6 +151,30 @@ GENERIC_CLOSING_RE = re.compile(
     r"(综上所述|总而言之|总的来说|由此可见|整体来看|in conclusion|to sum up|overall|it can be seen that)",
     re.IGNORECASE,
 )
+SENTENCE_TERMINAL_RE = re.compile(r"[。！？!?；;.][\"'”’）)\]】》]*$")
+WEAK_TRAILING_PUNCT_RE = re.compile(r"[，,、：:（(【\[][\"'”’）)\]】》]*$")
+REPEATED_PUNCT_RE = re.compile(r"([，,。！？!?；;：:、])\1+")
+MIXED_BAD_PUNCT_RE = re.compile(r"(?:[，,][。.!?]|[。.!?][，,])")
+CN_TRAILING_FRAGMENT_RE = re.compile(
+    r"(?:的|和|与|及|以及|并|但|而|或|在|对|把|被|将|为|以|从|向|通过|由于|因为|因此|同时|其中|例如|包括|并且|从而|为了)$"
+)
+EN_TRAILING_FRAGMENT_RE = re.compile(
+    r"\b(?:and|or|the|a|an|of|to|with|by|from|as|is|are|was|were|that|which|while|because|therefore|including|using|employing|in|on|at|for)$",
+    re.IGNORECASE,
+)
+ANSWER_WRAPPER_RE = re.compile(
+    r"^(?:以下|下面|当然|好的|已根据|根据你的要求|here\s+(?:is|are)|the\s+rewritten|rewritten\s+text|revised\s+text).{0,80}[:：]",
+    re.IGNORECASE,
+)
+BALANCED_SURFACE_PAIRS = (
+    ("（", "）"),
+    ("(", ")"),
+    ("【", "】"),
+    ("[", "]"),
+    ("《", "》"),
+    ("“", "”"),
+    ("‘", "’"),
+)
 class ProtectedText(NamedTuple):
     text: str
     tokens: dict[str, str]
@@ -1121,6 +1145,76 @@ def _validate_length_stability(input_text: str, output_text: str, chunk_id: str)
         raise ValueError(f"Chunk {chunk_id} expanded abnormally; possible answer-style drift")
 
 
+def _has_sentence_terminal(text: str) -> bool:
+    return bool(SENTENCE_TERMINAL_RE.search(str(text or "").strip()))
+
+
+def _surface_pair_delta(text: str, left: str, right: str) -> int:
+    return str(text or "").count(left) - str(text or "").count(right)
+
+
+def find_sentence_surface_issues(input_text: str, output_text: str, *, limit: int = 8) -> list[dict[str, object]]:
+    source = str(input_text or "").strip()
+    current = str(output_text or "").strip()
+    issues: list[dict[str, object]] = []
+    if not current:
+        return [{"code": "empty_output", "message": "Output is empty."}]
+
+    def add(code: str, message: str, **extra: object) -> None:
+        if len(issues) < limit:
+            payload: dict[str, object] = {"code": code, "message": message}
+            payload.update(extra)
+            issues.append(payload)
+
+    wrapper_match = is_disallowed_answer_style_output(source, current)
+    if wrapper_match:
+        add("answer_style_wrapper", "Output contains chat-style or answer-style wrapper text.", pattern=wrapper_match)
+    elif ANSWER_WRAPPER_RE.search(current) and not ANSWER_WRAPPER_RE.search(source):
+        add("answer_style_wrapper", "Output starts with an answer-style wrapper instead of body text.")
+
+    if len(current) >= 12:
+        repeated = sorted(set(match.group(0) for match in REPEATED_PUNCT_RE.finditer(current)))
+        introduced_repeated = [item for item in repeated if item not in source]
+        if introduced_repeated:
+            add("repeated_punctuation", "Output introduced abnormal repeated punctuation.", samples=introduced_repeated[:5])
+        bad_punct = sorted(set(match.group(0) for match in MIXED_BAD_PUNCT_RE.finditer(current)))
+        introduced_bad_punct = [item for item in bad_punct if item not in source]
+        if introduced_bad_punct:
+            add("mixed_bad_punctuation", "Output contains malformed adjacent punctuation.", samples=introduced_bad_punct[:5])
+
+    for left, right in BALANCED_SURFACE_PAIRS:
+        source_delta = _surface_pair_delta(source, left, right)
+        current_delta = _surface_pair_delta(current, left, right)
+        if current_delta != source_delta and source_delta == 0:
+            add(
+                "unbalanced_punctuation_pair",
+                "Output introduced unbalanced brackets or quotation marks.",
+                pair=f"{left}{right}",
+                delta=current_delta,
+            )
+
+    if len(source) >= 20 and len(current) >= 12:
+        if _has_sentence_terminal(source) and not _has_sentence_terminal(current):
+            add("missing_sentence_terminal", "Output appears to end before a complete sentence terminator.")
+        if WEAK_TRAILING_PUNCT_RE.search(current) and not WEAK_TRAILING_PUNCT_RE.search(source):
+            add("trailing_weak_punctuation", "Output ends with weak punctuation and looks incomplete.")
+        compact_current = current.rstrip("\"'”’）)]】》").strip()
+        if CN_TRAILING_FRAGMENT_RE.search(compact_current) and not CN_TRAILING_FRAGMENT_RE.search(source.rstrip("\"'”’）)]】》").strip()):
+            add("trailing_sentence_fragment", "Output ends with a dangling Chinese connector or function word.")
+        if detect_chunk_language(source) == "en" and EN_TRAILING_FRAGMENT_RE.search(compact_current):
+            add("trailing_sentence_fragment", "English output ends with a dangling function word.")
+
+    return issues
+
+
+def _validate_sentence_surface_integrity(input_text: str, output_text: str, chunk_id: str) -> None:
+    issues = find_sentence_surface_issues(input_text, output_text, limit=3)
+    if not issues:
+        return
+    summary = "; ".join(str(issue.get("code", "")) for issue in issues if issue.get("code"))
+    raise ValueError(f"Chunk {chunk_id} has incomplete or malformed sentence surface: {summary}")
+
+
 def _find_introduced_template_phrases(input_text: str, output_text: str) -> list[str]:
     return sorted(
         set(INTRODUCED_TEMPLATE_PHRASE_RE.findall(output_text))
@@ -1195,6 +1289,7 @@ def validate_chunk_output(input_text: str, output_text: str, chunk_id: str) -> N
     validate_factual_relation_stability(input_text, normalized_output, f"Chunk {chunk_id}")
     _validate_language_stability(input_text, normalized_output, chunk_id)
     _validate_length_stability(input_text, normalized_output, chunk_id)
+    _validate_sentence_surface_integrity(input_text, normalized_output, chunk_id)
     _validate_machine_style_stability(input_text, normalized_output, chunk_id)
 
     if len(normalized_output) > max(len(input_text) * 2, len(input_text) + 200):

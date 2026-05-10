@@ -137,7 +137,7 @@ def _chunk_text(chunk: dict[str, Any]) -> str:
     return str(chunk.get("outputText") or chunk.get("inputText") or "").strip()
 
 
-def _select_detection_smoke_target(compare_payload: dict[str, Any]) -> dict[str, Any] | None:
+def _select_targeted_rerun_smoke_target(compare_payload: dict[str, Any]) -> dict[str, Any] | None:
     chunks = compare_payload.get("chunks")
     if not isinstance(chunks, list):
         return None
@@ -148,58 +148,23 @@ def _select_detection_smoke_target(compare_payload: dict[str, Any]) -> dict[str,
     def score(chunk: dict[str, Any]) -> tuple[int, int, int]:
         text = _chunk_text(chunk)
         auto_numbered = 1 if AUTO_NUMBERED_BODY_RE.search(text) else 0
-        technical = 1 if re.search(r"(YOLO|CNN|R-CNN|mAP|IoU|LSTM|Transformer|XGBoost|LightGBM|准确率|检测|模型)", text, re.I) else 0
+        technical_terms = ("YOLO", "CNN", "R-CNN", "mAP", "IoU", "LSTM", "Transformer", "XGBoost", "LightGBM")
+        technical = 1 if any(term.lower() in text.lower() for term in technical_terms) else 0
         return (auto_numbered, technical, min(len(text), 600))
 
     return max(candidates, key=score)
 
 
-def _build_smoke_detection_report(target_chunk: dict[str, Any]) -> dict[str, Any]:
-    text = _chunk_text(target_chunk)
-    excerpt = text[:520]
-    return {
-        "provider": "paperpass",
-        "providerLabel": "PaperPass",
-        "sourcePath": "real-docx-smoke.synthetic.pdf",
-        "pageCount": 1,
-        "summary": {
-            "overallRiskProbability": 86,
-            "weightedOverallRiskProbability": 86,
-            "segmentCount": 1,
-            "checkedScopeNotes": ["Synthetic smoke segment generated from the current real DOCX compare chunk."],
-        },
-        "segments": [
-            {
-                "index": 1,
-                "content": excerpt,
-                "matchText": excerpt,
-                "probability": 86,
-                "riskLevel": "高风险",
-                "charCount": len(excerpt),
-                "sourceProvider": "paperpass",
-            }
-        ],
-    }
-
-
-def _build_smoke_detection_feedback(match: dict[str, Any]) -> str:
-    segment = match.get("segment") if isinstance(match.get("segment"), dict) else {}
-    probability = segment.get("probability", 0)
-    score = match.get("score", 0)
-    try:
-        score_value = float(score)
-    except (TypeError, ValueError):
-        score_value = 0.0
-    score_percent = round(score_value * 100 if score_value <= 1.5 else score_value)
-    excerpt = " ".join(str(segment.get("content") or segment.get("matchText") or "").split())[:420]
+def _build_smoke_rerun_feedback(target_chunk: dict[str, Any]) -> str:
+    excerpt = " ".join(_chunk_text(target_chunk).split())[:420]
     return (
-        "外部检测报告反馈：来源 PaperPass，当前 Diff 块被强命中。\n"
-        f"#{segment.get('index', 1)}，{round(float(probability or 0))}% 高风险，匹配度 {score_percent}%，摘录：{excerpt}\n"
-        "重写要求：保留原文事实、术语、数值、引用、编号和段落角色，只对报告命中的正文句式做局部改写。"
+        "TARGETED_RERUN_USER_FEEDBACK: keep the Diff review visible.\n"
+        f"Excerpt: {excerpt}\n"
+        "Preserve factual claims, numbering, citations, and English spacing."
     )
 
 
-def _run_detection_rerun_chain_smoke(report: dict[str, Any], export_path: Path) -> dict[str, Any]:
+def _run_targeted_rerun_chain_smoke(report: dict[str, Any], export_path: Path) -> dict[str, Any]:
     failures: list[str] = []
     output_path = Path(str(report.get("outputPath", "")))
     compare_path = Path(str((report.get("round") or {}).get("comparePath", "")))
@@ -210,20 +175,11 @@ def _run_detection_rerun_chain_smoke(report: dict[str, Any], export_path: Path) 
     if not compare_payload:
         return {"ok": False, "failures": [f"round compare is missing or invalid: {compare_path}"]}
 
-    target_chunk = _select_detection_smoke_target(compare_payload)
+    target_chunk = _select_targeted_rerun_smoke_target(compare_payload)
     if target_chunk is None:
-        return {"ok": False, "failures": ["no suitable compare chunk for detection rerun smoke"]}
+        return {"ok": False, "failures": ["no suitable compare chunk for targeted rerun smoke"]}
     target_chunk_id = str(target_chunk.get("chunkId", ""))
-    detection_report = _build_smoke_detection_report(target_chunk)
-    matches = app_service.build_detection_matches_for_output(str(output_path), detection_report)
-    target_matches = [
-        match
-        for match in matches
-        if str(match.get("chunkId", "")) == target_chunk_id and str(match.get("confidence", "")) == "strong"
-    ]
-    if not target_matches:
-        failures.append(f"synthetic detection report did not strongly match target chunk: {target_chunk_id}")
-    best_match = target_matches[0] if target_matches else (matches[0] if matches else {"segment": detection_report["segments"][0], "score": 0})
+    user_feedback = _build_smoke_rerun_feedback(target_chunk)
 
     prompts: list[str] = []
     original_builder = app_service._build_transform_from_model_config
@@ -240,20 +196,21 @@ def _run_detection_rerun_chain_smoke(report: dict[str, Any], export_path: Path) 
         rerun_result = app_service.rerun_compare_chunk(
             str(output_path),
             target_chunk_id,
-        {"baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
-            _build_smoke_detection_feedback(best_match),
+            {"baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
+            user_feedback,
         )
     finally:
         app_service._build_transform_from_model_config = original_builder
 
     rerun_chunk = rerun_result.get("chunk") if isinstance(rerun_result, dict) else {}
-    detector_profile = rerun_chunk.get("rerunDetectorProfile") if isinstance(rerun_chunk, dict) else None
-    if not prompts or "[DETECTOR MICRO-REPAIR MODE]" not in prompts[0]:
-        failures.append("targeted rerun prompt did not enter detector micro-repair mode")
-    if not isinstance(detector_profile, dict) or int(detector_profile.get("segmentCount", 0) or 0) < 1:
-        failures.append("targeted rerun did not persist a detector profile")
+    if not prompts or "TARGETED_RERUN_USER_FEEDBACK" not in prompts[0]:
+        failures.append("targeted rerun prompt did not include user feedback")
+    if prompts and "[DETECTOR MICRO-REPAIR MODE]" in prompts[0]:
+        failures.append("targeted rerun should not enter removed detection-report mode")
     if isinstance(rerun_chunk, dict) and ("rerunCandidateCount" in rerun_chunk or "rerunSelectedCandidate" in rerun_chunk):
-        failures.append("targeted detector rerun should not emit legacy candidate metadata")
+        failures.append("targeted rerun should not emit legacy candidate metadata")
+    if isinstance(rerun_chunk, dict) and "rerunDetectorProfile" in rerun_chunk:
+        failures.append("targeted rerun should not persist removed detection-report metadata")
 
     post_rerun_export_path = export_path.with_name(f"{export_path.stem}_post_rerun{export_path.suffix}")
     post_export_result = app_service.export_round_output(str(output_path), str(post_rerun_export_path), "docx")
@@ -269,11 +226,7 @@ def _run_detection_rerun_chain_smoke(report: dict[str, Any], export_path: Path) 
         "targetChunkId": target_chunk_id,
         "targetPreview": _chunk_text(target_chunk)[:180],
         "targetWasAutoNumberedBody": bool(AUTO_NUMBERED_BODY_RE.search(_chunk_text(target_chunk))),
-        "matchCount": len(matches),
-        "strongTargetMatchCount": len(target_matches),
-        "promptContainsDetectorMode": bool(prompts and "[DETECTOR MICRO-REPAIR MODE]" in prompts[0]),
-        "promptContainsAnchorCard": bool(prompts and "detector-anchor-preservation" in prompts[0]),
-        "rerunDetectorProfile": detector_profile if isinstance(detector_profile, dict) else {},
+        "promptContainsUserFeedback": bool(prompts and "TARGETED_RERUN_USER_FEEDBACK" in prompts[0]),
         "postRerunExport": post_export_result,
         "postRerunFormatAudit": post_format_audit,
     }
@@ -336,7 +289,7 @@ def run_smoke(
         smoke_failures.append("exported DOCX was not created")
     if not bool(audit.get("ok", True)):
         smoke_failures.append(f"export audit failed: {audit.get('issueCount')}")
-    chain_smoke = _run_detection_rerun_chain_smoke(report, export_path.resolve())
+    chain_smoke = _run_targeted_rerun_chain_smoke(report, export_path.resolve())
     smoke_failures.extend(str(failure) for failure in chain_smoke.get("failures", []) or [])
     report["ok"] = not smoke_failures
     report["baseFailures"] = original_failures

@@ -246,7 +246,7 @@ def main() -> int:
     targeted_compare_path = get_round_compare_path(targeted_output_path)
     previous_output = source_text.replace("changing only sentence rhythm", "making only local wording repairs")
     untouched_source = (
-        "The second paragraph already passed review and stays outside the selected detector match."
+        "The second paragraph already passed review and stays outside the selected rerun target."
     )
     untouched_output = untouched_source.replace("passed review", "passed manual review")
     targeted_output_path.write_text("\n\n".join([previous_output, untouched_output]), encoding="utf-8")
@@ -305,10 +305,10 @@ def main() -> int:
             "p0_c0",
             {"baseUrl": "http://localhost", "apiKey": "x", "model": "local"},
             (
-                "外部检测报告反馈：来源 PaperPass，当前 Diff 块 p0_c0 被强命中。\n"
-                "#2，70% 高风险，匹配度 91%，摘录：Firstly, the local rewrite service keeps citations [1], "
+                "定向重跑反馈：当前 Diff 块需要局部表达优化。\n"
+                "摘录：Firstly, the local rewrite service keeps citations [1], "
                 "metric names, and API identifiers stable. In conclusion, this process has important significance.\n"
-                "重写要求：保留原文事实、术语、数值、引用、编号和段落角色，只改写报告命中的句式。"
+                "重写要求：保留原文事实、术语、数值、引用、编号和段落角色，只调整句式入口和连接方式。"
             ),
         )
     finally:
@@ -320,17 +320,11 @@ def main() -> int:
         raise AssertionError("targeted rerun prompt must not include legacy multi-output direction text")
     if "[TARGETED REPAIR DIRECTION]" not in targeted_prompts[0]:
         raise AssertionError("targeted rerun prompt should keep a single repair direction")
-    detector_prompt_markers = [
-        "[DETECTOR MICRO-REPAIR MODE]",
-        "detector-high-risk-segment",
-        "detector-anchor-preservation",
-        "detector-rhythm-repair",
-        "detector-template-repair",
-        "[1]",
-    ]
-    for marker in detector_prompt_markers:
-        if marker not in targeted_prompts[0]:
-            raise AssertionError(f"targeted detector rerun prompt should include {marker!r}")
+    if "定向重跑反馈" not in targeted_prompts[0]:
+        raise AssertionError("targeted rerun prompt should include user feedback")
+    for marker in ["[DETECTOR MICRO-REPAIR MODE]", "detector-high-risk-segment", "detector-anchor-preservation"]:
+        if marker in targeted_prompts[0]:
+            raise AssertionError(f"targeted rerun prompt must not include removed detection-report marker {marker!r}")
     chunk = targeted_result["chunk"]
     updated_compare = json.loads(targeted_compare_path.read_text(encoding="utf-8"))
     updated_chunks = updated_compare.get("chunks", [])
@@ -348,18 +342,8 @@ def main() -> int:
         raise AssertionError("targeted rerun should restore output from existing chunks without changing segmentation")
     if "rerunCandidateCount" in chunk or "rerunSelectedCandidate" in chunk:
         raise AssertionError("targeted rerun metadata should not expose legacy candidate fields")
-    detector_profile = chunk.get("rerunDetectorProfile")
-    if not isinstance(detector_profile, dict):
-        raise AssertionError("targeted detector rerun should store a parsed detector profile")
-    if detector_profile.get("segmentCount") != 1:
-        raise AssertionError(f"detector profile should record one report segment, got {detector_profile}")
-    if detector_profile.get("maxProbability") != 70 or detector_profile.get("maxMatchScore") != 91:
-        raise AssertionError(f"detector profile should keep parsed probability and match score, got {detector_profile}")
-    if "[1]" not in detector_profile.get("matchedAnchors", []):
-        raise AssertionError(f"detector profile should preserve local report anchors, got {detector_profile}")
-    for tag in ["detector-surgery", "detector-high-risk-segment", "detector-anchor-preservation"]:
-        if tag not in chunk.get("rerunStrategy", []):
-            raise AssertionError(f"targeted detector rerun should expose strategy tag {tag!r}")
+    if "rerunDetectorProfile" in chunk:
+        raise AssertionError("targeted rerun metadata should not expose removed detection-report profile")
 
     print("single output retry regression passed")
     return 0

@@ -43,7 +43,7 @@ function runRegression() {
     assertIncludes(appSource, "<ResultCard", "Home result/report summary must sit in the primary left work area.", failures);
     assertIncludes(appSource, "<DiffReviewCard", "Home page must embed the full Diff workbench in the primary work area.", failures);
     assertIncludes(appSource, "<HomeRunPanel", "Home run controls must stay in the right operation stack.", failures);
-    assertIncludes(appSource, "<DetectionReportPanel", "External report controls must stay in the right operation stack.", failures);
+    assertNotIncludes(appSource, "<DetectionReportPanel", "External detection report controls must stay removed.", failures);
     assertIncludes(appSource, "<Dialog open={Boolean(setupEditor)}", "Home setup editors must open as centered shadcn Dialogs.", failures);
     assertNotIncludes(appSource, "<Sheet open={Boolean(setupEditor)}", "Home setup editors must not reopen as right-side Sheets.", failures);
     assertNotIncludes(appSource, "onOpenDiffWorkbench", "Home must not keep a redundant open-Diff entry now that Diff is embedded.", failures);
@@ -78,7 +78,7 @@ function runRegression() {
       "home uses shadcn viewport shell",
       "top status row links into inline Diff",
       "home result and Diff stay in the left work area",
-      "run/report controls stay in the right operation stack",
+      "run controls stay in the right operation stack",
       "old right-side panel state is removed",
     ],
   };

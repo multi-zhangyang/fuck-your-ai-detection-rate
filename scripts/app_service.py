@@ -23,7 +23,6 @@ from fyadr_records import (
     preview_delete_document,
 )
 from chunking import DEFAULT_CHUNK_LIMIT, build_manifest, load_manifest, restore_text_from_chunks, split_text_to_paragraphs
-from detection_matching import build_detection_matches
 from fyadr_round_service import (
     build_global_style_profile_from_texts,
     build_language_guard,
@@ -54,13 +53,20 @@ from fyadr_round_service import (
 )
 from prompt_library import DEFAULT_PROMPT_PROFILE, LEGACY_PROMPT_PROFILE, get_prompt_id_for_round, is_prompt_sequence_customizable, prompt_sequence_match_rank
 from docx_bodymap import load_docx_body_map, save_docx_body_map, update_docx_body_map_texts
-from docx_audit import audit_docx_export, get_docx_audit_report_path
+from docx_audit import (
+    audit_docx_export,
+    audit_docx_ooxml_integrity,
+    get_docx_audit_report_path,
+    get_docx_ooxml_audit_report_path,
+)
 from docx_export_guard import (
     run_docx_pre_export_guard,
     summarize_docx_export_guard_failure,
 )
 from docx_pipeline import (
     _load_docx_snapshot,
+    _normalize_rewritten_text,
+    _resolve_target_paragraph,
     _split_text_into_blocks,
     build_docx_scope_diagnostics,
     ensure_docx_processing_assets,
@@ -71,7 +77,7 @@ from docx_pipeline import (
     write_docx_text,
 )
 from docx_protection_map import build_docx_protection_map
-from docx_template import apply_school_format_rules
+from docx_template import DocxFormatPreflightError, apply_school_format_rules
 from llm_client import LLMRequestError, list_llm_models, llm_completion, test_llm_connection
 from round_helper import build_round_context, ensure_round_input_text, get_document_round_state
 
@@ -86,8 +92,6 @@ DEFAULT_REWRITE_CONCURRENCY = 2
 MAX_REWRITE_CONCURRENCY = 16
 DEFAULT_PREVIEW_MAX_CHARS = 12000
 TARGETED_RERUN_VALIDATION_ATTEMPTS = 2
-DETECTION_FEEDBACK_MAX_SEGMENTS = 6
-DETECTION_FEEDBACK_MAX_ANCHORS = 10
 _RATE_LIMIT_STATE: dict[str, list[float]] = {}
 _RATE_LIMIT_LOCK = threading.Lock()
 _PROVIDER_GUARD_STATE: dict[str, dict[str, Any]] = {}
@@ -95,16 +99,12 @@ _PROVIDER_GUARD_LOCK = threading.Lock()
 API_READ_ALLOWED_ROOTS = tuple((ROOT_DIR / name).resolve() for name in ("finish", "origin", "prompts", "references"))
 API_OUTPUT_ALLOWED_ROOTS = ((ROOT_DIR / "finish").resolve(),)
 API_EXPORT_ALLOWED_ROOTS = ((ROOT_DIR / "finish").resolve(),)
-DETECTOR_MECHANICAL_CONNECTOR_RE = re.compile(
-    r"(首先|其次|再次|最后|此外|同时|因此|所以|综上|总之|由此可见|值得注意的是|"
-    r"\bfirstly\b|\bsecondly\b|\bfinally\b|\bin addition\b|\bfurthermore\b|\btherefore\b|\bin conclusion\b|\boverall\b)",
-    re.IGNORECASE,
-)
-DETECTOR_TEMPLATE_PHRASE_RE = re.compile(
-    r"(具有重要意义|提供了.+?支持|进一步提升|有效促进|在.+?背景下|"
-    r"\bhas important significance\b|\bprovides (?:strong|important)? support\b|\bfurther improves\b|\beffectively promotes\b)",
-    re.IGNORECASE,
-)
+
+
+class ExportRoundError(ValueError):
+    def __init__(self, message: str, export_failure: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.export_failure = export_failure
 
 
 def _is_path_under(path: Path, root: Path) -> bool:
@@ -196,6 +196,42 @@ def _collect_issue_samples(*reports: dict[str, Any] | None, keys: tuple[str, ...
                 if len(samples) >= limit:
                     return samples
     return samples
+
+
+def _build_export_failure(
+    *,
+    stage: str,
+    label: str,
+    message: str,
+    report: dict[str, Any] | None = None,
+    report_path: Any = None,
+    issue_count: int | None = None,
+    warning_count: int | None = None,
+    samples: list[dict[str, str]] | None = None,
+    sample_keys: tuple[str, ...] = ("issues",),
+) -> dict[str, Any]:
+    normalized_report = report if isinstance(report, dict) else None
+    normalized_report_path = (
+        str(report_path or "").strip()
+        or str((normalized_report or {}).get("reportPath", "") or "").strip()
+        or str((normalized_report or {}).get("path", "") or "").strip()
+    )
+    normalized_issue_count = issue_count
+    if normalized_issue_count is None and normalized_report is not None:
+        normalized_issue_count = int(normalized_report.get("blockingIssueCount", normalized_report.get("issueCount", 0)) or 0)
+    normalized_warning_count = warning_count
+    if normalized_warning_count is None and normalized_report is not None:
+        normalized_warning_count = int(normalized_report.get("warningCount", 0) or 0)
+    normalized_samples = samples if samples is not None else _collect_issue_samples(normalized_report, keys=sample_keys, limit=5)
+    return {
+        "stage": stage,
+        "label": label,
+        "message": _truncate_issue_text(message, 400),
+        "reportPath": normalized_report_path,
+        "issueCount": int(normalized_issue_count or 0),
+        "warningCount": int(normalized_warning_count or 0),
+        "samples": normalized_samples[:5],
+    }
 
 
 def _coerce_int_config(value: Any, *, default: int, minimum: int, maximum: int) -> int:
@@ -1557,7 +1593,7 @@ def _history_artifact_kind(path: Path) -> str:
         return "exports"
     if parts[1] == "detection_reports":
         return "reports"
-    if normalized_path.name.endswith((".audit.json", ".guard.json", "_validation.json", "_format_preflight.json")):
+    if normalized_path.name.endswith((".audit.json", ".ooxml_audit.json", ".text_integrity.json", ".guard.json", "_validation.json", "_format_preflight.json")):
         return "reports"
     return "intermediate"
 
@@ -1588,7 +1624,7 @@ def _is_cleanable_history_artifact(path: Path) -> bool:
     name = normalized_path.name
     if ROUND_ARTIFACT_PATTERN.search(name):
         return True
-    if name.endswith(("_format_preflight.json", "_review_decisions.json")):
+    if name.endswith(("_format_preflight.json", "_review_decisions.json", ".ooxml_audit.json", ".text_integrity.json")):
         return True
     if ("_export" in name or "_reviewed_export" in name) and normalized_path.suffix.lower() in {".docx", ".txt", ".json"}:
         return True
@@ -2468,6 +2504,7 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
         body_map = _load_body_map_for_output(normalized_output_path)
         compare_payload = _load_compare_payload_for_output(normalized_output_path)
         guard_report: dict[str, Any] | None = None
+        expected_text_targets: list[tuple[dict[str, Any], str]] = []
         if origin_docx_bundle is not None:
             source_docx_path, snapshot_path = origin_docx_bundle
             ensure_docx_processing_assets(
@@ -2510,12 +2547,28 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                     paragraph_source=paragraph_source,
                 )
                 if not bool(guard_report.get("ok")):
-                    raise ValueError(summarize_docx_export_guard_failure(guard_report, label="导出"))
-                rebuild_docx_from_body_map_units(
-                    body_map.units,
-                    source_path=source_docx_path,
-                    export_path=normalized_export_path,
-                )
+                    message = summarize_docx_export_guard_failure(guard_report, label="导出")
+                    raise ExportRoundError(
+                        message,
+                        _build_export_failure(
+                            stage="guard",
+                            label="导出前保护",
+                            message=message,
+                            report=guard_report,
+                            issue_count=int(guard_report.get("blockingIssueCount", 0) or 0),
+                            warning_count=int(guard_report.get("warningCount", 0) or 0),
+                            sample_keys=("blockingIssues", "warnings"),
+                        ),
+                    )
+                expected_text_targets = _build_docx_text_targets_from_body_map(body_map)
+                try:
+                    rebuild_docx_from_body_map_units(
+                        body_map.units,
+                        source_path=source_docx_path,
+                        export_path=normalized_export_path,
+                    )
+                except ValueError as exc:
+                    raise _export_text_integrity_error(str(exc)) from exc
                 layout_mode = "body-map-roundtrip"
                 if not review_decisions:
                     paragraph_source = "body_map"
@@ -2532,10 +2585,26 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                     else None
                 )
                 if expected_paragraph_count is not None and len(blocks) != expected_paragraph_count:
-                    raise ValueError(
+                    message = (
                         "DOCX 导出已拦截：当前轮次正文段落数与原始 Word 快照不一致。"
                         f" 预期 {expected_paragraph_count} 段，实际 {len(blocks)} 段。"
                         " 请重新执行当前轮次，或回滚后重跑，避免导出成错位排版。"
+                    )
+                    raise ExportRoundError(
+                        message,
+                        _build_export_failure(
+                            stage="paragraph-count",
+                            label="正文段落",
+                            message=message,
+                            issue_count=1,
+                            samples=[
+                                {
+                                    "code": "paragraph_count_mismatch",
+                                    "message": "正文段落数与原始 Word 快照不一致",
+                                    "sample": f"expected={expected_paragraph_count}; actual={len(blocks)}",
+                                }
+                            ],
+                        ),
                     )
                 guard_report = run_docx_pre_export_guard(
                     blocks,
@@ -2548,13 +2617,29 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                     paragraph_source=paragraph_source,
                 )
                 if not bool(guard_report.get("ok")):
-                    raise ValueError(summarize_docx_export_guard_failure(guard_report, label="导出"))
-                rebuild_docx_from_snapshot(
-                    blocks,
-                    source_path=source_docx_path,
-                    snapshot_path=snapshot_path,
-                    export_path=normalized_export_path,
-                )
+                    message = summarize_docx_export_guard_failure(guard_report, label="导出")
+                    raise ExportRoundError(
+                        message,
+                        _build_export_failure(
+                            stage="guard",
+                            label="导出前保护",
+                            message=message,
+                            report=guard_report,
+                            issue_count=int(guard_report.get("blockingIssueCount", 0) or 0),
+                            warning_count=int(guard_report.get("warningCount", 0) or 0),
+                            sample_keys=("blockingIssues", "warnings"),
+                        ),
+                    )
+                expected_text_targets = _build_docx_text_targets_from_snapshot(snapshot_path, blocks)
+                try:
+                    rebuild_docx_from_snapshot(
+                        blocks,
+                        source_path=source_docx_path,
+                        snapshot_path=snapshot_path,
+                        export_path=normalized_export_path,
+                    )
+                except ValueError as exc:
+                    raise _export_text_integrity_error(str(exc)) from exc
                 layout_mode = "snapshot-compare-reflow" if paragraph_source.startswith("compare") else "snapshot-roundtrip"
         else:
             if review_decisions:
@@ -2564,15 +2649,72 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
                 blocks, paragraph_source = _read_output_paragraphs_for_export(normalized_output_path)
             write_docx_text(blocks, normalized_export_path)
         text_fingerprint_before_format = _collect_docx_text_fingerprint(normalized_export_path)
-        format_result = apply_school_format_rules(
-            normalized_export_path,
-            snapshot_path=origin_docx_bundle[1] if origin_docx_bundle is not None else None,
-        )
+        try:
+            format_result = apply_school_format_rules(
+                normalized_export_path,
+                snapshot_path=origin_docx_bundle[1] if origin_docx_bundle is not None else None,
+            )
+        except DocxFormatPreflightError as exc:
+            message = str(exc)
+            raise ExportRoundError(
+                message,
+                _build_export_failure(
+                    stage="preflight",
+                    label="格式预检",
+                    message=message,
+                    report=exc.report,
+                    sample_keys=("blockingIssues", "issues"),
+                ),
+            ) from exc
         text_fingerprint_after_format = _collect_docx_text_fingerprint(normalized_export_path)
         if text_fingerprint_after_format != text_fingerprint_before_format:
-            raise ValueError("DOCX 导出已拦截：排版规则意外改变了文档文本内容。")
+            message = "DOCX 导出已拦截：排版规则意外改变了文档文本内容。"
+            raise ExportRoundError(
+                message,
+                _build_export_failure(
+                    stage="format-text",
+                    label="排版文本",
+                    message=message,
+                    issue_count=1,
+                    samples=[
+                        {
+                            "code": "format_changed_text",
+                            "message": "排版规则改变了文档文本内容",
+                        }
+                    ],
+                ),
+            )
+        if expected_text_targets:
+            text_integrity_report = _audit_exported_docx_text_targets(normalized_export_path, expected_text_targets)
+            if not bool(text_integrity_report.get("ok")):
+                text_integrity_report_path = normalized_export_path.with_suffix(".text_integrity.json")
+                text_integrity_report["reportPath"] = str(text_integrity_report_path)
+                text_integrity_report_path.parent.mkdir(parents=True, exist_ok=True)
+                text_integrity_report_path.write_text(
+                    json.dumps(text_integrity_report, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                issue_count = int(text_integrity_report.get("issueCount", 0) or 0)
+                message = (
+                    "DOCX 导出已拦截：导出后的正文文本与本轮结果不一致。"
+                    f" 共 {issue_count} 个问题，报告：{text_integrity_report_path}"
+                )
+                raise ExportRoundError(
+                    message,
+                    _build_export_failure(
+                        stage="text-integrity",
+                        label="正文文本",
+                        message=message,
+                        report=text_integrity_report,
+                        report_path=text_integrity_report_path,
+                        issue_count=issue_count,
+                        sample_keys=("issues",),
+                    ),
+                )
         audit_report_path = get_docx_audit_report_path(normalized_export_path)
         audit_report: dict[str, Any] | None = None
+        ooxml_audit_report_path = get_docx_ooxml_audit_report_path(normalized_export_path)
+        ooxml_audit_report: dict[str, Any] | None = None
         if origin_docx_bundle is not None:
             audit_report = audit_docx_export(
                 normalized_export_path,
@@ -2582,9 +2724,46 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
             )
             if not bool(audit_report.get("ok")):
                 issue_count = int(audit_report.get("issueCount", 0) or 0)
-                raise ValueError(
+                message = (
                     "DOCX 导出已拦截：审计发现保护区内容发生变化。"
                     f" 共 {issue_count} 个问题，报告：{audit_report_path}"
+                )
+                raise ExportRoundError(
+                    message,
+                    _build_export_failure(
+                        stage="audit",
+                        label="保护区审计",
+                        message=message,
+                        report=audit_report,
+                        report_path=audit_report_path,
+                        issue_count=issue_count,
+                        sample_keys=("issues",),
+                    ),
+                )
+        if origin_docx_bundle is not None:
+            ooxml_audit_report = audit_docx_ooxml_integrity(
+                normalized_export_path,
+                source_path=origin_docx_bundle[0],
+                snapshot_path=origin_docx_bundle[1],
+                report_path=ooxml_audit_report_path,
+            )
+            if not bool(ooxml_audit_report.get("ok")):
+                issue_count = int(ooxml_audit_report.get("issueCount", 0) or 0)
+                message = (
+                    "DOCX export blocked: OOXML integrity audit found protected structure changes. "
+                    f"Issues: {issue_count}; report: {ooxml_audit_report_path}"
+                )
+                raise ExportRoundError(
+                    message,
+                    _build_export_failure(
+                        stage="ooxml",
+                        label="Word 结构",
+                        message=message,
+                        report=ooxml_audit_report,
+                        report_path=ooxml_audit_report_path,
+                        issue_count=issue_count,
+                        sample_keys=("issues",),
+                    ),
                 )
         preflight_report = _read_json_report(format_result.get("preflightPath", ""))
         return {
@@ -2600,12 +2779,23 @@ def export_round_output(output_path: str, export_path: str, target_format: str) 
             "validationPath": str(validation_path) if validation_path is not None else "",
             "auditPath": str(audit_report_path) if audit_report is not None else "",
             "auditIssueCount": int(audit_report.get("issueCount", 0) or 0) if audit_report is not None else 0,
+            "ooxmlAuditPath": str(ooxml_audit_report_path) if ooxml_audit_report is not None else "",
+            "ooxmlAuditIssueCount": int(ooxml_audit_report.get("issueCount", 0) or 0) if ooxml_audit_report is not None else 0,
             "preflightPath": str(format_result.get("preflightPath", "")),
             "preflightIssueCount": int(format_result.get("preflightIssueCount", 0) or 0),
+            "preflightWarningCount": int(
+                format_result.get(
+                    "preflightWarningCount",
+                    preflight_report.get("warningCount", 0) if preflight_report is not None else 0,
+                )
+                or 0
+            ),
             "guardPath": str(guard_report.get("reportPath", "")) if guard_report is not None else "",
             "guardIssueCount": int(guard_report.get("blockingIssueCount", 0) or 0) if guard_report is not None else 0,
+            "guardWarningCount": int(guard_report.get("warningCount", 0) or 0) if guard_report is not None else 0,
             "guardIssueSamples": _collect_issue_samples(guard_report, keys=("blockingIssues", "warnings")),
             "auditIssueSamples": _collect_issue_samples(audit_report, keys=("issues",)),
+            "ooxmlAuditIssueSamples": _collect_issue_samples(ooxml_audit_report, keys=("issues",)),
             "preflightIssueSamples": _collect_issue_samples(preflight_report, keys=("blockingIssues", "issues")),
         }
 
@@ -2623,6 +2813,80 @@ def _collect_docx_text_fingerprint(path: Path) -> list[tuple[str, str]]:
                 for paragraph_index, paragraph in enumerate(cell.paragraphs):
                     fingerprint.append((f"t:{table_index}:{row_index}:{cell_index}:{paragraph_index}", paragraph.text))
     return fingerprint
+
+
+def _build_docx_text_targets_from_body_map(body_map: Any) -> list[tuple[dict[str, Any], str]]:
+    targets: list[tuple[dict[str, Any], str]] = []
+    for unit in getattr(body_map, "units", []) or []:
+        target = getattr(unit, "target", {})
+        if isinstance(target, dict):
+            targets.append((dict(target), str(getattr(unit, "current_text", ""))))
+    return targets
+
+
+def _build_docx_text_targets_from_snapshot(snapshot_path: Path, rewritten_paragraphs: list[str]) -> list[tuple[dict[str, Any], str]]:
+    snapshot = _load_docx_snapshot(snapshot_path)
+    if snapshot is None:
+        return []
+    return [
+        (dict(unit.target), str(rewritten_text))
+        for unit, rewritten_text in zip(snapshot.editable_units(), rewritten_paragraphs)
+    ]
+
+
+def _audit_exported_docx_text_targets(export_path: Path, expected_targets: list[tuple[dict[str, Any], str]]) -> dict[str, Any]:
+    document = Document(str(export_path.resolve()))
+    issues: list[dict[str, Any]] = []
+    checks: list[dict[str, Any]] = []
+    for index, (target, expected_text) in enumerate(expected_targets):
+        try:
+            paragraph = _resolve_target_paragraph(document, target)
+            actual_text = paragraph.text
+        except Exception as exc:
+            issues.append({
+                "code": "docx_text_target_unreadable",
+                "message": f"无法读取导出后的正文目标：{type(exc).__name__}",
+                "location": json.dumps(target, ensure_ascii=False, sort_keys=True),
+            })
+            continue
+        expected = _normalize_rewritten_text(str(expected_text))
+        check = {
+            "index": index,
+            "location": json.dumps(target, ensure_ascii=False, sort_keys=True),
+            "expectedPreview": _truncate_issue_text(expected, 120),
+            "actualPreview": _truncate_issue_text(actual_text, 120),
+        }
+        checks.append(check)
+        if actual_text != expected:
+            issues.append({
+                "code": "docx_exported_text_changed",
+                "message": "导出后的正文文本与本轮结果不一致。",
+                "location": check["location"],
+                "sample": f"expected={check['expectedPreview']}; actual={check['actualPreview']}",
+            })
+    return {
+        "ok": not issues,
+        "issueCount": len(issues),
+        "checked": len(checks),
+        "issues": issues[:20],
+        "sampleChecks": checks[:8],
+    }
+
+
+def _export_text_integrity_error(message: str) -> ExportRoundError:
+    return ExportRoundError(
+        message,
+        _build_export_failure(
+            stage="text-integrity",
+            label="正文文本",
+            message=message,
+            issue_count=1,
+            samples=[{
+                "code": "docx_text_integrity_failed",
+                "message": _truncate_issue_text(message, 240),
+            }],
+        ),
+    )
 
 
 def read_output_text(output_path: str, max_chars: int | None = None) -> dict[str, Any]:
@@ -2656,11 +2920,6 @@ def read_round_compare(output_path: str) -> dict[str, Any]:
         raise ValueError(f"Invalid compare data payload: {compare_path}")
     payload = _normalize_compare_failed_attempts(payload)
     return payload
-
-
-def build_detection_matches_for_output(output_path: str, report: dict[str, Any]) -> list[dict[str, Any]]:
-    compare_payload = read_round_compare(output_path)
-    return build_detection_matches(report, compare_payload)
 
 
 def _find_review_decisions_path_for_output(output_path: Path) -> Path:
@@ -2881,348 +3140,6 @@ def _build_rerun_issue_cards(chunk: dict[str, Any]) -> list[str]:
                 cards.append(f"- [{code} / medium] 该块被标记为需审阅，请优先修复这个具体问题。")
 
     return _unique_strings(cards)
-
-
-def _is_external_detection_feedback(user_feedback: str) -> bool:
-    return bool(re.search(r"(外部检测报告|检测报告|PaperPass|SpeedAI|AIGC|疑似度|风险片段)", str(user_feedback or ""), re.I))
-
-
-def _looks_like_english_text(text: str) -> bool:
-    letters = re.findall(r"[A-Za-z]", text or "")
-    chinese = re.findall(r"[\u4e00-\u9fff]", text or "")
-    return len(letters) >= 30 and len(letters) > len(chinese) * 2
-
-
-def _short_evidence(text: str, patterns: list[str], limit: int = 90) -> str:
-    for pattern in patterns:
-        match = re.search(pattern, text, re.I)
-        if not match:
-            continue
-        start = max(0, match.start() - 24)
-        end = min(len(text), match.end() + 48)
-        return " ".join(text[start:end].split())[:limit]
-    return ""
-
-
-def _safe_float(value: object, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _extract_detection_feedback_segments(user_feedback: str) -> list[dict[str, Any]]:
-    segments: list[dict[str, Any]] = []
-    for raw_line in str(user_feedback or "").splitlines():
-        line = " ".join(raw_line.split())
-        if "#" not in line:
-            continue
-        index_match = re.search(r"#\s*(\d+)", line)
-        if not index_match:
-            continue
-        percentages = [float(match.group(1)) for match in re.finditer(r"(\d+(?:\.\d+)?)\s*%", line)]
-        probability = percentages[0] if percentages else 0.0
-        match_score = percentages[1] if len(percentages) > 1 else 0.0
-        excerpt = line
-        colon_positions = [line.rfind(":"), line.rfind("：")]
-        colon_position = max(colon_positions)
-        if colon_position >= 0 and colon_position + 1 < len(line):
-            excerpt = line[colon_position + 1 :].strip()
-        elif percentages:
-            percent_matches = list(re.finditer(r"\d+(?:\.\d+)?\s*%", line))
-            if percent_matches:
-                excerpt = line[percent_matches[-1].end() :].strip(" ，,;；:：")
-        if not excerpt:
-            excerpt = line
-        segments.append(
-            {
-                "index": int(index_match.group(1)),
-                "probability": probability,
-                "matchScore": match_score,
-                "excerpt": excerpt[:420],
-                "line": line[:560],
-            }
-        )
-        if len(segments) >= DETECTION_FEEDBACK_MAX_SEGMENTS:
-            break
-    return segments
-
-
-def _normalize_detector_anchor(value: str) -> str:
-    return re.sub(r"\s+", "", str(value or "").strip().lower())
-
-
-def _is_low_signal_detector_anchor(value: str) -> bool:
-    normalized = _normalize_detector_anchor(value)
-    if len(normalized) < 3:
-        return True
-    if normalized in {
-        "and",
-        "for",
-        "from",
-        "the",
-        "this",
-        "that",
-        "with",
-        "method",
-        "value",
-        "system",
-        "model",
-        "data",
-        "analysis",
-    }:
-        return True
-    if normalized.isdigit() and len(normalized) < 3:
-        return True
-    return False
-
-
-def _extract_detector_feedback_anchors(text: str) -> list[str]:
-    raw = str(text or "")
-    anchors: list[str] = []
-    seen: set[str] = set()
-
-    def add(value: str) -> None:
-        normalized = _normalize_detector_anchor(value)
-        if _is_low_signal_detector_anchor(normalized) or normalized in seen:
-            return
-        seen.add(normalized)
-        anchors.append(str(value).strip())
-
-    for match in re.finditer(r"(?:\[[0-9,\s-]+\]|\d+(?:\.\d+)?\s*(?:%|ms|s|kg|g|cm|mm|px|万元|元|次|个|篇|章|节|页|年)?)", raw):
-        add(match.group(0))
-    for match in re.finditer(r"[A-Za-z][A-Za-z0-9+.#/-]{2,}", raw):
-        add(match.group(0))
-    for match in re.finditer(r"[\u3400-\u9fff]{4,}", raw):
-        run = match.group(0)
-        if len(run) <= 10:
-            add(run)
-            continue
-        positions = [0, max(0, len(run) // 3), max(0, len(run) * 2 // 3), max(0, len(run) - 8)]
-        for position in positions:
-            add(run[position : position + 8])
-    return anchors[:DETECTION_FEEDBACK_MAX_ANCHORS]
-
-
-def _anchor_in_text(anchor: str, text: str) -> bool:
-    normalized_anchor = _normalize_detector_anchor(anchor)
-    normalized_text = _normalize_detector_anchor(text)
-    return bool(normalized_anchor and normalized_anchor in normalized_text)
-
-
-def _build_detection_feedback_profile(
-    input_text: str,
-    previous_output_text: str,
-    user_feedback: str,
-) -> dict[str, Any]:
-    segments = _extract_detection_feedback_segments(user_feedback)
-    if not segments and _is_external_detection_feedback(user_feedback):
-        segments = [
-            {
-                "index": 0,
-                "probability": 0.0,
-                "matchScore": 0.0,
-                "excerpt": " ".join(str(user_feedback or "").split())[:420],
-                "line": " ".join(str(user_feedback or "").split())[:560],
-            }
-        ]
-    excerpt_text = "\n".join(str(segment.get("excerpt", "")) for segment in segments)
-    analysis_text = "\n".join(item for item in (excerpt_text, previous_output_text, input_text, user_feedback) if str(item or "").strip())
-    anchors = _extract_detector_feedback_anchors(excerpt_text or user_feedback)
-    local_text = "\n".join([input_text, previous_output_text])
-    matched_anchors = [anchor for anchor in anchors if _anchor_in_text(anchor, local_text)]
-    probabilities = [_safe_float(segment.get("probability")) for segment in segments if _safe_float(segment.get("probability")) > 0]
-    match_scores = [_safe_float(segment.get("matchScore")) for segment in segments if _safe_float(segment.get("matchScore")) > 0]
-    connector_hits = len(DETECTOR_MECHANICAL_CONNECTOR_RE.findall(analysis_text))
-    template_hits = len(DETECTOR_TEMPLATE_PHRASE_RE.findall(analysis_text))
-    return {
-        "segments": segments,
-        "excerptText": excerpt_text,
-        "analysisText": analysis_text,
-        "anchors": anchors,
-        "matchedAnchors": matched_anchors,
-        "maxProbability": max(probabilities, default=0.0),
-        "maxMatchScore": max(match_scores, default=0.0),
-        "connectorHits": connector_hits,
-        "templateHits": template_hits,
-    }
-
-
-def _build_detection_surgery_feedback(
-    input_text: str,
-    previous_output_text: str,
-    user_feedback: str,
-) -> tuple[list[str], list[str], list[str], str]:
-    if not _is_external_detection_feedback(user_feedback):
-        return [], [], [], ""
-
-    analysis_text = "\n".join(
-        item for item in [previous_output_text.strip(), input_text.strip(), str(user_feedback or "").strip()] if item
-    )
-    cards: list[str] = []
-    tags: list[str] = ["detector-surgery"]
-    advice: list[str] = []
-    note_lines = [
-        "[DETECTOR MICRO-REPAIR MODE]",
-        "- External AI-detection feedback is active, but this is targeted local repair, not a broad rewrite.",
-        "- Do not make the paragraph smoother, more complete, or more explanatory by default.",
-        "- Change only sentence openings, connector choices, word order, and a few template-like phrases where necessary.",
-        "- Keep facts, numbers, citations, figure/table references, technical terms, paragraph role, and language unchanged.",
-    ]
-    detector_profile = _build_detection_feedback_profile(input_text, previous_output_text, user_feedback)
-
-    def add_card(code: str, level: str, title: str, repair: str, evidence: str = "") -> None:
-        card = f"- [{code} / {level}] {title}\n  Repair: {repair}"
-        if evidence:
-            card += f"\n  Evidence: {evidence}"
-        cards.append(card)
-        tags.append(code)
-        advice.append(title)
-
-    detector_segments = detector_profile.get("segments") if isinstance(detector_profile.get("segments"), list) else []
-    matched_anchors = detector_profile.get("matchedAnchors") if isinstance(detector_profile.get("matchedAnchors"), list) else []
-    if detector_segments:
-        segment_preview = "; ".join(
-            f"#{segment.get('index')} {round(_safe_float(segment.get('probability')))}% / match {round(_safe_float(segment.get('matchScore')))}%"
-            for segment in detector_segments[:3]
-        )
-        excerpt_preview = " | ".join(
-            str(segment.get("excerpt", "")).strip()[:150]
-            for segment in detector_segments[:2]
-            if str(segment.get("excerpt", "")).strip()
-        )
-        evidence = segment_preview if not excerpt_preview else f"{segment_preview}; excerpts: {excerpt_preview}"
-        add_card(
-            "detector-high-risk-segment",
-            "high" if _safe_float(detector_profile.get("maxProbability")) >= 80 else "medium",
-            "Use the report-hit segment as the exact repair target, not as permission to rewrite the whole chunk.",
-            "Only disturb the exposed sentence pattern: adjust opening, clause order, and transition wording around the matched excerpt while preserving all claims and local evidence.",
-            evidence,
-        )
-        note_lines.append(
-            f"- Parsed detector hits: {len(detector_segments)} segment(s), max probability {round(_safe_float(detector_profile.get('maxProbability')))}%, max match {round(_safe_float(detector_profile.get('maxMatchScore')))}%."
-        )
-    if matched_anchors:
-        add_card(
-            "detector-anchor-preservation",
-            "high",
-            "Detected report anchors overlap this chunk; preserve them while changing surrounding syntax.",
-            "Keep these anchors, numbers, citations, model names, and domain terms intact. Do not paraphrase or delete them; rewrite only the connective tissue around them.",
-            " / ".join(str(anchor) for anchor in matched_anchors[:8]),
-        )
-        note_lines.append(f"- Preserve detector anchors while repairing rhythm: {', '.join(str(anchor) for anchor in matched_anchors[:8])}.")
-    if _safe_float(detector_profile.get("connectorHits")) >= 3:
-        add_card(
-            "detector-rhythm-repair",
-            "medium",
-            "Report feedback and chunk text show repeated mechanical transitions.",
-            "Remove or replace a small number of repeated transitions, but keep the paragraph order and causal relation unchanged.",
-            f"connectorHits={int(_safe_float(detector_profile.get('connectorHits')))}",
-        )
-    if _safe_float(detector_profile.get("templateHits")) >= 1:
-        add_card(
-            "detector-template-repair",
-            "medium",
-            "Report feedback overlaps with stock academic template phrasing.",
-            "Replace broad value claims or formulaic academic phrasing with concrete wording tied to this paragraph's actual method, data, module, or result.",
-            f"templateHits={int(_safe_float(detector_profile.get('templateHits')))}",
-        )
-
-    if _looks_like_english_text(input_text or previous_output_text):
-        add_card(
-            "detector-english-lock",
-            "high",
-            "英文段落只做英文改写，不能翻译成中文，也不能改成标准机器摘要腔。",
-            "Keep the output fully English, keep the same claims and data, and only make small rhythm changes. Avoid generic thesis-summary phrases such as 'this thesis focuses on' when the source can be stated more concretely.",
-            _short_evidence(analysis_text, [r"this thesis", r"important for", r"according to", r"the results show"]),
-        )
-
-    definition_patterns = [
-        r"[\u4e00-\u9fffA-Za-z0-9\-]{2,30}\s*是.{0,40}(关键|核心|重要|基础|框架|方法|步骤|环节|工具|平台)",
-        r"(是|属于|指|作为).{0,25}(关键|核心|重要|基础|框架|方法|步骤|工具)",
-    ]
-    if any(re.search(pattern, analysis_text) for pattern in definition_patterns):
-        add_card(
-            "de-definition",
-            "high",
-            "疑似百科式定义开头，容易被报告判成模板化解释。",
-            "只微调“X 是……”这类开头，不要重写整段；可以改成从本文的数据处理、实验动作、系统页面或本段实际任务切入。",
-            _short_evidence(analysis_text, definition_patterns),
-        )
-
-    encyclopedia_patterns = [
-        r"(主要用于|广泛应用|具有较高的|能够在不依赖|提供.*(技术支撑|理论依据)|实际应用价值|工程落地潜力)",
-        r"(研究意义|应用意义|理论价值|实践价值).{0,30}(重要|明显|较高|突出)",
-    ]
-    if any(re.search(pattern, analysis_text) for pattern in encyclopedia_patterns):
-        add_card(
-            "de-encyclopedia",
-            "high",
-            "疑似通用技术说明过多，像在解释概念而不是写本文。",
-            "删除或替换少量泛泛介绍，把句子轻微落回“本文如何使用它、在哪个实验/模块/图表中出现、解决了什么具体处理问题”。",
-            _short_evidence(analysis_text, encyclopedia_patterns),
-        )
-
-    enumeration_hits = len(re.findall(r"(首先|其次|随后|最后|第一|第二|第三|一方面|另一方面|与此同时|总体来看|整体来看)", analysis_text))
-    if enumeration_hits >= 2:
-        add_card(
-            "break-neat-enumeration",
-            "medium",
-            "段落推进过于整齐，存在明显总分式机器节奏。",
-            "保留逻辑顺序，只替换一小部分“首先/其次/最后”等连接方式，不要重排论证。",
-            f"enumeration_hits={enumeration_hits}",
-        )
-
-    value_patterns = [
-        r"(显著|明显|充分|极大|更好|有效).{0,20}(提升|提高|增强|改善|体现|展示)",
-        r"(表达能力|预测效果|应用价值|工程落地|技术支撑|研究价值|应用意义|有效性与优越性)",
-    ]
-    if any(re.search(pattern, analysis_text) for pattern in value_patterns):
-        add_card(
-            "ground-value-claim",
-            "medium",
-            "抽象价值判断偏多，容易形成“正确但空”的 AI 论文腔。",
-            "弱化少量“提升价值/提供支撑/体现意义”式判断，能贴近已有图表、数值、模块行为时再做轻微替换。",
-            _short_evidence(analysis_text, value_patterns),
-        )
-
-    connector_hits = len(re.findall(r"(通过|对于.{0,12}而言|因此|同时|此外|也就是说|换句话说|从.{0,12}来看|基于|为了)", analysis_text))
-    if connector_hits >= 5:
-        add_card(
-            "trim-mechanical-connectors",
-            "medium",
-            "连接词密度偏高，段落读起来过于顺滑和机械。",
-            "只删除或替换一小部分套话连接词，让因果和递进更多依靠具体内容自然呈现。",
-            f"connector_hits={connector_hits}",
-        )
-
-    result_patterns = [
-        r"(图|表)\s*\d",
-        r"(准确率|召回率|AUC|F1|F1-Score|实验结果|对比实验|特征重要性)",
-        r"\b[A-Z][A-Za-z0-9+.#/-]{2,}\b",
-        r"\d+\.\d+",
-    ]
-    if sum(1 for pattern in result_patterns if re.search(pattern, analysis_text, re.I)) >= 2:
-        add_card(
-            "ground-in-experiment",
-            "high",
-            "本段涉及实验/图表/系统实现，应贴近本文结果而不是泛化说明。",
-            "围绕本段已有图表编号、模型名称、指标数值或系统模块做轻微表达调整；不要新增结论，不要升华成宽泛行业价值。",
-            _short_evidence(analysis_text, result_patterns),
-        )
-
-    if not cards:
-        add_card(
-            "detector-local-naturalize",
-            "medium",
-            "报告命中但未识别到单一强模式，需要做局部外科式自然化。",
-            "只改句式入口、连接方式和局部词序；避免新增背景解释，避免把段落写得更完整、更像标准答案。",
-            "",
-        )
-
-    note_lines.append("- Detector repair focus:")
-    note_lines.extend(f"  * {item}" for item in advice[:6])
-    return _unique_strings(cards), _unique_strings(tags), _unique_strings(advice), "\n".join(note_lines)
 
 
 def _build_compact_round_brief(
@@ -3518,22 +3435,6 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
     style_card = build_local_style_card(input_text, global_style_profile)
     rerun_note, strategy_tags, advice_items = _build_rerun_strategy_note(target_chunk, user_feedback=user_feedback)
     issue_cards = _build_rerun_issue_cards(target_chunk)
-    detector_cards, detector_tags, detector_advice, detector_note = _build_detection_surgery_feedback(
-        input_text,
-        previous_output_text,
-        user_feedback,
-    )
-    detector_profile = (
-        _build_detection_feedback_profile(input_text, previous_output_text, user_feedback)
-        if _is_external_detection_feedback(user_feedback)
-        else {}
-    )
-    if detector_cards:
-        issue_cards = _unique_strings([*detector_cards, *issue_cards])
-    if detector_note:
-        rerun_note = f"{detector_note}\n\n{rerun_note}"
-    strategy_tags = _unique_strings([*strategy_tags, *detector_tags])
-    advice_items = _unique_strings([*detector_advice, *advice_items])
     if style_card:
         strategy_tags = _unique_strings([*strategy_tags, "global-style-card"])
         advice_items = _unique_strings([*advice_items, "重跑会参考全文高频连接词、模板句和重复开头，避免继续放大全文层面的机械感。"])
@@ -3621,17 +3522,6 @@ def rerun_compare_chunk(output_path: str, chunk_id: str, model_config: dict[str,
     target_chunk["rerunSelectedScore"] = round(selected_score, 3)
     target_chunk["rerunPromptNote"] = rerun_note
     target_chunk["rerunUserFeedback"] = " ".join(str(user_feedback or "").split())[:800]
-    if detector_profile:
-        target_chunk["rerunDetectorProfile"] = {
-            "segmentCount": len(detector_profile.get("segments", [])) if isinstance(detector_profile.get("segments"), list) else 0,
-            "maxProbability": round(_safe_float(detector_profile.get("maxProbability")), 3),
-            "maxMatchScore": round(_safe_float(detector_profile.get("maxMatchScore")), 3),
-            "matchedAnchors": [str(anchor) for anchor in detector_profile.get("matchedAnchors", [])[:DETECTION_FEEDBACK_MAX_ANCHORS]]
-            if isinstance(detector_profile.get("matchedAnchors"), list)
-            else [],
-            "connectorHits": int(_safe_float(detector_profile.get("connectorHits"))),
-            "templateHits": int(_safe_float(detector_profile.get("templateHits"))),
-        }
     if used_fallback:
         target_chunk["rerunStatus"] = "fallback"
         target_chunk["rerunFallbackMode"] = fallback_mode

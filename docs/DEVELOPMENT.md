@@ -43,11 +43,12 @@ python scripts/state_machine_regression.py
 python scripts/format_rules_regression.py
 ```
 
-### 检测报告解析与匹配
+### 并发与恢复
 
 ```powershell
-python scripts/detection_report_regression.py
-node scripts/detection_matching_regression.mjs
+python scripts/parallel_round_regression.py
+python scripts/checkpoint_resume_regression.py
+python scripts/single_output_retry_regression.py
 ```
 
 ### 真实 DOCX 冒烟

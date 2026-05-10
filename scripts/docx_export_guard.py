@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from docx_bodymap import DocxBodyMap, validate_docx_body_map
-from docx_pipeline import _is_snapshot_current, _load_docx_snapshot
+from docx_pipeline import _is_snapshot_current, _load_docx_snapshot, build_docx_scope_diagnostics
 from fyadr_round_service import (
     _extract_required_term_counts,
     _extract_required_terms,
     detect_chunk_language,
+    find_sentence_surface_issues,
     find_english_spacing_corruptions,
     normalize_chunk_output,
 )
@@ -77,6 +78,7 @@ def run_docx_pre_export_guard(
         report["totalTextUnitCount"] = snapshot.total_text_unit_count
         report["protectedUnitCount"] = snapshot.total_text_unit_count - len(editable_units)
         body_map_export_count_matches = body_map is not None and len(rewritten_paragraphs) == len(body_map.units)
+        body_map_target_keys = _body_map_target_keys(body_map)
 
         if not _is_snapshot_current(snapshot, normalized_source_path):
             _add_issue(
@@ -84,6 +86,23 @@ def run_docx_pre_export_guard(
                 "snapshot_stale",
                 "原始 Word 在生成快照后发生过变化，需要重新上传或重新执行当前轮次。",
             )
+
+        scope_diagnostics = build_docx_scope_diagnostics(snapshot, snapshot_path=normalized_snapshot_path)
+        for issue in scope_diagnostics.get("issues", []) if isinstance(scope_diagnostics, dict) else []:
+            if isinstance(issue, dict) and issue.get("severity") == "error":
+                issue_code = str(issue.get("code", "diagnostic_error"))
+                target_list = warnings if _can_downgrade_scope_error_for_frozen_body_map(
+                    issue,
+                    body_map_export_count_matches=body_map_export_count_matches,
+                    body_map_target_keys=body_map_target_keys,
+                ) else blocking_issues
+                _add_issue(
+                    target_list,
+                    f"scope_{issue_code}",
+                    str(issue.get("message", "DOCX 正文边界诊断未通过。")),
+                    unit=issue.get("unit"),
+                    frozenBodyMapCompatibility=target_list is warnings,
+                )
 
         if len(rewritten_paragraphs) != len(editable_units):
             if body_map_export_count_matches:
@@ -326,11 +345,38 @@ def _check_rewritten_paragraphs(
                 paragraph_index=paragraph_index,
                 blocking_issues=blocking_issues,
             )
+        _check_sentence_surface_integrity(
+            original_text,
+            current_text,
+            paragraph_index=paragraph_index,
+            blocking_issues=blocking_issues,
+        )
         _check_length_ratio(
             original_text,
             current_text,
             paragraph_index=paragraph_index,
             warnings=warnings,
+        )
+
+
+def _check_sentence_surface_integrity(
+    original_text: str,
+    current_text: str,
+    *,
+    paragraph_index: int,
+    blocking_issues: list[dict[str, Any]],
+) -> None:
+    issues = find_sentence_surface_issues(original_text, current_text)
+    for issue in issues:
+        issue_code = str(issue.get("code", "sentence_surface_issue"))
+        _add_issue(
+            blocking_issues,
+            f"sentence_{issue_code}",
+            str(issue.get("message", "正文语句表面完整性异常。")),
+            paragraphIndex=paragraph_index,
+            originalSample=_sample_text(original_text),
+            rewrittenSample=_sample_text(current_text),
+            **{key: value for key, value in issue.items() if key not in {"code", "message"}},
         )
 
 
@@ -585,6 +631,33 @@ def _target_key(target: dict[str, Any]) -> tuple[Any, ...]:
             _coerce_int(target.get("paragraph_index"), default=-1),
         )
     return kind, json.dumps(target, ensure_ascii=False, sort_keys=True)
+
+
+def _body_map_target_keys(body_map: DocxBodyMap | None) -> set[tuple[Any, ...]]:
+    if body_map is None:
+        return set()
+    return {
+        _target_key(unit.target)
+        for unit in body_map.units
+        if isinstance(getattr(unit, "target", None), dict)
+    }
+
+
+def _can_downgrade_scope_error_for_frozen_body_map(
+    issue: dict[str, Any],
+    *,
+    body_map_export_count_matches: bool,
+    body_map_target_keys: set[tuple[Any, ...]],
+) -> bool:
+    if not body_map_export_count_matches:
+        return False
+    if str(issue.get("code", "")) != "editable_outside_rewrite_scope":
+        return False
+    unit = issue.get("unit")
+    target = unit.get("target") if isinstance(unit, dict) else None
+    if not isinstance(target, dict):
+        return False
+    return _target_key(target) not in body_map_target_keys
 
 
 def _coerce_int(value: Any, *, default: int) -> int:
