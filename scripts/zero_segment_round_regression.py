@@ -8,6 +8,14 @@ from app_service import get_document_status, read_round_compare
 from fyadr_records import ROOT_DIR, delete_document, update_round
 from fyadr_round_service import relative_to_root, run_round
 from round_helper import get_document_round_state
+from web_app import (
+    INCOMPLETE_RUN_RESULT_MESSAGE,
+    RUN_STATES,
+    ProgressState,
+    finalize_progress,
+    load_persisted_run_summary,
+    run_round_state_path,
+)
 
 
 REGRESSION_DIR = ROOT_DIR / "finish" / "regression"
@@ -15,6 +23,8 @@ INTERMEDIATE_DIR = ROOT_DIR / "finish" / "intermediate"
 REPORT_PATH = REGRESSION_DIR / "zero_segment_round_regression_report.json"
 TEST_STEM = "__zero_segment_round_regression__"
 TEST_DOC_ID = f"origin/{TEST_STEM}.txt"
+TEST_RUN_ID = "zero_segment_round_regression"
+TEST_FINALIZE_RUN_ID = "zero_segment_round_regression_finalize"
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -37,6 +47,8 @@ def _cleanup() -> None:
         INTERMEDIATE_DIR / f"{TEST_STEM}_round1_manifest.json",
         INTERMEDIATE_DIR / f"{TEST_STEM}_round1_compare.json",
         INTERMEDIATE_DIR / f"{TEST_STEM}_round1_quality.json",
+        run_round_state_path(TEST_RUN_ID),
+        run_round_state_path(TEST_FINALIZE_RUN_ID),
     ]:
         try:
             if path.exists() and path.is_file():
@@ -142,12 +154,70 @@ def _run_stale_artifact_guard(failures: list[str]) -> None:
             failures.append(f"empty compare error should explain incomplete result: {exc}")
 
 
+def _invalid_run_result() -> dict:
+    return {
+        "round": 1,
+        "outputPath": relative_to_root(INTERMEDIATE_DIR / f"{TEST_STEM}_round1.txt"),
+        "manifestPath": relative_to_root(INTERMEDIATE_DIR / f"{TEST_STEM}_round1_manifest.json"),
+        "comparePath": relative_to_root(INTERMEDIATE_DIR / f"{TEST_STEM}_round1_compare.json"),
+        "inputSegmentCount": 0,
+        "outputSegmentCount": 0,
+        "paragraphCount": 0,
+        "qualitySummary": {"estimatedApiCalls": 0},
+    }
+
+
+def _run_task_snapshot_guard(failures: list[str]) -> None:
+    snapshot_path = run_round_state_path(TEST_RUN_ID)
+    _write_json(snapshot_path, {
+        "kind": "runRound",
+        "version": 1,
+        "persistedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "state": {
+            "ok": True,
+            "runId": TEST_RUN_ID,
+            "sourcePath": str(ROOT_DIR / TEST_DOC_ID),
+            "status": "completed",
+            "completed": True,
+            "cancelRequested": False,
+            "eventCount": 1,
+            "lastEvent": {"phase": "round-complete", "round": 1},
+            "result": _invalid_run_result(),
+            "error": None,
+        },
+    })
+    summary = load_persisted_run_summary(TEST_RUN_ID)
+    if not isinstance(summary, dict):
+        failures.append("invalid persisted run summary must still be readable")
+        return
+    if summary.get("status") != "failed":
+        failures.append(f"invalid persisted run summary must be marked failed, got {summary.get('status')}")
+    if INCOMPLETE_RUN_RESULT_MESSAGE not in str(summary.get("error", "")):
+        failures.append(f"invalid persisted run summary must expose incomplete-result error: {summary.get('error')}")
+    if summary.get("result") is not None:
+        failures.append("invalid persisted run summary must not expose a successful result payload")
+
+    state = ProgressState(source_path=str(ROOT_DIR / TEST_DOC_ID))
+    RUN_STATES[TEST_FINALIZE_RUN_ID] = state
+    try:
+        finalize_progress(TEST_FINALIZE_RUN_ID, result=_invalid_run_result())
+        if state.status != "failed":
+            failures.append(f"finalize_progress must reject invalid run results, got {state.status}")
+        if INCOMPLETE_RUN_RESULT_MESSAGE not in str(state.error or ""):
+            failures.append(f"finalize_progress must explain incomplete result: {state.error}")
+        if state.result is not None:
+            failures.append("finalize_progress must not keep invalid result as successful output")
+    finally:
+        RUN_STATES.pop(TEST_FINALIZE_RUN_ID, None)
+
+
 def main() -> int:
     failures: list[str] = []
     _cleanup()
     try:
         _run_empty_input_guard(failures)
         _run_stale_artifact_guard(failures)
+        _run_task_snapshot_guard(failures)
     finally:
         _cleanup()
 

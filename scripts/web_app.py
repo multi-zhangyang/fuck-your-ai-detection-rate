@@ -135,6 +135,7 @@ TASK_STATE_SELF_HEAL_CACHE_AT = 0.0
 RUN_AUTO_RETRY_DELAY_SECONDS = 10
 RUN_AUTO_RETRY_MAX_ATTEMPTS = 3
 RUN_AUTO_NEXT_ROUND_DELAY_SECONDS = 60
+INCOMPLETE_RUN_RESULT_MESSAGE = "本轮结果不完整：未生成有效输出或 Diff，不能视为已完成。"
 app = Flask(__name__)
 
 
@@ -819,6 +820,88 @@ def build_terminal_run_event(state: ProgressState, *, result: dict[str, Any] | N
     return None
 
 
+def task_artifact_path(value: Any) -> Path | None:
+    raw_path = str(value or "").strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    return path if path.is_absolute() else ROOT_DIR / path
+
+
+def read_task_json(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def positive_task_int(value: Any) -> int | None:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized > 0 else None
+
+
+def run_result_has_usable_artifacts(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    output_path = task_artifact_path(result.get("outputPath") or result.get("output_path"))
+    if output_path is None or not output_path.exists() or not output_path.is_file():
+        return False
+    try:
+        if output_path.stat().st_size <= 0:
+            return False
+    except OSError:
+        return False
+
+    compare_path = task_artifact_path(result.get("comparePath") or result.get("compare_path"))
+    compare_payload = read_task_json(compare_path)
+    if compare_payload is None:
+        return False
+    chunks = compare_payload.get("chunks")
+    chunk_count = positive_task_int(compare_payload.get("chunkCount"))
+    paragraph_count = positive_task_int(compare_payload.get("paragraphCount"))
+    if not isinstance(chunks, list) or not chunks or chunk_count is None or chunk_count != len(chunks):
+        return False
+    if paragraph_count is None:
+        return False
+    input_segments = positive_task_int(result.get("inputSegmentCount") or result.get("input_segment_count"))
+    output_segments = positive_task_int(result.get("outputSegmentCount") or result.get("output_segment_count"))
+    if input_segments is not None and input_segments != chunk_count:
+        return False
+    if output_segments is not None and output_segments != chunk_count:
+        return False
+
+    manifest_path = task_artifact_path(result.get("manifestPath") or result.get("manifest_path"))
+    manifest_payload = read_task_json(manifest_path)
+    if manifest_payload is not None:
+        manifest_chunk_count = positive_task_int(manifest_payload.get("chunk_count"))
+        manifest_paragraph_count = positive_task_int(manifest_payload.get("paragraph_count"))
+        if manifest_chunk_count is None or manifest_chunk_count != chunk_count:
+            return False
+        if manifest_paragraph_count is None or manifest_paragraph_count != paragraph_count:
+            return False
+    return True
+
+
+def normalize_run_summary_result(summary: dict[str, Any]) -> dict[str, Any]:
+    if (
+        bool(summary.get("completed"))
+        and not summary.get("error")
+        and isinstance(summary.get("result"), dict)
+        and not run_result_has_usable_artifacts(summary.get("result"))
+    ):
+        summary["status"] = "failed"
+        summary["error"] = INCOMPLETE_RUN_RESULT_MESSAGE
+        summary["result"] = None
+        summary["automation"] = None
+    return summary
+
+
 def build_run_automation_hint(state: ProgressState) -> dict[str, Any] | None:
     if not state.completed:
         return None
@@ -840,7 +923,7 @@ def build_run_automation_hint(state: ProgressState) -> dict[str, Any] | None:
 
 
 def serialize_run_state(run_id: str, state: ProgressState) -> dict[str, Any]:
-    return {
+    return normalize_run_summary_result({
         "ok": True,
         "runId": run_id,
         "sourcePath": state.source_path,
@@ -854,7 +937,7 @@ def serialize_run_state(run_id: str, state: ProgressState) -> dict[str, Any]:
         "automation": build_run_automation_hint(state),
         "createdAt": datetime.fromtimestamp(state.created_at, timezone.utc).isoformat().replace("+00:00", "Z"),
         "updatedAt": datetime.fromtimestamp(state.updated_at, timezone.utc).isoformat().replace("+00:00", "Z"),
-    }
+    })
 
 
 def sanitize_round_model_for_task_snapshot(value: Any) -> Any:
@@ -967,6 +1050,7 @@ def load_recent_run_summaries(active_run_ids: set[str], limit: int = 8) -> list[
             summary["status"] = "interrupted"
             summary["cancelRequested"] = False
             summary["error"] = summary.get("error") or "Backend restarted before this round finished. Completed chunks were kept on disk; use continue to resume from the checkpoint."
+        summary = normalize_run_summary_result(summary)
         summaries.append(summary)
     return summaries
 
@@ -989,7 +1073,7 @@ def load_persisted_run_summary(run_id: str) -> dict[str, Any] | None:
         summary["status"] = "interrupted"
         summary["cancelRequested"] = False
         summary["error"] = summary.get("error") or "Backend restarted before this round finished. Completed chunks were kept on disk; use continue to resume from the checkpoint."
-    return summary
+    return normalize_run_summary_result(summary)
 
 
 def append_progress_event(run_id: str, event: dict[str, Any]) -> None:
@@ -1007,6 +1091,9 @@ def finalize_progress(run_id: str, *, result: dict[str, Any] | None = None, erro
     state = RUN_STATES.get(run_id)
     if not state:
         return
+    if error is None and isinstance(result, dict) and not run_result_has_usable_artifacts(result):
+        error = INCOMPLETE_RUN_RESULT_MESSAGE
+        result = None
     with state.condition:
         terminal_event = build_terminal_run_event(state, result=result, error=error)
         if terminal_event:

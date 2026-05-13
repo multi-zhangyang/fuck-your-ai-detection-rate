@@ -47,6 +47,63 @@ def write_sample() -> Path:
     return SAMPLE_PATH
 
 
+def usable_run_result(name: str, *, round_number: int = 1, extra: dict | None = None) -> dict:
+    TASK_STATE_TEST_DIR.mkdir(parents=True, exist_ok=True)
+    stem = f"{name}_round{round_number}"
+    input_text = f"{stem} input"
+    output_text = f"{stem} output"
+    output_path = TASK_STATE_TEST_DIR / f"{stem}.txt"
+    manifest_path = TASK_STATE_TEST_DIR / f"{stem}_manifest.json"
+    compare_path = TASK_STATE_TEST_DIR / f"{stem}_compare.json"
+    output_path.write_text(output_text, encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "chunk_limit": 1800,
+                "chunk_metric": "char",
+                "paragraph_count": 1,
+                "chunk_count": 1,
+                "paragraphs": [{"paragraph_index": 0, "original_text": input_text, "chunk_ids": ["p0_c0"]}],
+                "chunks": [{"chunk_id": "p0_c0", "paragraph_index": 0, "chunk_index": 0, "text": input_text}],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    compare_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "docId": str(SAMPLE_PATH),
+                "round": round_number,
+                "inputPath": str(SAMPLE_PATH),
+                "outputPath": str(output_path),
+                "manifestPath": str(manifest_path),
+                "paragraphCount": 1,
+                "chunkCount": 1,
+                "chunks": [{"chunkId": "p0_c0", "paragraphIndex": 0, "chunkIndex": 0, "inputText": input_text, "outputText": output_text}],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result = {
+        "round": round_number,
+        "outputPath": str(output_path),
+        "manifestPath": str(manifest_path),
+        "comparePath": str(compare_path),
+        "chunkLimit": 1800,
+        "inputSegmentCount": 1,
+        "outputSegmentCount": 1,
+        "paragraphCount": 1,
+    }
+    if extra:
+        result.update(extra)
+    return result
+
+
 class WebRunStateRegressionTest(unittest.TestCase):
     def setUp(self) -> None:
         reset_run_registry()
@@ -62,7 +119,7 @@ class WebRunStateRegressionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already has a running task"):
             web_app.register_run(str(self.sample_path))
 
-        web_app.finalize_progress(first_run_id, result={"ok": True})
+        web_app.finalize_progress(first_run_id, result=usable_run_result("duplicate_release"))
         second_run_id, _ = web_app.register_run(str(self.sample_path))
 
         self.assertNotEqual(first_run_id, second_run_id)
@@ -119,7 +176,7 @@ class WebRunStateRegressionTest(unittest.TestCase):
     def test_completed_round_reports_next_round_delay_hint(self) -> None:
         run_id, _ = web_app.register_run(str(self.sample_path))
 
-        web_app.finalize_progress(run_id, result={"round": 1, "outputPath": str(self.sample_path)})
+        web_app.finalize_progress(run_id, result=usable_run_result("next_round_hint"))
 
         completed = self.client.get(f"/api/run-round-status/{run_id}").get_json()
         self.assertEqual(completed["status"], "completed")
@@ -146,15 +203,9 @@ class WebRunStateRegressionTest(unittest.TestCase):
         )
         web_app.finalize_progress(
             run_id,
-            result={
-                "round": 1,
-                "outputPath": str(self.sample_path),
-                "manifestPath": "",
-                "comparePath": "",
-                "chunkLimit": 1,
-                "inputSegmentCount": 1,
-                "outputSegmentCount": 1,
-                "paragraphCount": 1,
+            result=usable_run_result(
+                "secret_snapshot",
+                extra={
                 "roundModel": {
                     "providerName": "private-provider",
                     "baseUrl": "https://private.example/v1",
@@ -162,7 +213,8 @@ class WebRunStateRegressionTest(unittest.TestCase):
                     "model": "private-model",
                     "apiType": "chat_completions",
                 },
-            },
+                },
+            ),
         )
 
         payload = json.loads(web_app.run_round_state_path(run_id).read_text(encoding="utf-8"))
@@ -244,7 +296,7 @@ class WebRunStateRegressionTest(unittest.TestCase):
 
     def test_task_state_cleanup_deletes_only_expired_inactive_snapshots(self) -> None:
         completed_run_id, _ = web_app.register_run(str(self.sample_path))
-        web_app.finalize_progress(completed_run_id, result={"ok": True})
+        web_app.finalize_progress(completed_run_id, result=usable_run_result("cleanup_completed"))
         active_run_id, _ = web_app.register_run(str(self.sample_path))
 
         old_timestamp = time.time() - 9 * 24 * 3600
@@ -352,7 +404,7 @@ class WebRunStateRegressionTest(unittest.TestCase):
 
     def test_cancel_completed_run_is_idempotent(self) -> None:
         run_id, state = web_app.register_run(str(self.sample_path))
-        web_app.finalize_progress(run_id, result={"ok": True})
+        web_app.finalize_progress(run_id, result=usable_run_result("cancel_completed"))
 
         response = self.client.post(f"/api/run-round/{run_id}/cancel")
 
@@ -361,7 +413,7 @@ class WebRunStateRegressionTest(unittest.TestCase):
         self.assertTrue(payload["completed"])
         self.assertEqual(payload["status"], "completed")
         self.assertFalse(state.cancel_requested)
-        self.assertFalse(state.events)
+        self.assertEqual(state.events[-1]["phase"], "round-complete")
 
     def test_cancel_unknown_run_returns_404(self) -> None:
         response = self.client.post("/api/run-round/not-a-real-run/cancel")
@@ -394,7 +446,7 @@ class WebRunStateRegressionTest(unittest.TestCase):
 
     def test_prune_completed_run_releases_active_source(self) -> None:
         run_id, state = web_app.register_run(str(self.sample_path))
-        web_app.finalize_progress(run_id, result={"ok": True})
+        web_app.finalize_progress(run_id, result=usable_run_result("prune_completed"))
         state.updated_at = time.time() - web_app.RUN_STATE_TTL_SECONDS - 5
 
         web_app.prune_run_states()
