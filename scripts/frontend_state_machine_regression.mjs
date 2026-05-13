@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const APP_PATH = resolve(ROOT_DIR, "app", "src", "App.tsx");
+const RESULT_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "ResultCard.tsx");
 const WEB_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webService.ts");
 const REPORT_PATH = resolve(ROOT_DIR, "finish", "regression", "frontend_state_machine_regression_report.json");
 
@@ -56,7 +57,11 @@ function runRegression() {
   if (!existsSync(WEB_SERVICE_PATH)) {
     failures.push(`Missing webService.ts: ${WEB_SERVICE_PATH}`);
   }
+  if (!existsSync(RESULT_CARD_PATH)) {
+    failures.push(`Missing ResultCard.tsx: ${RESULT_CARD_PATH}`);
+  }
   const appSource = failures.length ? "" : readFileSync(APP_PATH, "utf-8");
+  const resultCardSource = failures.length ? "" : readFileSync(RESULT_CARD_PATH, "utf-8");
   const webServiceSource = failures.length ? "" : readFileSync(WEB_SERVICE_PATH, "utf-8");
 
   if (appSource) {
@@ -133,6 +138,11 @@ function runRegression() {
     assertIncludes(appSource, "comparePromptProfile !== documentPromptProfile", "Diff ownership must reject compare payloads from another prompt profile before trusting docId.", failures);
     assertIncludes(appSource, "promptSequenceCoversSelectedRoute(\n      compareData.promptSequence,\n      document.promptSequence,", "Diff ownership must reject stale compare payloads from another custom prompt sequence.", failures);
     assertIncludes(appSource, "compareDataMatchesDocument(compareData, documentStatus, promptOptions, promptWorkflows)", "Active Diff selection must pass route metadata into compare ownership checks.", failures);
+    assertIncludes(appSource, "function isCompleteRoundCompareData(", "Frontend must reject zero-chunk compare payloads before treating a round as completed.", failures);
+    assertIncludes(appSource, "!isCompleteRoundCompareData(compareData) || !document", "Diff ownership must reject incomplete compare payloads before trusting document identity.", failures);
+    assertIncludes(appSource, "throw new Error(\"本轮结果不完整，不能载入为已完成 Diff。\")", "Snapshot restore must not load empty compare data as a completed Diff.", failures);
+    assertIncludes(appSource, "const latestRoundCompareReady = Boolean(", "Append eligibility must depend on a loaded complete compare payload.", failures);
+    assertIncludes(appSource, "const completedButDiffMissing = Boolean(", "Completed status without Diff must surface as incomplete instead of export-ready.", failures);
     assertIncludes(appSource, "promptSequenceCoversSelectedRoute(roundItem.promptSequence, promptSequence, roundItem.round", "History lookup must keep prefix rounds visible after a user appends one more custom round.", failures);
     assertIncludes(appSource, "const loadedCompletedResultRound = roundResult?.round ?? null;", "Home run panel must only treat completed round results as loaded results.", failures);
     assertIncludes(appSource, "loadedResultRound={loadedCompletedResultRound}", "Checkpoint Diff snapshots must not be passed to the run panel as completed results.", failures);
@@ -210,6 +220,12 @@ function runRegression() {
     assertIncludes(appSource, "<RunRecoveryPanel state={running ? null : runRecoveryState} />", "Home run panel must not duplicate the main running progress card.", failures);
   }
 
+  if (resultCardSource) {
+    assertIncludes(resultCardSource, "const compareReady = Boolean(", "Result card must derive output readiness from compare data, not result metadata alone.", failures);
+    assertIncludes(resultCardSource, "compareData.chunkCount === compareData.chunks.length", "Result card must reject empty or partial compare data before enabling export.", failures);
+    assertNotIncludes(resultCardSource, "const hasOutput = Boolean(result || compareData?.chunks.length);", "Result card must not show export controls from result metadata alone.", failures);
+  }
+
   if (webServiceSource) {
     const ensureRunStreamSource = extractFunctionSource(webServiceSource, "ensureRunStream");
     const pickSingleFileSource = extractFunctionSource(webServiceSource, "pickSingleFile");
@@ -237,6 +253,7 @@ function runRegression() {
       "run start rejects checkpoints from other prompt routes",
       "cancel targets the active run session",
       "SSE disconnect no longer equals run failure",
+      "zero-chunk compare data cannot become an export-ready completed result",
       "diagnostics exposes persisted run task summaries",
       "diagnostics exposes task snapshot governance",
       "document restoration participates in the shared task lifecycle",

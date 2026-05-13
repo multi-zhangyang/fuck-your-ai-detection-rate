@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from fyadr_records import ROOT_DIR, load_records_normalized, update_round
 from fyadr_round_service import (
     get_max_rounds,
     get_prompt_mapping,
     get_prompt_sequence_key,
+    get_round_compare_path,
     normalize_path,
     normalize_prompt_profile,
     normalize_prompt_sequence,
@@ -90,6 +91,70 @@ def _round_sequence_match_rank(round_item: dict, prompt_profile: str, prompt_seq
     return prompt_sequence_match_rank(round_item.get("prompt_sequence"), prompt_sequence, int(round_item.get("round", 0) or 0))
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized > 0 else None
+
+
+def _round_path(value: Any) -> Path | None:
+    raw_path = str(value or "").strip()
+    if not raw_path:
+        return None
+    return normalize_path(Path(raw_path))
+
+
+def _read_json_payload(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def round_record_has_usable_artifacts(round_item: dict[str, Any]) -> bool:
+    input_segments = _positive_int(round_item.get("input_segment_count"))
+    output_segments = _positive_int(round_item.get("output_segment_count"))
+    output_path = _round_path(round_item.get("output_path"))
+    if output_path is None or not output_path.exists() or not output_path.is_file():
+        return False
+    try:
+        if output_path.stat().st_size <= 0:
+            return False
+    except OSError:
+        return False
+
+    compare_path = _round_path(round_item.get("compare_path")) or get_round_compare_path(output_path)
+    compare_payload = _read_json_payload(compare_path)
+    if compare_payload is None:
+        return False
+    chunks = compare_payload.get("chunks")
+    if not isinstance(chunks, list) or not chunks:
+        return False
+    compare_chunk_count = _positive_int(compare_payload.get("chunkCount"))
+    compare_paragraph_count = _positive_int(compare_payload.get("paragraphCount"))
+    if compare_chunk_count is None or compare_chunk_count != len(chunks) or compare_paragraph_count is None:
+        return False
+    if input_segments is not None and input_segments != compare_chunk_count:
+        return False
+    if output_segments is not None and output_segments != compare_chunk_count:
+        return False
+
+    manifest_payload = _read_json_payload(_round_path(round_item.get("manifest_path")))
+    if manifest_payload is not None:
+        manifest_chunk_count = _positive_int(manifest_payload.get("chunk_count"))
+        manifest_paragraph_count = _positive_int(manifest_payload.get("paragraph_count"))
+        if manifest_chunk_count is None or manifest_chunk_count != compare_chunk_count:
+            return False
+        if manifest_paragraph_count is None or manifest_paragraph_count != compare_paragraph_count:
+            return False
+    return True
+
+
 def get_document_round_state(
     doc_id: str,
     prompt_profile: str = DEFAULT_PROMPT_PROFILE,
@@ -107,6 +172,7 @@ def get_document_round_state(
         and str(round_item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() == normalized_prompt_profile
         and _round_sequence_match_rank(round_item, normalized_prompt_profile, normalized_prompt_sequence) >= 0
         and 1 <= int(round_item.get("round")) <= max_rounds
+        and round_record_has_usable_artifacts(round_item)
     )
     for expected in range(1, max_rounds + 1):
         if expected not in completed:
@@ -382,6 +448,8 @@ def _get_round_item(
         if round_item.get("round") != round_number:
             continue
         if str(round_item.get("prompt_profile", LEGACY_PROMPT_PROFILE) or LEGACY_PROMPT_PROFILE).strip().lower() != normalized_prompt_profile:
+            continue
+        if not round_record_has_usable_artifacts(round_item):
             continue
         rank = _round_sequence_match_rank(round_item, normalized_prompt_profile, normalized_prompt_sequence)
         if rank > best_rank:

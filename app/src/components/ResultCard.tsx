@@ -93,8 +93,14 @@ type Props = {
 };
 
 export function ResultCard({ result, compareData, exportResult, exportFailure = null, busy, reviewDecisions, onRerunRiskyChunks, batchRerunRunning = false, batchRerunStatusText = "", onCancelBatchRerun, onExportTxt, onExportDocx, roundRunning = false, checkpointPending = false }: Props) {
-  const hasOutput = Boolean(result || compareData?.chunks.length);
-  const outputReady = Boolean((result?.outputPath || compareData?.outputPath) && !checkpointPending);
+  const compareReady = Boolean(
+    compareData?.outputPath
+    && compareData.chunks.length > 0
+    && compareData.chunkCount > 0
+    && compareData.chunkCount === compareData.chunks.length,
+  );
+  const hasOutput = compareReady;
+  const outputReady = Boolean(compareReady && (result?.outputPath || compareData?.outputPath) && !checkpointPending);
   const hasRerunnableReviewChunks = Boolean(compareData?.chunks.some((chunk) => {
     return Boolean(chunk.quality?.needsReview)
       && !isHighRiskFailedOutputChunk(chunk)

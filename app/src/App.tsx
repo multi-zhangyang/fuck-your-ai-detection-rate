@@ -555,13 +555,23 @@ function isResumableRunMessage(message: string): boolean {
     || message.includes("续跑");
 }
 
+function isCompleteRoundCompareData(compareData: RoundCompareData | null): compareData is RoundCompareData {
+  return Boolean(
+    compareData?.outputPath
+    && compareData.chunks.length > 0
+    && compareData.chunkCount > 0
+    && compareData.paragraphCount > 0
+    && compareData.chunkCount === compareData.chunks.length,
+  );
+}
+
 function compareDataMatchesDocument(
   compareData: RoundCompareData | null,
   document: DocumentStatus | null,
   promptOptions?: PromptOption[],
   promptWorkflows?: PromptWorkflow[],
 ): boolean {
-  if (!compareData || !document) {
+  if (!isCompleteRoundCompareData(compareData) || !document) {
     return false;
   }
   const comparePromptProfile = normalizePromptProfile(compareData.promptProfile, promptWorkflows) ?? compareData.promptProfile;
@@ -3225,6 +3235,9 @@ export function App({ service }: Props) {
       service.readCompare(outputPath),
       service.loadReviewDecisions(outputPath),
     ]);
+    if (!isCompleteRoundCompareData(nextCompareData)) {
+      throw new Error("本轮结果不完整，不能载入为已完成 Diff。");
+    }
     setPreview(outputPreview);
     setCompareData(nextCompareData);
     setLastExportResult(null);
@@ -3241,6 +3254,9 @@ export function App({ service }: Props) {
       service.readCompare(outputPath),
       service.loadReviewDecisions(outputPath),
     ]);
+    if (!isCompleteRoundCompareData(nextCompareData)) {
+      throw new Error("本轮结果不完整，不能载入为已完成 Diff。");
+    }
     setPreview(outputPreview);
     setCompareData(nextCompareData);
     setLastExportResult(null);
@@ -5067,6 +5083,7 @@ export function App({ service }: Props) {
                         progress={progress}
                         roundProgressStatus={roundProgressStatus}
                         loadedResultRound={loadedCompletedResultRound}
+                        activeCompareData={activeCompareData}
                         pendingAutoAction={pendingAutoAction}
                         promptProfile={modelConfig.promptProfile}
                         promptSequence={modelConfig.promptSequence}
@@ -5675,6 +5692,7 @@ function HomeRunPanel({
   progress,
   roundProgressStatus,
   loadedResultRound,
+  activeCompareData,
   pendingAutoAction,
   promptProfile,
   promptSequence,
@@ -5700,6 +5718,7 @@ function HomeRunPanel({
   progress: RoundProgress | null;
   roundProgressStatus: RoundProgressStatus | null;
   loadedResultRound: number | null;
+  activeCompareData: RoundCompareData | null;
   pendingAutoAction: PendingAutoAction | null;
   promptProfile: ModelConfig["promptProfile"];
   promptSequence: PromptId[];
@@ -5747,6 +5766,11 @@ function HomeRunPanel({
     .filter((round): round is number => Number.isFinite(round))
     .sort((left, right) => left - right);
   const latestCompletedRound = completedRounds[completedRounds.length - 1] ?? null;
+  const latestRoundCompareReady = Boolean(
+    latestCompletedRound
+    && activeCompareData?.round === latestCompletedRound
+    && isCompleteRoundCompareData(activeCompareData),
+  );
   const visibleResultRound = loadedResultRound ?? latestCompletedRound;
   const hasVisibleResult = Boolean(visibleResultRound);
   const resultAheadOfStatus = Boolean(value?.nextRound && visibleResultRound && visibleResultRound >= value.nextRound);
@@ -5846,6 +5870,7 @@ function HomeRunPanel({
       : `继续第 ${resumableCheckpoint.round ?? value?.nextRound ?? ""} 轮`
     : "";
   const waitingForStatusSync = Boolean(resultAheadOfStatus && !resumableCheckpoint && !checkpointOnCurrentRound);
+  const completedButDiffMissing = Boolean(latestCompletedRound && !latestRoundCompareReady && !hasPendingRound);
   const canRefreshStatus = hasDocument && !busy && !running && !activeRunStatus;
   const canResetRound = Boolean(resumableCheckpoint || latestCompletedRound);
   const canAppendRound = Boolean(
@@ -5856,6 +5881,7 @@ function HomeRunPanel({
     && !running
     && !activeRunStatus
     && unavailableRouteCount === 0
+    && latestRoundCompareReady
     && isPromptSequenceCustomizable(promptProfile, promptWorkflows)
     && activeSequence.length < appendRoundLimit,
   );
@@ -5940,6 +5966,8 @@ function HomeRunPanel({
     ? "先修复模型路线"
     : waitingForStatusSync
       ? "刷新轮次状态"
+      : completedButDiffMissing
+        ? "结果不完整，刷新状态"
       : hasPendingRound
         ? resumableCheckpoint
           ? checkpointRunLabel
@@ -5949,10 +5977,10 @@ function HomeRunPanel({
       : value
         ? "流程完成，可导出"
         : "上传后开始第 1 轮";
-  const primaryRunButtonDisabled = waitingForStatusSync ? !canRefreshStatus : !(canRunNextRound || canAppendRound);
-  const primaryRunButtonVariant = waitingForStatusSync || canRunNextRound || canAppendRound ? "default" : "secondary";
+  const primaryRunButtonDisabled = waitingForStatusSync || completedButDiffMissing ? !canRefreshStatus : !(canRunNextRound || canAppendRound);
+  const primaryRunButtonVariant = waitingForStatusSync || completedButDiffMissing || canRunNextRound || canAppendRound ? "default" : "secondary";
   const handlePrimaryRunAction = async () => {
-    if (waitingForStatusSync) {
+    if (waitingForStatusSync || completedButDiffMissing) {
       onRefreshStatus();
       return;
     }

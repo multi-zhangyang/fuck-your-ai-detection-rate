@@ -87,6 +87,7 @@ def build_commands(
         {"name": "validation fallback regression", "command": [sys.executable, "scripts/validation_fallback_regression.py"]},
         {"name": "single output retry regression", "command": [sys.executable, "scripts/single_output_retry_regression.py"]},
         {"name": "checkpoint resume regression", "command": [sys.executable, "scripts/checkpoint_resume_regression.py"]},
+        {"name": "zero segment round regression", "command": [sys.executable, "scripts/zero_segment_round_regression.py"]},
         {"name": "parallel round regression", "command": [sys.executable, "scripts/parallel_round_regression.py"]},
         {"name": "round concurrency benchmark", "command": [sys.executable, "scripts/round_concurrency_benchmark.py"]},
         {"name": "targeted rerun fallback regression", "command": [sys.executable, "scripts/targeted_rerun_fallback_regression.py"]},

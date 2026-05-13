@@ -2329,6 +2329,10 @@ def run_round(
 
     text = normalized_input_path.read_text(encoding="utf-8")
     manifest = build_manifest(text, chunk_limit=chunk_limit, chunk_metric=chunk_metric)
+    if manifest.paragraph_count <= 0 or manifest.chunk_count <= 0:
+        raise ValueError(
+            "未提取到可改写正文内容，已停止本轮，未调用 API。请检查 DOCX 正文边界或上传包含正文文本的文档。"
+        )
     api_call_estimate = _estimate_api_calls(manifest)
     global_style_profile = _build_global_style_profile(manifest)
     configured_concurrency = _clamp_round_concurrency(max_concurrency)

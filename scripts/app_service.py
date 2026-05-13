@@ -79,7 +79,7 @@ from docx_pipeline import (
 from docx_protection_map import build_docx_protection_map
 from docx_template import DocxFormatPreflightError, apply_school_format_rules
 from llm_client import LLMRequestError, list_llm_models, llm_completion, test_llm_connection
-from round_helper import build_round_context, ensure_round_input_text, get_document_round_state
+from round_helper import build_round_context, ensure_round_input_text, get_document_round_state, round_record_has_usable_artifacts
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -488,7 +488,8 @@ def _build_history_run_audit(item: dict[str, Any], quality_summary: dict[str, An
 
 def _record_entry_to_history(doc_id: str, entry: dict[str, Any]) -> dict[str, Any]:
     rounds = entry.get("rounds") if isinstance(entry.get("rounds"), list) else []
-    history_rounds = [_map_history_round(item) for item in rounds if isinstance(item, dict)]
+    usable_rounds = [item for item in rounds if isinstance(item, dict) and round_record_has_usable_artifacts(item)]
+    history_rounds = [_map_history_round(item) for item in usable_rounds]
     history_rounds.sort(key=lambda item: item["round"], reverse=True)
     completed_rounds = sorted({item["round"] for item in history_rounds})
     latest_round = max(
@@ -510,7 +511,7 @@ def _record_entry_to_history(doc_id: str, entry: dict[str, Any]) -> dict[str, An
         "completedRounds": completed_rounds,
         "latestOutputPath": latest_round.get("outputPath", "") if latest_round else "",
         "lastTimestamp": latest_round.get("timestamp", "") if latest_round else "",
-        "artifactStats": artifact_stats if artifact_stats is not None else build_artifact_summary([item for item in rounds if isinstance(item, dict)]),
+        "artifactStats": artifact_stats if artifact_stats is not None else build_artifact_summary(usable_rounds),
         "rounds": history_rounds,
     }
 
@@ -701,6 +702,30 @@ def _normalize_compare_failed_attempts(payload: dict[str, Any]) -> dict[str, Any
         if failed_attempts:
             chunk["failedAttempts"] = failed_attempts
     return payload
+
+
+def _compare_payload_is_usable(output_path: Path, payload: dict[str, Any]) -> bool:
+    try:
+        if not output_path.exists() or not output_path.is_file() or output_path.stat().st_size <= 0:
+            return False
+    except OSError:
+        return False
+    chunks = payload.get("chunks")
+    if not isinstance(chunks, list) or not chunks:
+        return False
+    expected_chunk_count = _coerce_optional_nonnegative_int(payload.get("chunkCount"))
+    expected_paragraph_count = _coerce_optional_nonnegative_int(payload.get("paragraphCount"))
+    if expected_chunk_count is None or expected_chunk_count <= 0 or expected_chunk_count != len(chunks):
+        return False
+    if expected_paragraph_count is not None and expected_paragraph_count <= 0:
+        return False
+    manifest = _load_manifest_for_compare(output_path, payload)
+    if manifest is not None:
+        if manifest.chunk_count != expected_chunk_count:
+            return False
+        if expected_paragraph_count is not None and manifest.paragraph_count != expected_paragraph_count:
+            return False
+    return True
 
 
 def _load_manifest_for_compare(output_path: Path, compare_payload: dict[str, Any]):
@@ -1052,7 +1077,13 @@ def find_conflicting_history_route(source_path: str, model_config: dict[str, Any
     records = list_records()
     entry = records.get(doc_id, {}) if isinstance(records, dict) else {}
     rounds = entry.get("rounds", []) if isinstance(entry, dict) else []
-    normalized_rounds = [item for item in rounds if isinstance(item, dict) and isinstance(item.get("round"), int)]
+    normalized_rounds = [
+        item
+        for item in rounds
+        if isinstance(item, dict)
+        and isinstance(item.get("round"), int)
+        and round_record_has_usable_artifacts(item)
+    ]
     if not normalized_rounds:
         return None
     if any(_record_matches_prompt(item, requested_profile, requested_sequence) for item in normalized_rounds):
@@ -1263,6 +1294,7 @@ def get_document_status(
         and isinstance(item.get("round"), int)
         and _record_matches_prompt(item, normalized_prompt_profile, normalized_prompt_sequence)
         and 1 <= int(item.get("round")) <= max_rounds
+        and round_record_has_usable_artifacts(item)
     ]
     completed_rounds.sort()
     latest_output_path = ""
@@ -1290,6 +1322,7 @@ def get_document_status(
                 and isinstance(item.get("round"), int)
                 and _record_matches_prompt(item, normalized_prompt_profile, normalized_prompt_sequence)
                 and 1 <= int(item.get("round")) <= max_rounds
+                and round_record_has_usable_artifacts(item)
             ),
             key=lambda item: item["round"],
             default=None,
@@ -1338,14 +1371,15 @@ def get_document_history(source_path: str) -> dict[str, Any]:
     entry = records.get(doc_id, {}) if isinstance(records, dict) else {}
     rounds = entry.get("rounds", []) if isinstance(entry, dict) else []
 
-    history_rounds = [_map_history_round(item) for item in rounds if isinstance(item, dict)]
+    usable_rounds = [item for item in rounds if isinstance(item, dict) and round_record_has_usable_artifacts(item)]
+    history_rounds = [_map_history_round(item) for item in usable_rounds]
 
     history_rounds.sort(key=lambda item: item["round"], reverse=True)
 
     return {
         "docId": doc_id,
         "sourcePath": str(normalized_source),
-        "artifactStats": build_artifact_summary([item for item in rounds if isinstance(item, dict)]),
+        "artifactStats": build_artifact_summary(usable_rounds),
         "rounds": history_rounds,
     }
 
@@ -2919,6 +2953,8 @@ def read_round_compare(output_path: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid compare data payload: {compare_path}")
     payload = _normalize_compare_failed_attempts(payload)
+    if not _compare_payload_is_usable(normalized_output_path, payload):
+        raise ValueError("本轮结果不完整：输出或 Diff 数据为空，不能视为已完成。")
     return payload
 
 

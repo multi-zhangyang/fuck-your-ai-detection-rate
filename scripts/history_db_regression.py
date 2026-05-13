@@ -80,6 +80,96 @@ def _write_text(path: Path, text: str) -> Path:
     return path
 
 
+def _relative(path: Path) -> str:
+    return str(path.resolve().relative_to(ROOT_DIR)).replace("\\", "/")
+
+
+def _write_usable_round_artifacts(
+    output_relative: str,
+    *,
+    doc_id: str,
+    round_number: int,
+    input_relative: str,
+) -> dict[str, Any]:
+    output_path = ROOT_DIR / output_relative
+    input_path = ROOT_DIR / input_relative
+    manifest_path = output_path.with_name(f"{output_path.stem}_manifest.json")
+    compare_path = output_path.with_name(f"{output_path.stem}_compare.json")
+    input_text = input_path.read_text(encoding="utf-8") if input_path.exists() else f"history regression input {round_number}"
+    output_text = f"history regression output {round_number}"
+    _write_text(output_path, output_text)
+    _write_text(
+        manifest_path,
+        json.dumps(
+            {
+                "chunk_limit": 1800,
+                "chunk_metric": "char",
+                "paragraph_count": 1,
+                "chunk_count": 1,
+                "paragraphs": [
+                    {
+                        "paragraph_index": 0,
+                        "original_text": input_text,
+                        "chunk_ids": ["p0_c0"],
+                        "split_reason": "paragraph-kept",
+                        "original_metric_count": len(input_text),
+                    }
+                ],
+                "chunks": [
+                    {
+                        "chunk_id": "p0_c0",
+                        "paragraph_index": 0,
+                        "chunk_index": 0,
+                        "text": input_text,
+                        "char_count": len(input_text),
+                        "word_count": len(input_text.split()),
+                        "paragraph_indices": [0],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
+    _write_text(
+        compare_path,
+        json.dumps(
+            {
+                "version": 2,
+                "docId": doc_id,
+                "round": round_number,
+                "promptProfile": "cn",
+                "promptSequence": ["classical"],
+                "inputPath": input_relative,
+                "outputPath": output_relative,
+                "manifestPath": _relative(manifest_path),
+                "paragraphCount": 1,
+                "chunkCount": 1,
+                "chunks": [
+                    {
+                        "chunkId": "p0_c0",
+                        "paragraphIndex": 0,
+                        "chunkIndex": 0,
+                        "inputText": input_text,
+                        "outputText": output_text,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
+    return {
+        "input_path": input_relative,
+        "output_path": output_relative,
+        "manifest_path": _relative(manifest_path),
+        "compare_path": _relative(compare_path),
+        "input_segment_count": 1,
+        "output_segment_count": 1,
+        "_created_paths": [output_path, manifest_path, compare_path],
+    }
+
+
 def _assert(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -165,10 +255,13 @@ def run_regression() -> dict[str, Any]:
 
     try:
         source_path = _write_text(ROOT_DIR / TEST_DOC_ID, "source")
-        output_path = _write_text(ROOT_DIR / "finish" / "intermediate" / "__fyadr_history_db_regression___round1.txt", "output")
-        manifest_path = _write_text(output_path.with_name(f"{output_path.stem}_manifest.json"), "{}")
-        compare_path = _write_text(output_path.with_name(f"{output_path.stem}_compare.json"), "{}")
-        created_paths.extend([source_path, output_path, manifest_path, compare_path])
+        round1_fields = _write_usable_round_artifacts(
+            "finish/intermediate/__fyadr_history_db_regression___round1.txt",
+            doc_id=TEST_DOC_ID,
+            round_number=1,
+            input_relative=TEST_DOC_ID,
+        )
+        created_paths.extend([source_path, *round1_fields.pop("_created_paths")])
 
         records = load_records_normalized()
         records[TEST_DOC_ID] = {
@@ -178,11 +271,8 @@ def run_regression() -> dict[str, Any]:
                     "round": 1,
                     "prompt": "prompts/rewrite-pass-1.md",
                     "prompt_profile": "cn",
-                    "input_path": TEST_DOC_ID,
-                    "output_path": "finish/intermediate/__fyadr_history_db_regression___round1.txt",
-                    "manifest_path": "finish/intermediate/__fyadr_history_db_regression___round1_manifest.json",
-                    "compare_path": "finish/intermediate/__fyadr_history_db_regression___round1_compare.json",
                     "timestamp": "2026-01-01T00:00:00Z",
+                    **round1_fields,
                 }
             ],
         }
@@ -201,19 +291,19 @@ def run_regression() -> dict[str, Any]:
         _assert(counts["refs"] >= 4, "SQLite index must include artifact references")
         checks.append("save_records synchronizes document, round, artifact references, and migration state")
 
-        round2_output_path = _write_text(ROOT_DIR / "finish" / "intermediate" / "__fyadr_history_db_regression___round2.txt", "output2")
-        round2_manifest_path = _write_text(round2_output_path.with_name(f"{round2_output_path.stem}_manifest.json"), "{}")
-        round2_compare_path = _write_text(round2_output_path.with_name(f"{round2_output_path.stem}_compare.json"), "{}")
-        created_paths.extend([round2_output_path, round2_manifest_path, round2_compare_path])
+        round2_fields = _write_usable_round_artifacts(
+            "finish/intermediate/__fyadr_history_db_regression___round2.txt",
+            doc_id=TEST_DOC_ID,
+            round_number=2,
+            input_relative="finish/intermediate/__fyadr_history_db_regression___round1.txt",
+        )
+        created_paths.extend(round2_fields.pop("_created_paths"))
         updated_doc = update_round(
             doc_id=TEST_DOC_ID,
             round_number=2,
-        prompt="prompts/rewrite-pass-2.md",
+            prompt="prompts/rewrite-pass-2.md",
             prompt_profile="cn",
-            input_path="finish/intermediate/__fyadr_history_db_regression___round1.txt",
-            output_path="finish/intermediate/__fyadr_history_db_regression___round2.txt",
-            manifest_path="finish/intermediate/__fyadr_history_db_regression___round2_manifest.json",
-            compare_path="finish/intermediate/__fyadr_history_db_regression___round2_compare.json",
+            **round2_fields,
         )
         transaction_health = check_history_index()
         transaction_counts = _fetch_counts()

@@ -1,14 +1,77 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from copy import deepcopy
+from pathlib import Path
 
 import app_service
 import fyadr_records
 import round_helper
 from app_config import SAVED_SECRET_PLACEHOLDER, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
 from app_service import _resolve_round_model_config, find_conflicting_history_route
+
+
+ARTIFACT_DIR = app_service.ROOT_DIR / "finish" / "regression" / "model_route_artifacts"
+
+
+def _relative(path: Path) -> str:
+    return str(path.resolve().relative_to(app_service.ROOT_DIR)).replace("\\", "/")
+
+
+def _usable_round_fields(output_name: str, *, doc_id: str, round_number: int) -> dict:
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = ARTIFACT_DIR / output_name
+    input_path = ARTIFACT_DIR / f"{Path(output_name).stem}_input.txt"
+    manifest_path = ARTIFACT_DIR / f"{Path(output_name).stem}_manifest.json"
+    compare_path = ARTIFACT_DIR / f"{Path(output_name).stem}_compare.json"
+    text = f"route regression round {round_number}"
+    input_path.write_text(text, encoding="utf-8")
+    output_path.write_text(text, encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "chunk_limit": 1800,
+                "chunk_metric": "char",
+                "paragraph_count": 1,
+                "chunk_count": 1,
+                "paragraphs": [{"paragraph_index": 0, "original_text": text, "chunk_ids": ["p0_c0"], "split_reason": "paragraph-kept", "original_metric_count": len(text)}],
+                "chunks": [{"chunk_id": "p0_c0", "paragraph_index": 0, "chunk_index": 0, "text": text, "char_count": len(text), "word_count": 3, "paragraph_indices": [0]}],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    compare_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "docId": doc_id,
+                "round": round_number,
+                "promptProfile": "cn_custom",
+                "promptSequence": ["classical"],
+                "inputPath": _relative(input_path),
+                "outputPath": _relative(output_path),
+                "manifestPath": _relative(manifest_path),
+                "paragraphCount": 1,
+                "chunkCount": 1,
+                "chunks": [{"chunkId": "p0_c0", "paragraphIndex": 0, "chunkIndex": 0, "inputText": text, "outputText": text}],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "input_path": _relative(input_path),
+        "output_path": _relative(output_path),
+        "manifest_path": _relative(manifest_path),
+        "compare_path": _relative(compare_path),
+        "input_segment_count": 1,
+        "output_segment_count": 1,
+    }
 
 
 def _base_config() -> dict:
@@ -229,13 +292,13 @@ def test_route_conflict_detects_stale_custom_sequence() -> None:
                         "round": 1,
                         "prompt_profile": "cn_custom",
                         "prompt_sequence": ["classical", "round1"],
-                        "output_path": "finish/intermediate/route-conflict_custom_classical_round1_round1.txt",
+                        **_usable_round_fields("route-conflict_custom_classical_round1_round1.txt", doc_id="origin/route-conflict.docx", round_number=1),
                     },
                     {
                         "round": 2,
                         "prompt_profile": "cn_custom",
                         "prompt_sequence": ["classical", "round1"],
-                        "output_path": "finish/intermediate/route-conflict_custom_classical_round1_round2.txt",
+                        **_usable_round_fields("route-conflict_custom_classical_round1_round2.txt", doc_id="origin/route-conflict.docx", round_number=2),
                     },
                 ],
             }
@@ -271,19 +334,19 @@ def test_status_ignores_rounds_outside_selected_custom_sequence() -> None:
                     "round": 1,
                     "prompt_profile": "cn_custom",
                     "prompt_sequence": ["classical", "classical"],
-                    "output_path": "finish/intermediate/round-boundary-status_round1.txt",
+                    **_usable_round_fields("round-boundary-status_round1.txt", doc_id="origin/round-boundary-status.txt", round_number=1),
                 },
                 {
                     "round": 2,
                     "prompt_profile": "cn_custom",
                     "prompt_sequence": ["classical", "classical"],
-                    "output_path": "finish/intermediate/round-boundary-status_round2.txt",
+                    **_usable_round_fields("round-boundary-status_round2.txt", doc_id="origin/round-boundary-status.txt", round_number=2),
                 },
                 {
                     "round": 3,
                     "prompt_profile": "cn_custom",
                     "prompt_sequence": ["classical", "classical"],
-                    "output_path": "finish/intermediate/round-boundary-status_round3.txt",
+                    **_usable_round_fields("round-boundary-status_round3.txt", doc_id="origin/round-boundary-status.txt", round_number=3),
                 },
             ],
         }
@@ -322,13 +385,13 @@ def test_appended_sequence_continues_from_prefix_rounds() -> None:
                     "round": 1,
                     "prompt_profile": "cn_custom",
                     "prompt_sequence": ["classical", "classical"],
-                    "output_path": "finish/intermediate/round-prefix-append_round1.txt",
+                    **_usable_round_fields("round-prefix-append_round1.txt", doc_id="origin/round-prefix-append.txt", round_number=1),
                 },
                 {
                     "round": 2,
                     "prompt_profile": "cn_custom",
                     "prompt_sequence": ["classical", "classical"],
-                    "output_path": "finish/intermediate/round-prefix-append_round2.txt",
+                    **_usable_round_fields("round-prefix-append_round2.txt", doc_id="origin/round-prefix-append.txt", round_number=2),
                 },
             ],
         }
