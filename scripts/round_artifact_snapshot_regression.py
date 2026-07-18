@@ -276,6 +276,7 @@ def _test_base_snapshot_and_api(root: Path, checks: list[str]) -> None:
     _assert(full["_internal"]["compareBytes"] == fixture["compare"].read_bytes(), "compare bytes were not captured exactly")
     _assert(full["_internal"]["manifestBytes"] == fixture["manifest"].read_bytes(), "manifest bytes were not captured exactly")
 
+    original_output_bytes = fixture["output"].read_bytes()
     crlf_effective = expected_effective.replace("\n", "\r\n")
     fixture["output"].write_bytes(crlf_effective.encode("utf-8"))
     crlf_snapshot = app_service.read_round_artifact_snapshot(
@@ -298,7 +299,7 @@ def _test_base_snapshot_and_api(root: Path, checks: list[str]) -> None:
         crlf_snapshot["outputSha256"] != crlf_snapshot["effectiveTextSha256"],
         "CRLF fixture did not prove byte-level and semantic equality remain distinct",
     )
-    fixture["output"].write_bytes(expected_effective.encode("utf-8"))
+    fixture["output"].write_bytes(original_output_bytes)
 
     limited = app_service.read_round_artifact_snapshot(fixture["output"], max_preview_chars=12)
     _assert(limited["effectivePreview"]["truncated"] is True, "maxChars did not truncate the preview")
