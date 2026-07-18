@@ -225,9 +225,42 @@ class WebRunStateRegressionTest(unittest.TestCase):
         self.assertNotIn("sk-private", serialized)
         self.assertNotIn("private-provider", serialized)
         self.assertNotIn("private-model", serialized)
+        self.assertEqual(payload["state"]["sourcePath"], str(self.sample_path))
         self.assertEqual(payload["state"]["lastEvent"]["phase"], "round-complete")
         self.assertNotIn("roundModel", payload["state"]["lastEvent"])
         self.assertEqual(payload["state"]["result"]["roundModel"]["model"], "<configured>")
+
+    def test_persisted_run_source_path_projection_rejects_out_of_origin_path(self) -> None:
+        run_id, _ = web_app.register_run(str(self.sample_path))
+        snapshot_path = web_app.run_round_state_path(run_id)
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        payload["state"]["sourcePath"] = str(Path(web_app.__file__).resolve())
+        web_app.write_json_atomic(snapshot_path, payload)
+
+        clear_run_memory()
+        restored = web_app.load_persisted_run_summary(run_id)
+        self.assertIsNotNone(restored)
+        assert restored is not None
+        self.assertNotIn("sourcePath", restored)
+        task = web_app.normalize_task_summary_item(
+            restored,
+            task_type="run-round",
+            task_group="recent",
+        )
+        self.assertEqual(task.get("targetPath"), "")
+        recent = [
+            item
+            for item in web_app.load_recent_run_summaries(set())
+            if item.get("runId") == run_id
+        ]
+        self.assertEqual(len(recent), 1)
+        self.assertNotIn("sourcePath", recent[0])
+        recent_task = web_app.normalize_task_summary_item(
+            recent[0],
+            task_type="run-round",
+            task_group="recent",
+        )
+        self.assertEqual(recent_task.get("targetPath"), "")
 
     def test_task_state_atomic_write_handles_concurrent_writers(self) -> None:
         output_path = TASK_STATE_TEST_DIR / "run_round_concurrent.json"

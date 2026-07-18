@@ -10,16 +10,69 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / "scripts"))
 
-from app_service import _normalize_review_decision_value, _select_review_text, export_round_output, save_review_decisions  # noqa: E402
+from app_service import (  # noqa: E402
+    DocumentReleaseGateError,
+    _normalize_review_decision_value,
+    _select_review_text,
+    export_round_output,
+    save_review_decisions,
+)
 from fyadr_round_service import get_round_compare_path  # noqa: E402
 
 REPORT_PATH = ROOT_DIR / "finish" / "regression" / "review_decisions_regression_report.json"
 APP_SOURCE_PATH = ROOT_DIR / "app" / "src" / "App.tsx"
+REVIEW_SOURCE_PATH = ROOT_DIR / "app" / "src" / "lib" / "reviewDecisions.ts"
 
 
 def _assert(condition: bool, message: str, failures: list[str]) -> None:
     if not condition:
         failures.append(message)
+
+
+def _assert_rejected_review_save_is_atomic(
+    *,
+    output_path: Path,
+    compare_path: Path,
+    review_path: Path,
+    decisions: dict[str, Any],
+    label: str,
+    failures: list[str],
+) -> None:
+    compare_existed_before = compare_path.exists()
+    compare_before = compare_path.read_bytes() if compare_existed_before else None
+    review_existed_before = review_path.exists()
+    review_before = review_path.read_bytes() if review_existed_before else None
+
+    try:
+        save_review_decisions(str(output_path), decisions)
+        failures.append(f"{label} must be rejected by the document release gate.")
+    except DocumentReleaseGateError as exc:
+        _assert(
+            getattr(exc, "code", None) == "document_release_gate_failed",
+            f"{label} must expose the stable document_release_gate_failed error code.",
+            failures,
+        )
+
+    compare_exists_after = compare_path.exists()
+    _assert(
+        compare_exists_after == compare_existed_before,
+        f"{label} must not change compare-sidecar existence when review saving is rejected.",
+        failures,
+    )
+    compare_after = compare_path.read_bytes() if compare_exists_after else None
+    _assert(compare_after == compare_before, f"{label} must not mutate compare bytes when review saving is rejected.", failures)
+    review_exists_after = review_path.exists()
+    _assert(
+        review_exists_after == review_existed_before,
+        f"{label} must not change review-sidecar existence when review saving is rejected.",
+        failures,
+    )
+    review_after = review_path.read_bytes() if review_exists_after else None
+    _assert(
+        review_after == review_before,
+        f"{label} must not mutate review-sidecar bytes when review saving is rejected.",
+        failures,
+    )
 
 
 def run_regression() -> dict[str, Any]:
@@ -48,25 +101,25 @@ def run_regression() -> dict[str, Any]:
         failures,
     )
     _assert(_select_review_text("original", "rewrite", legacy_failed_output) == "original", "Unconfirmed failed-output decisions must export safe source text.", failures)
-    _assert(_select_review_text("original", "rewrite", confirmed_failed_output) == "candidate", "Confirmed failed-output decisions must export the selected AI text.", failures)
 
     app_source = APP_SOURCE_PATH.read_text(encoding="utf-8") if APP_SOURCE_PATH.exists() else ""
-    _assert("function normalizeReviewDecisionsForSave" in app_source, "Frontend must save review decisions with explicit-state semantics.", failures)
-    _assert("return [chunkId, \"rewrite\" as ReviewDecision];" in app_source, "Saved plain rewrite must reload as unresolved.", failures)
-    _assert("return [chunkId, \"source\" as ReviewDecision];" in app_source, "Unconfirmed failed-output choices must reload as unresolved safe-source decisions.", failures)
-    _assert("isFailedOutputDecision(decision) && decision.confirmed !== true" in app_source, "Failed-output decisions must reload as unresolved until confirmed.", failures)
-    _assert("if (decision === \"source_confirmed\")" in app_source, "Only explicit source confirmations should be persisted.", failures)
+    review_source = REVIEW_SOURCE_PATH.read_text(encoding="utf-8") if REVIEW_SOURCE_PATH.exists() else ""
+    _assert("export function normalizeReviewDecisionsForSave" in review_source, "Frontend must save review decisions with explicit-state semantics.", failures)
+    _assert("return [chunkId, \"rewrite\" as ReviewDecision];" in review_source, "Saved plain rewrite must reload as unresolved.", failures)
+    _assert("return [chunkId, \"source\" as ReviewDecision];" in review_source, "Unconfirmed failed-output choices must reload as unresolved safe-source decisions.", failures)
+    _assert("if (isFailedOutputDecision(decision))" in review_source, "Failed-output decisions must always reload as unresolved safe-source choices.", failures)
+    _assert("if (decision === \"source_confirmed\")" in review_source, "Only explicit source confirmations should be persisted.", failures)
     _assert("if (decision === \"source\" || decision === \"source_confirmed\")" not in app_source, "Default source choices must not be saved as confirmed.", failures)
-    _assert("function normalizeSavedReviewDecisionsForCompare" in app_source, "Saved decisions must be normalized against compare data.", failures)
+    _assert("export function normalizeSavedReviewDecisionsForCompare" in review_source, "Saved decisions must be normalized against compare data.", failures)
     _assert("highRiskChunkIds.has(chunkId) && decision === \"source_confirmed\" ? \"source\"" not in app_source, "Confirmed source choices must not re-open handled high-risk failed outputs.", failures)
-    _assert("const validChunkIds = new Set(data.chunks.map((chunk) => chunk.chunkId));" in app_source, "Saved decisions should still be scoped to the loaded compare data.", failures)
+    _assert("const validChunkIds = new Set(data.chunks.map((chunk) => chunk.chunkId));" in review_source, "Saved decisions should still be scoped to the loaded compare data.", failures)
     _assert(
         "if (decision === \"rewrite\") return [chunkId, \"rewrite_confirmed\" as ReviewDecision];" not in app_source,
         "Frontend must not promote default rewrite to confirmed on reload.",
         failures,
     )
     _assert(
-        "return [[chunkId, \"rewrite_confirmed\" as ReviewDecision] as const];" in app_source,
+        "return [[chunkId, \"rewrite_confirmed\" as ReviewDecision] as const];" in review_source,
         "Frontend must persist explicit rewrite confirmations.",
         failures,
     )
@@ -77,7 +130,7 @@ def run_regression() -> dict[str, Any]:
     work_dir.mkdir(parents=True, exist_ok=True)
     output_path = work_dir / "failed_output_choice.txt"
     export_path = work_dir / "failed_output_safe_export.txt"
-    adopted_export_path = work_dir / "failed_output_adopted_export.txt"
+    rejected_save_export_path = work_dir / "failed_output_rejected_save_export.txt"
     source_text = (
         "（2）发送请求：通过OkHttpClient向文心一言API端点"
         "`https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions`"
@@ -111,13 +164,15 @@ def run_regression() -> dict[str, Any]:
     _assert(not invalid_format_parent.exists(), "Invalid export format must not create directories.", failures)
 
     compare_path = get_round_compare_path(output_path)
-    compare_path.with_name(f"{compare_path.stem}_review_decisions.json").unlink(missing_ok=True)
+    review_path = compare_path.with_name(f"{compare_path.stem}_review_decisions.json")
+    review_path.unlink(missing_ok=True)
     compare_path.write_text(
         json.dumps(
             {
                 "version": 2,
                 "docId": "review-decisions-recovery",
                 "round": 1,
+                "updatedAt": "2000-01-01T00:00:00Z",
                 "chunkCount": 1,
                 "qualitySummary": {"sourceFallbackCount": 1, "sourceFallbackChunkIds": ["p0_c0"]},
                 "chunks": [
@@ -139,22 +194,35 @@ def run_regression() -> dict[str, Any]:
         encoding="utf-8",
     )
     export_round_output(str(output_path), str(export_path), "txt")
-    _assert(export_path.read_text(encoding="utf-8") == source_text, "TXT export must keep source fallback until the user explicitly adopts failed output.", failures)
-    save_review_decisions(
-        str(output_path),
-        {"p0_c0": {"mode": "custom", "source": "failed_output", "text": recovered_text, "confirmed": True}},
+    _assert(
+        export_path.read_text(encoding="utf-8") == source_text,
+        "TXT export must keep source fallback when no safe rewrite has been released.",
+        failures,
     )
-    export_round_output(str(output_path), str(adopted_export_path), "txt")
-    _assert(adopted_export_path.read_text(encoding="utf-8") == recovered_text, "Confirmed failed-output decision must export the selected AI text.", failures)
+    _assert_rejected_review_save_is_atomic(
+        output_path=output_path,
+        compare_path=compare_path,
+        review_path=review_path,
+        decisions={"p0_c0": {"mode": "custom", "source": "failed_output", "text": recovered_text, "confirmed": True}},
+        label="Confirmed failed-output review decision",
+        failures=failures,
+    )
+    export_round_output(str(output_path), str(rejected_save_export_path), "txt")
+    _assert(
+        rejected_save_export_path.read_text(encoding="utf-8") == source_text,
+        "Rejecting a confirmed failed-output decision must preserve safe source export semantics.",
+        failures,
+    )
 
     targeted_output_path = work_dir / "targeted_failed_output_choice.txt"
     targeted_export_path = work_dir / "targeted_safe_export.txt"
-    targeted_adopted_export_path = work_dir / "targeted_adopted_export.txt"
+    targeted_rejected_save_export_path = work_dir / "targeted_rejected_save_export.txt"
     targeted_source = "登录注册模块围绕账号创建、身份校验和会话保持展开，保证用户能够稳定访问平台功能。"
     targeted_recovered = "登录注册模块主要承接账号创建、身份核验与会话维持等流程，使用户可以持续、稳定地进入平台功能。"
     targeted_output_path.write_text(targeted_source, encoding="utf-8")
     targeted_compare_path = get_round_compare_path(targeted_output_path)
-    targeted_compare_path.with_name(f"{targeted_compare_path.stem}_review_decisions.json").unlink(missing_ok=True)
+    targeted_review_path = targeted_compare_path.with_name(f"{targeted_compare_path.stem}_review_decisions.json")
+    targeted_review_path.unlink(missing_ok=True)
     targeted_compare_path.write_text(
         json.dumps(
             {
@@ -184,14 +252,22 @@ def run_regression() -> dict[str, Any]:
     )
     export_round_output(str(targeted_output_path), str(targeted_export_path), "txt")
     targeted_compare_after = json.loads(targeted_compare_path.read_text(encoding="utf-8"))
-    _assert(targeted_export_path.read_text(encoding="utf-8") == targeted_source, "Targeted fallback export must keep safe text until explicit failed-output adoption.", failures)
+    _assert(targeted_export_path.read_text(encoding="utf-8") == targeted_source, "Targeted fallback export must keep safe source text.", failures)
     _assert(targeted_compare_after.get("qualitySummary", {}).get("targetedRerunFallbackCount") == 1, "Reading/exporting compare must not clear targeted fallback summary by itself.", failures)
-    save_review_decisions(
-        str(targeted_output_path),
-        {"p0_c0": {"mode": "custom", "source": "failed_output", "text": targeted_recovered, "confirmed": True}},
+    _assert_rejected_review_save_is_atomic(
+        output_path=targeted_output_path,
+        compare_path=targeted_compare_path,
+        review_path=targeted_review_path,
+        decisions={"p0_c0": {"mode": "custom", "source": "rejected_candidate", "text": targeted_recovered, "confirmed": True}},
+        label="Confirmed legacy rejected-candidate review decision",
+        failures=failures,
     )
-    export_round_output(str(targeted_output_path), str(targeted_adopted_export_path), "txt")
-    _assert(targeted_adopted_export_path.read_text(encoding="utf-8") == targeted_recovered, "Confirmed targeted failed-output decision must export the selected AI text.", failures)
+    export_round_output(str(targeted_output_path), str(targeted_rejected_save_export_path), "txt")
+    _assert(
+        targeted_rejected_save_export_path.read_text(encoding="utf-8") == targeted_source,
+        "Rejecting a confirmed legacy rejected-candidate decision must preserve safe source export semantics.",
+        failures,
+    )
 
     report = {
         "ok": not failures,

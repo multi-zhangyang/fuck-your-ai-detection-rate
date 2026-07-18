@@ -126,6 +126,15 @@ function npmInvocation(args) {
   return { command: "npm", args };
 }
 
+function pythonExecutable() {
+  if (process.env.PYTHON) return process.env.PYTHON;
+  const localCandidates = process.platform === "win32"
+    ? [resolve(ROOT_DIR, ".venv", "Scripts", "python.exe")]
+    : [resolve(ROOT_DIR, ".venv", "bin", "python")];
+  return localCandidates.find((candidate) => existsSync(candidate))
+    || (process.platform === "win32" ? "python" : "python3");
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -189,6 +198,7 @@ function getBrowserCandidates() {
     );
   } else {
     candidates.push(
+      "/snap/bin/chromium",
       "/usr/bin/google-chrome",
       "/usr/bin/google-chrome-stable",
       "/usr/bin/chromium",
@@ -366,7 +376,7 @@ async function runSmoke() {
 
   try {
     if (!(await requestOk(backendHealthUrl, 2000))) {
-      const backend = new ManagedProcess("backend", process.env.PYTHON || "python", ["scripts/web_app.py"], { cwd: ROOT_DIR });
+      const backend = new ManagedProcess("backend", pythonExecutable(), ["scripts/web_app.py"], { cwd: ROOT_DIR });
       managedProcesses.push(backend);
       await waitForHttp(backendHealthUrl, DEFAULT_TIMEOUT_MS, "backend", backend);
       backendStartedBySmoke = true;
@@ -382,7 +392,7 @@ async function runSmoke() {
     checks.push("frontend dev server reachable");
 
     userDataDir = mkdtempSync(join(tmpdir(), "fyadr-e2e-"));
-    browserProcess = new ManagedProcess("browser", browserExecutable, [
+    const browserArgs = [
       "--headless=new",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${userDataDir}`,
@@ -392,7 +402,11 @@ async function runSmoke() {
       "--disable-gpu",
       "--window-size=1440,1000",
       frontendUrl,
-    ]);
+    ];
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      browserArgs.unshift("--no-sandbox");
+    }
+    browserProcess = new ManagedProcess("browser", browserExecutable, browserArgs);
     managedProcesses.push(browserProcess);
     await waitForHttp(`http://127.0.0.1:${debugPort}/json/version`, DEFAULT_TIMEOUT_MS, "browser CDP", browserProcess);
 
@@ -419,7 +433,11 @@ async function runSmoke() {
       const hasRestoredDocument = await evaluate(browserClient, `document.body?.innerText?.includes("源文档 ·") ?? false`, 3000);
       if (!hasRestoredDocument && await findClickablePointByText(browserClient, "上传文档")) {
         await clickByText(browserClient, "上传文档");
-        await waitForText(browserClient, "已取消选择文档", 12_000);
+        await wait(750);
+        const cancelNoticeVisible = await evaluate(browserClient, `document.body?.innerText?.includes("已取消选择文档") ?? false`, 3000);
+        if (!cancelNoticeVisible) {
+          warnings.push("browser canceled the intercepted file chooser without dispatching a page-level cancel event");
+        }
         await clickByText(browserClient, "模型配置");
         await waitForText(browserClient, "默认连接", 12_000);
         await clickByText(browserClient, "工作台");
@@ -451,7 +469,8 @@ async function runSmoke() {
     checks.push("home controls remain visible beside inline Diff workbench");
 
     await clickByText(browserClient, "学校规范");
-    await waitForText(browserClient, "学校排版规范", 12_000);
+    await waitForText(browserClient, "学校规范对照", 12_000);
+    await waitForText(browserClient, "不会重排上传 Word", 12_000);
     await clickByText(browserClient, "历史记录");
     await waitForText(browserClient, "继续处理与导出", 12_000);
     await clickByText(browserClient, "启动诊断");
@@ -466,6 +485,23 @@ async function runSmoke() {
 
     await clickByText(browserClient, "工作台");
     await waitForText(browserClient, "改写对照", 12_000);
+    await clickByText(browserClient, "降检报告");
+    await waitForExpression(
+      browserClient,
+      `document.body?.innerText?.includes("降检诊断") || document.body?.innerText?.includes("尚未载入论文")`,
+      "rate-audit report or honest empty state",
+      20_000,
+    );
+    const hasRateAudit = await evaluate(browserClient, `document.body?.innerText?.includes("降检诊断") ?? false`, 3000);
+    if (hasRateAudit) {
+      await waitForText(browserClient, "降检策略 × 正文与格式硬约束", 12_000);
+      await waitForText(browserClient, "正文范围与格式锁", 12_000);
+      checks.push("rate-audit report renders the dual strategy/content contract gate");
+    } else {
+      checks.push("rate-audit report renders an honest empty state without a selected document");
+    }
+    await clickByText(browserClient, "工作台");
+    await waitForText(browserClient, "改写对照", 12_000);
     await clickByText(browserClient, "打开通知与任务中心");
     await waitForText(browserClient, "通知与任务中心", 12_000);
     const notificationCenterIsDialog = await evaluate(browserClient, "Boolean(document.querySelector('[role=\"dialog\"][aria-modal=\"true\"]'))", 3000);
@@ -475,6 +511,69 @@ async function runSmoke() {
     await pressKey(browserClient, "Escape");
     await waitForTextGone(browserClient, "通知与任务中心", 12_000);
     checks.push("prompt workspace renders and notification center opens/closes with Escape");
+
+    await browserClient.send("Emulation.setDeviceMetricsOverride", {
+      width: 390,
+      height: 844,
+      deviceScaleFactor: 1,
+      mobile: true,
+      screenWidth: 390,
+      screenHeight: 844,
+    });
+    await wait(350);
+    const mobileHeaderState = await evaluate(browserClient, `(() => {
+      const notification = document.querySelector('button[aria-label="打开通知与任务中心"]');
+      const subbar = document.querySelector('.vercel-subbar');
+      const productName = Array.from(document.querySelectorAll('header span')).find((item) => item.textContent?.trim() === '论文 AI 降检平台');
+      if (!notification || !subbar || !productName) return null;
+      const rect = notification.getBoundingClientRect();
+      const productRect = productName.getBoundingClientRect();
+      return {
+        notificationVisible: rect.left >= 0 && rect.right <= window.innerWidth && rect.width >= 32,
+        productNameVisible: productRect.left >= 0 && productRect.right <= window.innerWidth && productRect.width > 0,
+        subbarFits: subbar.scrollWidth <= subbar.clientWidth + 2,
+        documentFits: document.documentElement.scrollWidth <= window.innerWidth + 2,
+      };
+    })()`, 3000);
+    if (!mobileHeaderState?.notificationVisible || !mobileHeaderState?.productNameVisible || !mobileHeaderState?.subbarFits || !mobileHeaderState?.documentFits) {
+      throw new Error(`Mobile global status controls are clipped: ${JSON.stringify(mobileHeaderState)}`);
+    }
+    await clickByText(browserClient, "打开通知与任务中心");
+    await waitForText(browserClient, "通知与任务中心", 12_000);
+    await pressKey(browserClient, "Escape");
+    await waitForTextGone(browserClient, "通知与任务中心", 12_000);
+
+    const mobileSidebarOpened = await evaluate(browserClient, `(() => {
+      const trigger = document.querySelector('[data-sidebar="trigger"]');
+      if (!(trigger instanceof HTMLElement)) return false;
+      trigger.click();
+      return true;
+    })()`, 3000);
+    if (!mobileSidebarOpened) {
+      throw new Error("Mobile sidebar trigger is unavailable.");
+    }
+    await waitForText(browserClient, "工作台导航", 12_000);
+    const mobilePromptNavigationClicked = await evaluate(browserClient, `(() => {
+      const button = Array.from(document.querySelectorAll('button')).find((item) => item.textContent?.trim() === '提示词');
+      if (!(button instanceof HTMLButtonElement)) return false;
+      button.click();
+      return true;
+    })()`, 3000);
+    if (!mobilePromptNavigationClicked) {
+      throw new Error("Prompt navigation item is unavailable in the mobile sidebar.");
+    }
+    await waitForExpression(browserClient, "Boolean(document.querySelector('textarea'))", "mobile prompt editor textarea", 12_000);
+    const mobilePromptEditorReachable = await evaluate(browserClient, `(() => {
+      const textarea = document.querySelector('textarea');
+      if (!textarea) return false;
+      textarea.scrollIntoView({ block: 'center' });
+      const rect = textarea.getBoundingClientRect();
+      return rect.height >= 80 && rect.bottom > 0 && rect.top < window.innerHeight;
+    })()`, 3000);
+    if (!mobilePromptEditorReachable) {
+      throw new Error("Prompt editor is not reachable in the 390x844 mobile viewport.");
+    }
+    checks.push("390px mobile product header, page width, and prompt editor remain reachable");
 
     return {
       ok: true,

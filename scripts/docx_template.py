@@ -323,7 +323,24 @@ def apply_school_format_rules(
     *,
     snapshot_path: Path | None = None,
     rules: dict[str, Any] | None = None,
+    preserve_original_format: bool = False,
+    report_export_path: Path | None = None,
 ) -> dict[str, Any]:
+    """Apply school format rules to the exported document.
+
+    When ``preserve_original_format`` is False (default, legacy behavior), each
+    editable body paragraph is force-fit to the school spec (font/size/line
+    spacing/indent) and the section page margins are rewritten — suitable only
+    for the single school the spec was authored for.
+
+    When ``preserve_original_format`` is True ("preserve original / fidelity"
+    mode), the source document's own formatting is the single source of truth:
+    editable body paragraphs keep their original ``pPr``/``rPr`` byte-for-byte
+    (the profile is skipped entirely — only ``w:t`` text was changed during
+    rebuild), the section layout and table layout are left untouched, and
+    ``mode`` reports ``"preserve_original"``. This is format-agnostic across
+    universities: the only thing changed is the text, not the formatting.
+    """
     normalized_export_path = export_path.resolve()
     active_rules = rules or load_active_format_rules()
     document = Document(str(normalized_export_path))
@@ -331,11 +348,19 @@ def apply_school_format_rules(
     editable_top_level_indexes = _load_editable_top_level_paragraph_indexes(snapshot_path)
     body_scope_top_level_indexes = _load_body_scope_top_level_paragraph_indexes(snapshot_path)
     editable_only_mode = editable_top_level_indexes is not None
-    _apply_school_section_layout(document, active_rules)
+    # Preserve-original mode leaves the page layout (margins/headers/footers)
+    # exactly as the source document had it — the source is the single source of
+    # truth, so we do not rewrite section geometry.
+    if not preserve_original_format:
+        _apply_school_section_layout(document, active_rules)
     paragraphs = _collect_top_level_nonempty_paragraphs(document)
     if not paragraphs:
         document.save(str(normalized_export_path))
-        return {"appliedCount": 0, "bodyParagraphCount": 0, "mode": "school_rules"}
+        return {
+            "appliedCount": 0,
+            "bodyParagraphCount": 0,
+            "mode": "preserve_original" if preserve_original_format else "school_rules",
+        }
 
     start_index = _find_body_start_index(paragraphs)
     first_body_index = _find_first_body_heading_index(paragraphs, start_index)
@@ -387,11 +412,29 @@ def apply_school_format_rules(
         body_paragraph_count += 1
         if editable_only_mode and not is_editable_top_level:
             content_locked_style_count += 1
+        # In preserve-original mode the source run/paragraph formatting is the
+        # single source of truth: we only changed the text (w:t) during rebuild,
+        # so we must NOT touch pPr/rPr at all — not even to "fill blanks", because
+        # backfilling bold=False / cs-font / explicit indents would mutate the
+        # format-bearing OOXML of sources that rely on inheritance, breaking the
+        # format-lock invariant. Skip the profile entirely.
+        if preserve_original_format:
+            applied_profiles.append({
+                "index": actual_paragraph_index if actual_paragraph_index is not None else index,
+                "role": school_profile.role if school_profile is not None else "body_text",
+                "text": paragraph.text.strip(),
+                "fontSizePt": None,
+                "cnFont": None,
+                "enFont": None,
+                "preserved": True,
+            })
+            applied_count += 1
+            continue
         _apply_paragraph_profile(
             paragraph,
             school_profile,
             font_profile=school_profile,
-            preserve_existing=False,
+            preserve_existing=preserve_original_format,
         )
         applied_profiles.append({
             "index": actual_paragraph_index if actual_paragraph_index is not None else index,
@@ -404,10 +447,14 @@ def apply_school_format_rules(
         applied_count += 1
 
     table_layout_stats = {"tableCount": 0, "tableParagraphCount": 0, "borderedTableCount": 0}
-    if not editable_only_mode or _rules_allow_content_locked_table_format(active_rules):
+    if not preserve_original_format and (not editable_only_mode or _rules_allow_content_locked_table_format(active_rules)):
         table_layout_stats = _apply_school_table_layout(document, active_rules)
 
-    preflight_report = _write_school_format_preflight_report(normalized_export_path, applied_profiles, active_rules)
+    preflight_report = _write_school_format_preflight_report(
+        (report_export_path or normalized_export_path).resolve(),
+        applied_profiles,
+        active_rules,
+    )
     if preflight_report["blockingIssues"]:
         raise DocxFormatPreflightError(
             "DOCX formatting aborted: school format preflight found high-risk layout issues. "
@@ -425,7 +472,7 @@ def apply_school_format_rules(
         "contentLockedStyleCount": content_locked_style_count,
         "tableStyleCount": int(table_layout_stats.get("tableParagraphCount", 0) or 0),
         "tableBorderCount": int(table_layout_stats.get("borderedTableCount", 0) or 0),
-        "mode": "school_rules",
+        "mode": "preserve_original" if preserve_original_format else "school_rules",
         "formatScope": "body_scope_style_only" if editable_only_mode else "full_generated_document",
         "schoolName": str(active_rules.get("schoolName", "")),
         "preflightPath": str(preflight_report.get("path", "")),

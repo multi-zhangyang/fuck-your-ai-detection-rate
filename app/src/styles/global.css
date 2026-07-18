@@ -1,73 +1,87 @@
-@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600;700&display=swap");
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 4%;
+    --background: 0 0% 98.8%;
+    --foreground: 0 0% 7%;
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 4%;
+    --card-foreground: 0 0% 7%;
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 4%;
-    --primary: 0 0% 4%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 9%;
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 44%;
-    --accent: 0 0% 94%;
-    --accent-foreground: 0 0% 9%;
-    --destructive: 0 72% 45%;
+    --popover-foreground: 0 0% 7%;
+    --primary: 0 0% 7%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 96.5%;
+    --secondary-foreground: 0 0% 8%;
+    --muted: 0 0% 96.5%;
+    --muted-foreground: 0 0% 42%;
+    --accent: 0 0% 95.5%;
+    --accent-foreground: 0 0% 7%;
+    --destructive: 2 57% 46%;
     --destructive-foreground: 0 0% 100%;
-    --success: 142 72% 36%;
+    --success: 153 31% 34%;
+    --success-text: 153 34% 27%;
     --success-foreground: 0 0% 100%;
-    --border: 0 0% 89%;
-    --input: 0 0% 89%;
-    --ring: 0 0% 4%;
-    --radius: 0.5rem;
-    --sidebar-background: 0 0% 100%;
-    --sidebar-foreground: 0 0% 9%;
-    --sidebar-primary: 0 0% 4%;
+    --warning: 36 48% 42%;
+    --warning-text: 32 51% 34%;
+    --warning-foreground: 36 60% 12%;
+    --info: 215 16% 40%;
+    --info-text: 215 16% 32%;
+    --destructive-text: 0 65% 44%;
+    --info-foreground: 0 0% 98%;
+    --border: 0 0% 88.5%;
+    --input: 0 0% 87%;
+    --ring: 0 0% 16%;
+    --radius: 0.75rem;
+    --sidebar-background: 0 0% 97.8%;
+    --sidebar-foreground: 0 0% 18%;
+    --sidebar-primary: 0 0% 7%;
     --sidebar-primary-foreground: 0 0% 98%;
-    --sidebar-accent: 0 0% 96%;
+    --sidebar-accent: 0 0% 94%;
     --sidebar-accent-foreground: 0 0% 9%;
-    --sidebar-border: 0 0% 89%;
-    --sidebar-ring: 0 0% 4%;
+    --sidebar-border: 0 0% 91%;
+    --sidebar-ring: 0 0% 9%;
   }
 
   .dark {
-    --background: 0 0% 0%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 4%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 4%;
-    --popover-foreground: 0 0% 98%;
+    --background: 0 0% 3.4%;
+    --foreground: 0 0% 95%;
+    --card: 0 0% 5.8%;
+    --card-foreground: 0 0% 95%;
+    --popover: 0 0% 6.2%;
+    --popover-foreground: 0 0% 95%;
     --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 4%;
-    --secondary: 0 0% 9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 8%;
-    --muted-foreground: 0 0% 64%;
-    --accent: 0 0% 12%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 72% 45%;
-    --destructive-foreground: 0 0% 98%;
-    --success: 142 76% 45%;
+    --primary-foreground: 0 0% 7%;
+    --secondary: 0 0% 10%;
+    --secondary-foreground: 0 0% 94%;
+    --muted: 0 0% 10%;
+    --muted-foreground: 0 0% 65%;
+    --accent: 0 0% 11.5%;
+    --accent-foreground: 0 0% 96%;
+    --destructive: 2 52% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 153 28% 43%;
+    --success-text: 153 31% 59%;
     --success-foreground: 0 0% 4%;
-    --border: 0 0% 16%;
-    --input: 0 0% 18%;
-    --ring: 0 0% 72%;
-    --sidebar-background: 0 0% 0%;
-    --sidebar-foreground: 0 0% 92%;
+    --warning: 38 43% 50%;
+    --warning-text: 38 48% 66%;
+    --warning-foreground: 38 90% 96%;
+    --info: 215 14% 62%;
+    --info-text: 215 16% 72%;
+    --destructive-text: 0 70% 64%;
+    --info-foreground: 0 0% 98%;
+    --border: 0 0% 15%;
+    --input: 0 0% 17%;
+    --ring: 0 0% 78%;
+    --sidebar-background: 0 0% 4.5%;
+    --sidebar-foreground: 0 0% 91%;
     --sidebar-primary: 0 0% 98%;
-    --sidebar-primary-foreground: 0 0% 4%;
+    --sidebar-primary-foreground: 0 0% 9%;
     --sidebar-accent: 0 0% 12%;
-    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-accent-foreground: 0 0% 93%;
     --sidebar-border: 0 0% 14%;
-    --sidebar-ring: 0 0% 72%;
+    --sidebar-ring: 0 0% 83%;
   }
 
   * {
@@ -81,43 +95,104 @@
   body {
     @apply h-svh overflow-hidden bg-background font-sans text-foreground antialiased;
     text-rendering: geometricPrecision;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
   #root {
     @apply h-svh overflow-hidden;
   }
+
+  :focus-visible {
+    scroll-margin: 1rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
 @layer utilities {
   .vercel-shell {
-    @apply bg-background;
+    @apply bg-transparent;
+    background-image:
+      radial-gradient(circle at 50% -20%, hsl(var(--foreground) / 0.045), transparent 42%),
+      linear-gradient(to right, hsl(var(--border) / 0.22) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.22) 1px, transparent 1px);
+    background-position: center top;
+    background-size: auto, 48px 48px, 48px 48px;
   }
 
   .vercel-subbar {
-    @apply border-border bg-background;
-    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.035);
+    @apply border-border/70 bg-background/75 backdrop-blur-xl;
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.025);
   }
 
   .vercel-surface {
-    @apply border border-border bg-card text-card-foreground;
-    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.035);
+    @apply border border-border/80 bg-card/95 text-card-foreground shadow-soft backdrop-blur-sm;
+    box-shadow:
+      inset 0 1px 0 hsl(var(--foreground) / 0.035),
+      0 1px 2px hsl(0 0% 0% / 0.04),
+      0 16px 40px -24px hsl(0 0% 0% / 0.22);
+  }
+
+  .vercel-empty-state,
+  [data-vercel-state="review"] {
+    @apply relative isolate overflow-hidden bg-card/80;
+    background-image:
+      radial-gradient(circle at center, hsl(var(--foreground) / 0.035), transparent 46%),
+      linear-gradient(to right, hsl(var(--border) / 0.26) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.26) 1px, transparent 1px);
+    background-size: auto, 32px 32px, 32px 32px;
+  }
+
+  .vercel-empty-state::after,
+  [data-vercel-state="review"]::after {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    content: "";
+    background: radial-gradient(circle at center, transparent 0, hsl(var(--card) / 0.9) 74%);
+    pointer-events: none;
+  }
+
+  .vercel-kicker {
+    @apply font-mono text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground;
+  }
+
+  .vercel-icon-frame {
+    @apply flex shrink-0 items-center justify-center rounded-lg border border-border/80 bg-gradient-to-b from-card to-muted/70 text-foreground shadow-sm;
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.06), 0 1px 2px hsl(0 0% 0% / 0.08);
+  }
+
+  .vercel-hairline {
+    background: linear-gradient(90deg, transparent, hsl(var(--border)), transparent);
   }
 
   .shadcn-control-panel {
-    @apply rounded-lg border border-border bg-card shadow-sm;
-    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.035);
+    @apply rounded-xl border border-border/80 bg-card/95 shadow-soft backdrop-blur-sm;
+    box-shadow:
+      inset 0 1px 0 hsl(var(--foreground) / 0.04),
+      0 1px 2px hsl(0 0% 0% / 0.04),
+      0 18px 44px -28px hsl(0 0% 0% / 0.28);
   }
 
   .shadcn-choice-card {
-    @apply flex h-auto min-h-[4.25rem] w-full min-w-0 max-w-full flex-col items-stretch justify-start gap-1.5 overflow-hidden whitespace-normal rounded-md border bg-card px-3 py-2.5 text-left text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60;
+    @apply flex h-auto min-h-[4.25rem] w-full min-w-0 max-w-full flex-col items-stretch justify-start gap-1.5 overflow-hidden whitespace-normal rounded-xl border border-border/80 bg-card/70 px-3 py-3 text-left text-foreground shadow-none transition-all duration-200 hover:-translate-y-px hover:border-foreground/20 hover:bg-accent/70 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60;
   }
 
   .shadcn-choice-card-active {
-    @apply border-foreground/35 bg-accent shadow-sm;
+    @apply border-foreground/25 bg-accent/80 shadow-sm ring-1 ring-foreground/5;
   }
 
   .shadcn-config-dialog {
-    @apply border-border bg-background shadow-[0_18px_56px_hsl(var(--foreground)/0.16)];
+    @apply border-border bg-background shadow-soft;
   }
 
   .shadcn-scroll-bound {
@@ -134,6 +209,39 @@
     max-width: 100% !important;
   }
 
+  @media (max-width: 1179px) {
+    .shadcn-home-operation-scroll,
+    .shadcn-home-operation-scroll [data-radix-scroll-area-viewport] {
+      height: auto !important;
+      overflow: visible !important;
+    }
+
+    .shadcn-home-operation-scroll [data-radix-scroll-area-scrollbar] {
+      display: none !important;
+    }
+  }
+
+  @media (max-width: 1535px) {
+    [data-ui-section="model-form-scroll"],
+    [data-ui-section="model-form-scroll"] [data-radix-scroll-area-viewport] {
+      height: auto !important;
+      overflow: visible !important;
+    }
+
+    [data-ui-section="model-form-scroll"] {
+      flex: none !important;
+    }
+
+    [data-ui-section="model-form-card"] {
+      height: max-content !important;
+      overflow: visible !important;
+    }
+
+    [data-ui-section="model-form-scroll"] [data-radix-scroll-area-scrollbar] {
+      display: none !important;
+    }
+  }
+
   .shadcn-config-dialog svg {
     @apply size-4;
   }
@@ -147,11 +255,10 @@
   }
 
   ::selection {
-    background: hsl(var(--foreground) / 0.16);
+    background: hsl(var(--foreground) / 0.12);
   }
 
   * {
     scrollbar-color: hsl(var(--border)) transparent;
   }
-
 }

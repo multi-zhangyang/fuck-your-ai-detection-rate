@@ -2,7 +2,7 @@
   {
     "id": "prewrite",
     "label": "润色改写",
-    "description": "先做保守自然化与结构预热。",
+    "description": "只修复明显生硬、重复和模板化表达。",
     "relativePath": "prompts/prewrite.md",
     "defaultPath": "prompts/defaults/prewrite.md",
     "builtIn": true,
@@ -18,9 +18,18 @@
     "editable": true
   },
   {
+    "id": "template-repair",
+    "label": "模板表达定点修复",
+    "description": "只处理模板句、泛化总结和空泛填充，不扩写正文。",
+    "relativePath": "prompts/template-repair.md",
+    "defaultPath": "prompts/defaults/template-repair.md",
+    "builtIn": true,
+    "editable": true
+  },
+  {
     "id": "round1",
     "label": "规范改写",
-    "description": "正文主体降痕与语气调整。",
+    "description": "调整连续同构句式与不合理句界，不强造短句。",
     "relativePath": "prompts/rewrite-pass-1.md",
     "defaultPath": "prompts/defaults/rewrite-pass-1.md",
     "builtIn": true,
@@ -29,7 +38,7 @@
   {
     "id": "round2",
     "label": "专家改写",
-    "description": "最终降痕与连贯性修整。",
+    "description": "终稿校正衔接、指代和同义反复，不注入新细节。",
     "relativePath": "prompts/rewrite-pass-2.md",
     "defaultPath": "prompts/defaults/rewrite-pass-2.md",
     "builtIn": true,

@@ -10,17 +10,16 @@ from typing import Literal
 
 DEFAULT_CHUNK_LIMIT = 1800
 MAX_PARAGRAPHS_PER_CHUNK = 4
-CN_KEEP_SINGLE_LIMIT = 280
-CN_SENTENCE_GROUP_TARGET = 260
-CN_SENTENCE_GROUP_HARD_LIMIT = 420
+# ``chunk_limit`` is the public contract.  Older code silently replaced the
+# default 1800-character limit with a 280-character "adaptive" limit.  A
+# normal 400--800 character thesis paragraph was therefore rewritten as two or
+# three context-free fragments even though it fit comfortably in one model
+# request.  Keep complete paragraphs whenever they fit, and only split truly
+# oversized paragraphs.  When a split is required, leave some headroom instead
+# of falling all the way back to tiny sentence groups.
+GENERATION_TARGET_RATIO = 0.80
 CN_MIN_TAIL_LIMIT = 90
-EN_KEEP_SINGLE_CHAR_LIMIT = 420
-EN_SENTENCE_GROUP_CHAR_TARGET = 360
-EN_SENTENCE_GROUP_CHAR_HARD_LIMIT = 560
 EN_MIN_TAIL_CHAR_LIMIT = 140
-WORD_KEEP_SINGLE_LIMIT = 115
-WORD_SENTENCE_GROUP_TARGET = 90
-WORD_SENTENCE_GROUP_HARD_LIMIT = 150
 WORD_MIN_TAIL_LIMIT = 35
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[。！？；!?;])")
 ENGLISH_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?;:])\s+")
@@ -311,27 +310,18 @@ def _adaptive_generation_chunk_limit(
     chunk_metric: ChunkMetric,
     paragraph_language: str,
 ) -> int:
-    if chunk_metric == "word":
-        return min(chunk_limit, WORD_KEEP_SINGLE_LIMIT)
-    if paragraph_language == "en":
-        return min(chunk_limit, EN_KEEP_SINGLE_CHAR_LIMIT)
-    return min(chunk_limit, CN_KEEP_SINGLE_LIMIT)
+    # The limit supplied by the caller is already selected for the active
+    # model/profile.  Language-specific hidden caps make the UI/API value
+    # misleading and, more importantly, destroy paragraph-level coherence.
+    return max(1, chunk_limit)
 
 
 def _target_generation_chunk_limit(chunk_limit: int, chunk_metric: ChunkMetric, paragraph_language: str) -> int:
-    if chunk_metric == "word":
-        return min(chunk_limit, WORD_SENTENCE_GROUP_TARGET)
-    if paragraph_language == "en":
-        return min(chunk_limit, EN_SENTENCE_GROUP_CHAR_TARGET)
-    return min(chunk_limit, CN_SENTENCE_GROUP_TARGET)
+    return max(1, min(chunk_limit, round(chunk_limit * GENERATION_TARGET_RATIO)))
 
 
 def _hard_generation_chunk_limit(chunk_limit: int, chunk_metric: ChunkMetric, paragraph_language: str) -> int:
-    if chunk_metric == "word":
-        return min(chunk_limit, max(WORD_SENTENCE_GROUP_HARD_LIMIT, WORD_SENTENCE_GROUP_TARGET))
-    if paragraph_language == "en":
-        return min(chunk_limit, max(EN_SENTENCE_GROUP_CHAR_HARD_LIMIT, EN_SENTENCE_GROUP_CHAR_TARGET))
-    return min(chunk_limit, max(CN_SENTENCE_GROUP_HARD_LIMIT, CN_SENTENCE_GROUP_TARGET))
+    return max(1, chunk_limit)
 
 
 def _min_tail_generation_chunk_limit(chunk_metric: ChunkMetric, paragraph_language: str) -> int:

@@ -16,7 +16,7 @@ DEFAULT_REPORT_PATH = ROOT_DIR / "finish" / "regression" / "open_web_ui_report.j
 def open_web_ui(url: str, *, report_path: Path | None = None) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
 
-    if os.name == "nt" and hasattr(os, "startfile"):
+    if hasattr(os, "startfile"):
         try:
             os.startfile(url)  # type: ignore[attr-defined]
             attempts.append({"method": "os.startfile", "ok": True, "error": ""})

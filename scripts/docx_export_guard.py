@@ -109,7 +109,7 @@ def run_docx_pre_export_guard(
                 _add_issue(
                     warnings,
                     "body_map_scope_drift",
-                    "\u5f53\u524d Word \u4fdd\u62a4\u533a\u7b97\u6cd5\u8bc6\u522b\u51fa\u7684\u6b63\u6587\u6570\u91cf\u4e0e\u6b64\u8f6e\u51bb\u7ed3\u7684 body map \u4e0d\u4e00\u81f4\uff0c\u5df2\u6309\u5f53\u8f6e body map \u76ee\u6807\u6bb5\u843d\u517c\u5bb9\u5bfc\u51fa\u3002",
+                    "当前 Word 识别出的正文数量与此轮冻结 body map 不一致；只有冻结范围签名完全一致时才允许继续。",
                     snapshotEditableUnitCount=len(editable_units),
                     bodyMapUnitCount=len(body_map.units) if body_map is not None else 0,
                     actual=len(rewritten_paragraphs),
@@ -276,7 +276,7 @@ def _check_body_map(
                 _add_issue(
                     warnings,
                     "body_map_editable_unit_count_drift",
-                    "\u5f53\u524d\u5feb\u7167\u6b63\u6587\u6570\u91cf\u5df2\u53d8\u5316\uff0c\u4f46 body map \u76ee\u6807\u6bb5\u843d\u4ecd\u53ef\u5b9a\u4f4d\uff0c\u5bfc\u51fa\u5c06\u91c7\u7528\u5f53\u8f6e\u51bb\u7ed3\u7684\u6b63\u6587\u6620\u5c04\u3002",
+                    "当前快照正文数量已变化，已交由冻结范围签名硬校验；不会按旧映射静默导出。",
                     **{key: value for key, value in issue.items() if key not in {"code", "message"}},
                 )
                 continue

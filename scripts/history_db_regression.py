@@ -15,8 +15,10 @@ sys.path.insert(0, str(ROOT_DIR / "scripts"))
 from app_service import get_document_history, list_document_histories, query_history_artifact_governance  # noqa: E402
 from fyadr_history_db import (  # noqa: E402
     DB_PATH,
+    MAX_BACKUP_KEEP,
     apply_history_delete_maintenance as sqlite_apply_history_delete_maintenance,
     backup_history_index as sqlite_backup_history_index,
+    coerce_backup_keep,
     compact_history_index as sqlite_compact_history_index,
     get_history_document_from_index,
     get_history_index_maintenance_summary as sqlite_get_history_index_maintenance_summary,
@@ -357,6 +359,19 @@ def run_regression() -> dict[str, Any]:
         _assert(compacted["ok"] is True, "history DB compaction must preserve a healthy index")
         _assert(compacted.get("backup", {}).get("ok") is True, "history DB compaction must create a pre-compaction backup")
         checks.append("history DB backup, listing, recovery, and compaction preserve a healthy index")
+
+        # keep coercion guards the retention floor: keep<=0 used to prune every
+        # backup (including the one just written), and a huge keep would never prune.
+        _assert(coerce_backup_keep(0) == 12, "keep=0 must fall back to the default instead of pruning all backups")
+        _assert(coerce_backup_keep(-5) == 12, "negative keep must fall back to the default")
+        _assert(coerce_backup_keep("not-an-int") == 12, "non-integer keep must fall back to the default")
+        _assert(coerce_backup_keep(1_000_000) == MAX_BACKUP_KEEP, "huge keep must clamp to the configured ceiling")
+        _assert(coerce_backup_keep(5) == 5, "in-range keep must pass through unchanged")
+        _assert(coerce_backup_keep(1000) == MAX_BACKUP_KEEP, "keep above the ceiling must clamp rather than grow unbounded")
+        zero_keep_backup = sqlite_backup_history_index(reason="regression_keep_floor", keep=0, backup_dir=REGRESSION_BACKUP_DIR)
+        _assert(zero_keep_backup["ok"] is True, "backup with keep=0 must still succeed")
+        _assert(Path(zero_keep_backup["path"]).exists(), "backup written under keep=0 must survive coercion (not be pruned away)")
+        checks.append("backup keep coercion floors retention at the default and clamps to a ceiling")
 
         maintenance_summary = sqlite_get_history_index_maintenance_summary(backup_dir=REGRESSION_BACKUP_DIR)
         _assert(maintenance_summary.get("ok") is True, "maintenance summary must expose SQLite history diagnostics")

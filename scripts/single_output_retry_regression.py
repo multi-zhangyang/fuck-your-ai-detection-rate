@@ -7,11 +7,51 @@ import app_service
 from chunking import build_manifest
 from fyadr_records import ROOT_DIR
 from fyadr_round_service import (
+    _build_candidate_selection_event,
     _build_chunk_quality,
+    _evaluate_rewrite_candidate,
     get_round_compare_path,
     run_round,
     validate_chunk_output,
 )
+
+
+def _published_selection(
+    input_text: str,
+    output_text: str,
+    chunk_id: str,
+    global_style_profile: dict[str, object],
+) -> dict[str, object]:
+    baseline = _evaluate_rewrite_candidate(
+        input_text=input_text,
+        output_text=input_text,
+        candidate_id="baseline",
+        origin="baseline",
+        attempt=0,
+        hard_valid=True,
+        round_dimension={"id": "neutral", "primaryMetric": ""},
+        global_style_profile=global_style_profile,
+    )
+    candidate = _evaluate_rewrite_candidate(
+        input_text=input_text,
+        output_text=output_text,
+        candidate_id="model-attempt-1",
+        origin="model",
+        attempt=1,
+        hard_valid=True,
+        round_dimension={"id": "neutral", "primaryMetric": ""},
+        global_style_profile=global_style_profile,
+    )
+    if candidate.get("safetyEligible") is not True or candidate.get("changedFromBaseline") is not True:
+        raise AssertionError(f"fixture {chunk_id} is not a release-eligible changed candidate")
+    return _build_candidate_selection_event(
+        chunk_id=chunk_id,
+        round_number=1,
+        candidates=[baseline, candidate],
+        selected=candidate,
+        reason_codes=["fixture_production_selected"],
+        conditional_retry_count=0,
+    )
 
 
 def _assert_default_chunk_manifest_contract() -> None:
@@ -95,15 +135,23 @@ def main() -> int:
         chunk_limit=1000,
     )
     quality_summary = result.get("quality_summary") or {}
-    if len(prompts) != 1:
-        raise AssertionError(f"full-round rewrite should call the model once per valid chunk, got {len(prompts)} calls")
+    if len(prompts) != 2:
+        raise AssertionError(
+            f"an unchanged valid candidate should receive one bounded net-gain repair attempt, got {len(prompts)} calls"
+        )
     if "[CANDIDATE DIRECTION]" in prompts[0]:
         raise AssertionError("full-round prompt must not include legacy candidate direction text")
     for legacy_key in ("rewriteCandidateMode", "candidateMaxPerChunk", "twoCandidateChunkCount", "candidateSelectionCount"):
         if legacy_key in quality_summary:
             raise AssertionError(f"quality summary should not expose removed candidate field {legacy_key}")
+    if "[CANDIDATE SELECTION RETRY]" not in prompts[-1]:
+        raise AssertionError("unchanged valid candidate retry lost selector feedback")
     if quality_summary.get("estimatedApiCalls") != 1:
-        raise AssertionError("quality summary should estimate one API call for one chunk")
+        raise AssertionError("quality summary nominal one-call estimate drifted")
+    if quality_summary.get("estimatedMaxApiCalls") != 2:
+        raise AssertionError("quality summary lost the bounded two-call maximum")
+    if quality_summary.get("boundedCandidateModelAttemptCount") != 2:
+        raise AssertionError("quality summary did not expose both actual bounded attempts")
 
     structured_output_path = work_dir / "structured_round1.txt"
     structured_manifest_path = work_dir / "structured_round1_manifest.json"
@@ -178,7 +226,11 @@ def main() -> int:
     style_retry_events = [
         event
         for event in style_compare.get("validationEvents", [])
-        if event.get("event") == "validation-retry" and "machine-like writing style" in str(event.get("error", ""))
+        if event.get("event") == "validation-retry"
+        and event.get("guardCategory") == "style"
+        and event.get("issueCodes") == ["machine_style_drift"]
+        and event.get("textStored") is False
+        and event.get("errorStored") is False
     ]
     if len(style_retry_events) != 1:
         raise AssertionError("compare payload should record the machine-style validation retry")
@@ -244,12 +296,19 @@ def main() -> int:
 
     targeted_output_path = work_dir / "targeted.txt"
     targeted_compare_path = get_round_compare_path(targeted_output_path)
+    targeted_compare_path.with_name(f"{targeted_compare_path.stem}_review_decisions.json").unlink(missing_ok=True)
     previous_output = source_text.replace("changing only sentence rhythm", "making only local wording repairs")
     untouched_source = (
         "The second paragraph already passed review and stays outside the selected rerun target."
     )
     untouched_output = untouched_source.replace("passed review", "passed manual review")
     targeted_output_path.write_text("\n\n".join([previous_output, untouched_output]), encoding="utf-8")
+    targeted_global_style_profile = app_service.build_global_style_profile_from_texts(
+        [source_text, untouched_source]
+    )
+    targeted_source_profile = targeted_global_style_profile.get("documentPatternBaseline")
+    if not isinstance(targeted_source_profile, dict):
+        raise AssertionError("targeted fixture lost its document source-pattern profile")
     compare_payload = {
         "version": 2,
         "docId": "single-output-targeted-regression",
@@ -270,8 +329,15 @@ def main() -> int:
                 "chunkIndex": 0,
                 "inputText": source_text,
                 "outputText": previous_output,
+                "candidateBaselineText": source_text,
                 "inputCharCount": len(source_text),
                 "outputCharCount": len(previous_output),
+                "candidateSelection": _published_selection(
+                    source_text,
+                    previous_output,
+                    "p0_c0",
+                    targeted_global_style_profile,
+                ),
                 "quality": _build_chunk_quality(source_text, previous_output),
             },
             {
@@ -280,20 +346,37 @@ def main() -> int:
                 "chunkIndex": 0,
                 "inputText": untouched_source,
                 "outputText": untouched_output,
+                "candidateBaselineText": untouched_source,
                 "inputCharCount": len(untouched_source),
                 "outputCharCount": len(untouched_output),
+                "candidateSelection": _published_selection(
+                    untouched_source,
+                    untouched_output,
+                    "p1_c0",
+                    targeted_global_style_profile,
+                ),
                 "quality": _build_chunk_quality(untouched_source, untouched_output),
             },
         ],
+        "sourcePatternProfiles": {
+            str(targeted_source_profile.get("profileSha256", "")): targeted_source_profile,
+        },
+        "sourceRelativeDocumentDelta": app_service.assess_source_relative_document_delta(
+            [source_text, untouched_source],
+            [previous_output, untouched_output],
+        ),
     }
     targeted_compare_path.write_text(json.dumps(compare_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    compare_before_soft_noop = targeted_compare_path.read_bytes()
 
     targeted_prompts: list[str] = []
+    targeted_model_inputs: list[str] = []
     original_builder = app_service._build_transform_from_model_config
 
     def fake_builder(_model_config):
         def valid_transform(chunk_text: str, prompt_input: str, _round: int, _chunk_id: str) -> str:
             targeted_prompts.append(prompt_input)
+            targeted_model_inputs.append(chunk_text)
             return chunk_text
 
         return valid_transform, "online"
@@ -314,18 +397,34 @@ def main() -> int:
     finally:
         app_service._build_transform_from_model_config = original_builder
 
-    if len(targeted_prompts) != 1:
-        raise AssertionError(f"targeted rerun should generate one output per attempt, got {len(targeted_prompts)} calls")
+    if len(targeted_prompts) != 2:
+        raise AssertionError(f"targeted zero-gain rerun should use its one bounded repair attempt, got {len(targeted_prompts)} calls")
+    if targeted_model_inputs != [app_service.protect_structure_tokens(previous_output).text] * 2:
+        raise AssertionError("targeted rerun must send the fresh review-materialized candidate instead of frozen inputText")
     if "[CANDIDATE DIRECTION]" in targeted_prompts[0]:
         raise AssertionError("targeted rerun prompt must not include legacy multi-output direction text")
     if "[TARGETED REPAIR DIRECTION]" not in targeted_prompts[0]:
         raise AssertionError("targeted rerun prompt should keep a single repair direction")
+    if "[CANDIDATE SELECTION RETRY]" not in targeted_prompts[-1]:
+        raise AssertionError("targeted zero-gain retry lost selector feedback")
     if "定向重跑反馈" not in targeted_prompts[0]:
         raise AssertionError("targeted rerun prompt should include user feedback")
     for marker in ["[DETECTOR MICRO-REPAIR MODE]", "detector-high-risk-segment", "detector-anchor-preservation"]:
         if marker in targeted_prompts[0]:
             raise AssertionError(f"targeted rerun prompt must not include removed detection-report marker {marker!r}")
     chunk = targeted_result["chunk"]
+    candidate_selection = chunk.get("candidateSelection") or {}
+    attempt_selection = targeted_result.get("candidateSelectionAttempt") or {}
+    if targeted_result.get("preservedExisting") is not True:
+        raise AssertionError("targeted zero-gain rerun was not returned as a soft no-op")
+    if attempt_selection.get("decision") != "preserved_baseline" or attempt_selection.get("publishedRewrite") is not False:
+        raise AssertionError("targeted zero-gain attempt lost its explicit preserved-baseline evidence")
+    if candidate_selection.get("decision") != "generated_selected" or candidate_selection.get("publishedRewrite") is not True:
+        raise AssertionError("soft no-op replaced the prior authoritative candidate selection")
+    if chunk.get("outputText") != previous_output:
+        raise AssertionError("targeted preserved baseline changed compare outputText")
+    if targeted_compare_path.read_bytes() != compare_before_soft_noop:
+        raise AssertionError("soft no-op rewrote authoritative compare bytes")
     updated_compare = json.loads(targeted_compare_path.read_text(encoding="utf-8"))
     updated_chunks = updated_compare.get("chunks", [])
     if updated_compare.get("paragraphCount") != 2 or updated_compare.get("chunkCount") != 2:
@@ -338,8 +437,8 @@ def main() -> int:
     if any(str(key).startswith("rerun") for key in untouched_chunk):
         raise AssertionError("targeted rerun metadata must stay on the selected chunk only")
     output_paragraphs = targeted_output_path.read_text(encoding="utf-8").split("\n\n")
-    if output_paragraphs != [source_text, untouched_output]:
-        raise AssertionError("targeted rerun should restore output from existing chunks without changing segmentation")
+    if output_paragraphs != [previous_output, untouched_output]:
+        raise AssertionError("targeted rerun should preserve fresh effective text without changing segmentation")
     if "rerunCandidateCount" in chunk or "rerunSelectedCandidate" in chunk:
         raise AssertionError("targeted rerun metadata should not expose legacy candidate fields")
     if "rerunDetectorProfile" in chunk:

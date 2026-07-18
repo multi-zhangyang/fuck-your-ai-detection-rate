@@ -6,6 +6,7 @@ export type RoundModelConfig = {
   apiKey: string;
   model: string;
   apiType: "chat_completions" | "responses";
+  streaming?: boolean;
   temperature?: number;
   requestTimeoutSeconds?: number;
   maxRetries?: number;
@@ -20,6 +21,7 @@ export type ModelProviderConfig = {
   baseUrl: string;
   apiKey: string;
   apiType: "chat_completions" | "responses";
+  streaming?: boolean;
   temperature?: number;
   requestTimeoutSeconds?: number;
   maxRetries?: number;
@@ -123,6 +125,7 @@ export type ModelConfig = {
   apiKey: string;
   model: string;
   apiType: "chat_completions" | "responses";
+  streaming: boolean;
   temperature: number;
   promptProfile: PromptProfile;
   promptSequence: PromptId[];
@@ -305,17 +308,23 @@ export type RoundProgress = {
   checkpointPath?: string;
   compareInputText?: string;
   compareOutputText?: string;
+  streamChars?: number;
+  streamEventCount?: number;
+  streamDone?: boolean;
+  finalTextChars?: number;
+  reasoningSuppressed?: boolean;
+  providerContentStored?: boolean;
   error?: string;
   errorCategory?: string;
   statusCode?: number | string;
-    retryable?: boolean;
-    attempts?: number | string;
-    maxAttempts?: number | string;
-    nextAttempt?: number | string;
-    cooldownSeconds?: number | string;
-    retryAfterSeconds?: number | string;
-    configuredMaxRetries?: number | string;
-    providerMessage?: string;
+  retryable?: boolean;
+  attempts?: number | string;
+  maxAttempts?: number | string;
+  nextAttempt?: number | string;
+  cooldownSeconds?: number | string;
+  retryAfterSeconds?: number | string;
+  configuredMaxRetries?: number | string;
+  providerMessage?: string;
   autoRetryEligible?: boolean;
   retryDelaySeconds?: number;
   maxAutoRetries?: number;
@@ -327,6 +336,278 @@ export type RunAutomationHint = {
   eligible: boolean;
   delaySeconds?: number;
   maxAttempts?: number;
+};
+
+export type RerunDimensionDirection = {
+  dimensionId?: string;
+  direction?: string;
+  primaryMetric?: string;
+  secondaryMetric?: string;
+  before?: number;
+  after?: number;
+  ok?: boolean;
+  satisfied?: boolean;
+  note?: string;
+  riskCodesBefore?: string[];
+  riskCodesAfter?: string[];
+  structureDirection?: {
+    effective?: boolean;
+    concentration?: number;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+export type DeterministicLexicalRetentionProxy = {
+  name?: string;
+  score: number;
+  minimumScore: number;
+  sourceCoverage: number;
+  outputPrecision: number;
+  lengthSimilarity: number;
+  usesEmbedding: false;
+  usesModel: false;
+  claimsSemanticEquivalence: false;
+  isAiDetector: false;
+  claimsDetectionRate: false;
+};
+
+export type AcademicReadabilityDeltaEvidence = {
+  schema: "fyadr.academic-readability-delta";
+  schemaVersion: 1;
+  ok: boolean;
+  issueCodes: string[];
+};
+
+export type SourceRelativePatternDeltaRow = {
+  kind: "opening_family" | "sentence_skeleton";
+  inputCount: number;
+  outputCount: number;
+  introducedCount: number;
+  documentBeforeCount: number | null;
+  documentAfterCount: number | null;
+  documentIntroducedCount: number | null;
+  familyId?: string;
+  patternSha256?: string;
+};
+
+export type SourceRelativePatternDeltaSummary = {
+  introducedPatternCount: number;
+  blockingPatternCount: number;
+  maxIntroducedCount: number;
+  maxDocumentAfterCount: number;
+  issueCodes: string[];
+  patterns: SourceRelativePatternDeltaRow[];
+};
+
+export type SourceRelativeStyleDeltaEvidence = {
+  schema: "fyadr.source-relative-style-delta";
+  schemaVersion: 1;
+  ready: boolean;
+  passed: boolean;
+  contextScope: "document" | "local" | "invalid";
+  binding: {
+    sourceProfileSha256: string;
+    baselineTextSha256: string;
+    candidateTextSha256: string;
+  };
+  openingFamilyDelta: SourceRelativePatternDeltaSummary;
+  sentenceSkeletonDelta: SourceRelativePatternDeltaSummary;
+  sentenceBoundaryDelta: {
+    inputSentenceCount: number;
+    outputSentenceCount: number;
+    inputShortSentenceCount: number;
+    outputShortSentenceCount: number;
+    collapseCount: number;
+    fragmentIncrease: number;
+    collapsed: boolean;
+    fragmented: boolean;
+    issueCodes: string[];
+  };
+  blockingIssueCodes: string[];
+  advisoryIssueCodes: string[];
+  claims: {
+    providerIndependent: true;
+    deltaOnly: true;
+    heuristicOnly: true;
+    storesInputText: false;
+    storesOutputText: false;
+    storesMatchedText: false;
+    isAiDetector: false;
+    claimsAuthorshipDetection: false;
+    claimsDetectionRate: false;
+    claimsSemanticEquivalence: false;
+  };
+};
+
+export type SourceRelativeDocumentPatternRow = {
+  kind: "opening_family" | "sentence_skeleton";
+  baselineCount: number;
+  resultCount: number;
+  introducedCount: number;
+  familyId?: string;
+  patternSha256?: string;
+};
+
+export type SourceRelativeDocumentDeltaEvidence = {
+  schema: "fyadr.source-relative-document-style-delta";
+  schemaVersion: 1;
+  ready: true;
+  passed: boolean;
+  binding: {
+    chunkCount: number;
+    baselineProfileSha256: string;
+    resultProfileSha256: string;
+    baselineChunksSha256: string;
+    resultChunksSha256: string;
+  };
+  openingFamilyDelta: {
+    introducedPatternCount: number;
+    blockingPatternCount: number;
+    maxIntroducedCount: number;
+    maxResultCount: number;
+    issueCodes: string[];
+    patterns: SourceRelativeDocumentPatternRow[];
+  };
+  sentenceSkeletonDelta: {
+    introducedPatternCount: number;
+    blockingPatternCount: number;
+    maxIntroducedCount: number;
+    maxResultCount: number;
+    issueCodes: string[];
+    patterns: SourceRelativeDocumentPatternRow[];
+  };
+  blockingIssueCodes: string[];
+  advisoryIssueCodes: string[];
+  claims: {
+    providerIndependent: true;
+    deltaOnly: true;
+    heuristicOnly: true;
+    storesInputText: false;
+    storesOutputText: false;
+    storesMatchedText: false;
+    preservesChunkBoundaries: true;
+    isAiDetector: false;
+    claimsAuthorshipDetection: false;
+    claimsDetectionRate: false;
+    claimsSemanticEquivalence: false;
+  };
+};
+
+export type CandidateSelectionCandidate = {
+  candidateId: string;
+  origin: "baseline" | "model";
+  attempt: number;
+  textSha256: string;
+  charCount: number;
+  changedFromBaseline: boolean;
+  hardValid: boolean;
+  hardValidationIssueCodes: string[];
+  academicReadabilityDelta?: AcademicReadabilityDeltaEvidence;
+  readabilityGuardPassed?: boolean;
+  readabilityIssueCodes?: string[];
+  sourceRelativeStyleDelta: SourceRelativeStyleDeltaEvidence;
+  sourceRelativeStyleGuardPassed: boolean;
+  factualGuardPassed: boolean;
+  factualIssueCodes: string[];
+  deterministicLexicalRetentionProxy: DeterministicLexicalRetentionProxy;
+  sameDimensionDirection: RerunDimensionDirection;
+  stylePenalty: number | null;
+  safetyEligible: boolean;
+  rejectionReasonCodes: string[];
+};
+
+export type ChunkCandidateSelection = {
+  schema: "fyadr.chunk-candidate-selection";
+  schemaVersion: 2;
+  decision: "generated_selected" | "preserved_baseline" | "hard_failure_preserved_baseline";
+  publishedRewrite: boolean;
+  runFailed: boolean;
+  selectedCandidateId: string;
+  selectedOrigin: "baseline" | "model";
+  selectedTextSha256: string;
+  resultTextSha256: string;
+  publishedTextSha256?: string;
+  selectedCharCount: number;
+  resultCharCount: number;
+  publishedCharCount?: number;
+  postprocessApplied: boolean;
+  resultSourceRelativeStyleDelta: SourceRelativeStyleDeltaEvidence;
+  reasonCodes: string[];
+  modelAttemptCount: number;
+  conditionalRetryCount: number;
+  candidateLimit: number;
+  modelAttemptLimit: number;
+  retentionAssessment: {
+    name?: string;
+    usesEmbedding: false;
+    usesModel: false;
+    claimsSemanticEquivalence: false;
+    isAiDetector: false;
+    claimsDetectionRate: false;
+  };
+  candidates: CandidateSelectionCandidate[];
+  documentArbitration?: {
+    decision: "baseline_preserved";
+    reasonCode: "document_pattern_delta_accumulation_blocked";
+    rejectedDocumentDelta: SourceRelativeDocumentDeltaEvidence;
+  };
+};
+
+export type FailedAttemptGuardCategory =
+  | "structure"
+  | "factual"
+  | "readability"
+  | "style"
+  | "provider"
+  | "local_validation";
+
+export type FailedAttemptIssueCode =
+  | "structure_placeholder_preservation"
+  | "format_anchor_preservation"
+  | "paragraph_structure_preservation"
+  | "citation_preservation"
+  | "number_preservation"
+  | "term_preservation"
+  | "language_stability"
+  | "factual_relation_preservation"
+  | "factual_scope_qualifier_changed"
+  | "repetition_stability"
+  | "length_stability"
+  | "sentence_surface_stability"
+  | "academic_register_stability"
+  | "academic_collocation_stability"
+  | "predicate_completeness"
+  | "machine_style_drift"
+  | "answer_style_rejected"
+  | "empty_output"
+  | "provider_auth"
+  | "provider_rate_limit"
+  | "provider_timeout"
+  | "provider_network"
+  | "provider_server"
+  | "provider_client_configuration"
+  | "provider_failure"
+  | "reasoning_content_suppressed"
+  | "validation_rejected_unspecified";
+
+/**
+ * Text-free failed-candidate evidence. Failed provider output, raw errors and
+ * reasoning content are deliberately absent from this public contract.
+ */
+export type FailedAttemptEvidence = {
+  schema: "fyadr.failed-attempt-evidence";
+  schemaVersion: 1;
+  attempt: number | null;
+  outputCharCount: number;
+  outputTextSha256: string;
+  truncated: boolean;
+  guardCategory: FailedAttemptGuardCategory;
+  issueCodes: FailedAttemptIssueCode[];
+  textStored: false;
+  errorStored: false;
+  reasoningSuppressed: true;
+  providerContentStored: false;
 };
 
 export type RoundCompareChunk = {
@@ -341,31 +622,47 @@ export type RoundCompareChunk = {
   outputWordCount?: number;
   fallbackMode?: "source";
   fallbackReason?: string;
-  fallbackError?: string;
+  fallbackGuardCategory?: FailedAttemptGuardCategory;
+  fallbackIssueCodes?: FailedAttemptIssueCode[];
+  fallbackErrorStored?: false;
   fallbackAttempts?: number;
   fallbackAt?: string;
-  failedAttempts?: Array<{
-    attempt?: number;
-    outputText: string;
-    outputCharCount?: number;
-    truncated?: boolean;
-    error?: string;
-  }>;
+  failedAttempts?: FailedAttemptEvidence[];
   rerunAt?: string;
   rerunMode?: string;
   rerunStatus?: string;
+  rerunNonConvergedReason?: string;
+  rerunAttemptCount?: number;
+  rerunSelectedScore?: number;
+  rerunDimensionConverged?: boolean;
+  rerunDimensionConvergeDirections?: RerunDimensionDirection[];
   rerunFallbackMode?: string;
-  rerunFallbackError?: string;
+  rerunFallbackGuardCategory?: FailedAttemptGuardCategory;
+  rerunFallbackIssueCodes?: FailedAttemptIssueCode[];
+  rerunFallbackErrorStored?: false;
   rerunStrategy?: string[];
   rerunAdvice?: string[];
-  rerunPromptNote?: string;
-  rerunStyleCard?: string;
-  rerunGlobalStyleProfile?: GlobalStyleProfile;
-  rerunUserFeedback?: string;
+  rerunPromptStored?: false;
+  rerunUserFeedbackPresent?: boolean;
+  rerunUserFeedbackCharCount?: number;
+  rerunUserFeedbackSha256?: string;
+  rerunDefaultDecision?: "source" | "rewrite";
+  rateAuditStrategyReviewRequired?: boolean;
+  rateAuditStrategyPlanDigest?: string;
+  rateAuditStrategyPromptId?: string;
+  rateAuditStrategyEvaluatorDimensionId?: string;
+  rateAuditStrategyInputSource?: string;
+  rateAuditStrategyEffectiveInputSha256?: string;
+  candidateSelection?: ChunkCandidateSelection;
   quality?: {
     expansionRatio?: number;
     missingCitationCount?: number;
     missingCitations?: string[];
+    introducedColloquialPhraseCount?: number;
+    introducedColloquialPhrases?: string[];
+    academicRegisterDrift?: boolean;
+    styleValidationIssueCount?: number;
+    styleValidationIssues?: MachineLikeRisk[];
     machineLikeRiskCount?: number;
     machineLikeRisks?: MachineLikeRisk[];
     reviewReasons?: MachineLikeRisk[];
@@ -375,6 +672,17 @@ export type RoundCompareChunk = {
     flags?: string[];
     advisoryFlags?: string[];
     needsReview?: boolean;
+    styleMetrics?: {
+      sentenceCount?: number;
+      sentenceVariance?: number;
+      burstinessRatio?: number;
+      passiveDensity?: number;
+      chengyuDensity?: number;
+      connectorDensity?: number;
+      paragraphCount?: number;
+      paragraphLengthCv?: number;
+      adjacentParagraphUniformity?: number;
+    };
   };
 };
 
@@ -391,6 +699,355 @@ export type MachineLikeRisk = {
   level: "low" | "medium" | "high" | string;
   message: string;
   evidence?: unknown;
+};
+
+export type RateAuditRisk = {
+  code: string;
+  level: "low" | "medium" | "high" | string;
+  message: string;
+  points: number;
+  dimensionId: string;
+};
+
+export type RateAuditDimension = {
+  id: string;
+  label: string;
+  description: string;
+  action: string;
+  riskCount: number;
+  highRiskCount: number;
+  riskPoints: number;
+  status: "clear" | "watch" | "focus" | string;
+  riskCodes: string[];
+};
+
+export type RateAuditMetrics = {
+  language: string;
+  charCount: number;
+  sentenceCount: number;
+  paragraphCount: number;
+  sentenceLengthVariation: number;
+  burstinessRatio: number;
+  shortSentenceRate: number;
+  connectorDensity: number;
+  templateDensity: number;
+  abstractPaddingDensity: number;
+  passiveDensity: number;
+  chengyuDensity: number;
+  nestedNumberDensity: number;
+  colonParallelDensity: number;
+  structureConcentration: number;
+  paragraphLengthCv: number;
+  adjacentParagraphUniformity: number;
+};
+
+export type RateAuditStage = {
+  id: string;
+  label: string;
+  round: number | null;
+  originalCharCount: number;
+  analyzedCharCount: number;
+  truncated: boolean;
+  riskCount: number;
+  highRiskCount: number;
+  riskPoints: number;
+  risks: RateAuditRisk[];
+  dimensions: RateAuditDimension[];
+  metrics: RateAuditMetrics;
+};
+
+export type RateAuditDimensionDelta = {
+  id: string;
+  label: string;
+  beforeRiskPoints: number;
+  afterRiskPoints: number;
+  riskPointChange: number;
+  trend: "improved" | "regressed" | "stable" | string;
+};
+
+export type RateAuditDelta = {
+  beforeRiskPoints: number;
+  afterRiskPoints: number;
+  riskPointChange: number;
+  beforeRiskCount: number;
+  afterRiskCount: number;
+  relativeRiskChangePercent: number | null;
+  improvedDimensionCount: number;
+  regressedDimensionCount: number;
+  stableDimensionCount: number;
+  dimensions: RateAuditDimensionDelta[];
+};
+
+export type RateAuditHotspot = {
+  chunkId: string;
+  paragraphIndex: number;
+  chunkIndex: number;
+  excerpt: string;
+  riskCount: number;
+  highRiskCount: number;
+  riskPoints: number;
+  dimensionIds: string[];
+  risks: RateAuditRisk[];
+};
+
+export type RateAuditRecommendation = {
+  dimensionId: string;
+  label: string;
+  priority: "low" | "medium" | "high" | string;
+  trend: "improved" | "regressed" | "stable" | string;
+  riskCount: number;
+  highRiskCount?: number;
+  riskPoints: number;
+  reason: string;
+  action: string;
+  targetChunkIds: string[];
+  repairPromptId?: string;
+  evaluatorDimensionId?: string;
+  primaryMetric?: string;
+  secondaryMetric?: string;
+  directionEvaluator?: string;
+  targetScope?: string;
+  maxAttempts?: number;
+  plateauPolicy?: string;
+  canExecute?: boolean;
+  manualReviewReason?: string;
+};
+
+export type RateAuditBlockingManualDimension = {
+  dimensionId: string;
+  label: string;
+  trend: "improved" | "regressed" | "stable" | string;
+  riskCount: number;
+  highRiskCount: number;
+  riskPoints: number;
+  targetScope: string;
+  targetChunkIds: string[];
+  targetChunkCount: number;
+  manualReviewReason: string;
+  action: string;
+};
+
+export type RateAuditExecutableQueueItem = {
+  dimensionId: string;
+  label: string;
+  priority: "low" | "medium" | "high" | string;
+  trend: "improved" | "regressed" | "stable" | string;
+  riskCount: number;
+  highRiskCount: number;
+  riskPoints: number;
+  repairPromptId: string;
+  evaluatorDimensionId: string;
+  primaryMetric: string;
+  targetScope: string;
+  maxAttempts: number;
+  plateauPolicy: string;
+  targetChunkIds: string[];
+  targetChunkCount: number;
+};
+
+export type RateAuditPlateau = {
+  reached: boolean;
+  reason: string;
+  hardStop: boolean;
+  dimensionId: string;
+  targetChunkIds: string[];
+  targetChunkCount: number;
+  attemptLimit: number;
+  preservedPreviousText: boolean;
+  manualReviewRequired: boolean;
+};
+
+export type DocumentEditContractIssue = {
+  code: string;
+  severity: "error" | "warning" | string;
+  message: string;
+  [key: string]: unknown;
+};
+
+export type DocumentEditContract = {
+  version: number;
+  policy: string;
+  stage: string;
+  createdAt: string;
+  sourceKind: string;
+  sourcePath: string;
+  sourceSha256: string;
+  snapshotPath: string;
+  snapshotVersion: number;
+  snapshotCurrent: boolean;
+  scopeDigest: string;
+  formatDigest: string;
+  formatLockPolicy: string;
+  formatLockApplicable: boolean;
+  formatLockReady: boolean;
+  scopeReady: boolean;
+  editableUnitCount: number;
+  protectedUnitCount: number;
+  headingCount: number;
+  protectedHeadingCount: number;
+  editableHeadingCount: number;
+  semanticRangeCount: number;
+  bookmarkRangeCount: number;
+  commentRangeCount: number;
+  semanticRangeTopologyValid: boolean;
+  semanticRangeIssueCount: number;
+  semanticRangeIssueCodes: string[];
+  semanticRangeAnchorUnitCount: number;
+  protectedSemanticRangeAnchorUnitCount: number;
+  editableSemanticRangeAnchorUnitCount: number;
+  semanticRangeCoveredUnitCount: number;
+  protectedSemanticRangeCoveredUnitCount: number;
+  editableSemanticRangeCoveredUnitCount: number;
+  bookmarkRangeInteriorUnitCount: number;
+  protectedBookmarkRangeInteriorUnitCount: number;
+  editableBookmarkRangeInteriorUnitCount: number;
+  semanticPointReferenceUnitCount: number;
+  protectedSemanticPointReferenceUnitCount: number;
+  editableSemanticPointReferenceUnitCount: number;
+  modelInputUnitCount: number;
+  modelInputMatchesEditableUnits: boolean;
+  extractedTextPath: string;
+  extractedTextMatchesEditableUnits: boolean;
+  bodyMapPresent: boolean;
+  bodyMapReady: boolean;
+  scopeDiagnosticsOk: boolean;
+  exportPath: string;
+  exportSha256: string;
+  exportEvidence: Record<string, unknown>;
+  ready: boolean;
+  issueCount: number;
+  warningCount: number;
+  issues: DocumentEditContractIssue[];
+  truncatedIssues: number;
+  reportPath?: string;
+};
+
+export type RateAuditStrategyPlan = {
+  version: number;
+  decision: "blocked" | "stop" | "targeted_rerun" | "next_dimension" | string;
+  label: string;
+  recommendedPromptId: string;
+  currentPromptId: string;
+  nextPromptId: string;
+  dimensionId: string;
+  dimensionLabel: string;
+  dimensionRegistryVersion?: number;
+  repairPromptId?: string;
+  evaluatorDimensionId?: string;
+  primaryMetric?: string;
+  secondaryMetric?: string;
+  directionEvaluator?: string;
+  targetScope?: string;
+  maxAttempts?: number;
+  plateauPolicy?: string;
+  dimensionCanExecute?: boolean;
+  manualReviewReason?: string;
+  promptSelectionSource?: string;
+  progressEvidenceDimensionId?: string;
+  progressEvidenceEvaluatorDimensionId?: string;
+  progressEvidenceTrend?: "improved" | "regressed" | "stable" | string;
+  progressEvidenceAfterRiskPoints?: number;
+  progressEvidenceReady?: boolean;
+  progressEvidenceSource?: "bound_dimension" | "prewrite_global_delta" | "none" | string;
+  blockingManualDimensions: RateAuditBlockingManualDimension[];
+  blockingManualDimensionCount: number;
+  executableQueue: RateAuditExecutableQueueItem[];
+  executableQueueCount: number;
+  selectedExecutableDimensionId: string;
+  manualReviewRequired: boolean;
+  manualReviewStillRequired: boolean;
+  hardStop: boolean;
+  plateauReached: boolean;
+  plateauReason: string;
+  plateauDimensionId?: string;
+  plateauTargetChunkIds?: string[];
+  plateauTargetChunkCount?: number;
+  plateauAttemptLimit?: number;
+  reason: string;
+  action: string;
+  targetChunkIds: string[];
+  targetChunkCount: number;
+  contentContractReady: boolean;
+  scopeContractReady: boolean;
+  formatContractReady: boolean;
+  canExecute: boolean;
+};
+
+export type RateAuditReadiness = {
+  status: "ready" | "attention" | "blocked" | string;
+  strategyDecisionReady: boolean;
+  contentContractReady: boolean;
+  scopeContractReady: boolean;
+  formatContractReady: boolean;
+  runReady: boolean;
+  preExportReady: boolean;
+  blockedReason: string;
+};
+
+export type RateAuditStrategyBinding = {
+  version: number;
+  ready: boolean;
+  compareRevision: string;
+  sourceSha256: string;
+  scopeDigest: string;
+  formatDigest: string;
+  dimensionId: string;
+  recommendedPromptId: string;
+  targetChunkIds: string[];
+  planDigest: string;
+  effectiveTextSha256?: string;
+  reviewRevision?: string;
+  contentRevision?: string;
+  artifactSnapshotDigest?: string;
+  outputSha256?: string;
+  compareSha256?: string;
+  promptSha256?: string;
+  blockedReason: string;
+};
+
+export type PreviousRoundRevisionBinding = {
+  expectedPreviousCompareRevision: string;
+  expectedPreviousReviewRevision: string;
+  expectedPreviousContentRevision: string;
+  expectedPreviousArtifactSnapshotDigest: string;
+  expectedPreviousEffectiveTextSha256: string;
+};
+
+export type RateAuditStrategyExecutionRequest = {
+  sourcePath: string;
+  outputPath: string;
+  dimensionId: string;
+  recommendedPromptId: string;
+  compareRevision: string;
+  scopeDigest: string;
+  formatDigest: string;
+  sourceSha256: string;
+  targetChunkIds: string[];
+  planDigest: string;
+};
+
+export type RateAuditReport = {
+  version: number;
+  label: string;
+  isAiDetector: false;
+  disclaimer: string;
+  createdAt: string;
+  sourcePath: string;
+  currentOutputPath: string;
+  sourceOnly: boolean;
+  stageCount: number;
+  baseline: RateAuditStage;
+  current: RateAuditStage;
+  stages: RateAuditStage[];
+  delta: RateAuditDelta;
+  hotspotCount: number;
+  hotspots: RateAuditHotspot[];
+  recommendations: RateAuditRecommendation[];
+  strategyPlan: RateAuditStrategyPlan;
+  plateau: RateAuditPlateau;
+  strategyBinding: RateAuditStrategyBinding | null;
+  contentContract: DocumentEditContract | null;
+  readiness: RateAuditReadiness;
 };
 
 export type StyleCountItem = {
@@ -469,11 +1126,19 @@ export type ReviewDecision = "rewrite" | "source" | "rewrite_confirmed" | "sourc
 export type ReviewDecisionsResult = {
   path: string;
   decisions: Record<string, ReviewDecision>;
+  updatedAt?: string;
+  compareRevision?: string;
+  currentCompareRevision?: string;
+  reviewBaseCompareRevision?: string;
+  reviewLinkReady?: boolean;
+  reviewLinkStatus?: "linked" | "legacy_unversioned" | "none" | string;
 };
 
 export type RoundQualitySummary = {
   label?: string;
   isAiDetector?: boolean;
+  hardValidationRules?: string[];
+  reviewRules?: string[];
   paragraphSplitSummary?: ParagraphSplitSummary;
   validationRetryCount?: number;
   sourceFallbackCount?: number;
@@ -483,6 +1148,12 @@ export type RoundQualitySummary = {
   citationOutputCount?: number;
   protectedTokenCount?: number;
   protectedTokenTypes?: Record<string, number>;
+  introducedTemplatePhraseCount?: number;
+  introducedTemplatePhrases?: string[];
+  introducedColloquialPhraseCount?: number;
+  introducedColloquialPhrases?: string[];
+  styleValidationIssueCount?: number;
+  styleValidationIssues?: MachineLikeRisk[];
   styleCardVersion?: number;
   styleCardChunkCount?: number;
   styleCardChunkIds?: string[];
@@ -531,7 +1202,10 @@ export type RoundCompareData = {
   paragraphSplitSummary?: ParagraphSplitSummary;
   validationEvents?: Array<Record<string, unknown>>;
   qualitySummary?: RoundQualitySummary;
-  updatedAt?: string;
+  updatedAt?: string | null;
+  reviewUpdatedAt?: string | null;
+  compareRevision?: string;
+  sourceRelativeDocumentDelta?: SourceRelativeDocumentDeltaEvidence;
   chunks: RoundCompareChunk[];
 };
 
@@ -540,6 +1214,8 @@ export type RerunChunkResult = {
   compare: RoundCompareData;
   outputPath: string;
   comparePath: string;
+  preservedExisting?: boolean;
+  candidateSelectionAttempt?: ChunkCandidateSelection;
 };
 
 export type BatchRerunTarget = {
@@ -550,11 +1226,19 @@ export type BatchRerunTarget = {
 export type BatchRerunFailure = {
   chunkId: string;
   error: string;
+  guardCategory?: FailedAttemptGuardCategory;
+  issueCodes?: FailedAttemptIssueCode[];
+  errorStored?: false;
+  reasoningSuppressed?: true;
+  providerContentStored?: false;
   failedAttempts?: NonNullable<RoundCompareChunk["failedAttempts"]>;
   rerunStatus?: string;
   rerunFallbackMode?: string;
-  rerunFallbackError?: string;
+  rerunFallbackGuardCategory?: FailedAttemptGuardCategory;
+  rerunFallbackIssueCodes?: FailedAttemptIssueCode[];
+  rerunFallbackErrorStored?: false;
   quality?: RoundCompareChunk["quality"];
+  scopeKey?: string;
 };
 
 export type BatchRerunResult = {
@@ -564,6 +1248,10 @@ export type BatchRerunResult = {
   comparePath: string;
   compare?: RoundCompareData;
   successChunkIds?: string[];
+  preservedAttempts?: Array<{
+    chunkId: string;
+    candidateSelectionAttempt: ChunkCandidateSelection;
+  }>;
   totalCount: number;
   completedCount: number;
   successCount: number;
@@ -586,6 +1274,7 @@ export type BatchRerunStatus = {
   currentIndex: number;
   currentChunkId: string;
   successChunkIds?: string[];
+  preservedAttempts?: BatchRerunResult["preservedAttempts"];
   failures?: BatchRerunFailure[];
   eventCount: number;
   lastEvent?: Record<string, unknown> | null;
@@ -636,6 +1325,10 @@ export type ProtectionMapSection = {
   editable: boolean;
   reason: string;
   label: string;
+  structuralRole?: string;
+  structuralRoleLabel?: string;
+  editEligibility?: "eligible" | "protected" | string;
+  eligibilityReasonCodes?: string[];
   startUnit: number;
   endUnit: number;
   count: number;
@@ -654,6 +1347,18 @@ export type DocumentProtectionMap = {
     protectedUnits: number;
     tableUnits: number;
     topLevelParagraphUnits: number;
+    structuralRolePolicyVersion?: number;
+    structuralInventoryVersion?: number;
+    ambiguousUnits?: number;
+    roleCounts?: Record<string, number>;
+    semanticRangeCount: number;
+    bookmarkRangeCount?: number;
+    commentRangeCount?: number;
+    bookmarkRangeInteriorUnits?: number;
+    editableBookmarkRangeInteriorUnits?: number;
+    commentRangeInteriorUnits?: number;
+    semanticRangeTopologyValid: boolean;
+    semanticRangeCoveredUnits: number;
     protectionReasons: ProtectionReasonSummary[];
   };
   sections: ProtectionMapSection[];
@@ -663,7 +1368,10 @@ export type ScopeDiagnosticUnitFlags = {
   abstractStart?: boolean;
   bodyStart?: boolean;
   acknowledgementHeading?: boolean;
+  bookmarkRangeInterior?: boolean;
+  commentRangeInterior?: boolean;
   referencesHeading?: boolean;
+  referenceEntry?: boolean;
   backMatterHeading?: boolean;
   tocHeading?: boolean;
   tocEntry?: boolean;
@@ -673,6 +1381,8 @@ export type ScopeDiagnosticUnitFlags = {
   caption?: boolean;
   note?: boolean;
   formula?: boolean;
+  templateInstruction?: boolean;
+  semanticRangeCovered?: boolean;
 };
 
 export type ScopeDiagnosticUnit = {
@@ -682,12 +1392,29 @@ export type ScopeDiagnosticUnit = {
   styleName: string;
   editable: boolean;
   protectReason: string;
+  structuralRole?: string;
+  editEligibility?: string;
+  editEligibilityEvidenceDigest?: string;
+  editEligibilityReasonCodes?: string[];
+  presentationSignals?: Record<string, unknown>;
   textLength: number;
   textPreview: string;
   hasFieldCode: boolean;
   hasDrawing: boolean;
+  hasMath?: boolean;
+  hasComplexInline?: boolean;
   hasNumbering: boolean;
   numberingLevel?: number | null;
+  outlineLevel?: number | null;
+  formatAnchorCount?: number;
+  formatAnchorAmbiguous?: boolean;
+  hasSemanticRangeAnchor?: boolean;
+  insideSemanticRange?: boolean;
+  hasBookmarkRangeAnchor?: boolean;
+  hasCommentRangeAnchor?: boolean;
+  insideBookmarkRange?: boolean;
+  insideCommentRange?: boolean;
+  hasSemanticPointReference?: boolean;
   flags: ScopeDiagnosticUnitFlags;
 };
 
@@ -723,6 +1450,28 @@ export type DocumentScopeDiagnostics = {
   totalTextUnitCount: number;
   editableUnitCount: number;
   protectedUnitCount: number;
+  semanticRangeCount: number;
+  bookmarkRangeCount?: number;
+  commentRangeCount?: number;
+  semanticRangeTopologyValid: boolean;
+  semanticRangeIssueCount: number;
+  semanticRangeIssueCodes: string[];
+  semanticRangeCoveredUnitCount: number;
+  editableSemanticRangeCoveredUnitCount: number;
+  bookmarkRangeInteriorUnitCount?: number;
+  editableBookmarkRangeInteriorUnitCount?: number;
+  commentRangeInteriorUnitCount?: number;
+  editableCommentRangeInteriorUnitCount?: number;
+  semanticRangeAnchorUnitCount?: number;
+  editableSemanticRangeAnchorUnitCount?: number;
+  bookmarkRangeAnchorUnitCount?: number;
+  commentRangeAnchorUnitCount?: number;
+  structuralRolePolicyVersion?: number;
+  structuralInventoryVersion?: number;
+  protectedStructuralUnitCount?: number;
+  protectedTableParagraphCount?: number;
+  templateInstructionUnitCount?: number;
+  editableTemplateInstructionUnitCount?: number;
   reasonCounts: Record<string, number>;
   scope: ScopeDiagnosticSummary;
   issueCount: number;
@@ -783,6 +1532,13 @@ export type HistoryRound = {
   outputSegmentCount: number | null;
   timestamp: string;
   artifactStats?: HistoryArtifactStats;
+};
+
+export type HistoryExportSelection = {
+  docId: string;
+  sourcePath: string;
+  round: number;
+  outputPath: string;
 };
 
 export type DocumentHistory = {
@@ -952,6 +1708,133 @@ export type HistoryOrphanDeleteResult = {
   after: HistoryOrphanScanResult;
 };
 
+export type HistoryDatabaseStorageStats = {
+  exists?: boolean;
+  fileSizeBytes?: number;
+  pageSizeBytes?: number;
+  pageCount?: number;
+  freePageCount?: number;
+  freeBytes?: number;
+  freeRatio?: number;
+  estimatedPageBytes?: number;
+  error?: string;
+};
+
+export type HistoryDatabaseMaintenanceCounters = {
+  deleteEventCount?: number;
+  deletedRowCount?: number;
+  deletedFileCount?: number;
+  lastDeleteAt?: string;
+  lastCompactAt?: string;
+  lastCompactReason?: string;
+};
+
+export type HistoryDatabaseCompactionAdvice = {
+  shouldCompact?: boolean;
+  reasons?: string[];
+  thresholds?: {
+    deleteEventCount?: number;
+    deletedRowCount?: number;
+    freeBytes?: number;
+    freeRatio?: number;
+  };
+};
+
+export type HistoryDatabaseBackupEntry = {
+  path: string;
+  name: string;
+  sizeBytes: number;
+  modifiedAt: string;
+  validation?: HistoryDatabaseCheckResult;
+  ok?: boolean;
+};
+
+export type HistoryDatabaseMaintenanceSummary = {
+  ok: boolean;
+  path?: string;
+  status?: Record<string, unknown>;
+  storage?: HistoryDatabaseStorageStats;
+  counters?: HistoryDatabaseMaintenanceCounters;
+  policy?: HistoryDatabaseCompactionAdvice;
+  backupDir?: string;
+  backupCount?: number;
+  latestBackup?: HistoryDatabaseBackupEntry | null;
+  readiness?: Record<string, unknown>;
+  error?: string;
+};
+
+export type HistoryDatabaseBackupListResult = {
+  ok: boolean;
+  backupDir?: string;
+  total: number;
+  items: HistoryDatabaseBackupEntry[];
+};
+
+export type HistoryDatabaseBackupResult = {
+  ok: boolean;
+  createdAt?: string;
+  reason?: string;
+  path?: string;
+  backupDir?: string;
+  sourcePath?: string;
+  sizeBytes?: number;
+  sourceStatus?: Record<string, unknown>;
+  validation?: HistoryDatabaseCheckResult;
+  prunedBackups?: string[];
+  backupCount?: number;
+  error?: string;
+};
+
+export type HistoryDatabaseCompactResult = {
+  ok: boolean;
+  compactedAt?: string;
+  reason?: string;
+  path?: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  beforeSizeBytes?: number;
+  afterSizeBytes?: number;
+  savedBytes?: number;
+  backup?: HistoryDatabaseBackupResult | null;
+  validation?: HistoryDatabaseCheckResult;
+  error?: string;
+};
+
+export type HistoryDatabaseRecoveryReconciliation = {
+  source: string;
+  action: string;
+  jsonExisted: boolean;
+  jsonValid: boolean;
+  jsonRecordsHash: string;
+  jsonDocumentCount: number;
+  jsonRoundCount: number;
+  jsonGenerationChangedDuringRecovery: boolean;
+  recoveredRecordsHash: string;
+  recoveredDocumentCount: number;
+  recoveredRoundCount: number;
+};
+
+export type HistoryDatabaseRecoverResult = {
+  ok: boolean;
+  recoveredAt?: string;
+  path?: string;
+  backupPath?: string;
+  backupDir?: string;
+  sourceValidation?: HistoryDatabaseCheckResult;
+  preRecoveryBackup?: HistoryDatabaseBackupResult | null;
+  rawCurrentBackup?: string;
+  after?: Record<string, unknown>;
+  validation?: HistoryDatabaseCheckResult;
+  recoveredBackupAfter?: Record<string, unknown> | null;
+  recoveredBackupValidation?: HistoryDatabaseCheckResult | null;
+  jsonReconciliationRebuild?: Record<string, unknown>;
+  jsonReconciliationValidation?: HistoryDatabaseCheckResult;
+  jsonReconciliationAttemptCount?: number;
+  reconciliation?: HistoryDatabaseRecoveryReconciliation;
+  errorCode?: string;
+  error?: string;
+};
+
 export type HistoryDeleteImpactFile = {
   path: string;
   relativePath: string;
@@ -1009,6 +1892,23 @@ export type ExportFailureDetails = {
 export type ExportResult = {
   format: "txt" | "docx";
   path: string;
+  /** Identity of the immutable round generation certified by this export. */
+  outputPath?: string;
+  docId?: string;
+  round?: number;
+  compareRevision?: string;
+  contentRevision?: string;
+  artifactSnapshotDigest?: string;
+  evidenceVersion?: number;
+  overallStatus?: "passed" | "failed" | "unknown";
+  certification?: "plain_uncertified" | "unknown";
+  sourceKind?: "original_docx" | "generated_docx" | "plain_text" | "unknown";
+  contentContractStatus?: "passed" | "failed" | "unknown" | "not_applicable";
+  formatLockStatus?: "passed" | "failed" | "unknown" | "not_applicable";
+  checksPerformed?: string[];
+  exportAttemptId?: string;
+  artifactSha256?: string;
+  evidenceManifestPath?: string;
   layoutMode?: string;
   paragraphSource?: string;
   formatMode?: string;
@@ -1021,6 +1921,30 @@ export type ExportResult = {
   auditIssueCount?: number;
   ooxmlAuditPath?: string;
   ooxmlAuditIssueCount?: number;
+  formatLockPath?: string;
+  formatLockIssueCount?: number;
+  formatLockEditableChecked?: number;
+  contentContractPath?: string;
+  contentContractReady?: boolean;
+  contentContractIssueCount?: number;
+  editableUnitCount?: number;
+  protectedUnitCount?: number;
+  protectedHeadingCount?: number;
+  editableHeadingCount?: number;
+  semanticRangeCount?: number;
+  bookmarkRangeCount?: number;
+  commentRangeCount?: number;
+  semanticRangeTopologyValid?: boolean;
+  semanticRangeIssueCount?: number;
+  semanticRangeAnchorUnitCount?: number;
+  protectedSemanticRangeAnchorUnitCount?: number;
+  editableSemanticRangeAnchorUnitCount?: number;
+  semanticRangeCoveredUnitCount?: number;
+  protectedSemanticRangeCoveredUnitCount?: number;
+  editableSemanticRangeCoveredUnitCount?: number;
+  bookmarkRangeInteriorUnitCount?: number;
+  editableBookmarkRangeInteriorUnitCount?: number;
+  modelInputMatchesEditableUnits?: boolean;
   preflightPath?: string;
   preflightIssueCount?: number;
   preflightWarningCount?: number;
@@ -1031,6 +1955,14 @@ export type ExportResult = {
   auditIssueSamples?: ExportIssueSample[];
   ooxmlAuditIssueSamples?: ExportIssueSample[];
   preflightIssueSamples?: ExportIssueSample[];
+};
+
+export type ExportRoundOptions = {
+  expectedDocId: string;
+  expectedRound: number;
+  expectedCompareRevision: string;
+  expectedContentRevision: string;
+  expectedArtifactSnapshotDigest: string;
 };
 
 export type FormatRules = {
@@ -1070,4 +2002,52 @@ export type OutputPreview = {
   truncated: boolean;
   totalChars: number;
   previewChars: number;
+};
+
+export type RoundArtifactSnapshotIdentity = {
+  outputPath: string;
+  docId: string;
+  round: number;
+};
+
+export type RoundArtifactSnapshotReview = ReviewDecisionsResult & {
+  outputPath: string;
+  docId: string;
+  round: number;
+  updatedAt: string;
+  compareRevision: string;
+  currentCompareRevision: string;
+  reviewBaseCompareRevision: string;
+  reviewLinkReady: true;
+  reviewLinkStatus: "linked" | "legacy_unversioned" | "none";
+};
+
+/**
+ * One revision-consistent view of every mutable artifact that defines a round.
+ * `effectivePreview` is canonical even when the raw output/body-map materialized
+ * artifacts are explicitly reported as stale.
+ */
+export type RoundArtifactSnapshot = RoundArtifactSnapshotIdentity & {
+  version: 1;
+  materializationSource: "review_materialized_compare";
+  compare: RoundCompareData & { compareRevision: string };
+  review: RoundArtifactSnapshotReview;
+  effectivePreview: OutputPreview;
+  compareRevision: string;
+  reviewRevision: string;
+  contentRevision: string;
+  artifactSnapshotDigest: string;
+  compareSha256: string;
+  reviewSha256: string | null;
+  effectiveTextSha256: string;
+  outputSha256: string;
+  bodyMapSha256: string | null;
+  manifestSha256: string | null;
+  rawOutputMatchesEffective: boolean;
+  bodyMapMatchesEffective: boolean | null;
+};
+
+export type RoundArtifactSnapshotReadOptions = {
+  maxChars?: number;
+  signal?: AbortSignal;
 };

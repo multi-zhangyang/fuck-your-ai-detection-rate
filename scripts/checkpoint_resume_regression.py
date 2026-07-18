@@ -7,6 +7,7 @@ from pathlib import Path
 from app_service import get_round_progress_status
 from fyadr_records import ROOT_DIR
 from fyadr_round_service import get_round_checkpoint_path, run_round
+from llm_client import LLMRequestError
 from round_helper import build_round_context
 
 
@@ -66,10 +67,21 @@ def main() -> int:
 
     first_calls: list[str] = []
 
+    provider_private_message = "CHECKPOINT_PROVIDER_PRIVATE_MESSAGE"
+
     def failing_transform(chunk_text: str, _prompt: str, _round_number: int, chunk_id: str) -> str:
         first_calls.append(chunk_id)
-        if len(first_calls) == 2:
-            raise RuntimeError("simulated provider timeout")
+        # An unchanged, hard-valid first candidate now receives its one
+        # selector-driven net-gain retry. Fail on the following chunk's first
+        # provider call so exactly one completed chunk remains resumable.
+        if len(first_calls) == 3:
+            raise LLMRequestError(
+                provider_private_message,
+                category="timeout",
+                retryable=False,
+                endpoint="https://example.com/private-endpoint",
+                provider_message=provider_private_message,
+            )
         return chunk_text
 
     try:
@@ -85,13 +97,15 @@ def main() -> int:
             checkpoint_metadata={"model": "provider-a/model-1"},
         )
     except RuntimeError as exc:
-        if "simulated provider timeout" not in str(exc):
+        if "category=timeout" not in str(exc) or provider_private_message in str(exc):
             raise
     else:
         raise AssertionError("first run must fail to leave a checkpoint")
 
     checkpoint_path = get_round_checkpoint_path(output_path)
     checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    if provider_private_message in checkpoint_path.read_text(encoding="utf-8"):
+        raise AssertionError("checkpoint persisted the provider-private failure message")
     completed_before = set(checkpoint_payload.get("chunk_outputs", {}))
     if len(completed_before) != 1:
         raise AssertionError(f"expected 1 checkpointed chunk, got {len(completed_before)}")
@@ -109,8 +123,10 @@ def main() -> int:
         raise AssertionError(f"expected 1 completed chunk in progress status, got {progress_status.get('completedChunks')}")
     if int(progress_status.get("totalChunks", 0) or 0) <= 1:
         raise AssertionError("progress status must expose total chunk count")
-    if "simulated provider timeout" not in str(progress_status.get("lastError", "")):
-        raise AssertionError("progress status must preserve the last checkpoint error")
+    if "category=timeout" not in str(progress_status.get("lastError", "")):
+        raise AssertionError("progress status must preserve the stable provider error category")
+    if provider_private_message in json.dumps(progress_status, ensure_ascii=False):
+        raise AssertionError("progress status leaked the provider-private failure message")
     if progress_status.get("resumeStage") != "continue_chunks":
         raise AssertionError(f"expected continue_chunks resume stage, got {progress_status.get('resumeStage')}")
     if int(progress_status.get("nextChunkIndex", 0) or 0) != 2:

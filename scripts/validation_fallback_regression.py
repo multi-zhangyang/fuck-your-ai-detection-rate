@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 
@@ -9,7 +8,7 @@ from fyadr_round_service import MAX_VALIDATION_ATTEMPTS, normalize_chunk_output,
 
 
 def main() -> int:
-    work_dir = ROOT_DIR / "finish" / "regression" / "validation_fallback"
+    work_dir = ROOT_DIR / "finish" / "regression" / "validation_hard_fail"
     shutil.rmtree(work_dir, ignore_errors=True)
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -42,45 +41,39 @@ def main() -> int:
         prompts.append(prompt)
         return "错误输出"
 
-    result = run_round(
-        doc_id="validation-fallback-regression",
-        round_number=1,
-        input_path=source_path,
-        output_path=output_path,
-        manifest_path=manifest_path,
-        transform=invalid_transform,
-        prompt_profile="cn_custom",
-        prompt_sequence=["classical"],
-        chunk_limit=1000,
-    )
+    try:
+        run_round(
+            doc_id="validation-hard-fail-regression",
+            round_number=1,
+            input_path=source_path,
+            output_path=output_path,
+            manifest_path=manifest_path,
+            transform=invalid_transform,
+            prompt_profile="cn_custom",
+            prompt_sequence=["classical"],
+            chunk_limit=1000,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "failed hard validation" not in message and "failed:" not in message:
+            raise AssertionError(f"expected hard validation failure, got: {message}") from exc
+    else:
+        raise AssertionError("validation exhaustion must hard-fail the round instead of source fallback")
 
-    if output_path.read_text(encoding="utf-8") != source_text:
-        raise AssertionError("validation fallback must keep source text when all attempts fail")
+    if output_path.exists() and output_path.read_text(encoding="utf-8").strip():
+        # A partial write is acceptable only if it is not a silent full-source success artifact.
+        # Hard-fail path should not present a completed rewrite equal to the source as success.
+        pass
     if len(prompts) != MAX_VALIDATION_ATTEMPTS:
         raise AssertionError(f"expected {MAX_VALIDATION_ATTEMPTS} validation attempts, got {len(prompts)}")
     if "[RETRY NOTE]" not in prompts[-1]:
         raise AssertionError("second attempt must include validation feedback for the model")
 
-    compare = json.loads(Path(result["compare_path"]).read_text(encoding="utf-8"))
-    fallback_events = [event for event in compare.get("validationEvents", []) if event.get("event") == "source-fallback"]
-    if len(fallback_events) != 1:
-        raise AssertionError("compare payload must record exactly one source fallback event")
+    checkpoint_path = output_path.with_name(f"{output_path.stem}_checkpoint.json")
+    if not checkpoint_path.exists():
+        raise AssertionError("hard-fail path must keep checkpoint so the round can resume after a real fix")
 
-    chunk = compare["chunks"][0]
-    quality = chunk.get("quality") or {}
-    if chunk.get("fallbackMode") != "source":
-        raise AssertionError("fallback chunk must expose fallbackMode=source")
-    if "source_fallback" not in (quality.get("flags") or []):
-        raise AssertionError("fallback chunk must be marked with source_fallback flag")
-    failed_attempts = chunk.get("failedAttempts") or []
-    if not failed_attempts or failed_attempts[-1].get("outputText") != "错误输出":
-        raise AssertionError("fallback chunk must expose failed model outputs for manual review")
-    if not quality.get("needsReview"):
-        raise AssertionError("fallback chunk must require review")
-    if compare.get("qualitySummary", {}).get("sourceFallbackCount") != 1:
-        raise AssertionError("quality summary must count source fallback chunks")
-
-    print("validation fallback regression passed")
+    print("validation hard-fail regression passed")
     return 0
 
 

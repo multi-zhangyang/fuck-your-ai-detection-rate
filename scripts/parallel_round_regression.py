@@ -16,14 +16,23 @@ import fyadr_round_service as service  # noqa: E402
 from llm_client import LLMRequestError  # noqa: E402
 
 
+# Keep the four bodies structurally distinct: the ordering probe must not
+# manufacture a repeated sentence skeleton that the document-level release
+# gate would correctly arbitrate back to its baseline before restoration.
 SOURCE_TEXT = "\n\n".join(
     [
-        "Alpha paragraph for stable parallel order.",
-        "Bravo paragraph for stable parallel order.",
-        "Charlie paragraph for stable parallel order.",
-        "Delta paragraph for stable parallel order.",
+        "Firstly, Alpha waits for the first worker.",
+        "Firstly, Bravo completes after a short delay, preserving its assigned slot.",
+        "Firstly, Charlie verifies that concurrent work can finish early and still return safely.",
+        "Firstly, Delta closes the manifest sequence; therefore, restoration remains deterministic.",
     ]
 )
+
+
+def _marked_rewrite(text: str, marker: str) -> str:
+    # Keep the order marker while also removing a real mechanical connector so
+    # the candidate genuinely beats the baseline under bounded selection.
+    return f"[{marker}] {text.removeprefix('Firstly, ')}"
 
 
 def _read_checkpoint(output_path: Path) -> dict[str, object]:
@@ -41,7 +50,7 @@ def _run_order_regression() -> None:
         time.sleep(sleep_by_chunk.get(chunk_id, 0.01))
         with lock:
             completed_order.append(chunk_id)
-        return f"[{chunk_id}] {text}"
+        return _marked_rewrite(text, chunk_id)
 
     with tempfile.TemporaryDirectory(prefix="fyadr_parallel_order_") as temp_dir:
         temp_path = Path(temp_dir)
@@ -64,10 +73,10 @@ def _run_order_regression() -> None:
 
         expected_output = "\n\n".join(
             [
-                "[p0_c0] Alpha paragraph for stable parallel order.",
-                "[p1_c0] Bravo paragraph for stable parallel order.",
-                "[p2_c0] Charlie paragraph for stable parallel order.",
-                "[p3_c0] Delta paragraph for stable parallel order.",
+                "[p0_c0] Alpha waits for the first worker.",
+                "[p1_c0] Bravo completes after a short delay, preserving its assigned slot.",
+                "[p2_c0] Charlie verifies that concurrent work can finish early and still return safely.",
+                "[p3_c0] Delta closes the manifest sequence; therefore, restoration remains deterministic.",
             ]
         )
         if output_path.read_text(encoding="utf-8") != expected_output:
@@ -98,7 +107,7 @@ def _run_failure_resume_regression() -> None:
             first_calls.append(chunk_id)
             if chunk_id == "p0_c0":
                 time.sleep(0.12)
-                return f"[first:{chunk_id}] {text}"
+                return _marked_rewrite(text, f"first:{chunk_id}")
             if chunk_id == "p1_c0":
                 time.sleep(0.02)
                 raise LLMRequestError(
@@ -110,11 +119,11 @@ def _run_failure_resume_regression() -> None:
                     cooldown_seconds=20,
                     provider_message="busy",
                 )
-            return f"[unexpected:{chunk_id}] {text}"
+            return _marked_rewrite(text, f"unexpected:{chunk_id}")
 
         def resume_transform(text: str, _prompt_input: str, _round: int, chunk_id: str) -> str:
             resume_calls.append(chunk_id)
-            return f"[resume:{chunk_id}] {text}"
+            return _marked_rewrite(text, f"resume:{chunk_id}")
 
         with tempfile.TemporaryDirectory(prefix="fyadr_parallel_resume_") as temp_dir:
             temp_path = Path(temp_dir)
@@ -164,10 +173,10 @@ def _run_failure_resume_regression() -> None:
                 raise AssertionError("resume reran a checkpointed chunk")
             expected_output = "\n\n".join(
                 [
-                    "[first:p0_c0] Alpha paragraph for stable parallel order.",
-                    "[resume:p1_c0] Bravo paragraph for stable parallel order.",
-                    "[resume:p2_c0] Charlie paragraph for stable parallel order.",
-                    "[resume:p3_c0] Delta paragraph for stable parallel order.",
+                    "[first:p0_c0] Alpha waits for the first worker.",
+                    "[resume:p1_c0] Bravo completes after a short delay, preserving its assigned slot.",
+                    "[resume:p2_c0] Charlie verifies that concurrent work can finish early and still return safely.",
+                    "[resume:p3_c0] Delta closes the manifest sequence; therefore, restoration remains deterministic.",
                 ]
             )
             if output_path.read_text(encoding="utf-8") != expected_output:
@@ -189,11 +198,11 @@ def _run_cancel_regression() -> None:
         if chunk_id == "p0_c0":
             time.sleep(0.02)
             cancel_state["requested"] = True
-            return f"[kept:{chunk_id}] {text}"
+            return _marked_rewrite(text, f"kept:{chunk_id}")
         time.sleep(0.08)
         if cancel_state["requested"]:
             raise RuntimeError("Run was interrupted by user. Completed chunks are kept; click continue to resume this round.")
-        return f"[unexpected:{chunk_id}] {text}"
+        return _marked_rewrite(text, f"unexpected:{chunk_id}")
 
     with tempfile.TemporaryDirectory(prefix="fyadr_parallel_cancel_") as temp_dir:
         temp_path = Path(temp_dir)

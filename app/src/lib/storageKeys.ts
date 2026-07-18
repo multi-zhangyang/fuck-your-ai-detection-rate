@@ -1,0 +1,14 @@
+export const PREVIEW_MAX_CHARS = 12000;
+export const FORMAT_RULE_DRAFT_KEY = "fyadr.formatRuleDraft";
+export const FORMAT_RULE_PENDING_KEY = "fyadr.formatRulePending";
+export const FORMAT_RULE_ACTIVE_KEY = "fyadr.formatRuleActive";
+export const FORMAT_RULE_MODEL_ROUTE_KEY = "fyadr.formatRuleModelRoute";
+export const FORMAT_PARSER_DEFAULT_PROVIDER_ID = "__default";
+export const ACTIVE_DOCUMENT_KEY = "fyadr.activeDocument";
+export const ACTIVE_PROMPT_PROFILE_KEY = "fyadr.activePromptProfile";
+export const ACTIVE_PROMPT_SEQUENCE_KEY = "fyadr.activePromptSequence";
+export const AUTO_SNAPSHOT_SUPPRESSION_KEY = "fyadr.autoSnapshotSuppression";
+export const BATCH_RERUN_POLL_INTERVAL_MS = 1200;
+export const AUTO_RUN_RETRY_DELAY_SECONDS = 10;
+export const AUTO_RUN_RETRY_MAX_ATTEMPTS = 3;
+export const AUTO_NEXT_ROUND_DELAY_SECONDS = 60;

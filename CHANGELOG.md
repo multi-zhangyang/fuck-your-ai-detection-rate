@@ -6,7 +6,480 @@
 
 ## Unreleased
 
+### Brand & UI
+- 主品牌继续使用 **FYADR / Fuck your AI detection rate**，左上角产品副标题统一为“论文 AI 降检平台”，不再把产品定位成泛化的论文改写工作台。
+- 前端视觉收成 Vercel 风格：中性黑白灰主色、去掉荧光蓝紫光晕与按钮悬浮抬升，卡片/按钮/输入框改为更克制的边框与轻阴影。
+
+### 最终质量审计——当前实现准则
+
+> 本节是当前未发布版本的事实来源。后续条目包含开发过程中的中间实验，
+> 其中一部分已经撤回。FYADR 当前不再强制短句配额、被动句、长“的”链、
+> 最长/最短句比例或逗号改句号，也不承诺任何第三方 AIGC 检测器的分数或通过结果。
+
+- 以保守型学术编辑重写三轮默认提示词：事实与逻辑完整高于风格变化；原本自然的文本可以不改；禁止虚构机制、例子、数据、结论或所谓“细节注入”。回归会逐字校验活动提示词与内置默认版本一致。
+- 取消指标投机，改为相对、顾问式诊断：句长变化使用稳健分位数与变异信号，明确识别碎句刷分，也不再把被动句或长定语视为天然“更像人”。原无解析器标点切分仅保留为不修改正文的兼容接口。
+- 加固内容硬锁：每个保护占位符必须恰好出现一次且顺序不变；未知、重复、删除或换序均会失败。数值/实体顺序与隐式指标—数值绑定增加校验，同时不向模型提示泄露已遮罩的原始数值。
+- 增加否定范围最低保障：原文存在明确否定而输出完全丢失否定标记时，以 `negation_scope_removed` 阻断；“并非”改为“并不表示”等等价表达仍可通过。
+- 恢复段落级上下文：公开配置的 `chunk_limit` 重新成为真实上限，普通 400～800 字论文段落不再被内部 280 字隐藏阈值静默切碎。
+- 同名文档不再串档：新上传进入 `origin/<完整内容 SHA-256>/<原文件名>`，同名不同内容不覆盖、相同内容安全复用；DOCX/round 中间产物使用不泄露路径的规范化文档 identity 短哈希。旧产物仅在来源可证明时只读兼容，歧义路径拒绝恢复或删除。
+- DOCX 保真升级到 snapshot v9 与阻断式 OOXML 格式锁。超链接 run 在不拍平 wrapper 的前提下改写；字段、OMML、VML/OLE、表格、关系、section、样式、编号、页眉页脚、SDT、修订、ruby 与 AlternateContent 均被保护，无法安全映射时直接拒绝导出。格式漂移不再只是警告。
+- Web UI 重构为桌面/移动响应式工作台，二级页面按需加载；补齐诚实空态、错误态、质量态、无障碍控件、根级错误恢复、离线系统字体、安全浏览器存储降级、未保存草稿保护、模型配置校验，以及按文档串行且在离页时刷新的审阅决策保存队列。
+- 本地部署与密钥链加固：密钥复用绑定原 Base URL、配置使用原子写与 POSIX `0600`、容器强制单 worker、生产静态资源具备正确缓存/MIME/404 行为，并明确只适用于本机或可信网络。
+- 验证结果明确区分离线回归、合成复杂 DOCX、真实浏览器、真实 Docker、可选真实模型合成样本与无法控制的第三方检测平台；可选样本跳过不会被描述成“样本已通过”。
+- 三个真实模型门控已改为保守编辑合同，不再要求 burstiness/结构浓度朝指定方向变化；受控合成样本实测覆盖两轮链、独立 Pass、重复句模与必要逻辑，验证数值、单位、引用、术语、否定和指标绑定，且调用量有明确上限。
+
 ### Added
+- **双契约功能跃迁**：新增 `document_edit_contract.py`，把“降检策略”和“只改正文/原格式固定”合并成运行与导出的硬门。DOCX 在 `pre_run`、`post_round`、`pre_export`、`post_export` 四个阶段校验源文件身份、冻结范围、模型输入、body map 目标、标题泄漏与格式证据；`editableHeadingCount` 必须为 0。RateAudit v2 新增 `strategyPlan`（停止/定点重跑/下一维度/阻断）、`contentContract` 与统一 `readiness`；前端“降检报告”展示双契约状态、正文/保护区/标题计数和可定位目标。导出 API 补齐格式锁响应头并新增正文契约响应头，导出健康面板同时展示“格式锁”和“正文契约”。完整设计见 `docs/DUAL_CONTRACT_DESIGN.md`。
+- **格式策略收敛为唯一保真路径**：`school_rules` 只保留为旧配置兼容标识，读取、保存或显式导出请求都会迁移为 `preserve_original`；学校规范 UI 改为“学校规范对照”，只做诊断，不再写回字体、字号、段距、页边距或页面结构。新增复杂 DOCX 契约回归，覆盖任意 Title、英文/中文标题样式、自动编号、TOC、公式、表格、参考文献、页眉页脚和篡改 body map 的失败关闭。
+- **DOCX 快照身份升级到 v10**：快照新增原始文件 SHA-256 并在每次复用前校验。即使文件内容被替换后刻意恢复相同大小和修改时间，旧正文范围也会失效并重建，避免仅凭 stat 元数据误认源文档未变化。
+- **RateAudit 降检诊断闭环**：新增离线 `/api/rate-audit`，以原文为基线汇总同一路线的分轮结果，用统一规则计算风险点数轨迹、五维改善/退化、问题段落热区和定向处理建议；热区保留真实 `chunkId`，前端“降检报告”可直接跳回对应 Diff。风险点数明确是 high=3 / medium=2 / low=1 的可解释相对计数，`isAiDetector=false`，不输出第三方检测概率。新增单阶段 30 万字符分析上限与显式截断、指标快照复用、源文件/产物路径及文档归属边界、陈旧请求防覆盖、算法/API/前端三层回归及技术设计文档。
+- 后端与容器发布链加固：已保存 API Key 只能在原 Base URL 上补全，变更地址必须重新输入密钥；POSIX 配置目录/文件改为 `0700`/`0600` 并使用原子替换；Docker 修复 `/app/scripts` 模块导入与 Compose 提前降权冲突，启动前真实执行 task/history readiness，强制单 Gunicorn worker；生产静态根资源恢复正确 MIME/404，哈希资源保留一年 immutable 缓存。新增 `production_deployment_regression.py`，并扩充 Web 安全回归覆盖密钥外带、配置权限与生产静态行为；部署文档明确默认仅面向本机或可信网络。
+- 核心算法护城河——多轮改写**轮间换扰动维度**（对标 2025–2026 知网 4.0 / Exa 调研结论：2–3 轮封顶、每轮换不同扰动维度，避免同维度重复导致“AI 改 AI 反弹”）。`prompt_library` 新增 `ROUND_PERTURBATION_DIMENSIONS` 映射与 `get_round_dimension`：prewrite=结构预热（neutral）、round1=句长结构维度（主攻 burstiness/句式骨架）、round2=连接词细节维度（主攻连接词分布不均/细节注入），两轮主攻维度刻意不同。重写 `rewrite-pass-1.md` / `rewrite-pass-2.md` / `prewrite.md` 与 defaults：round1 只在句长结构与句式骨架上重度发力并显式声明“连接词松散化是下一轮维度、本轮不强攻”；round2 反过来只主攻连接词与细节、显式声明“不再重复结构维度、维持 Pass 1 已有句长起伏而非重攻”，消除两轮在 burstiness/连接词/去模板的重叠。`prompt-registry.json` 同步 round1/round2 描述。
+- 检测器在环定向诊断：`fyadr_round_service` 新增 `resolve_round_dimension` + `_assess_dimension_direction`，按本轮主攻维度校验输出是否朝降 AI 方向移动（句长结构维度期望 burstiness 抬升、连接词细节维度期望 connectorDensity 下降），未生效时挂 `dimension_direction_not_effective` 顾问标记并给定向重跑建议；`_build_chunk_quality` 回传 `roundDimension`/`dimensionDirection`，`_build_quality_summary` 回传 `roundDimension`。新增真实验证 `round_dimension_rotation_regression.py`（真实文本真实指标计算：round2 维度 burstiness 1.25→17.0 判 ok、打回均匀 1.25→1.54 判未生效；round3 维度 connectorDensity 0.71→0.0 判 ok、双连接词加码到 1.25 判未生效；映射 round1/2/3 维度两两不同），已接入 `run_regressions.py`。
+- 维度定向重跑闭环（检测器在环从被动建议升级为重跑时实际纠偏）：`app_service._build_dimension_rerun_guidance` 按 `chunk.quality.roundDimension.primaryMetric` 生成定向重跑指令——句长结构维度失效→“拉长短句交错、抬高句长突发比，不要动连接词”，连接词细节维度失效→“松散逻辑脚手架、降低连接词密度，不要再去制造长短句交错”；`_build_rerun_strategy_note` 将其作为 `dimension-targeted-repair` 标签优先注入重跑 prompt（优先于通用降机器味策略），`RERUN_FEEDBACK_TEMPLATES` 补 `dimension_direction_not_effective` 条目。新增真实验证 `dimension_rerun_loop_regression.py`（用真实 `_build_chunk_quality` 生成的 chunk 断言：burstiness 失效块的重跑指令锁句长、connector 失效块的重跑指令锁连接词、两条指令分叉不相同、有效块不注入定向指令），已接入 `run_regressions.py`。
+- 降 AI 黑名单单一事实源 + 漂移护栏：新建 `style_blacklist_registry.py`，把连接词/模板/成语/被动标记/AI 突发连接词/空泛填充/英文对应项集中为一处事实源，`fyadr_round_service` 的 9 个检测正则（`MECHANICAL_CONNECTOR_RE`/`TEMPLATE_PHRASE_RE`/`EN_*`/`AI_BURST_CONNECTOR_RE`/`AI_ABSTRACT_PADDING_RE`/`GENERIC_CLOSING_RE`/`PASSIVE_VOICE_RE`/`CHENGYU_RE`/`INTRODUCED_TEMPLATE_PHRASE_RE`）全部改为从注册表派生。新增真实验证 `style_blacklist_drift_regression.py`：断言派生正则与代码正则字节一致、注册表每个字面项被对应正则捕获、**prompts 中“避免”的术语被代码正则捕获（防止“提示叫模型避开但检测器从不统计”的盲区）**——首次跑即发现真实漏洞：prompts 叫避免“提供了有力**支撑**/发挥了重要作用”，但旧 `TEMPLATE_PHRASE_RE` 只匹配“提供了…**支持**/发挥着…作用”，`支撑/发挥了` 从未被检测到；注册表已修正为同时匹配 `支撑` 与 `发挥了作用`，drift 回归锁定该修复不回退。已接入 `run_regressions.py`。
+- **真实 LLM 端到端改写测试**：新增 `real_rewrite_e2e_regression.py`，用真实配置的 本机已配置 provider 跑完整 `fyadr_round_service.run_round`（真实 LLM、真实 chunking、真实硬验证），在**真实 LLM 输出**上断言 `roundDimension`/`dimensionDirection` 真实计算、维度旋转在真实链上成立。无 provider 或 LLM 不可达时 skip（不 fail，离线 CI 不红）；默认套件经 `FYADR_RUN_REAL_LLM=1` 环境变量门控（避免每次 CI 烧真实 API 配额）。**该真实测试直接发现一个真实设计缺陷**：多轮链中 round1（句长维度）的改写常顺带清掉机械连接词，round2（连接词维度）接力时输入 `connectorDensity==0` 已无连接词可降，旧诊断空转报“decrease succeeded 0.0→0.0”——毫无意义。修复 `_assess_dimension_direction`：输入维度已达标时返回 `satisfied:True`（“输入连接词密度已低，本轮连接词维度已满足，无需定向重跑”），真实区分“本轮在该维度产生方向性变化”与“输入已达标无事可做”；`round_dimension_rotation_regression.py` 与真实 e2e 均锁定该修复（真实链 round3 现报 `satisfied=True`，不再空转成功）。
+- **真实 LLM 维度增益对照实验 + 句长维度 prompt 强度修复**：新增 `real_dimension_gain_regression.py`，用真实 LLM 对**同一高连接词密度+均匀句长输入**分别跑 round1（句长维度）与 round2（连接词维度），用真实检测指标对比两轮在各自维度上的方向性增益，证明“轮间换维度”在真实 LLM 下确实产生不同降 AI 信号。**该实验首次跑直接暴露真实缺陷**：round1 的句长结构 prompt 在真实 LLM 上只把 burstiness 从 1.38 拉到 1.5（+0.12，几乎没动），反而 round2 的连接词 prompt 拉到 2.25（+0.87）——结构维度 prompt 没真正驱动 LLM 做长短句交错，所谓“轮间换维度”分工在真实链上失效。强化 `rewrite-pass-1.md` 句长结构指令为硬性可操作：**必须**造 2～3 个 6～12 字短句穿插 30～50 字中长句、禁止均匀句模、自检最长/最短句字数比≥2。强化后真实复跑：round1 burstiness 增益 +0.12→+0.26～+0.62、链上 2.25→3.0，结构维度真正驱动。**诚实结论与测试设计**：真实 LLM 上两维度**部分耦合**（去连接词天然会改变句长），断言“A 的 burstiness 增益必须 ≥ B−0.5”是错误的不可实现耦合，套件跑会因连接词 prompt 顺带拉高句长而 flaky 失败。改为可辩护的解耦断言：A 必须真实把 burstiness 抬高 ≥0.15（A 自己的维度）、两轮都必须实质性降低 connectorDensity、B（连接词专家）的 connectorDensity 不得高于 A（连接词维度确是 B 专长）。3 次真实 LLM 连跑稳定通过。已接入 `run_regressions.py`（经 `FYADR_RUN_REAL_LLM=1` 门控）。
+- **结构 OOD 真实 LLM 验证 + prompt 硬性结构规则 + 分类器修正（真实发现护城河弱点并修复）**：新增 `real_structure_ood_regression.py`，用真实 LLM 跑高结构集中度“该方法…”8 句输入（集中度 0.875、全 plain_active），断言真实改写后结构集中度真实下降。**首次跑暴露双重缺陷**：①真实 LLM（当时使用的测试模型）plain 改写后结构集中度反升到 1.0、主导类型不变——LLM 对结构多样性和对句长一样懒，prompt 此前只有软性“结构变形可互换”没硬性目标；②分类器 `_classify_sentence_structure` 的 subordinate_lead 只匹配固定前缀（若/由于/通过/在…），漏掉“在多个公开数据集上，该方法…”“工程实践里，它…”这类**通用状语前置句**，导致即便 LLM 真分散了结构也测不到。修法：`rewrite-pass-1.md` 加硬性可操作结构规则（整段至少 2～3 个非简单陈述结构：前置从句/被动/长定语；自检 >70% 同结构须重构——对标句长维度的“硬性指标”教训：软指令 LLM 必偷懒），defaults 同步；扩 `STRUCT_SUBORD_LEAD_RE` 增“X 里/中/上/下/时/后/前 + 逗号”通用状语前置模式。修后真实复跑集中度 0.875→0.625/0.667，LLM 真分散结构。**教训**：①只测合成文本过不了真实 LLM 懒；②分类器漏检比信号不存在更隐蔽——会误判护城河已失效。`real_structure_ood_regression.py` 经 `FYADR_RUN_REAL_LLM=1` 门控接入。全量回归 51/51 绿（含真实 LLM 门控）。
+- **结构 OOD 从顾问信号升级为强制子维度（对标知网 4.0“看结构不看词”护城河深化）**：此前结构集中度只是 advisory flag，检测器在环诊断只强制 burstiness/连接词两个维度——结构集中度不达标不会触发维度定向重跑。现把结构集中度升为**句长结构维度（round1）的强制子信号**：`_assess_dimension_direction` 在 burstiness 维度上回传 `structureDirection`（concentration/dominantType/total/effective），**即便 burstiness 已达标（satisfied=True），若输出仍集中在 plain_active/enumerative（总句数≥5 且集中度≥0.85），仍判本轮未在结构子维度生效**，挂 `dimension_direction_not_effective` 并给结构定向重跑建议；连接词维度不受影响（无 structureDirection，避免维度冲突）。闭合闭环同步加固：`_dimension_converged` 在 `structureDirection.effective=False` 时判**未收敛**（此前只看 `ok or satisfied`，会把“burstiness 满足但结构仍集中”误判为收敛、结构定向重跑空转）；`_build_dimension_rerun_guidance` 与 `_build_dimension_converge_retry_note` 在结构子维度失效时改发**结构定向**重跑/强化指令（把 2～3 个简单陈述句改前置从句/被动/长定语使主导类型占比降到 70% 以下），而非继续只交错句长——治本结构集中而非句长起伏。新增真实验证 `structure_subdimension_regression.py`（4 例：句长已达标但结构集中→判失效且 note 是结构定向/连接词维度不带 structureDirection/句长已达标且结构分散→通过/总句数<5 不触发结构强制），真实 LLM 复跑结构集中度 0.875→0.667 仍成立。已接入 `run_regressions.py`。全量回归 49/49 绿。**这是把“第三类降 AI 信号”从只看不治的顾问升级为检测器在环真正纠偏的强制维度**，结构层 AI 指纹不再靠句长起伏间接覆盖。
+- **确定性后处理升级为指标引导的 accept-best 提交（研究代理 #3，真实 LLM 实测增益翻倍）**：`_apply_deterministic_burstiness_pass` 此前只要 burstiness 拆句改善就提交，可能 perversely 抬高连接词密度（拆出的片段以连接词起句）或集中结构（两半都成 plain_active）。现改为**三信号联合重评分 accept-best**：对拆句候选重算 burstiness/connectorDensity/structureConcentration，仅当 burstiness 真上升且连接词不实质加码（>+0.1 且 ≥0.45）、且结构不被推入 AI 集中区（集中度 +0.1 且跨过 0.85 且主导类型为 plain_active/enumerative）才提交拆句，否则落 `deterministic-burstiness-postprocess-skipped` 事件并保留拆前输出——accept-best、绝不越改越差。真实 LLM 链实测增益：`real_rewrite_e2e` round2 burstiness 从 2.25 提升到 **7.0**（此前 3.67），`real_structure_ood` 结构集中度 0.875→**0.444**且主导类型迁移到 subordinate_lead（此前 0.667）——三信号联合门控让确定性后处理不仅治句长，还连带不破坏连接词/结构、甚至因拆句后片段落入不同结构类型而真实分散结构。全量回归 52/52 绿（含真实 LLM 门控）。**壁垒价值**：把单一维度确定性后处理升级为多维联合最优选择，对标 arxiv 2506.07001 training-free 检测器引导扰动的 accept-best 思想，但用本地统计指标替代 7B 检测器做 oracle——无需 GPU、可复现、检测器难针对性重训。
+- **结构 OOD（结构类型分布）第三维降检测信号（独立于句长/连接词）**：对标知网 4.0“看结构不看词”——在句长突发性（burstiness）与连接词密度（connectorDensity）之外补第三类**结构层**信号。新增无解析器浅层句式分类器 `_classify_sentence_structure`（被动/前置从句/长前置定语/枚举/简单陈述，first-match 优先）+ `_structure_type_distribution`（各类型计数 + 主导类型 + 集中度=最大类型占比）。AI 文集中在 plain_active + enumerative，人工文分散到 passive/subordinate_lead/long_premodifier。`_style_risk_metrics` 回传 `structureTypeCounts`/`structureTypeTotal`/`dominantStructureType`/`structureConcentration`（仅中文）；`_assess_machine_like_risks` 新增顾问风险 `structure_template_concentration`（总句数≥5 且主导类型为 plain_active/enumerative 且集中度≥0.85 触发，≥0.92 为 high——阈值刻意高，plain_active 是兜底类、人类主动句也多，低阈值会误伤自然文：实测 0.8 的人工 fixture 不触发、0.875 的 AI fixture 触发）。`_build_chunk_quality` 在该风险触发时挂 `structure_template_concentration` advisory flag + 结构专属 rewriteAdvice（把简单陈述改前置从句/被动/长定语增多样性），`styleMetrics` 白名单补 `structureConcentration`/`dominantStructureType` 给前端。`RERUN_FEEDBACK_TEMPLATES` 补 `structure_template_concentration`→`structure-diversify` tag + 指令；`_build_rerun_strategy_note` 改为同时读 `flags` + `advisoryFlags`（此前只读 flags，advisory 的结构信号被吞）使结构定向重跑指令真实注入。新增真实验证 `structure_ood_regression.py`（7 例：AI 高集中度 plain_active 触发风险 / 人工低集中度不触发且 ≥3 结构类型 / passive 优先于 enumerative 的分类优先级 / <3 句集中度归 0 无伪信号 / 英文空结构 / 句长健康但结构集中的解耦证明 / 重跑 note 含 structure-diversify tag + Structure diversity 指令）。这是第三类可计算降 AI 信号，与前两类刻意正交（解耦验证），为后续把结构 OOD 升为独立轮维度/独立护城河打底。全量回归 50/50 绿（含真实 LLM 门控）。已接入 `run_regressions.py`。
+- **多维诊断定向改写闭环真正闭合（诊断→重写→重评分→收敛）**：此前 `dimension-targeted-repair` 只在重跑 prompt 注入定向指令就结束——重跑后无人验证本轮维度是否真纠偏，闭环是开环。现已闭合：`app_service.rerun_compare_chunk` 在块被标 `dimension_direction_not_effective` 时，每次重跑通过硬验证后用真实 `resolve_round_dimension` + `_build_chunk_quality(round_dimension=...)` **按本轮主攻维度重评分**，`_dimension_converged` 判 `dimensionDirection.ok/satisfied`；未收敛则注入 `[DIMENSION-CONVERGE RETRY]` 强化 note（句长维度：硬性插 2 个 6～12 字短句、长短比>2；连接词维度：机械连接词再降一半）再重跑，最多 `DIMENSION_RERUN_CONVERGE_ATTEMPTS=2` 次；最终回传 `rerunDimensionConverged`（真/假诚实）+`rerunDimensionConvergeDirections`（各次方向记录）+最终 `quality.dimensionDirection`（用 round_dimension 重算，真实反映纠偏结果——此前 `_build_chunk_quality` 未传 round_dimension 导致重跑后维度诊断被丢）。未标 `dimension_direction_not_effective` 的块关闭闭环（不引入额外重跑）。新增真实验证 `dimension_convergence_regression.py`（用 fake 确定性 transform 跑真实 `rerun_compare_chunk`：A 句长维度首跑未收敛→converge-retry note 后产出变体→converged=True 且 directions 记录、最终 quality.dimensionDirection ok/satisfied；B transform 永远产出均匀句→诚实 converged=False；C 未标失效→闭环关闭无 rerunDimensionConverged 字段）。**关键发现**：连接词维度非收敛与 `connector_density_increased` 硬验证门重叠（连接词密度高且加码即硬失败），故“永不收敛”诚实案例只能在句长维度（均匀节拍仅顾问、非硬门）上体现——这本身说明连接词维度被硬验证兜底、句长维度才是需要软闭环纠偏的真正缺口。全量回归 49/49 绿（含真实 LLM 门控）。已接入 `run_regressions.py`。
+- **确定性 burstiness 后处理壁垒（后处理去 AI 化，超越纯 prompt 调优）**：新增 `deterministic_postprocess.py` 的 `deterministic_burstiness_postprocess`——LLM-free、可复现、保内容的后处理去 AI 化：检测连续均匀句长窗口（`UNIFORM_TOLERANCE=0.22`/`WINDOW=3`），在中文逗号边界把一句拆两句（`，`→`。`，纯标点不改任何内容字符），专打知网 4.0“均匀节拍”AI 指纹。硬护栏：不拆含保护区占位符（`@@FYADR_*_NNN@@`）的句、不拆 <22 字短句、不拆无中文逗号句、不拆拉丁/数字主导句（`latin/digit<8` 跳过）、`MAX_SPLITS=3` 防过碎。**已接入 `run_round` 管线**：`_rewrite_round_chunk` 在硬验证通过后调 `_apply_deterministic_burstiness_pass`，**仅当本轮维度 `primaryMetric=="burstinessRatio"`（句长维度）且输出仍均匀时触发**，连接词维度绝不触发（避免与连接词降密目标冲突），触发后重跑 `validate_chunk_output` 二次确认保内容不破坏硬验证、失败回退原文；`_build_quality_summary` 回传 `deterministicPostprocessCount`/`deterministicPostprocessSplitTotal`/`deterministicPostprocessChunkIds`。**真实验证双保险**：`deterministic_postprocess_regression.py`（单元：均匀句 burstiness 1.41→3.83、内容字符字节级保真、占位符句绝不拆、变体文本 burstiness 不恶化、二次 pass 内容保持、tiny/数字英文句安全）+ `deterministic_postprocess_integration_regression.py`（用 fake 确定性 transform 跑完整 `run_round`：句长维度真触发 burstiness 1.26→3.83、连接词维度不触发、引用 `[1]` 占位符全程保全、`quality_summary` 计数真实回传）。真实 LLM 链实测：`real_rewrite_e2e` round2 burstiness 从接管线前 2.25 提升到 3.67。全量回归 48/48 绿（含真实 LLM 门控）。**壁垒价值**：纯标点变换不调 LLM、可复现、检测器难以针对性重训、同行无法靠调 prompt 复制——这是第一个真正超越“prompt 调优 + 统计顾问”层级的护城河。已接入 `run_regressions.py`。
+- DOCX 导出固定为 `formatMode = preserve_original`：以原 Word 每个 run/段落的 OOXML `pPr`/`rPr` 为唯一真相源，改写时只回填 `w:t` 文字节点，跳过页面级布局（页边距/页眉页脚/页码）与表格布局，保证修改前后字体、字号、标题等版式字节级不变；旧 `school_rules` 请求也不能改变该行为。新增阻断式 `audit_docx_format_lock`（lxml 文本无关 pPr/rPr sha256 签名）逐段校验签名一致性，导出结果回传 `formatLockPath`/`formatLockIssueCount`。
+- 核心降检测维度加固（对标 2025–2026 知网 4.0 结构化判定）：`_style_risk_metrics` 新增被动句密度（`PASSIVE_VOICE_RE`：被/予以/加以/为…所/受到/得以）、四字成语文言密度（`CHENGYU_RE`）、句长突发比（max/min 句长）三项指标；`_assess_machine_like_risks` 对应新增 `passive_voice_overuse`/`chengyu_density_high`/`low_burstiness_ratio` 顾问风险。`prewrite` 默认流程补入句长突发性、连接词分布不均、论证深度起伏、被动句克制、成语减密五条 CNKI-4.0 指向指令。新增 `style_dimensions_regression.py` 锁定指标与风险行为。
+- 前端导出提示统一显示“原 Word 是唯一格式真相源”，并展示正文契约通过的正文单元数与锁定标题数，不再提供格式写回模式分支。
+- `app_config.formatMode` 固定归一化为 `preserve_original`；旧 `school_rules` 值只用于迁移兼容，不再是可选产品模式。
+- 改写质量卡片展示降检测指标：`_build_chunk_quality` 回传 `styleMetrics`（句长突发比、被动密度、成语密度、连接词密度），前端 `ChunkQualityMeta` 显示“降检测指标：句长突发·被动密度·成语密度”，让用户在 Diff 区直接看到每块的 CNKI-4.0 结构维度数值。
+- 导出保真校验结果前端可见：保真模式导出回传 `formatLockPath`/`formatLockIssueCount`/`formatLockEditableChecked`，`ExportResult` 类型补字段，`formatExportNotice` 显示“格式保真校验通过：N 个正文段落版式与原文一致”或“发现 N 个段落版式与原文不一致，请检查…”，用户在导出通知直接感知保真锁状态（此前后端算了但前端无任何展示）。
+- 三个真实验证脚本（独立 lxml 字节级比对，不信任自写 audit 函数）：`fidelity_real_verification.py` 验证复杂真实 DOCX 的正常导出与旧 `school_rules` 显式覆盖均保持全部 pPr/rPr 签名、14pt 字号和非标准页边距；`fidelity_multiround_verification.py` 验证 2 轮链后保真锁、段落数与保护区不变；`document_edit_contract_regression.py` 验证标题/结构区不入模和篡改范围失败关闭。均已接入 `run_regressions.py`。
+- 首屏体积优化：`DiagnosticsPage`/`PromptPreviewPage`/`QualityReportPage` 改为 `React.lazy` 路由级懒加载（`Suspense` fallback），从 index chunk 剥离。index chunk 440K→398K（gzip 114K→107.8K），首屏不再加载二级页面 34K（gzip ~9.8K），公网慢链首屏更快；二级页仅在用户切换到对应视图时按需下载。
+- 实测后端请求延迟基线：`/api/ping` 0ms、`/api/health` 18.6ms、`/api/prompts` 2.6ms、其余 <1ms（Flask test client，3 次取中位数），确认公网延迟瓶颈在首屏前端 bundle + 网络往返而非后端处理。
+- LLM 默认流式输出：`chat/completions` 与 `responses` 请求支持 `stream=true`，改写进度可上报 `provider-stream` 事件。
+- 前端展示模型流式进度：运行状态卡与 runtime step 支持 `provider-stream` 预览。
+- 抽出 `RoundRunStatusCard` 与 `runtimeProgress` 工具模块，继续降低 `App.tsx` 单体体积。
+- 继续拆分：抽出 `RunRecoveryPanel`、`AutoRunSignal`、`runRecovery`、`autoRun` 模块。
+- 抽出 `HomeRunPanel` 与 `documentPaths`，`App.tsx` 从约 7k 行降到约 6.2k 行。
+- 拆出 `PromptPreviewPage`、`DiagnosticsPage`、`QualityReportPage`、`NotificationCenter`、`AppSidebar`、`UnifiedConfirmDialog` 与诊断/格式化工具库，`App.tsx` 降至约 4.7k 行。
+- 继续拆分 `App.tsx` 纯逻辑：抽出 `historyHelpers` / `progressHelpers` / `exportHelpers` / `diffDashboard` / `documentMatch` / `notificationHelpers` / `roundResultHelpers`，主文件降至约 4.0k 行。
+- 导出风险提示强化：未确认高风险/回退块在 Word 导出确认中以 danger 语气明示，默认导出原文而非伪装成功。
+- 再拆 `App.tsx` 存储/自动续跑/状态文案 helper：`storageKeys`、`formatStorage`、`promptStorage`、`autoSnapshot`、`autoRunScope`、`documentStatusCopy`、`errorRecovery`，主文件降至约 3.7k 行。
+- 风格硬校验改为“相对输入新增风险”：同文回传不再因原文已有的 burst/节奏特征误杀；`run_regressions.py --skip-frontend-build` 全量 35 项通过。
+- 清理回归里的私有厂商 URL；`open_web_ui` 在存在 `os.startfile` 时优先调用；`npm run check:text` 改用 `python3`。
+- Diff 区接入块级流式预览：`provider-stream` 时高亮当前分块并展示增量文本。
+- 抽出 `reviewDecisions` 模块，统一默认决策与保存/恢复语义。
+- 抽出 `historyDeleteCopy` 与 `modelRouteSummary`，继续压缩 `App.tsx` / `HomeRunPanel` 纯文案与路线汇总逻辑。
+- 抽出 `AppendRoundDialog` 与 `homeRunPanelState`，`HomeRunPanel` 继续从约 860 行降到约 776 行。
+- 抽出 `SetupEditorDialog` 与 `modelRouteEdit`，`HomeRunPanel` 继续降到约 585 行。
+- 抽出 `HomeRunControlSection` 与 `homeRunControl`，`HomeRunPanel` 继续降到约 517 行。
+- 抽出 `HomeDocumentEntryCard` 与 `HomeSetupChoiceCards`，`HomeRunPanel` 继续降到约 460 行。
+- 抽出 `runRoundPrep`：运行配置/断点/进度视图/失败分类纯函数，`handleRunRound`/`attachActiveRun` 继续瘦身。
+- 抽出历史选择/删除通知、资产查询失败态与批量重跑结果纯函数，`App.tsx` 继续降到约 3547 行。
+- 抽出 `providerModelHelpers` 与 `formatParseHelpers`，继续压缩服务商模型刷新与学校规范解析文案/合并逻辑。
+- 抽出自动重跑/下一轮调度与放弃进度确认纯函数，`App.tsx` 继续降到约 3514 行。
+- 抽出运行启动/完成/失败收尾纯函数到 `runRoundPrep`，统一 `handleRunRound` 与 `attachActiveRun` 完成路径。
+- 抽出 `useRunSession` hook：会话 begin/clear/isActive、进度监听释放与 batch rerun session 从 `App.tsx` 迁出。
+- 抽出历史删除确认/删除后文档 follow-up 与 orphan 清理确认纯函数，继续收敛 `App.tsx` 命令式文案分支。
+- 抽出运行进度监听物化与完成/失败 UI 反馈纯函数，统一 `handleRunRound`/`attachActiveRun` 状态写入路径。
+- 抽出 `planRunLaunchSeed`/`planAttachRunSeed`，并把进度/失败 UI 写入收敛为 App 本地 apply helper。
+- 抽出 `finalizeCompletedRound`，统一 `handleRunRound`/`attachActiveRun` 成功收尾路径。
+- 抽出 `finalizeFailedRound`，统一 `handleRunRound`/`attachActiveRun` 失败收尾与自动重跑调度。
+- 抽出 `attachRoundProgressListener`，统一启动/恢复路径的进度监听与流式物化写入。
+- 抽出 `applyHistoryDeleteFollowup` 与模型目录/服务商批量刷新反馈纯函数。
+- 抽出 `deriveHomePrimaryActionState`/`buildAppendDraftFromRoute`，压缩 Home 主按钮与追加轮次派生逻辑。
+- 抽出 `applyRunLaunchSeedUi`/`applyAttachSeedUi`/`mergeActiveRunProgressSnapshot`，继续压缩启动与恢复路径。
+- 抽出 `prepareRunLaunch`/`syncRunConfigToUi`，把 handleRunRound 压到 prepare→start→finalize 编排。
+- 抽出 `prepareAttachActiveRun` 与 `resolvePendingAutoActionPlan`，对齐 attach/自动执行路径。
+- 抽出格式解析默认/忙碌反馈纯函数，继续压缩 `handleParseFormatRules` 文案分支。
+- 抽出历史文档载入反馈与模型目录 UI plan helpers，并统一历史配置同步写入。
+- 抽出 `resolveLatestRoundSnapshotSelection`/`planBatchRerunFeedback`，统一快照选择与批量重跑反馈。
+- 抽出 `buildAppendRoundModelConfig` 与服务商批量刷新失败/补丁 helpers，压缩 Home 追加轮次与服务商刷新路径。
+- 抽出 `applyOptionalUiFeedback` 与模型目录/历史删除/格式解析 plan helpers，继续压缩 App 编排分支。
+- 抽出 `fetchCompleteRoundSnapshot`/`applyLoadedRoundSnapshotUi`，统一历史与自动恢复快照加载路径。
+- 抽出 `ensureHistoryOrphanScan` 与 Home 追加轮次 draft/provider helpers，继续压缩孤儿清理与追加路径。
+- 抽出 `startAndListenRunRound`/`refreshStatusForPendingAutoAction`，把 handleRunRound 压到 prepare→start/listen→finalize。
+- 抽出格式规则 apply helper、批量重跑 compare apply 与服务商刷新 collect helpers。
+- 抽出 `beginHistoryDocumentSelection`/`loadSelectedHistoryDocument` 与 `previewHistoryDeleteImpact`/`executeHistoryDelete`，压缩历史选择与删除路径。
+- 拆分 `applyDefaultFormatRules`/`parseFormatRulesText` 与 `collectProviderModelPatches`，压缩格式解析与批量服务商刷新。
+- 抽出 `clearActiveRunProgressUi`/`refreshStatusAfterFailedRound`/`maybeScheduleFailureAutoRetry` 与 `executeRoundReset`，压缩失败收尾与重置路径。
+- 抽出 catalog apply、pending auto plan apply、complete-round artifact/UI 与 batch compare resolve helpers。
+- 抽出 `executeExportRound`/`applyPickedDocument`/`awaitAttachedActiveRun`/`applyRerunChunkSuccess`，压缩导出、选文档、接管与局部重跑路径。
+- 抽出 `applyPromptRouteSwitch` 与单服务商模型刷新文案 helpers，压缩 Prompt 路线切换与 provider refresh。
+- 抽出 `bootstrapHelpers` / snapshot roundResult / attach status reuse，并修复 App import 回填。
+- 抽出 `useAppBootstrap`，把 config/history 启动引导移出 App 内联 effect。
+- 抽出 catalog request begin/finish、attach status resolve、snapshot view 与 batch preview apply helpers。
+- 把 format rules bootstrap 并入 `useAppBootstrap`，并抽出 `applySelectedRoundSnapshot`。
+- 抽出 `documentRestoreHelpers` 与 `awaitStartedRunRound`，压缩文档恢复与 run 成功等待路径。
+- 抽出 history resync、orphan cleanup execute、provider patch save 与 batch attach finalize helpers。
+- 抽出 `persistRunConfigForLaunch`/`buildReadyRunLaunchResult`，继续压缩 prepareRunLaunch 与 handleRunRound。
+- 抽出 `refreshOneProviderModelPatch` 与 round-progress request sequencing helpers。
+- 抽出 `useDocumentRestore` hook，文档恢复 effect 移出 App。
+- 抽出 `useActiveRunProbes` 与 pure `refreshOneProviderModelPatch`，继续减薄 App 探测/服务商刷新路径。
+- 抽出 `useAutoSnapshotRestore`，压缩 `refreshModelCatalog` missing-credentials 分支。
+- 抽出 `toOptionalUiFeedbackFromBatchPlan` / `beginAttachActiveRunTask`，继续压缩 batch 与 attach 路径。
+- 抽出 provider models task helpers 与 `seedAndListenAttachedRun`，继续压缩服务商刷新与 attach 编排。
+- 抽出 `clearUiAfterRoundReset` / `resolveCurrentPendingAutoActionPlan`，继续压缩 reset 与 auto-action 路径。
+- 抽出 `usePendingAutoCountdown` / `useNoticeNotifications`，并压缩 `resolveConfirmedRoundResetInput`。
+- 抽出 `useLazyWorkbenchViews`，并压缩 `resolveRunnableDocumentStatus` 启动守卫。
+- 抽出 diagnostics/prompt feedback pure helpers，压缩 history load 与诊断刷新路径。
+- 抽出 `resolveRoundProgressRoute` / format-parse request helpers / `buildLaunchRunConfig`。
+- 抽出 save-config feedback / `applySavedModelConfig` / `applyAutoRetryPlan` / prompt-route reload helpers。
+- 抽出 `runPreparedRound` / `applyRunStartFeedback` / `beginAttachActiveBatchRerunTask`，继续压缩启动与 batch attach。
+- 抽出 history DB repair feedback、`beginAttachedRunSession`、provider single success apply helpers。
+- 抽出 `buildStartRoundFailureInput` / `buildExecuteRoundResetInput` / catalog fetch begin / history load-resync helpers。
+- 抽出 pick/load、history delete confirm、attach failure、snapshot apply 与 save persist helpers。
+- 抽出 `buildMaybeScheduleFailureAutoRetryInput` 与 history orphan cleanup apply helpers。
+- 将 `buildStartRoundFailureInput` / `buildAttachRoundFailureInput` / `buildMaybeScheduleFailureAutoRetryInput` 下沉到 `runRoundPrep`；压缩 repair/progress helpers。
+- 将 `buildExecuteRoundResetInput` 下沉到 `documentStatusCopy`；压缩 history delete success、format confirm 与 history export helpers。
+- 抽出 `planFailureAutoRetrySchedule`；压缩 prompt preview / diagnostics / format parse / provider refresh / history delete success helpers。
+- 抽出 `executePreparedRunRound` / `runAttachedActiveSession`；压缩 export confirm、orphan cleanup、batch result、catalog fetch 与 pending auto guard helpers。
+- 再压 `fetchRoundProgressStatus` / `executePreparedRunRound` 完成分支；`handleRunRound` 保持薄 shell + failure finalize 契约。
+- 再压 batch rerun / provider single / history artifact / test connection / cancel / rerun chunk / pending auto 等 21L 路径。
+- 再压 optional UI feedback、default format、rerun failure、attach seed plan 与 run-config merge helpers。
+- 再压 `buildReadyRunLaunchResult` checkpoint resolve 与 `startAndListenRunRound` create-session helpers。
+- 抽出 `planProviderModelsRequestFailureFeedback`；再压 ready launch payload、pick cancel、catalog failure 与 provider batch collect helpers。
+- 再压 `createStartedRunSession` / attach skip guard；`handleRunRound`/`attachActiveRun` 保持 session shell + shared failure finalize 契约。
+- 再压 finalize classify apply、round reset perform、export success/failure、export path resolve、format reset、batch cancel、prompt delete confirm、route local state 与 workflow default apply helpers。
+- 再压 start/listen progress attach、ready launch seed plan、failure auto-retry after refresh、pick failure、rerun path resolve 与 snapshot typed apply helpers。
+- 再压 failure auto-retry args builder、history resync status result、refresh/pick/format failure UI、batch rerun failure、snapshot loaded-ui input、pending auto run helpers。
+- 再压 history delete confirm request、document status refresh body、attach finish cleanup helpers；run/attach 仅保留 session shell。
+- 将 `buildFormatParserModelConfig` 下沉到 `formatParseHelpers`；再压 complete success feedback、completed loading state、attach prepare result 与 orphan cleanup failure helpers。
+- 再压 batch start session、failed-round refresh、history selection config、format confirm pending resolve 与 single chunk rerun path helpers。
+- 再压 success-after-round schedule、round progress route resolve、provider failure UI apply、history delete reload 与 provider patches collect helpers。
+- 导出 `PendingAutoActionPlan`；再压 attach failure finalize、history delete impact request、document status refresh source resolve helpers。
+- 再压 success completion feedback、provider failure feedback resolve、format activate、document status refresh run 与 pending auto dispatch helpers。
+- 再压 history delete impact preview task begin helper；≥17L 仅剩 handleRunRound shell。
+- 外提 pure launch/failure/history/snapshot builders 到 `runRoundPrep`/`historyArtifactHelpers`/`roundResultHelpers`；App 约 4687→约 4560。
+- 成功 completion feedback 压缩；≥17L 仅 `handleRunRound` session shell。
+- 外提 batch progress/history route/concurrency guard pure helpers；再压 cancel/test/delete/orphan/repair/snapshot/resync 等 16L 路径。
+- 折叠无价值薄壳 wrapper 与统一 error+runtimeStep failure helper；App 约 4703→约 4562。
+- 外提 `buildFormatParseRequestSetup` 与 provider failure feedback materialize；再压 parse/provider/progress/concurrency shells。
+- 再 densify run/preview/format/concurrency 等 shell；App 约 4553→约 4520，≥17L 仅 `handleRunRound` 25L。
+- 外提 test/task-cleanup/format apply/rerun-failure pure helpers；折叠 catalog fetch wrapper；App 约 4520→约 4471。
+- 再 densify catalog/history/delete/batch/run shells；App 约 4471→约 4428，≥16L 仅 `handleRunRound` 20L。
+- 外提 `selectRiskyRerunChunkIds`；再 densify 多条 14–18L shells；App 约 4428→约 4336。
+- 再 densify run/risky/history/export/attach shells + `buildUnresolvedFailureChunkIds`；App 约 4336→约 4283，≥15L 仅 `handleRunRound`。
+- 折叠单用 wrapper（attach/refresh/merged/diagnostics/format-parse/task-cleanup）；App 约 4283→约 4223，函数数 约 261→约 253。
+- 外提 `planDefaultPromptWorkflowConfigUpdate` / `buildLoadedRoundSnapshotReviewDecisions`；折叠 attach failure wrapper；densify 厚壳；App 约 4223→约 4147；append SM 重定位 pure。
+- 再折叠 materialize/finish-attach/format-success/catalog-finish 与一批 3L error wrapper；densify finally；App 约 4147→约 4071，函数数 约 252→约 237。
+- 再折叠 confirm/seed/failure/catalog 单用 wrapper，清理无用 type；App 约 4071→约 3999，函数数 约 237→约 225。
+- 内联 catalog begin/result/failure 到 `fetchAndApplyModelCatalog`；densify run-failure UI / orphan cleanup；App 约 3999→约 3974。
+- densify feedback/run-seed/optional-ui shells + `buildRerunChunkReviewDecisions` pure；App 约 3974→约 3936。
+- densify catalog/parse/progress/run/attach + mid shells（prompt/export/history/provider/batch）；App 约 3936→约 3830，≥14 仅剩 `fetchAndApplyModelCatalog` 17L。
+- densify mid shells（history/prompt/provider/run/attach/failure chain restore）；App 约 3830→约 3682；修复 `finalizeFailedRound` 契约（`userCanceled`/`clearActiveRunProgressUi`/`applyClassifiedRunFailure`）。
+- densify confirm/history/status/run-start/notification shells；App 约 3682→约 3634，≥12 仅 catalog/parse/listener。
+- densify listener/history/prompt/run/attach mid shells；App 约 3634→约 3554，≥12 仅 catalog 17L / parse 13L。
+- densify remaining mid shells（confirm/history/prompt/provider/run/attach/catalog/parse）；App 约 3554→约 3433，≥10L 清空；`handleRunRound`/`attachActiveRun`/`fetchAndApplyModelCatalog`/`parseFormatRulesText` 保持诚实 session shell；needles/suite 绿。
+- 折叠无价值单用 wrapper（export/pick/catalog-missing/diagnostics-failure/run-start/run-failure-ui/batch-compare/format-state/rerun-failure/clearLoaded alias）；外提 `mergePromptSaveResultIntoPreviews` / `buildPromptPreviewsAfterDelete`；App 约 3433→约 3347，函数数 约 223→约 213；suite 绿。
+- 再折叠 format confirm/reset、document-status refresh、cancel-failure、pending-auto run、history delete/orphan、provider single success、prompt-route local、rerun success/clear、autoRetry apply 等单用 wrapper；App 约 3347→约 3266，函数数 约 212→约 197；≥10L 清空；suite 绿。
+- 外提 `historyCardHelpers`：HistoryCard pure 文案/轮次/资产统计 helpers 迁出；保留 `makeDeleteActionKey`/`AssetImpactPanel`/`HistoryDeleteAction`/`HistoryArtifactGovernancePanel`/`getMaintenanceStateLabel` 以兼容治理回归；HistoryCard 约 967→约 756。
+- 外提 `resultCardHelpers`：ResultCard 导出健康/Diff 纯函数迁出；保留 `DiffReviewCard`/`ExportHealth*`/`hasChunkNumberRisk`/`hasChunkCitationRisk`/`getDiffFilterEmptyState`/`getChunkReviewReasons` 等回归 needle；ResultCard 约 942→约 791。
+- 外提 `modelConfigCardHelpers`：服务商创建/转换、格式角色标签与 style 摘要 pure 迁出；保留 loading spinner / 16 并发 / Tabs / provider catalog AbortSignal 等 UI 回归 needle；ModelConfigCard 约 822→约 741。
+- 外提 `protectionMapHelpers`：保护区/范围诊断文案 pure 迁出；ProtectionMapCard 约 454→约 409。
+- 再折叠 App 单用 wrapper：history delete followup、completed-round loading、prompt delete/previews、provider catalog load、run launch seed UI；App 约 3266→约 3218，函数数 约 197→约 189；suite 绿。
+- 再折叠 App 单用 wrapper：export docx confirm、format default apply、manual-intervention schedule、round-reset UI clear、history delete confirm、batch start session、batch preview apply、round-progress fetch；保留 `rerunChunkAtOutputPath` 以满足 batch feedback 回归；App 约 3218→约 3162，函数数 约 189→约 179；suite 绿。
+- 外提 `RewriteDiffPanel`：Diff 面板/`ChunkQualityBar`/`TextPane` 迁出；`hasChunkNumberRisk`/`hasChunkCitationRisk`/`getDiffFilterEmptyState`/`getChunkReviewReasons` pure 下沉 `resultCardHelpers`，ResultCard 保留薄 wrapper 与 export 面板/needle；batch/ui 回归合并读取 `RewriteDiffPanel.tsx`；ResultCard 约 791→约 337。
+- 外提 `HistoryGovernancePanels`：资产治理/孤儿清理/`AssetImpactPanel`/`HistoryDeleteAction`/`StatPill` 迁出；`getMaintenanceStateLabel` pure 下沉 `historyCardHelpers`，HistoryCard 保留治理 needle 薄 wrapper；hist 回归合并读取 panels；HistoryCard 约 757→约 444。
+- 再折叠 App 单用 wrapper：history delete followup/preview/execute、pending-auto plan dispatch、provider batch success/collect、failed-round status refresh；App 约 3162→约 3103，函数数 约 179→约 171；suite 绿。
+- 外提 `SchoolFormatCard`：学校规范解析 UI/`FormatRulesPreview`/`RuleRow` 迁出；`ModelConfigCard` 保留 Tabs/provider catalog/LOADING/MAX_REWRITE needle 并 re-export `SchoolFormatCard`；ModelConfigCard 约 741→约 517。
+- 再折叠 App 单用 wrapper：history export、round-progress request、orphan scan/cleanup、provider batch refresh、rerun compare apply、pending-auto status refresh；App 约 3103→约 3055，函数数 约 171→约 164；suite 绿。
+- 外提 `ProtectionMapPanels`：正文诊断 Sheet/`BoundaryStrip`/`ReasonGrid`/`SectionRow` 等迁出；ProtectionMapCard 保留主地图编排；ui 回归合并读取 panels；ProtectionMapCard 约 409→约 131。
+- 再折叠 App 单用 wrapper：format parse text、history artifact query；App 约 3055→约 3043，函数数 约 164→约 162；suite 绿。
+- UI 一致性回归重定位：Diff/保护图/History StatPill/HomeRun/Setup/Notification 等 needle 跟随模块拆分合并读组件与 lib。
+- 外提 `ChunkQualityBar`/`TextPane`：Diff 块质量条与文本窗迁出；`RewriteDiffPanel` 保留过滤/滚动/流式预览；batch/ui 回归合并读取 `ChunkQualityBar.tsx`；RewriteDiffPanel 约 481→约 369。
+- 外提 `DiagnosticsPanels`：诊断摘要/检查卡/任务告警/行项迁出；`DiagnosticsPage` 保留 `DiagnosticTaskAlert` 薄 wrapper 与页面编排；DiagnosticsPage 约 358→约 282。
+- 再 densify App 单用路径：history delete success、notification center open、review decision save、model catalog cancel；App 约 3043→约 3035；suite 绿。
+- 外提 `ModelDefaultConnectionPanel` / `ModelProviderRepositoryPanel`：ModelConfig 双 Tab 表单迁出；卡片保留 catalog abort / `refreshAllProviderCatalogs` / Tabs 壳与常量 needle；ModelConfigCard 约 517→约 217。
+- UI 回归合并读取 ModelConfig 面板源；ScrollArea/`max={MAX_REWRITE_CONCURRENCY}`/`获取全部` 走 `modelConfigSource`。
+- 再 densify App：history delete preview 合并、failed-round status refresh、notification clear、format rule text；App 约 3035→约 3023；suite 绿。
+- 外提 `useHomeRunPanelModel`：HomeRun 状态/派生/追加轮次编排迁入 hook；`HomeRunPanel` 仅保留任务控制台与 Dialog 装配；HomeRunPanel 约 444→约 196。
+- SM/ui/prompt-preview 回归合并读取 `useHomeRunPanelModel.ts`（append draft、primary action、editable profile、modelConfigRef）。
+- 外提 `ExportHealthPanels`：导出健康/拦截面板与 LiveHint 迁出；`ResultCard` 保留薄 wrapper + DiffReviewCard/stream needle；ResultCard 约 337→约 193。
+- 外提 `HistoryDocumentList`：历史文档行/轮次/清理动作列表迁出；`HistoryCard` 保留治理 needle 与摘要/维护壳；HistoryCard 约 444→约 277。
+- UI/hist 回归合并读取 ExportHealthPanels 与 HistoryDocumentList；suite 绿。
+- 外提 `FormatRulesPreview`：学校规范解析结果/规则行迁出；`SchoolFormatCard` 保留解析输入与模型来源壳；SchoolFormatCard 约 238→约 174。
+- 外提 `PromptPreviewListPanel` / `PromptPreviewEditorPanel`：提示词列表与编辑器迁出；`PromptPreviewPage` 仅保留 CRUD 状态编排；PromptPreviewPage 约 323→约 138。
+- 拆分 `webService`：抽出 `webServiceHttp`/`webServiceExport`/`webServiceModelConfig`/`webServiceCompat`/`webServiceFiles`/`webServiceRunStream`；主文件保留 service 对象与 prompt fallback；webService 约 1185→约 524。
+- 拆分 `runRoundPrep`：抽出 `runFailurePrep`/`runLaunchPrep`，主文件 barrel re-export + 进度/完成 helper；runRoundPrep 约 708→约 169。
+- SM/batch/ui 回归合并读取 webService 与 runRoundPrep 子模块；suite 绿。
+- 抽出 `diffFilterModel`：Diff 过滤集合/shownChunks 纯函数；`RewriteDiffPanel` 保留滚动/焦点/渲染；RewriteDiffPanel 约 369→约 346。
+- 拆分 `HistoryDeletePanels`：Orphan/AssetImpact/HistoryDeleteAction 迁出；`HistoryGovernancePanels` 保留资产治理与 re-export；HistoryGovernancePanels 约 358→约 173。
+- batch/ui/hist 回归合并读取 diffFilterModel 与 HistoryDeletePanels；suite 绿。
+- 外提 `ScopeDiagnosticsPanel`：正文边界诊断 Sheet/统计迁出；`ProtectionMapPanels` 保留结构条/原因网格/区段行；ProtectionMapPanels 约 298→约 131。
+- 外提 `useAppendRoundControls`：Home 追加轮次 draft/确认编排迁入独立 hook；`useHomeRunPanelModel` 保留主操作与路由编辑；useHomeRunPanelModel 约 390→约 355。
+- SM/ui 回归合并读取 append hook 与 ScopeDiagnostics 面板；suite 绿。
+- 抽出 `modelCatalogHandlers`：模型目录/服务商批量刷新/保存连通性编排迁出；App 通过 factory 注入；App 约 3022→约 2894。
+- 抽出 `useDiffPanelScrollFocus`：Diff 滚动恢复/失败自动聚焦/焦点请求消费迁入 hook；RewriteDiffPanel 约 346→约 256。
+- ui/batch 回归合并读取 modelCatalogHandlers 与 Diff scroll hook；suite 绿。
+- 抽出 `formatRulesHandlers`：学校规范解析/启用/重置编排迁出 App。
+- 抽出 `promptHandlers`：提示词 CRUD/流程/路由切换编排迁出 App；App 约 2894→约 2776。
+- 抽出 `historyHandlers`：历史选择/删除/孤儿清理/资产治理/库修复编排迁出；App 保留 SM 入口 `beginHistoryDocumentSelection`/`handleSelectHistory`；App 约 2776→约 2602。
+- hist/sm 回归合并读取 historyHandlers；suite 绿。
+- 抽出 `batchRerunHandlers`：批量重跑/局部重跑/失败可见性编排迁出；保留 App 接线与 `handleRerunChunk`；App 约 2602→约 2517。
+- batch/ui 回归合并读取 batchRerunHandlers；suite 绿。
+- 抽出 `autoRunHandlers`：自动重试/下一轮/失败后调度迁出；App 保留 clearPending 壳与 SM 入口链。
+- 抽出 `exportHandlers`：导出路径守卫/高风险确认/执行迁出。
+- 抽出 `documentLoadHandlers`：选文档/诊断/任务快照清理迁出；App 约 2517→约 2420。
+- sm 合并读取 auto/export/document handlers；suite 绿。
+- 抽出 `runRoundHandlers`：run 启动/attach/cancel/reset/完成/失败/快照进度编排迁出；App 用 handlersBridge 解耦循环依赖；App 约 2420→约 2053。
+- sm/ui 合并读取 runRoundHandlers；suite 绿。
+- 拆分 `runRoundHandlers`：progress/finish/launch/attach + types；主文件 barrel 组装；约 973→约 46 + 子模块。
+- sm/ui/prompt-preview 合并读取 run 子模块；suite 绿。
+- 拆分 `historyHandlers`：core/delete + types；主文件 barrel 组装；约 514→约 27 + 子模块。
+- hist/sm 合并读取 history 子模块；suite 绿。
+- 再拆 `runRoundFinishHandlers`：completion/cancel/reset/snapshot；finish barrel 约 321→约 26。
+- sm/ui/prompt-preview 合并读取 finish 子模块；suite 绿。
+- 拆分 `webService` 主对象：Health/Prompts/Model/Documents/History/Rounds/Format 域 API；主文件 约 524→约 25 barrel spread。
+- sm/ui/batch/prompt-preview 合并读取 webService 域模块；suite 绿。
+- 拆分 `runRoundLaunchHandlers`：prepare/start；launch barrel 约 301→约 21。
+- 拆分 `batchRerunHandlers`：core/action + types；约 331→约 24 barrel。
+- sm/ui/batch 合并读取 launch/batch 子模块；suite 绿。
+- 拆分 `modelCatalogHandlers`：list/provider/config + types；约 344→约 26 barrel。
+- ui 合并读取 modelCatalog 子模块；suite 绿。
+- 拆分 `promptHandlers`：crud/route + types；约 292→约 20 barrel。
+- 拆分 `autoRunHandlers`：clear/schedule/perform + types；约 259→约 26 barrel。
+- sm 合并读取 autoRun 子模块；suite 绿。
+- 拆分 `runLaunchPrep`：config/concurrency/seed；约 324→约 32 barrel。
+- 拆分 `homeRunPanelState`：primary/append；约 310→约 18 barrel。
+- sm/ui 合并读取 launch/home 子模块；suite 绿。
+- 拆分 `runFailurePrep`：types/classify/schedule；约 256→约 26 barrel。
+- 拆分 `providerModelHelpers`：catalog/refresh/save；约 408→约 52 barrel。
+- sm/ui 合并读取 failure/provider 子模块；suite 绿。
+- 拆分 `autoRun`：types/actionBuilders/planning；约 393→约 37 barrel。
+- 拆分 `historyHelpers`：match/load；约 355→约 28 barrel。
+- sm/prompt-preview 合并读取 autoRun/history 子模块；suite 绿。
+- 拆分 `promptRegistry`：defaults/core/update；约 318→约 37 barrel。
+- 拆分 `diagnosticsHelpers`：task/share/feedback；约 305→约 28 barrel。
+- sm/batch 合并读取 promptRegistry/diagnostics 子模块；suite 绿。
+- 拆分 `documentStatusCopy`：progress/reset/switch；约 242→约 34 barrel。
+- 拆分 `exportHelpers`：failure/rerun/notice；约 240→约 29 barrel。
+- sm/batch/hist 合并读取 documentStatus/export 子模块；suite 绿。
+- 拆分 `historyCardHelpers`：format/round/maintenance；约 260→约 34 barrel。
+- 拆分 `resultCardHelpers`：exportHealth/review/risk；约 236→约 41 barrel。
+- 拆分 `historyDeleteCopy`：notice/confirm/runtime；约 231→约 28 barrel。
+- hist 合并读取 historyDelete 子模块；suite 绿。
+- 拆分 `autoRunPlanning`：schedule/attach；约 235→约 16 barrel。
+- 拆分 `providerModelCatalogHelpers`：patch/plan；约 237→约 32 barrel。
+- 拆分 `historyDeleteHandlers`：delete action/orphan repair；约 228→约 18 barrel。
+- sm/ui/hist 合并读取子模块；suite 绿。
+- 拆分 `historyLoadHelpers`：route/feedback；约 214→约 16 barrel。
+- 拆分 `runLaunchSeedPrep`：core/result；约 208→约 23 barrel。
+- 拆分 `homeRunAppendState`：route/config；约 193→约 17 barrel。
+- sm/ui/prompt-preview 合并读取子模块；suite 绿。
+- 拆分 `historyCoreHandlers`：list governance/document load；约 206→约 13 barrel。
+- 拆分 `formatRulesHandlers`：route/action + types；约 202→约 20 barrel。
+- 拆分 `documentLoadHandlers`：diagnostics/pick + types；约 182→约 18 barrel。
+- sm/hist 合并读取子模块；suite 绿。
+- 拆分 `documentRestoreHelpers`：store/route；约 169→约 17 barrel。
+- 拆分 `runRoundHandlerTypes`：input/deps/interface；约 239→约 30 barrel。
+- 拆分 `batchRerunActionHandlers`：抽出 attach handlers；约 169→约 103 + attach 约 87。
+- 抽出 `homeRunPanelViewModel` pure 装配；`useHomeRunPanelModel` 约 355→约 287。
+- sm/ui/batch/prompt-preview 合并读取 restore/batch/home view；suite 绿。
+- 拆分 `runRoundStartHandlers`：session/execute；约 176→约 26 barrel。
+- 拆分 `runRoundPrepareHandlers`：config/launch prepare；约 175→约 27 barrel。
+- 抽出 `autoSnapshotRestoreHelpers` pure plan/route；`useAutoSnapshotRestore` 约 218→约 165。
+- sm/ui 合并读取 start/prepare/autosnapshot 子模块；suite 绿。
+- 抽出 `diagnosticsPageViewModel`；`DiagnosticsPage` 派生态下沉。
+- 拆分 `autoRunSchedulePlanning`：guard/retry schedule；约 163→~8 barrel。
+- 抽出 `documentRestoreBootstrap`；`useDocumentRestore` 约 206→约 198。
+- 抽出 `homeRunPanelRouteViewModel`；home view 再拆 route 装配。
+- sm/ui/batch/prompt-preview 合并读取；suite 绿。
+- 拆分 `historyMatchHelpers`：round match/selection；约 160→约 18 barrel。
+- 拆分 `batchRerunHelpers`：feedback/selection；约 160→约 19 barrel。
+- 拆分 `formatParseHelpers`：feedback/request；约 158→约 22 barrel。
+- 抽出 `runRoundProgressPrep`；`runRoundPrep` barrel 约 169→约 61。
+- sm/batch/ui/prompt-preview 合并读取；suite 绿。
+- 拆分 `progressHelpers`：merge/percent；约 155→约 14 barrel。
+- 拆分 `providerModelRefreshHelpers`：state/action；约 156→约 20 barrel。
+- 拆分 `historyHandlerTypes`：input/deps/interface；约 152→约 18 barrel。
+- 拆分 `webServiceFiles`：size/picker；约 159→约 10 barrel。
+- sm/ui/hist 合并读取；suite 绿。
+- 抽出 `historyDocumentListViewModel`；`HistoryDocumentList` 列表态下沉。
+- 抽出 `historyCardSummaryViewModel`；`HistoryCard` 汇总态下沉。
+- 抽出 `homeRunPanelRouteEditHelpers`；`useHomeRunPanelModel` 约 287→约 267。
+- 拆分 `promptRegistryWorkflowHelpers`：preview/resolve/sequence；约 140→约 23 barrel。
+- hist/sm/ui/prompt-preview 合并读取；suite 绿。
+- 抽出 `rewriteDiffPanelViewModel`；`RewriteDiffPanel` 约 256→约 227。
+- 抽出 `modelConfigProviderCatalogHandlers`；`ModelConfigCard` 约 217→约 138。
+- 抽出 `modelProviderRepositoryViewModel`；provider list 态下沉。
+- ui/batch 合并读取；suite 绿。
+- 抽出 `setupEditorDialogViewModel`；Setup 轮次路线态下沉。
+- 抽出 `historyDeletePanelsViewModel`；删除影响/孤儿面板态下沉。
+- 抽出 `appTaskLifecycleHelpers`；App task ticket 判定 pure。
+- App 空白压缩 约 2053→约 2043；ui/home-layout/hist 合并读取；suite 绿。
+- 抽出 `HistoryDocumentListItem`；`HistoryDocumentList` 约 277→约 111。
+- 扩展 `historyDocumentListViewModel` round 态；list/item 合并读取。
+- 拆分 `DiagnosticsPage`：ProblemAndChecks/RuntimeSections；约 280→约 130。
+- hist/sm/ui/batch/prompt-preview 合并读取；suite 绿。
+- 抽出 `ModelProviderEditorPanel`；`ModelProviderRepositoryPanel` 约 276→约 140。
+- 抽出 `HistoryDocumentRoundList`；`HistoryDocumentListItem` 约 270→约 203。
+- 抽出 `historyDeleteActionKey`；HistoryCard 仍保留 `makeDeleteActionKey` shell。
+- ui/hist/prompt-preview 合并读取；suite 绿。
+- 抽出 `homeRunPanelTypes` + `useSetupEditorEscape`；`useHomeRunPanelModel` 约 267→约 221。
+- 拆分 `SetupEditorDialog`：Prompt/ModelRoute sections；约 242→约 130。
+- 抽出 `HistoryCardMaintenanceSection`；`HistoryCard` 约 268→约 252。
+- 抽出 `RewriteDiffChunkCard`；`RewriteDiffPanel` 约 227→约 169。
+- 抽出 `homeRunPanelPrimaryViewModel`；home view 再拆 primary 装配。
+- 抽出 `appUiShellHelpers`；App confirm/diff-focus/notification pure。
+- ui/batch/sm/prompt-preview 合并读取；suite 绿。
+- 拆分 `modelConfigProviderCatalogHandlers`：mutation/refresh；约 157→约 107 + mutation 约 80。
+- 拆分 `HistoryDeletePanels`：Orphan/AssetImpact/DeleteAction 子组件；barrel 约 4。
+- 抽出 `resultCardOutputViewModel`；ResultCard 输出就绪态 pure。
+- 抽出 `HistoryDocumentListItemHeader`；list item 约 203→约 180。
+- 抽出 `useHistoryCardState`；HistoryCard 约 252→约 241。
+- 抽出 `ModelProviderEditorFields`；editor 约 197→约 97。
+- 抽出 `useHomeRunPanelActions`；home model 约 221→约 212。
+- 抽出 `historyDocumentListViewTypes`；list view model 约 195→约 166。
+- 抽出 `documentRestoreSessionHelpers`；`useDocumentRestore` 约 198→约 145。
+- 拆分 NotificationCenter：RuntimeTask/History 分区 + view model；约 186→约 76。
+- App densify 空白；约 2049→约 1911。
+- 拆分 ExportHealthPanels：Panel/Details/Failure/LiveHint + `exportHealthViewModel`；barrel 约 5。
+- 抽出 `schoolFormatCardViewModel`；SchoolFormatCard 状态 pure。
+- 拆分 `webServiceExport`：headers/result；barrel 约 10。
+- 抽出 `autoSnapshotRestoreSessionHelpers`；hook 约 165→约 135。
+- 抽出 `HistoryCardHeader`；HistoryCard 约 241→约 232。
+- 抽出 `runtimeTaskCenterHelpers`；App `runtimeTaskItems` 约 190 行 pure 外提；App 约 1914→约 1750。
+- 拆分 `runtimeTaskCenterHelpers`：types/active/phase/diff/background；composer 约 286→约 82。
+- 抽出 `diffPanelScrollFocusHelpers`；Diff 失败筛选 pure。
+- 抽出 `HistoryDocumentRoundCard`；RoundList 约 162→约 127。
+- 拆分 `SetupEditorModelRouteSection`：summary/round card；约 171→约 109。
+- 拆分 `resultCardRiskHelpers`：token/format/review；恢复 `resultCardDecisionHelpers`。
+- 抽出 `HistoryCardSmWrappers`；HistoryCard 约 232→约 183。
+- 拆分 `runRoundCompletionHandlers`：failure/success。
+- 拆分 `useRunSession`：types/helpers。
+- 拆分 `batchRerunCoreHandlers`：materialize/wait。
+- 抽出 `appTaskLifecycleHandlers`；App begin/transition/finish 壳。
+- 抽出并接线 `appDocumentHandlers`：clear/history/feedback 壳。
+- 抽出 `appReviewRefreshHandlers`；App review/refresh 壳；handlersBridge 补 `refreshRoundProgressStatus`。
+- 拆分 `historyOrphanRepairHandlers`：scan/database repair。
+- 拆分 `providerModelCatalogPlanHelpers`：ui/patch。
+- 抽出 `diffPanelScrollPositionStore` / `diffPanelFocusEffectHelpers`。
+- 拆分 RewriteDiffPanel：alerts/empty；HomeRun dialogs：setup/append shell。
+- 抽出 `documentRestoreEffectHelpers`；保留 `beginTaskRef.current("restoring-document"`。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 抽出 `promptPreviewDraftHelpers` / `promptPreviewActionHelpers`。
+- 拆分 `historyArtifactHelpers`：query/repair。
+- 拆分 `useDiffPanelScrollFocus`：filter/scroll effects。
+- 拆分 `homeRunAppendRouteState`：route options/draft。
+- 抽出 `HistoryCardBody`、`HistoryDocumentListItemBody`。
+- 拆分 `webServiceHttp`：error helpers；`webServiceModelConfig`：secrets。
+- 拆分 `historyDocumentListViewModel`：list item rounds helpers。
+- 拆分 `useActiveRunProbes`：run/batch probe effects。
+- 抽出 `HistoryCardProps`、`HistoryDocumentSharedTypes`。
+- 抽出 `useRewriteDiffPanelModel` / `RewriteDiffPanelProps`。
+- 抽出 `ModelConfigCardProps`、`ResultCardProps`、`SetupEditorDialogBodyProps`。
+- 拆分 prompt draft：`promptPreviewDraftActionFactory`。
+- sm/ui/batch/hist/home-layout/prompt-preview 合并读取；suite 绿。
+- 拆分 `useDocumentRestore`：effect runner + hook types。
+- 拆分 `useAutoSnapshotRestore`：refs + hook types。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 拆分 `usePromptPreviewDraftState`：form state。
+- 抽出 `RewriteDiffPanelChunkList`、`HistoryCardBodyTypes`、`appendRoundControlHelpers`。
+- sm/ui/batch/hist/home-layout/prompt-preview 合并读取；suite 绿。
+- 拆分 `useRunSession`：run/batch controls。
+- 抽出 `ChunkQualityMeta` / `ChunkQualityActions`；Diff scroll restore/focus effects。
+- 抽出 `HistoryDocumentRoundListEmpty`。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 拆分 `historyLoadFeedbackHelpers`：notice/plan；`historyLoadRouteHelpers`：route/snapshot。
+- 拆分 `exportHandlers`：resolve/execute；`autoRunScheduleHandlers`：core/failure-refresh。
+- 拆分 `runRoundSessionHandlers`：start/await；`historyDelete` confirm text/options/result。
+- sm/ui/batch/hist/home-layout/prompt-preview 合并读取；suite 绿。
+- 抽出 `useDocumentRestoreRefs`；保留 `beginTaskRef.current("restoring-document"`。
+- sm/ui/batch/hist/home-layout/prompt-preview 合并读取；suite 绿。
+- 抽出 `roundRunStatusViewModel` / `RoundRunStatusStats`。
+- 抽出 `AppendRoundDialogFields`、`RewriteDiffTextPane`、`historyDocumentDeleteActionHelpers`。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 抽出 `usePromptPreviewDraftState`；PromptPreviewPage 薄壳保留 CRUD 函数名。
+- 抽出 `useModelConfigProviderCatalog`；`SetupEditorDialogBody`。
+- sm/ui/batch/hist/home-layout/prompt-preview 合并读取；suite 绿。
+- 拆分 `homeRunPrimaryActionState`：button/derive。
+- 拆分 `documentRestoreSessionHelpers`：success/failure。
+- 抽出 ModelProvider identity/param fields；SchoolFormat controls/text；HistoryDocumentRoundHeader。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 抽出 `RewriteDiffChunkAlerts`、`DiffReviewCard`、`resultCardCopy`。
+- 抽出 `DiagnosticsPageHeader`、`autoSnapshotRestoreEffectHelpers`。
+- sm/ui/batch/hist/home-layout/prompt-preview 合并读取；suite 绿。
+- 拆分 `autoSnapshotRestoreHelpers`：plan/route。
+- 拆分 `diagnosticsTaskHelpers`：access/build；`documentStatusResetCopy`：plan/notice。
+- 拆分 `batchRerunFeedbackHelpers`：decision/notice。
+- 抽出 HistoryArtifactGovernance toolbar/body；`activeRunProbeHelpers`。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 拆分 `webServiceRounds`：run-round/io；`webServicePrompts`：core/workflow。
+- 抽出 `ModelProviderListPanel`；ProtectionMap strip/reason/section。
+- sm/ui/batch/hist/home-layout/prompt-preview 合并读取；suite 绿。
+- 拆分 `historyDeleteActionHandlers`：apply/preview。
+- 抽出 `chunkQualityBarCopy`；ChunkQualityBar 约 158→约 123。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 拆分 `runRoundProgressPrep`：view/feedback。
+- 拆分 `modelRouteProviderHelpers`：round provider/default+issues。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 拆分 `historyCardMaintenanceHelpers`：label/stats。
+- 拆分 `runRoundSnapshotHandlers`：apply/load。
+- 抽出 `SidebarRuntimeProgress`、`ProtectionMapEmptyState`。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 拆分 `autoRunActionBuilders`：format/build。
+- 拆分 `formatRulesActionHandlers`：parse/confirm。
+- 拆分 `diagnosticsShareHelpers`：core/runs。
+- 抽出 `ResultCardSmWrappers`；ResultCard 约 165→约 135。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 拆分 `ModelDefaultConnectionPanel`：form/actions。
+- 拆分 `HomeRunControlSection`：status/actions。
+- 抽出 `appClearPendingHandlers`；App clearPending 壳。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 抽出 `appWorkbenchShellHandlers`；App 通知/确认/Diff 跳转壳；App 约 1738→约 1729。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 拆分 `providerModelCatalogPatchHelpers`：patch core/notice。
+- 拆分 `DiagnosticsRuntimeSections`：workspace+config / task。
+- densify `HomeRunPanel`（约 186→约 120）。
+- 拆分 `runFailureSchedulePrep`：builders/plan。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 抽出 `chunkQualityDecisionHelpers`；ChunkQualityBar 决策 pure。
+- 抽出 `HistoryArtifactRow`；拆分 `rewriteDiffPanel` copy/filter/chunk view models。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 抽出 `ResultCardExportActions`；ResultCard 约 168→约 165。
+- densify `homeRunPanelViewModel` / `useHomeRunPanelModel`（约 177→约 90 / 约 212→约 125）。
+- 拆分 `historyDocumentRoundViewModel`；list VM 约 166→约 118。
+- 抽出 `RewriteDiffPanelToolbar`；panel 约 169→约 159。
+- sm/ui/batch/hist/home-layout 合并读取；suite 绿。
+- 拆分 `exportNoticeHelpers`：format/error/action。
+- 拆分 `modelRouteEdit`：sequence/provider。
+- 抽出 `appBootstrapConfig/History/FormatHelpers`；`useAppBootstrap` 约 154→约 91。
+- 抽出 `HistoryDocumentCleanupActions`；`homeRunAppendIssueHelpers`。
+- sm/ui/batch/hist/home-layout/prompt-preview 合并读取；suite 绿。
+- 抽出 `appNotificationStatusHelpers`；App 通知态 pure。
+- 抽出 `HomeRunPanelDialogs`；HomeRunPanel 约 196→约 186。
+- 抽出 `HistoryCardSummaryPills`；history-user-summary 外提。
+- sm/ui/batch/hist/home 合并读取；suite 绿。
+- 抽出 `SchoolFormatParserSection`、`BatchRerunStatusAlert`、`appOptionalUiFeedbackHelpers`。
+- 重建 `frontend_state_machine_regression.mjs` 多模块 merge-read，对齐 handler 工厂/useCallback 形态；suite 绿。
+- 拆分 PromptPreviewEditor：Create/Active/Empty；panel 约 191→约 108。
+- 拆分 ScopeDiagnostics：Parts + DetailSheet；panel 约 175→约 85。
+- 抽出 `appReviewDecisionHelpers` / `appPendingAutoActionHelpers`。
+- hist/ui/sm/prompt-preview 合并读取；suite 绿。
+- sm/ui/batch 合并读取 export/autosnapshot 分区；修复 UI regression source 定义；suite 绿。
+- sm/ui 合并读取 restore session / notification 分区；suite 绿。
+- hist/ui/sm/home-layout/prompt-preview 合并读取；suite 绿。
+- hist/ui/batch/sm/prompt-preview 合并读取；suite 绿。
+- ui/home-layout/hist/sm/prompt-preview 合并读取；suite 绿。
+- 拆分 `promptRegistryCore`：workflow/label；约 158→约 24 barrel。
+- 拆分 `runLaunchSeedCore`：feedback/plan；约 153→约 22 barrel。
+- 拆分 `roundResultHelpers`：build/snapshot；约 145→约 18 barrel。
+- 抽出 `runRoundAttachSeedHandlers`；attach 约 146→约 82 + seed 约 82。
+- sm/ui 合并读取；suite 绿。
+- 拆分 `modelCatalogProviderHandlers`：task/refresh；约 151→约 87 + task 约 84。
+- 拆分 `historyDocumentLoadHandlers`：route/artifacts；约 146→约 67 + route 约 101。
+- 拆分 `promptRouteHandlers`：workflow/switch；约 142→约 106 + workflow 约 59。
+- 抽出 `webServiceRunStreamLifecycle`；stream 约 142→约 76 + lifecycle 约 83。
+- sm/ui/hist 合并读取；suite 绿。
+- suite 绿。
+- UI/prompt-preview 回归合并读取 Prompt 面板源；suite 绿。
+- 抽取 `app/src/lib/modelRoute.ts` 与 `app/src/lib/qualityStats.ts`，继续拆分 `App.tsx` 纯工具逻辑。
+- 流式进度事件节流：按时间/字数阈值上报，降低 UI 刷新噪声。
+- LLM 请求明确不设置 `max_tokens` / `max_output_tokens`，降低代理与免费模型错误率。
+- 诚实执行语义：轮次校验耗尽与定向重跑校验耗尽改为硬失败，保留 checkpoint / 失败诊断，禁止静默回落原文后标为成功。
+- 风格硬门禁升级：扩展连接词、模板句、空泛填充、句长整齐度与机械爆发模式检测。
+- 内置 prompt 分层重写：润色预热 / 规范降痕 / 专家终轮 / 经典解释，强化 burstiness 与去模板约束。
+- 前端视觉系统：工作台顶栏毛玻璃、卡片阴影层次、Diff 区与控制台圆角与背景层次升级。
 
 - 模型路线回归：新增 `scripts/model_route_regression.py`，覆盖服务商仓库优先、禁用服务商拦截、缺失服务商不静默回退、旧快照兼容等场景。
 - GitHub Actions CI：在 push、Pull Request 和手动触发时运行完整回归，覆盖 Python 编译、开源审计、前端文本检查和前端构建。
@@ -19,10 +492,32 @@
 - 真实浏览器 E2E 烟测：新增 Chrome / Edge CDP 点击测试，覆盖上传取消、专注 Diff、导航切换和通知中心。
 - UI 一致性回归：新增共享视觉类检查，防止页面重新出现散装抽屉、无效 Tailwind 透明度和不统一卡片样式。
 - 导出健康状态：结果区汇总保护、审计、预检和 Word 结构状态，区分阻断问题和非阻断提示。
+- 历史库维护端点前端接线：`/api/history-db/maintenance`、`/backups`、`/backup`、`/compact`、`/recover` 五个后端治理端点此前仅后端实现，前端只接了 `/check`、`/repair`；新增 `HistoryDatabaseMaintenancePanel`、`historyDatabaseMaintenanceHandlers` 与对应服务方法/类型，可在“高级维护”区查看库大小/碎片率/备份列表并触发立即备份、压缩与从备份恢复（恢复前二次确认）。
+- `web_app` 引入 `RunRegistry` 与 `create_app()` 工厂：把四处分散的运行态字典与锁收进单一 `RunRegistry`，`prune_run_states` 委托其 `prune_stale`，模块级旧名作为同对象别名保持向后兼容；Flask 构造集中到 `create_app()`，供 `main` 与测试统一构建。
+- 路径脱敏与顺序加固：`web_app.py` 错误响应经 `sanitize_error_message` 脱敏（绝对路径/Windows 路径/`sk-` 类密钥），原始信息仅落 stderr；导出端点先校验 `target_format` 再落盘并 `is_path_under` 收口。
+- SQLite 并发收敛：`fyadr_history_db` 全部连接经 `_connect_history_db`（`busy_timeout`+`foreign_keys`），统一 18 处 `sqlite3.connect`。
+- 提取 `path_utils.is_path_under`/`resolve_under`，统一 `web_app`/`app_service` 三处重复的 `_is_path_under`。
+- `should_freeze_chunk` 经评估确认为刻意休眠（含 `[LANGUAGE LOCK]` 守卫），新增 `freeze_chunk_regression` 锁定休眠语义与路径脱敏。
+- 新增 `docx_template_role_regression`：为 `docx_template.apply_school_format_rules` 补角色级单测覆盖。
+- 历史卡片去除 `HistoryCardSmWrappers` 间接层：消费者改从真实模块（`HistoryDeletePanels`、`HistoryGovernancePanels`、`historyDeleteActionKey`）直接导入，对应三处回归改为断言底层模块；`HistoryCard` 移除死代码 `void getMaintenanceStateLabel`。
+- 收敛 `TaskPhase`/`requestConfirm` 类型边界，消除 `App.tsx` 全部 15 处 `as never`：`runRoundInputTypes`/`batchRerunHandlerTypes`/`documentLoadHandlerTypes` 改为从 `taskState` 复用真实 `TaskPhase` 联合（删去局部 `TaskPhase = string` 重定义），各 handler deps 的 `beginTask` 由 `kind: string` 收窄为 `kind: TaskPhase`，`requestConfirm` 统一为 `ConfirmDialogOptions`；`runRoundSnapshotHandlers`/`runRoundInterfaceTypes` 的 `applySelectedRoundSnapshot`/`loadLatestRoundSnapshot` 返回由 `Promise<unknown>` 收窄为 `Promise<AutoSnapshotLoadedSnapshot | null>`，使自动快照恢复钩子获得精确返回类型而无需强制转换。
 
 ### Changed
 
+- 公网延迟优化（对标 /goal“公网访问延迟太高、项目太重”）：① `/api/health` 诊断对项目根目录与中间产物目录不再走全仓库文件遍历（`summarize_workspace_path(include_stats=False)`），改为 O(1) `stat` 校验可读写，省去整库 walk（实测省 12ms+，公网慢链首屏 health 更快）。② `get_document_status`（前端轮询状态热路径）从“每次 `list_records()` 整 JSON 加载”改为“SQLite 索引优先、索引不可用才回落 JSON”，与 `get_document_history`/`list_document_histories` 一致走索引快路径。③ `list_document_histories` 的每轮 artifact 统计 `_history_artifact_stats_from_index_items` 去掉 `_record_path_to_absolute` 的 `Path.resolve()`（逐组件 `lstat`），改为基于已归一化路径字符串的纯内存判定；针对索引里数百 artifact 路径逐字节比对与旧逻辑零差异，端到端从 120ms 降到 24ms（5×），文件系统 stat 调用清零。历史库 / 状态 / web health 相关回归全绿。
+- `export_round_output`/`_export_docx_round` 新增可选 `format_mode` 参数：`None` 时读取 `formatMode` 配置（默认保真），`"school_rules"` 显式回退到内置学校规范；`docx_export_regression`/`real_docx_smoke` 等断言学校字体（10.5/12pt、20 磅、7/9 磅段距）的回归显式传 `school_rules` 分流，避免被保真默认误伤。`apply_school_format_rules(preserve_original_format=True)` 对可编辑正文跳过 `_apply_paragraph_profile`（不再“填空”未设置属性，否则会为依赖样式继承的源文档注入 bold=False/cs 字体等额外 rPr 字节，破坏格式锁定不变量）。
+- 后端输入边界加固：`/api/read-output` 的 `maxChars` 用 `bounded_int_query_value` 钳制到 `[1, 2_000_000]`，越界/负数/非整数统一回落默认而非放大响应；历史库备份 `keep` 经 `coerce_backup_keep` 钳制到 `[1, 100]`，`keep<=0` 不再静默清空全部备份（含刚写入的那份），改为回落默认值，过大值钳制上限；`/api/round-progress` DELETE 的 `roundNumber`、`/api/cleanup-task-state-snapshots` 的 `mode`/`maxAgeHours` 改为安全整型校验，未知 `mode` 直接报错而非静默降级。
+- 历史库 `recover_history_database_governance` 恢复路径改用嵌套 `with _connect_history_db()` 上下文管理器，替代手写 `.close()`，与文件其余 17 处一致并消除连接泄漏窗口。
+- 提取 `WEB_HOST`/`WEB_PORT`/`FRONTEND_DEV_PORT` 模块常量：CORS 白名单与 `main()` 启动地址改用常量，删除 `main()` 启动日志中的脏话。
+- 统一 7 个 prompt 端点的错误状态：原先 `except Exception` 返回 500 与其余端点的 400 不一致，现统一为 400，并合并冗余的 `ValueError`/`Exception` 双 catch 块。
+- 前端 `formatBytes` 去重：`webServiceFileSizeHelpers` 改为从 `lib/formatters` 复用同一实现，删除本地副本。
+- 前端模块边界收敛：`App.tsx` 改为从真实模块直接导入 `DiffReviewCard`、`SchoolFormatCard`，删除 `ResultCard`/`ModelConfigCard` 上的误导性跨模块 re-export（format 视图不再从 model 卡片转出）。
+- 可访问性：`ModelProviderParamFields` 与 `AppendRoundDialogFields` 的表单字段补 `htmlFor`/`id` 关联，屏幕阅读器可正确将标签绑定到控件，并以回归锁定该约定。
+- 可访问性（轮次运行进度）：`RoundRunStatusCard` 补 `role="status"` + `aria-live="polite"`，改写运行期间进度/状态变化由屏幕阅读器实时播报（断点按钮、分块流式预览、错误摘要可被无障碍感知），错误态仍由底层 `Alert` 的 `role="alert"` 兜底。
+
 - 模型配置链路改为“服务商仓库优先”：每轮只表达服务商和模型选择，执行时从最新服务商配置取地址、Key、超时、重试和限速，避免保存后仍跑旧快照。
+- 删除 targeted rerun 的 silent fallback 成功路径；失败时不改写已接受输出，仅落盘诊断事件。
+- Diff 文案不再把历史 fallback 粉饰成“安全原文/重跑保留”，改为“校验失败/重跑失败”。
 - 主页模型路线面板加宽并增强校验：专属服务商缺地址、Key 或模型时会阻止启动；选择服务商不再静默复用默认模型名。
 - 服务商仓库支持批量读取模型列表，并展示缓存模型数、限速策略和最近更新时间；禁用服务商可以保存但不会被强制连通性测试卡住。
 - 统一首页状态条、操作面板、导出健康、通知中心、策略复盘、启动诊断、历史资产治理和 Diff 区域的卡片/抽屉/提示块视觉语言。
@@ -43,7 +538,7 @@
 
 ### Changed
 
-- 项目名称统一为 `Fuck your AI detection rate`。
+- 项目名称统一为 `FYADR`。
 - Prompt 文件改为 `fyadr-*` 命名，保留核心中文改写 prompt 的稳定边界。
 - 前端布局以 Diff 区域为主视觉，左侧导航支持折叠，通知与诊断信息做了收口。
 - 历史记录操作区分记录、中间产物、导出文件和源文档，避免误删语义混乱。

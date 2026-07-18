@@ -21,6 +21,7 @@ SKIP_DIRS = {
     ".venv",
     "__pycache__",
     "dist",
+    "data",
     "finish",
     "logs",
     "node_modules",
@@ -73,9 +74,18 @@ LOCAL_ARTIFACT_GLOBS = {
     "*.local.yaml",
 }
 
+ALLOWED_PROJECT_BINARY_ASSETS = {
+    "FYADR.png",
+    "app/public/brand-logo.png",  # Legacy release compatibility.
+    "app/public/brand-logo-32.png",
+    "app/public/brand-logo-96.webp",
+    "assets-source/brand/brand-logo-original-1024.png",
+}
+
 REQUIRED_GITIGNORE_PATTERNS = {
     "app/node_modules/",
     "app/dist/",
+    "data/",
     "finish/",
     "origin/",
     "logs/",
@@ -272,6 +282,18 @@ def _looks_like_placeholder(value: str) -> bool:
     return any(word in lowered for word in PLACEHOLDER_WORDS)
 
 
+def _is_env_interpolation(value: str) -> bool:
+    """True when a value is a shell/compose env-var interpolation, not a literal secret.
+
+    Covers ``${VAR}``, ``${VAR:-default}``, ``${VAR-default}``, ``$VAR`` and
+    bare ``os.environ``/``os.getenv`` references — these pass secrets through
+    from the host environment and are the safe pattern, not a hardcoded key.
+    """
+
+    stripped = value.strip().strip("'\"")
+    return bool(re.search(r"\$\{[^}]+\}", stripped)) or stripped.startswith("$") or "os.environ" in stripped or "os.getenv" in stripped
+
+
 def _is_safe_public_url(value: str) -> bool:
     normalized = value.strip().strip("'\"`<>.,;")
     return not normalized or bool(LOCAL_OR_PLACEHOLDER_URL_RE.match(normalized))
@@ -312,6 +334,8 @@ def _scan_text_file(path: Path) -> list[dict[str, Any]]:
             for match in rule.regex.finditer(line):
                 secret_value = match.groupdict().get("value") or match.group(0)
                 if rule.code != "secret.provider_url" and _looks_like_placeholder(secret_value):
+                    continue
+                if rule.code != "secret.provider_url" and _is_env_interpolation(secret_value):
                     continue
                 if rule.code == "secret.provider_url" and _is_safe_public_url(secret_value):
                     continue
@@ -360,7 +384,7 @@ def _check_required_release_files() -> list[dict[str, Any]]:
 
 
 def _is_allowed_local_artifact(relative_path: str) -> bool:
-    return relative_path in {"app/public/brand-logo.png"}
+    return relative_path in ALLOWED_PROJECT_BINARY_ASSETS
 
 
 def _is_local_artifact_relative(relative_path: str) -> bool:
@@ -407,7 +431,7 @@ def _scan_local_artifacts() -> list[dict[str, Any]]:
         relative = _relative(path)
         suffix = path.suffix.lower()
         if suffix in LOCAL_ARTIFACT_SUFFIXES or any(path.match(pattern) for pattern in LOCAL_ARTIFACT_GLOBS):
-            if _relative(path) in {"Fuck your AI detection rate.png", "app/public/brand-logo.png"}:
+            if relative in ALLOWED_PROJECT_BINARY_ASSETS:
                 continue
             code = "local.config_artifact" if path.name == "config.json" or ".local." in path.name else "local.artifact"
             message = (
@@ -429,7 +453,7 @@ def _scan_local_artifacts() -> list[dict[str, Any]]:
 
 def _scan_runtime_dirs() -> list[dict[str, Any]]:
     warnings: list[dict[str, Any]] = []
-    for dirname in ["finish", "origin", "logs", "app/dist", "app/node_modules"]:
+    for dirname in ["data", "finish", "origin", "logs", "app/dist", "app/node_modules"]:
         path = ROOT_DIR / dirname
         if not path.exists():
             continue

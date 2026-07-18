@@ -16,38 +16,36 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import fyadr_round_service as service  # noqa: E402
-from fyadr_history_db import DB_PATH  # noqa: E402
-from fyadr_records import RECORDS_PATH  # noqa: E402
 
 
 DEFAULT_REPORT_PATH = ROOT_DIR / "finish" / "regression" / "round_concurrency_benchmark_report.json"
 DEFAULT_CONCURRENCY_LEVELS = [1, 2, 4, 8, 16]
 
 
-def _backup(path: Path) -> bytes | None:
-    try:
-        return path.read_bytes() if path.exists() else None
-    except OSError:
-        return None
-
-
-def _restore(path: Path, payload: bytes | None) -> None:
-    if payload is None:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
-
-
 def _build_source_text(chunk_count: int) -> tuple[str, list[str]]:
-    paragraphs = [
-        f"并发压测段落 {index + 1:02d}：用于模拟慢模型请求，并验证最终输出仍按原文顺序合并。"
-        for index in range(chunk_count)
-    ]
-    return "\n\n".join(paragraphs), paragraphs
+    bodies: list[str] = []
+    for index in range(chunk_count):
+        # 3 colon buckets × 4 comma buckets × 2 conjunction buckets give
+        # 24 distinct sentence skeletons. Even at the CLI maximum of 64 chunks,
+        # no newly rewritten skeleton occurs four times and contaminates this
+        # concurrency-only benchmark with document-pattern arbitration.
+        variant = index % 24
+        colon_count = variant % 3
+        extra_comma_count = (variant // 3) % 4
+        conjunction_variant = (variant // 12) % 2
+        body = f"并发压测段落 {index + 1:02d} 验证顺序"
+        if colon_count >= 1:
+            body += "：记录返回槽位"
+        if colon_count >= 2:
+            body += "：核对汇总位置"
+        for stage in range(extra_comma_count):
+            body += f"，检查阶段{'一二三'[stage]}"
+        if conjunction_variant:
+            body += "且保存调度证据"
+        bodies.append(f"{body}。")
+    source_paragraphs = [f"首先，综上所述，{body}" for body in bodies]
+    expected_paragraphs = [f"首先，{body}" for body in bodies]
+    return "\n\n".join(source_paragraphs), expected_paragraphs
 
 
 def _event_max(events: list[dict[str, Any]], key: str) -> int:
@@ -85,7 +83,10 @@ def _run_case(*, concurrency: int, chunk_count: int, delay_ms: int) -> dict[str,
             with lock:
                 completion_order.append(chunk_id)
                 finished_at.append(time.perf_counter())
-            return f"[{chunk_id}] {text}"
+            rewritten = text.replace("首先，综上所述，", "首先，", 1)
+            if rewritten.endswith("。"):
+                return f"{rewritten[:-1]} [{chunk_id}]。"
+            return f"{rewritten} [{chunk_id}]"
         finally:
             with lock:
                 active_count -= 1
@@ -112,10 +113,34 @@ def _run_case(*, concurrency: int, chunk_count: int, delay_ms: int) -> dict[str,
         duration_ms = round((time.perf_counter() - started) * 1000)
 
         expected_output = "\n\n".join(
-            f"[p{index}_c0] {paragraph}"
+            f"{paragraph[:-1]} [p{index}_c0]。"
             for index, paragraph in enumerate(paragraphs)
         )
         output_text = output_path.read_text(encoding="utf-8")
+        compare_payload = json.loads(Path(str(result.get("compare_path", ""))).read_text(encoding="utf-8"))
+        candidate_decision_counts: dict[str, int] = {}
+        arbitration_reason_counts: dict[str, int] = {}
+        for chunk in compare_payload.get("chunks", []):
+            selection = chunk.get("candidateSelection") if isinstance(chunk, dict) else None
+            if not isinstance(selection, dict):
+                continue
+            decision = str(selection.get("decision", "") or "missing")
+            candidate_decision_counts[decision] = candidate_decision_counts.get(decision, 0) + 1
+            arbitration = selection.get("documentArbitration")
+            if isinstance(arbitration, dict):
+                reason = str(arbitration.get("reasonCode", "") or "missing")
+                arbitration_reason_counts[reason] = arbitration_reason_counts.get(reason, 0) + 1
+        expected_paragraphs = expected_output.split("\n\n")
+        actual_paragraphs = output_text.split("\n\n")
+        mismatch_positions = [
+            index
+            for index in range(max(len(expected_paragraphs), len(actual_paragraphs)))
+            if (
+                expected_paragraphs[index] if index < len(expected_paragraphs) else None
+            ) != (
+                actual_paragraphs[index] if index < len(actual_paragraphs) else None
+            )
+        ]
         run_audit = result.get("run_audit") if isinstance(result, dict) else {}
 
     api_window_ms = round((max(finished_at) - min(started_at)) * 1000) if started_at and finished_at else 0
@@ -131,6 +156,10 @@ def _run_case(*, concurrency: int, chunk_count: int, delay_ms: int) -> dict[str,
         "maxProgressActive": _event_max(events, "activeChunks"),
         "completedProgressEvents": sum(1 for event in events if event.get("phase") == "chunk-complete"),
         "outputOrdered": output_text == expected_output,
+        "outputParagraphCount": len(actual_paragraphs),
+        "mismatchPositions": mismatch_positions,
+        "candidateDecisionCounts": candidate_decision_counts,
+        "documentArbitrationReasonCounts": arbitration_reason_counts,
         "auditConcurrency": run_audit.get("rewriteConcurrency") if isinstance(run_audit, dict) else None,
     }
 
@@ -140,8 +169,6 @@ def run_benchmark(*, chunk_count: int, delay_ms: int, concurrency_levels: list[i
     if 1 not in normalized_levels:
         normalized_levels.insert(0, 1)
 
-    records_backup = _backup(RECORDS_PATH)
-    db_backup = _backup(DB_PATH)
     original_validate = service.validate_chunk_output
     original_should_freeze = service.should_freeze_chunk
     original_update_round = service.update_round
@@ -169,8 +196,6 @@ def run_benchmark(*, chunk_count: int, delay_ms: int, concurrency_levels: list[i
         service.should_freeze_chunk = original_should_freeze
         service.update_round = original_update_round
         service._build_quality_summary = original_build_quality_summary
-        _restore(RECORDS_PATH, records_backup)
-        _restore(DB_PATH, db_backup)
 
     baseline = next((case for case in cases if case["concurrency"] == 1), cases[0])
     baseline_duration = max(1, int(baseline["durationMs"]))
@@ -184,6 +209,10 @@ def run_benchmark(*, chunk_count: int, delay_ms: int, concurrency_levels: list[i
         concurrency = int(case["concurrency"])
         if not case["outputOrdered"]:
             failures.append(f"concurrency {concurrency} restored output out of order")
+        if case.get("candidateDecisionCounts") != {"generated_selected": int(case["chunkCount"])}:
+            failures.append(
+                f"concurrency {concurrency} benchmark fixture was changed by candidate arbitration"
+            )
         if int(case.get("auditConcurrency") or 0) != concurrency:
             failures.append(f"concurrency {concurrency} was not recorded in run audit")
         if concurrency > 1 and int(case.get("maxObservedActive") or 0) < 2:

@@ -20,6 +20,7 @@ const defaultModelConfig: ModelConfig = {
   apiKey: "",
   model: "",
   apiType: "chat_completions",
+  streaming: true,
   temperature: 0.7,
   promptProfile: ACTIVE_PROMPT_PROFILE,
   promptSequence: DEFAULT_PROMPT_SEQUENCE,

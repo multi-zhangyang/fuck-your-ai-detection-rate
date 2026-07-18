@@ -2,10 +2,28 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from open_source_audit import ROOT_DIR, run_audit
+from open_source_audit import (
+    ROOT_DIR,
+    _gitignore_patterns,
+    _is_allowed_local_artifact,
+    _is_under_skipped_dir,
+    run_audit,
+)
 
 
 def main() -> int:
+    private_runtime_config = ROOT_DIR / "data" / "config" / "config.json"
+    if not _is_under_skipped_dir(private_runtime_config):
+        raise AssertionError("Docker runtime data/config is being scanned as repository source")
+    if "data/" not in _gitignore_patterns():
+        raise AssertionError("Docker runtime data directory is not protected by .gitignore")
+    for asset_path in (
+        "app/public/brand-logo-32.png",
+        "app/public/brand-logo-96.webp",
+        "assets-source/brand/brand-logo-original-1024.png",
+    ):
+        if not _is_allowed_local_artifact(asset_path):
+            raise AssertionError(f"project brand asset was misclassified as a local artifact: {asset_path}")
     probe_path = ROOT_DIR / ".open_source_audit_probe.env"
     report_path = ROOT_DIR / "finish" / "regression" / "open_source_audit_probe_report.json"
     key_name = "FYADR_" + "API_" + "KEY"
@@ -32,6 +50,13 @@ def main() -> int:
     missing_codes = sorted(expected_codes - error_codes)
     if missing_codes:
         raise AssertionError(f"open-source audit did not catch expected private data leaks: {missing_codes}")
+    leaked_runtime_paths = sorted(
+        str(item.get("path", ""))
+        for item in report.get("errors", [])
+        if isinstance(item, dict) and str(item.get("path", "")).startswith("data/")
+    )
+    if leaked_runtime_paths:
+        raise AssertionError(f"private Docker runtime data was classified as repository source: {leaked_runtime_paths}")
     for item in report.get("errors", []):
         if isinstance(item, dict) and item.get("code") in expected_codes and not str(item.get("action", "")).strip():
             raise AssertionError(f"open-source audit issue lacks action guidance: {item.get('code')}")

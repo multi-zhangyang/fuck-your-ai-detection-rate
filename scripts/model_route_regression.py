@@ -9,7 +9,7 @@ from pathlib import Path
 import app_service
 import fyadr_records
 import round_helper
-from app_config import SAVED_SECRET_PLACEHOLDER, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
+from app_config import SAVED_SECRET_PLACEHOLDER, get_app_config_path, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
 from app_service import _resolve_round_model_config, find_conflicting_history_route
 
 
@@ -80,6 +80,7 @@ def _base_config() -> dict:
         "apiKey": "default-key",
         "model": "default-model",
         "apiType": "chat_completions",
+        "streaming": True,
         "temperature": 0.7,
         "promptProfile": "cn_prewrite",
         "promptSequence": ["prewrite", "round1", "round2"],
@@ -93,6 +94,7 @@ def _base_config() -> dict:
                 "baseUrl": "https://provider-a.example/v1",
                 "apiKey": "provider-a-key",
                 "apiType": "responses",
+                "streaming": False,
                 "temperature": 0.4,
                 "requestTimeoutSeconds": 900,
                 "maxRetries": 5,
@@ -108,6 +110,7 @@ def _base_config() -> dict:
                 "baseUrl": "https://provider-b.example/v1",
                 "apiKey": "provider-b-key",
                 "apiType": "chat_completions",
+                "streaming": True,
                 "temperature": 0.8,
                 "requestTimeoutSeconds": 300,
                 "maxRetries": 1,
@@ -124,6 +127,7 @@ def _base_config() -> dict:
                 "apiKey": "stale-key",
                 "model": "a-model-2",
                 "apiType": "chat_completions",
+                "streaming": True,
                 "temperature": 1.4,
                 "requestTimeoutSeconds": 60,
                 "maxRetries": 0,
@@ -147,6 +151,7 @@ def test_provider_repository_is_authoritative() -> None:
     assert resolved["apiKey"] == "provider-a-key"
     assert resolved["model"] == "a-model-2"
     assert resolved["apiType"] == "responses"
+    assert resolved["streaming"] is False
     assert resolved["temperature"] == 0.4
     assert resolved["requestTimeoutSeconds"] == 900
     assert resolved["maxRetries"] == 5
@@ -212,6 +217,7 @@ def test_legacy_snapshot_still_works_without_provider_repository() -> None:
     assert resolved["providerName"] == "Legacy"
     assert resolved["baseUrl"] == "https://legacy.example/v1"
     assert resolved["model"] == "legacy-model"
+    assert resolved["streaming"] is True
     assert resolved["rateLimitWindowMinutes"] == 1
     assert resolved["rateLimitMaxRequests"] == 6
 
@@ -255,6 +261,9 @@ def test_redacted_config_preserves_saved_secrets() -> None:
             assert redacted["apiKey"] == SAVED_SECRET_PLACEHOLDER
             assert redacted["hasApiKey"] is True
             assert redacted["modelProviders"][0]["apiKey"] == SAVED_SECRET_PLACEHOLDER
+            assert redacted["streaming"] is True
+            assert redacted["modelProviders"][0]["streaming"] is False
+            assert redacted["roundModels"]["cn_prewrite:1"]["streaming"] is True
             assert "default-key" not in json_dump(redacted)
             save_app_config(redacted)
             loaded = load_app_config()
@@ -263,6 +272,8 @@ def test_redacted_config_preserves_saved_secrets() -> None:
             hydrated = hydrate_app_config_secrets(redacted)
             assert hydrated["apiKey"] == "default-key"
             assert hydrated["modelProviders"][0]["apiKey"] == "provider-a-key"
+            assert hydrated["streaming"] is True
+            assert hydrated["modelProviders"][0]["streaming"] is False
 
             cleared = deepcopy(redacted)
             cleared["apiKey"] = ""
@@ -278,6 +289,55 @@ def test_redacted_config_preserves_saved_secrets() -> None:
             os.environ.pop("APPDATA", None)
         else:
             os.environ["APPDATA"] = original_appdata
+
+
+def test_streaming_config_round_trip_and_legacy_default() -> None:
+    original_override = os.environ.get("FYADR_APP_CONFIG_DIR")
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["FYADR_APP_CONFIG_DIR"] = temp_dir
+            legacy = deepcopy(_base_config())
+            legacy.pop("streaming", None)
+            for provider in legacy["modelProviders"]:
+                provider.pop("streaming", None)
+            for round_config in legacy["roundModels"].values():
+                round_config.pop("streaming", None)
+            config_path = get_app_config_path()
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+
+            loaded_legacy = load_app_config()
+            assert loaded_legacy["streaming"] is True
+            assert all(provider["streaming"] is True for provider in loaded_legacy["modelProviders"])
+            assert all(route["streaming"] is True for route in loaded_legacy["roundModels"].values())
+
+            explicit = deepcopy(_base_config())
+            explicit["streaming"] = False
+            explicit["modelProviders"][0]["streaming"] = False
+            explicit["roundModels"]["cn_prewrite:1"]["streaming"] = False
+            saved = save_app_config(explicit)
+            assert saved["streaming"] is False
+            assert saved["modelProviders"][0]["streaming"] is False
+            assert saved["roundModels"]["cn_prewrite:1"]["streaming"] is False
+            reloaded = load_app_config()
+            assert reloaded["streaming"] is False
+            assert reloaded["modelProviders"][0]["streaming"] is False
+            assert reloaded["roundModels"]["cn_prewrite:1"]["streaming"] is False
+            persisted = json.loads(config_path.read_text(encoding="utf-8"))
+            assert persisted["streaming"] is False
+            assert "stream" not in persisted
+
+            alias_input = deepcopy(explicit)
+            alias_input.pop("streaming", None)
+            alias_input["stream"] = False
+            alias_saved = save_app_config(alias_input)
+            assert alias_saved["streaming"] is False
+            assert "stream" not in alias_saved
+    finally:
+        if original_override is None:
+            os.environ.pop("FYADR_APP_CONFIG_DIR", None)
+        else:
+            os.environ["FYADR_APP_CONFIG_DIR"] = original_override
 
 
 def test_route_conflict_detects_stale_custom_sequence() -> None:
@@ -416,7 +476,8 @@ def test_appended_sequence_continues_from_prefix_rounds() -> None:
             prompt_profile="cn_custom",
             prompt_sequence=appended_sequence,
         )
-        assert str(context.input_text_path).endswith("round-prefix-append_round2.txt")
+        assert str(context.parent_output_path).endswith("round-prefix-append_round2.txt")
+        assert context.input_text_path.name.endswith("_round3_input.txt")
     finally:
         app_service.list_records = original_app_records
         round_helper.load_records_normalized = original_round_records
@@ -478,6 +539,7 @@ def main() -> int:
     test_legacy_snapshot_still_works_without_provider_repository()
     test_provider_repository_is_not_capped_at_fifty()
     test_redacted_config_preserves_saved_secrets()
+    test_streaming_config_round_trip_and_legacy_default()
     test_route_conflict_detects_stale_custom_sequence()
     test_status_ignores_rounds_outside_selected_custom_sequence()
     test_appended_sequence_continues_from_prefix_rounds()

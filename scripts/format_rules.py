@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_json import extract_json_object
-from app_config import DEFAULT_MAX_RETRIES, DEFAULT_REQUEST_TIMEOUT_SECONDS, load_app_config
+from app_config import DEFAULT_MAX_RETRIES, DEFAULT_REQUEST_TIMEOUT_SECONDS, load_app_config, normalize_streaming
 from llm_client import llm_completion
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -1723,6 +1723,7 @@ def parse_format_rules_from_text(document_text: str, *, model_config: dict[str, 
             temperature=0,
             timeout=parse_timeout,
             max_retries=parse_retries,
+            stream=normalize_streaming(config.get("streaming", config.get("stream"))),
         )
         parsed = _extract_json_object(response_text)
         deterministic_rules = extract_deterministic_format_rules(text)

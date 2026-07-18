@@ -1,15 +1,26 @@
 {
-  "name": "fuck-your-ai-detection-rate",
+  "name": "fyadr-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "dev:web": "vite",
     "build": "tsc && vite build",
     "build:web": "tsc && vite build",
     "preview": "vite preview",
-    "check:text": "python ../scripts/check_frontend_text.py",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run check:text && npm run typecheck && npm run test:frontend",
+    "check:text": "node ../scripts/run_python.mjs ../scripts/check_frontend_text.py",
+    "test:frontend": "npm run test:frontend:state-consistency && npm run test:frontend:review-save && npm run test:frontend:round-snapshot && npm run test:frontend:evidence && npm run test:frontend:model-streaming",
+    "test:frontend:state-consistency": "node ../scripts/frontend_state_consistency_regression.mjs",
+    "test:frontend:review-save": "node ../scripts/frontend_review_save_queue_regression.mjs",
+    "test:frontend:round-snapshot": "node ../scripts/frontend_round_snapshot_regression.mjs",
+    "test:frontend:evidence": "node ../scripts/frontend_evidence_chain_regression.mjs",
+    "test:frontend:model-streaming": "node ../scripts/frontend_model_streaming_regression.mjs",
     "test:e2e:smoke": "node ../scripts/browser_e2e_smoke.mjs"
   },
   "dependencies": {
@@ -41,12 +52,12 @@
     "@types/node": "^25.6.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
+    "@vitejs/plugin-react": "^6.0.3",
     "autoprefixer": "^10.5.0",
     "postcss": "^8.5.10",
     "tailwindcss": "^3.4.17",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.5.4",
-    "vite": "^5.4.2"
+    "vite": "^8.1.5"
   }
 }

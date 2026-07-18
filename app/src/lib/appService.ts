@@ -7,6 +7,7 @@ import type {
   DocumentStatus,
   EnvironmentDiagnostics,
   ExportResult,
+  ExportRoundOptions,
   BackendRuntimeInfo,
   BatchRerunResult,
   BatchRerunStatus,
@@ -17,6 +18,11 @@ import type {
   HistoryArtifactQueryFilters,
   HistoryArtifactQueryResponse,
   HistoryDatabaseCheckResult,
+  HistoryDatabaseCompactResult,
+  HistoryDatabaseMaintenanceSummary,
+  HistoryDatabaseBackupListResult,
+  HistoryDatabaseBackupResult,
+  HistoryDatabaseRecoverResult,
   HistoryDatabaseRepairResult,
   HistoryOrphanDeleteResult,
   HistoryOrphanScanResult,
@@ -30,6 +36,11 @@ import type {
   PromptSaveResult,
   PromptWorkflow,
   PromptWorkflowSaveResult,
+  PreviousRoundRevisionBinding,
+  RateAuditReport,
+  RateAuditStrategyExecutionRequest,
+  RoundArtifactSnapshot,
+  RoundArtifactSnapshotReadOptions,
   RoundCompareData,
   RoundProgress,
   RoundProgressStatus,
@@ -69,6 +80,8 @@ export interface AppService {
   getDocumentHistory(sourcePath: string): Promise<DocumentHistory>;
   getDocumentProtectionMap(sourcePath: string): Promise<DocumentProtectionMap>;
   getDocumentScopeDiagnostics(sourcePath: string): Promise<DocumentScopeDiagnostics>;
+  getRateAudit(sourcePath: string, outputPath?: string): Promise<RateAuditReport>;
+  startRateAuditStrategy(request: RateAuditStrategyExecutionRequest, modelConfig: ModelConfig): Promise<string>;
   listDocumentHistories(): Promise<HistoryListResponse>;
   deleteDocumentHistory(
     docId: string,
@@ -81,9 +94,18 @@ export interface AppService {
   queryHistoryArtifacts(filters?: HistoryArtifactQueryFilters): Promise<HistoryArtifactQueryResponse>;
   checkHistoryDatabase(): Promise<HistoryDatabaseCheckResult>;
   repairHistoryDatabase(): Promise<HistoryDatabaseRepairResult>;
+  getHistoryDatabaseMaintenance(): Promise<HistoryDatabaseMaintenanceSummary>;
+  listHistoryDatabaseBackups(validate?: boolean): Promise<HistoryDatabaseBackupListResult>;
+  backupHistoryDatabase(options?: { reason?: string; keep?: number }): Promise<HistoryDatabaseBackupResult>;
+  compactHistoryDatabase(options?: { createBackup?: boolean; keep?: number }): Promise<HistoryDatabaseCompactResult>;
+  recoverHistoryDatabase(options?: { backupPath?: string; keep?: number }): Promise<HistoryDatabaseRecoverResult>;
   scanHistoryOrphans(protectedPaths?: string[]): Promise<HistoryOrphanScanResult>;
   deleteHistoryOrphans(protectedPaths?: string[]): Promise<HistoryOrphanDeleteResult>;
-  startRunRound(sourcePath: string, modelConfig: ModelConfig): Promise<string | null>;
+  startRunRound(
+    sourcePath: string,
+    modelConfig: ModelConfig,
+    previousRoundBinding?: PreviousRoundRevisionBinding,
+  ): Promise<string | null>;
   getRunRoundStatus(runToken: string): Promise<RunRoundStatus>;
   cancelRunRound(runToken: string): Promise<void>;
   getRoundProgressStatus(sourcePath: string, promptProfile: ModelConfig["promptProfile"], roundNumber?: number | null, promptSequence?: ModelConfig["promptSequence"]): Promise<RoundProgressStatus>;
@@ -91,14 +113,26 @@ export interface AppService {
   awaitRunRound(sourcePath: string, modelConfig: ModelConfig, runToken?: string | null): Promise<RoundResult>;
   listenRoundProgress(onProgress: (payload: RoundProgress) => void, runToken?: string | null): Promise<() => void>;
   readOutput(outputPath: string, maxChars?: number): Promise<OutputPreview>;
+  readRoundSnapshot(
+    outputPath: string,
+    options?: RoundArtifactSnapshotReadOptions,
+  ): Promise<RoundArtifactSnapshot>;
   readCompare(outputPath: string): Promise<RoundCompareData>;
   loadReviewDecisions(outputPath: string): Promise<ReviewDecisionsResult>;
-  saveReviewDecisions(outputPath: string, decisions: Record<string, ReviewDecision>): Promise<ReviewDecisionsResult>;
+  saveReviewDecisions(
+    outputPath: string,
+    decisions: Record<string, ReviewDecision>,
+    expectedCompareRevision: string,
+  ): Promise<ReviewDecisionsResult>;
   rerunChunk(outputPath: string, chunkId: string, modelConfig: ModelConfig, userFeedback?: string): Promise<RerunChunkResult>;
   startBatchRerun(outputPath: string, targets: BatchRerunTarget[], modelConfig: ModelConfig): Promise<string>;
   getBatchRerunStatus(runToken: string): Promise<BatchRerunStatus>;
   cancelBatchRerun(runToken: string): Promise<void>;
-  exportRound(outputPath: string, targetFormat: "txt" | "docx"): Promise<ExportResult>;
+  exportRound(
+    outputPath: string,
+    targetFormat: "txt" | "docx",
+    options?: ExportRoundOptions,
+  ): Promise<ExportResult>;
   loadFormatRules(): Promise<FormatRules>;
   parseFormatRules(text: string, modelConfig: ModelConfig, signal?: AbortSignal): Promise<FormatRulesResult>;
   activateFormatRules(rules: FormatRules): Promise<FormatRulesResult>;

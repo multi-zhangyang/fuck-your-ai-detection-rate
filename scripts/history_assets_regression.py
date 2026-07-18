@@ -166,13 +166,17 @@ def run_regression() -> dict[str, Any]:
         created_paths.append(active_source)
         protected_scan = scan_history_orphan_artifacts([str(active_source)])
         _assert(not _path_in_files(protected_scan["orphanFiles"], active_source), "active source must be protected from orphan scan")
-        unprotected_scan = scan_history_orphan_artifacts([])
-        _assert(_path_in_files(unprotected_scan["orphanFiles"], active_source), "unreferenced source copy must be visible as orphan")
         protect_everything_else = [
             str(path)
             for path in _iter_cleanable_history_artifacts()
             if path.resolve() != active_source.resolve()
         ]
+        # The public scan intentionally previews only the first 200 orphan
+        # files. A busy workspace may already contain more than that, so make
+        # this fixture the only unprotected candidate instead of assuming it
+        # will sort into the preview window.
+        unprotected_scan = scan_history_orphan_artifacts(protect_everything_else)
+        _assert(_path_in_files(unprotected_scan["orphanFiles"], active_source), "unreferenced source copy must be visible as orphan")
         delete_history_orphan_artifacts(protect_everything_else)
         _assert(not active_source.exists(), "orphan cleanup must delete only the unprotected source copy")
         checks.append("orphan cleanup respects active-path protection")

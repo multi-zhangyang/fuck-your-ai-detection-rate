@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import base64
+import copy
+from hashlib import sha256
 import json
+import math
 import os
 import platform
+import re
 import sys
 import threading
 import time
@@ -14,33 +18,56 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from flask import Flask, Response, jsonify, request, send_file, stream_with_context
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
 from werkzeug.exceptions import RequestEntityTooLarge
 
+# gzip for /api JSON + served static assets. Optional: only the production
+# Docker image installs flask-compress; local dev can run without it (no gzip),
+# so import lazily and no-op when absent rather than failing to start.
+try:
+    from flask_compress import Compress
+except ImportError:  # pragma: no cover - local dev without flask-compress
+    Compress = None  # type: ignore[assignment]
+
 from app_config import get_app_config_path, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
+from path_utils import is_path_under, truncate_utf8_filename_component
 from app_service import (
+    DocumentReleaseGateError,
     ExportRoundError,
+    InconsistentReviewStateError,
     MAX_REWRITE_CONCURRENCY,
     MIN_REWRITE_REQUEST_TIMEOUT_SECONDS,
+    PARENT_INPUT_BINDING_FIELDS,
+    ReviewRevisionRequiredError,
+    RoundInputRevisionRequiredError,
+    RoundArtifactSnapshotError,
+    StaleReviewDecisionsError,
+    StaleRoundInputError,
+    StaleRateAuditStrategyPlanError,
     backup_history_database_governance,
     check_history_database_governance,
     compact_history_database_governance,
     delete_document_history,
     delete_history_orphan_artifacts,
     ensure_history_database_ready,
+    execute_rate_audit_strategy,
     export_round_output,
     find_conflicting_history_route,
     get_document_history,
     get_document_protection_map,
     get_document_scope_diagnostics,
     get_document_status,
+    get_output_rerun_lock,
+    get_document_rate_audit,
     get_history_database_maintenance_summary,
     get_round_progress_status,
     list_available_models,
     list_document_histories,
     load_review_decisions,
     preview_document_history_delete,
+    preflight_run_round_input,
     read_output_text,
+    read_round_artifact_snapshot,
     read_round_compare,
     query_history_artifact_governance,
     recover_history_database_governance,
@@ -51,8 +78,17 @@ from app_service import (
     save_review_decisions,
     scan_history_orphan_artifacts,
     test_model_connection,
+    validate_rate_audit_strategy_request,
     list_history_database_backups,
+    _normalize_compare_failed_attempts,
 )
+from fyadr_round_service import (
+    _classify_failed_attempt_diagnostic,
+    _normalize_failed_attempt_evidence,
+    _public_candidate_selection_event,
+    _sanitize_public_diagnostic_value,
+)
+from fyadr_history_db import DEFAULT_BACKUP_KEEP, coerce_backup_keep
 from format_rules import (
     get_default_format_rules,
     load_active_format_rules,
@@ -72,6 +108,7 @@ from prompt_library import (
     update_prompt_metadata,
     update_prompt_workflow,
 )
+from runtime_error_safety import public_provider_error_message
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -86,11 +123,26 @@ TASK_STATE_SELF_HEAL_INTERVAL_SECONDS = 60
 TASK_STATE_SNAPSHOT_PREFIXES = ("run_round_", "batch_rerun_")
 DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_UPLOAD_BYTES = 40 * 1024 * 1024
+# In production (Docker) the server must listen on all interfaces so the
+# container port can be published. Override with WEB_HOST/WEB_PORT env vars.
+WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
+WEB_PORT = int(os.getenv("WEB_PORT", "8765"))
+FRONTEND_DEV_PORT = 1420
+
+# Directory that holds the production frontend build (app/dist) served by Flask
+# in single-container deployments. Empty => not served (frontend runs elsewhere).
+WEB_STATIC_DIR = os.getenv("WEB_STATIC_DIR", "").strip()
+
+
+def _local_origin(port: int) -> set[str]:
+    return {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
 
 
 @dataclass
 class ProgressState:
     source_path: str
+    expected_previous_compare_revision: str = ""
+    expected_parent_input_binding: dict[str, str] = field(default_factory=dict)
     status: str = "running"
     completed: bool = False
     error: str | None = None
@@ -118,17 +170,82 @@ class BatchRerunState:
     current_index: int = 0
     current_chunk_id: str = ""
     success_chunk_ids: list[str] = field(default_factory=list)
+    preserved_attempts: list[dict[str, Any]] = field(default_factory=list)
     failures: list[dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     condition: threading.Condition = field(default_factory=threading.Condition)
 
 
-RUN_STATES: dict[str, ProgressState] = {}
-ACTIVE_RUNS_BY_SOURCE: dict[str, str] = {}
-BATCH_RERUN_STATES: dict[str, BatchRerunState] = {}
-ACTIVE_BATCH_RERUNS_BY_OUTPUT: dict[str, str] = {}
-RUN_REGISTRY_LOCK = threading.Lock()
+class RunRegistry:
+    """Single owner of in-flight run/batch-rerun state and its lock.
+
+    Before this class existed, four module-level dicts (``RUN_STATES``,
+    ``ACTIVE_RUNS_BY_SOURCE``, ``BATCH_RERUN_STATES``,
+    ``ACTIVE_BATCH_RERUNS_BY_OUTPUT``) and ``RUN_REGISTRY_LOCK`` were scattered
+    as bare globals. Every access had to remember to take the same lock and to
+    keep the four maps mutually consistent. This class gives that state one
+    home so the lifecycle rules live next to the data.
+
+    The maps themselves are still plain dict instances (not private copies) so
+    existing inline call sites and regression tests that mutate them directly
+    keep working — the registry is the owner, the module-level names below are
+    backward-compatible aliases for the same dict objects.
+    """
+
+    def __init__(self) -> None:
+        self.run_states: dict[str, ProgressState] = {}
+        self.active_runs_by_source: dict[str, str] = {}
+        self.batch_rerun_states: dict[str, BatchRerunState] = {}
+        self.active_batch_reruns_by_output: dict[str, str] = {}
+        self.lock = threading.Lock()
+
+    def prune_stale(self, cutoff: float) -> None:
+        """Drop completed runs and orphaned source/output lookups past ``cutoff``.
+
+        Must be called under ``self.lock``; callers already hold it through the
+        registry's lock, so this only mutates the maps.
+        """
+        stale_run_ids = [
+            run_id
+            for run_id, state in self.run_states.items()
+            if state.completed and state.updated_at < cutoff
+        ]
+        for run_id in stale_run_ids:
+            self.run_states.pop(run_id, None)
+        inactive_sources = [
+            source_path
+            for source_path, run_id in self.active_runs_by_source.items()
+            if run_id not in self.run_states
+        ]
+        for source_path in inactive_sources:
+            self.active_runs_by_source.pop(source_path, None)
+        stale_batch_ids = [
+            run_id
+            for run_id, state in self.batch_rerun_states.items()
+            if state.completed and state.updated_at < cutoff
+        ]
+        for run_id in stale_batch_ids:
+            self.batch_rerun_states.pop(run_id, None)
+        inactive_outputs = [
+            output_path
+            for output_path, run_id in self.active_batch_reruns_by_output.items()
+            if run_id not in self.batch_rerun_states
+        ]
+        for output_path in inactive_outputs:
+            self.active_batch_reruns_by_output.pop(output_path, None)
+
+
+RUN_REGISTRY = RunRegistry()
+
+# Backward-compatible module-level aliases. These are the *same* dict objects
+# and lock instance the registry owns, so inline call sites and regression
+# tests that read or mutate them directly keep working unchanged.
+RUN_STATES: dict[str, ProgressState] = RUN_REGISTRY.run_states
+ACTIVE_RUNS_BY_SOURCE: dict[str, str] = RUN_REGISTRY.active_runs_by_source
+BATCH_RERUN_STATES: dict[str, BatchRerunState] = RUN_REGISTRY.batch_rerun_states
+ACTIVE_BATCH_RERUNS_BY_OUTPUT: dict[str, str] = RUN_REGISTRY.active_batch_reruns_by_output
+RUN_REGISTRY_LOCK = RUN_REGISTRY.lock
 TASK_STATE_SELF_HEAL_LOCK = threading.Lock()
 TASK_STATE_SELF_HEAL_CACHE: dict[str, Any] | None = None
 TASK_STATE_SELF_HEAL_CACHE_AT = 0.0
@@ -150,7 +267,25 @@ def _read_byte_limit_env(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-app.config["MAX_CONTENT_LENGTH"] = _read_byte_limit_env("FYADR_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES)
+def create_app() -> Flask:
+    """Application factory.
+
+    Centralizes Flask app construction: the request-size cap, CORS preflight
+    handler, and the workspace/history readiness bootstrap all live here so the
+    server entry point (``main``) and tests can build a configured app the same
+    way. The module-level ``app`` is itself the product of this factory, so the
+    ``@app.route`` decorators below still bind to the same instance.
+    """
+    app.config["MAX_CONTENT_LENGTH"] = _read_byte_limit_env("FYADR_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES)
+    # gzip for both /api JSON and served static assets (low-latency public access).
+    # Only the production Docker image installs flask-compress; in local dev it
+    # is absent and gzip is simply skipped (no crash).
+    if Compress is not None:
+        Compress(app)
+    return app
+
+
+app = create_app()
 
 
 def ensure_workspace_dirs() -> None:
@@ -159,8 +294,40 @@ def ensure_workspace_dirs() -> None:
     TASK_STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+_SENSITIVE_MESSAGE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # Absolute POSIX paths rooted under a user/system directory.
+    (re.compile(r"(?<![A-Za-z0-9])(/(?:root|home|tmp|Users|var|opt|etc|mnt)[A-Za-z0-9_./\-]+(?:[ ][A-Za-z0-9_./\-]+)*[A-Za-z0-9_./\-])"), "<path>"),
+    # Windows drive paths rooted under a user directory.
+    (re.compile(r"(?<![A-Za-z0-9])([A-Za-z]:\\[A-Za-z0-9_.\\\-]+(?:[ ][A-Za-z0-9_.\\\-]+)*[A-Za-z0-9_.\\\-])"), "<path>"),
+    # API-key-like tokens (api_key=..., token: ..., Bearer ...)
+    (re.compile(r"(?i)(api[_-]?key|token|secret|bearer|authorization)[\"\']?\s*[:=]\s*[\"\']?[A-Za-z0-9_\-]{12,}"), r"\1=<redacted>"),
+    # Bare sk-... style keys
+    (re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "<redacted>"),
+)
+
+
+def sanitize_error_message(message: str) -> str:
+    """Strip absolute paths and secret-like tokens before returning to the client.
+
+    Local validation messages (e.g. "Output file does not exist: <path>") keep
+    their sentence; only the path/secret tokens are masked. This closes the
+    information-leak window where raw exceptions echo the server's filesystem
+    layout or upstream credentials to the browser.
+    """
+
+    sanitized = message
+    for pattern, replacement in _SENSITIVE_MESSAGE_PATTERNS:
+        sanitized = pattern.sub(replacement, sanitized)
+    return sanitized
+
+
 def error_response(message: str, status: int = 400, **extra: Any) -> tuple[Response, int]:
-    payload: dict[str, Any] = {"message": message}
+    safe_message = sanitize_error_message(message)
+    if safe_message != message:
+        # The original message may carry diagnostic detail we do not want to
+        # lose; print it server-side so operators can still debug.
+        print(f"[error_response {status}] raw={message!r} safe={safe_message!r}", file=sys.stderr)
+    payload: dict[str, Any] = {"message": safe_message}
     payload.update({key: value for key, value in extra.items() if value is not None})
     return jsonify(payload), status
 
@@ -186,8 +353,8 @@ def make_ascii_header_json(value: object) -> str:
 
 
 def sanitize_filename(filename: str) -> str:
-    candidate = Path(filename).name.strip()
-    if not candidate:
+    candidate = Path(str(filename or "").replace("\\", "/")).name.strip()
+    if not candidate or candidate in {".", ".."} or "\x00" in candidate:
         raise ValueError("Filename is required.")
     return candidate
 
@@ -214,29 +381,64 @@ def _decode_upload_base64(content_base64: str, *, label: str) -> bytes:
     return data
 
 
+def _verify_existing_content_addressed_upload(target_path: Path, data: bytes, digest: str) -> None:
+    if target_path.is_symlink() or not target_path.is_file():
+        raise ValueError("Upload target already exists but is not a regular file.")
+    try:
+        if target_path.stat().st_size != len(data) or sha256(target_path.read_bytes()).hexdigest() != digest:
+            raise ValueError("Upload target content does not match its content identity.")
+    except OSError as exc:
+        raise ValueError("Upload target could not be verified safely.") from exc
+
+
+def _write_content_addressed_upload(safe_name: str, data: bytes) -> Path:
+    """Store an upload without ever overwriting a same-named source document.
+
+    The content hash is a directory rather than a basename suffix so existing
+    UI/history code can continue to display ``Path(source).name`` unchanged.
+    A fully written temporary file is hard-linked into place, making the final
+    path appear atomically and preventing concurrent workers from replacing an
+    earlier upload. Repeated identical uploads safely reuse the same file.
+    """
+
+    digest = sha256(data).hexdigest()
+    content_dir = ORIGIN_DIR / digest
+    content_dir.mkdir(parents=True, exist_ok=True)
+    if content_dir.is_symlink() or not is_path_under(content_dir, ORIGIN_DIR):
+        raise ValueError("Upload target directory is not safe.")
+    target_path = content_dir / safe_name
+    if target_path.exists() or target_path.is_symlink():
+        _verify_existing_content_addressed_upload(target_path, data, digest)
+        return target_path
+
+    temp_path = content_dir / f".upload-{uuid.uuid4().hex}.tmp"
+    try:
+        with temp_path.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temp_path, target_path)
+        except FileExistsError:
+            _verify_existing_content_addressed_upload(target_path, data, digest)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return target_path
+
+
 def write_uploaded_file(filename: str, content: str) -> Path:
     ensure_workspace_dirs()
     safe_name = sanitize_filename(filename)
-    _assert_upload_size(len(content.encode("utf-8")), label="Text upload")
-    target_path = ORIGIN_DIR / safe_name
-    target_path.write_text(content, encoding="utf-8")
-    return target_path
+    data = content.encode("utf-8")
+    _assert_upload_size(len(data), label="Text upload")
+    return _write_content_addressed_upload(safe_name, data)
 
 
 def write_uploaded_binary_file(filename: str, content_base64: str) -> Path:
     ensure_workspace_dirs()
     safe_name = sanitize_filename(filename)
-    target_path = ORIGIN_DIR / safe_name
-    target_path.write_bytes(_decode_upload_base64(content_base64, label="Document upload"))
-    return target_path
-
-
-def _is_path_under(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
+    data = _decode_upload_base64(content_base64, label="Document upload")
+    return _write_content_addressed_upload(safe_name, data)
 
 
 def _resolve_api_file_path(value: str, *, allowed_roots: tuple[Path, ...], label: str) -> Path:
@@ -245,7 +447,7 @@ def _resolve_api_file_path(value: str, *, allowed_roots: tuple[Path, ...], label
         candidate = (ROOT_DIR / candidate).resolve()
     else:
         candidate = candidate.resolve()
-    if not any(_is_path_under(candidate, root) for root in allowed_roots):
+    if not any(is_path_under(candidate, root) for root in allowed_roots):
         allowed = ", ".join(str(root) for root in allowed_roots)
         raise ValueError(f"{label} must stay under allowed workspace directories: {allowed}")
     if not candidate.exists():
@@ -254,9 +456,22 @@ def _resolve_api_file_path(value: str, *, allowed_roots: tuple[Path, ...], label
 
 
 def normalize_source_path(source_path: str) -> str:
+    """Resolve a source path and assert it lives under ORIGIN_DIR.
+
+    This is the safe variant: unlike the previous implementation it never
+    accepts an arbitrary existing path, which could otherwise let a caller
+    point at files outside the workspace. All callers that previously relied
+    on the exists()-only check now get the same allowlist enforcement as
+    :func:`normalize_api_source_path`.
+    """
+
     candidate = Path(source_path).expanduser()
     if not candidate.is_absolute():
-        candidate = (ROOT_DIR / candidate).resolve()
+        candidate = (ORIGIN_DIR / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    if not is_path_under(candidate, ORIGIN_DIR):
+        raise ValueError("Source file must stay under the origin workspace directory.")
     if not candidate.exists():
         raise ValueError(f"Source file does not exist: {candidate}")
     return str(candidate)
@@ -269,34 +484,7 @@ def normalize_api_source_path(source_path: str) -> str:
 def prune_run_states() -> None:
     cutoff = time.time() - RUN_STATE_TTL_SECONDS
     with RUN_REGISTRY_LOCK:
-        stale_run_ids = [
-            run_id
-            for run_id, state in RUN_STATES.items()
-            if state.completed and state.updated_at < cutoff
-        ]
-        for run_id in stale_run_ids:
-            RUN_STATES.pop(run_id, None)
-        inactive_sources = [
-            source_path
-            for source_path, run_id in ACTIVE_RUNS_BY_SOURCE.items()
-            if run_id not in RUN_STATES
-        ]
-        for source_path in inactive_sources:
-            ACTIVE_RUNS_BY_SOURCE.pop(source_path, None)
-        stale_batch_ids = [
-            run_id
-            for run_id, state in BATCH_RERUN_STATES.items()
-            if state.completed and state.updated_at < cutoff
-        ]
-        for run_id in stale_batch_ids:
-            BATCH_RERUN_STATES.pop(run_id, None)
-        inactive_outputs = [
-            output_path
-            for output_path, run_id in ACTIVE_BATCH_RERUNS_BY_OUTPUT.items()
-            if run_id not in BATCH_RERUN_STATES
-        ]
-        for output_path in inactive_outputs:
-            ACTIVE_BATCH_RERUNS_BY_OUTPUT.pop(output_path, None)
+        RUN_REGISTRY.prune_stale(cutoff)
 
 
 def normalize_output_path(output_path: str) -> str:
@@ -720,7 +908,43 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         raise last_error
 
 
-def register_run(source_path: str) -> tuple[str, ProgressState]:
+def normalize_run_parent_input_binding(
+    expected_previous_compare_revision: str = "",
+    expected_parent_input_binding: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    if expected_parent_input_binding is None:
+        raw_binding: dict[str, Any] = {}
+    elif isinstance(expected_parent_input_binding, dict):
+        raw_binding = expected_parent_input_binding
+    else:
+        raise ValueError("expected parent input binding must be an object.")
+    normalized: dict[str, str] = {}
+    for field, _mismatch_code in PARENT_INPUT_BINDING_FIELDS:
+        raw_value = raw_binding.get(field)
+        if raw_value is None:
+            continue
+        if not isinstance(raw_value, str):
+            raise ValueError(f"expected parent input binding field {field} must be a string.")
+        value = raw_value.strip()
+        if value:
+            normalized[field] = value
+    legacy_compare_revision = str(expected_previous_compare_revision or "").strip()
+    if (
+        legacy_compare_revision
+        and normalized.get("compareRevision")
+        and normalized["compareRevision"] != legacy_compare_revision
+    ):
+        raise ValueError("expectedPreviousCompareRevision conflicts with the parent input binding.")
+    if legacy_compare_revision:
+        normalized["compareRevision"] = legacy_compare_revision
+    return normalized
+
+
+def register_run(
+    source_path: str,
+    expected_previous_compare_revision: str = "",
+    expected_parent_input_binding: dict[str, Any] | None = None,
+) -> tuple[str, ProgressState]:
     prune_run_states()
     normalized_source_path = normalize_source_path(source_path)
     with RUN_REGISTRY_LOCK:
@@ -731,8 +955,16 @@ def register_run(source_path: str) -> tuple[str, ProgressState]:
                 raise ValueError("This document already has a running task. Please wait for it to finish.")
             ACTIVE_RUNS_BY_SOURCE.pop(normalized_source_path, None)
 
+        normalized_binding = normalize_run_parent_input_binding(
+            expected_previous_compare_revision,
+            expected_parent_input_binding,
+        )
         run_id = uuid.uuid4().hex
-        state = ProgressState(source_path=normalized_source_path)
+        state = ProgressState(
+            source_path=normalized_source_path,
+            expected_previous_compare_revision=normalized_binding.get("compareRevision", ""),
+            expected_parent_input_binding=normalized_binding,
+        )
         RUN_STATES[run_id] = state
         ACTIVE_RUNS_BY_SOURCE[normalized_source_path] = run_id
     persist_run_state(run_id)
@@ -753,12 +985,33 @@ def get_active_run_for_source(source_path: str) -> tuple[str, ProgressState] | N
     return None
 
 
-def register_or_reuse_run(source_path: str) -> tuple[str, ProgressState, bool]:
+def register_or_reuse_run(
+    source_path: str,
+    expected_previous_compare_revision: str = "",
+    expected_parent_input_binding: dict[str, Any] | None = None,
+) -> tuple[str, ProgressState, bool]:
+    requested_binding = normalize_run_parent_input_binding(
+        expected_previous_compare_revision,
+        expected_parent_input_binding,
+    )
     active_run = get_active_run_for_source(source_path)
     if active_run is not None:
         run_id, state = active_run
+        active_binding = dict(state.expected_parent_input_binding or {})
+        if not active_binding and state.expected_previous_compare_revision:
+            active_binding["compareRevision"] = state.expected_previous_compare_revision
+        if active_binding != requested_binding:
+            raise StaleRoundInputError(
+                state.expected_previous_compare_revision,
+                ["active_run_parent_binding_mismatch"],
+                "An active run is already bound to a different parent generation.",
+            )
         return run_id, state, True
-    run_id, state = register_run(source_path)
+    run_id, state = register_run(
+        source_path,
+        expected_previous_compare_revision,
+        expected_parent_input_binding=requested_binding,
+    )
     return run_id, state, False
 
 
@@ -927,6 +1180,8 @@ def serialize_run_state(run_id: str, state: ProgressState) -> dict[str, Any]:
         "ok": True,
         "runId": run_id,
         "sourcePath": state.source_path,
+        "expectedPreviousCompareRevision": state.expected_previous_compare_revision,
+        "expectedParentInputBinding": dict(state.expected_parent_input_binding),
         "status": state.status,
         "completed": state.completed,
         "cancelRequested": state.cancel_requested,
@@ -1022,6 +1277,18 @@ def persist_run_state(run_id: str) -> None:
         return
 
 
+def _project_persisted_run_source_path(value: object) -> str:
+    """Project only an existing source file inside the local origin tree."""
+
+    if not isinstance(value, str) or not value.strip() or len(value) > 4096:
+        return ""
+    try:
+        normalized = normalize_api_source_path(value.strip())
+        return normalized if Path(normalized).is_file() else ""
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
 def load_recent_run_summaries(active_run_ids: set[str], limit: int = 8) -> list[dict[str, Any]]:
     ensure_workspace_dirs()
     summaries: list[dict[str, Any]] = []
@@ -1042,7 +1309,7 @@ def load_recent_run_summaries(active_run_ids: set[str], limit: int = 8) -> list[
         run_id = str(state.get("runId", "")).strip()
         if not run_id or run_id in active_run_ids:
             continue
-        summary = dict(state)
+        summary = project_batch_rerun_public_payload(state)
         summary["restoredFromDisk"] = True
         summary["persistedAt"] = payload.get("persistedAt")
         if not bool(summary.get("completed")):
@@ -1051,7 +1318,11 @@ def load_recent_run_summaries(active_run_ids: set[str], limit: int = 8) -> list[
             summary["cancelRequested"] = False
             summary["error"] = summary.get("error") or "Backend restarted before this round finished. Completed chunks were kept on disk; use continue to resume from the checkpoint."
         summary = normalize_run_summary_result(summary)
-        summaries.append(summary)
+        public_summary = project_batch_rerun_public_payload(summary)
+        source_path = _project_persisted_run_source_path(state.get("sourcePath"))
+        if source_path:
+            public_summary["sourcePath"] = source_path
+        summaries.append(public_summary)
     return summaries
 
 
@@ -1065,7 +1336,7 @@ def load_persisted_run_summary(run_id: str) -> dict[str, Any] | None:
         return None
     if str(state.get("runId", "")).strip() != run_id:
         return None
-    summary = dict(state)
+    summary = project_batch_rerun_public_payload(state)
     summary["restoredFromDisk"] = True
     summary["persistedAt"] = payload.get("persistedAt")
     if not bool(summary.get("completed")):
@@ -1073,15 +1344,146 @@ def load_persisted_run_summary(run_id: str) -> dict[str, Any] | None:
         summary["status"] = "interrupted"
         summary["cancelRequested"] = False
         summary["error"] = summary.get("error") or "Backend restarted before this round finished. Completed chunks were kept on disk; use continue to resume from the checkpoint."
-    return normalize_run_summary_result(summary)
+    summary = normalize_run_summary_result(summary)
+    source_path = _project_persisted_run_source_path(state.get("sourcePath"))
+    if source_path:
+        summary["sourcePath"] = source_path
+    return summary
+
+
+PROVIDER_PROGRESS_PHASES = frozenset({"provider-stream", "provider-retry-wait"})
+PROVIDER_RETRY_ERROR_CATEGORIES = frozenset({
+    "auth",
+    "endpoint",
+    "network",
+    "provider",
+    "rate_limit",
+    "response_limit",
+    "response_parse",
+    "server",
+    "timeout",
+    "unknown",
+})
+
+
+def _provider_progress_int(value: Any, *, minimum: int = 0, maximum: int | None = None) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if isinstance(value, float) and (not math.isfinite(value) or value != number):
+        return None
+    if isinstance(value, str) and str(number) != value.strip():
+        return None
+    if number < minimum or (maximum is not None and number > maximum):
+        return None
+    return number
+
+
+def _provider_progress_number(value: Any, *, minimum: float = 0.0) -> int | float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < minimum:
+        return None
+    return int(number) if number.is_integer() else round(number, 3)
+
+
+def _copy_provider_progress_int(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    key: str,
+    *,
+    minimum: int = 0,
+    maximum: int | None = None,
+) -> None:
+    if key not in source:
+        return
+    value = _provider_progress_int(source.get(key), minimum=minimum, maximum=maximum)
+    if value is not None:
+        target[key] = value
+
+
+def _copy_provider_progress_number(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    key: str,
+) -> None:
+    if key not in source:
+        return
+    value = _provider_progress_number(source.get(key))
+    if value is not None:
+        target[key] = value
+
+
+def project_provider_progress_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Keep provider transport progress metadata-only at its final public sink.
+
+    The model transport already emits a safe schema, but this is the last
+    boundary shared by in-memory state, recovery snapshots, status JSON and
+    browser SSE.  Re-projecting here prevents a future or accidental caller
+    from persisting partial output, reasoning, provider bodies, or endpoints.
+    Ordinary lifecycle events deliberately bypass this projection so their
+    existing chunk failure/review evidence remains available to the UI.
+    """
+
+    raw_phase = event.get("phase")
+    phase = raw_phase if isinstance(raw_phase, str) else ""
+    if phase not in PROVIDER_PROGRESS_PHASES:
+        return event
+
+    projected: dict[str, Any] = {
+        "phase": phase,
+        # These values describe this sink's projection, rather than trusting
+        # similarly named assertions supplied by an upstream caller.
+        "reasoningSuppressed": True,
+        "providerContentStored": False,
+    }
+    _copy_provider_progress_int(projected, event, "round")
+    chunk_id = event.get("chunkId")
+    if isinstance(chunk_id, str) and chunk_id:
+        projected["chunkId"] = chunk_id[:256]
+    for key in ("concurrency", "configuredConcurrency"):
+        _copy_provider_progress_int(projected, event, key, minimum=1, maximum=MAX_REWRITE_CONCURRENCY)
+
+    if phase == "provider-stream":
+        _copy_provider_progress_int(projected, event, "streamEventCount")
+        stream_done = event.get("streamDone") is True
+        projected["streamDone"] = stream_done
+        if stream_done:
+            _copy_provider_progress_int(projected, event, "finalTextChars")
+        return projected
+
+    raw_category = event.get("errorCategory")
+    category = str(raw_category or "provider").strip().lower() if isinstance(raw_category, str) else "provider"
+    if category not in PROVIDER_RETRY_ERROR_CATEGORIES:
+        category = "provider"
+    projected["errorCategory"] = category
+    status_code = _provider_progress_int(event.get("statusCode"), minimum=100, maximum=599)
+    if status_code is not None:
+        projected["statusCode"] = status_code
+    projected["error"] = public_provider_error_message(category=category, status_code=status_code)
+    if isinstance(event.get("retryable"), bool):
+        projected["retryable"] = event["retryable"]
+    for key in ("attempt", "attempts", "maxAttempts", "nextAttempt"):
+        _copy_provider_progress_int(projected, event, key)
+    for key in ("retryDelaySeconds", "retryAfterSeconds", "cooldownSeconds"):
+        _copy_provider_progress_number(projected, event, key)
+    return projected
 
 
 def append_progress_event(run_id: str, event: dict[str, Any]) -> None:
     state = RUN_STATES.get(run_id)
     if not state:
         return
+    safe_event = project_provider_progress_event(event)
     with state.condition:
-        state.events.append(event)
+        state.events.append(safe_event)
         state.updated_at = time.time()
         state.condition.notify_all()
     persist_run_state(run_id)
@@ -1170,7 +1572,7 @@ def release_active_batch_rerun(run_id: str) -> None:
 
 
 def serialize_batch_rerun_state(run_id: str, state: BatchRerunState) -> dict[str, Any]:
-    return {
+    return project_batch_rerun_public_payload({
         "ok": True,
         "runId": run_id,
         "outputPath": state.output_path,
@@ -1184,6 +1586,7 @@ def serialize_batch_rerun_state(run_id: str, state: BatchRerunState) -> dict[str
         "currentIndex": state.current_index,
         "currentChunkId": state.current_chunk_id,
         "successChunkIds": state.success_chunk_ids,
+        "preservedAttempts": state.preserved_attempts,
         "failures": state.failures,
         "eventCount": len(state.events),
         "lastEvent": state.events[-1] if state.events else None,
@@ -1191,7 +1594,7 @@ def serialize_batch_rerun_state(run_id: str, state: BatchRerunState) -> dict[str
         "error": state.error,
         "createdAt": datetime.fromtimestamp(state.created_at, timezone.utc).isoformat().replace("+00:00", "Z"),
         "updatedAt": datetime.fromtimestamp(state.updated_at, timezone.utc).isoformat().replace("+00:00", "Z"),
-    }
+    })
 
 
 def find_compare_chunk(compare_payload: Any, chunk_id: str) -> dict[str, Any] | None:
@@ -1211,20 +1614,9 @@ def normalize_failed_attempts_for_failure(value: Any) -> list[dict[str, Any]]:
         return []
     attempts: list[dict[str, Any]] = []
     for attempt in value[-4:]:
-        if not isinstance(attempt, dict):
-            continue
-        output_text = str(attempt.get("outputText", "") or "")
-        if not output_text.strip():
-            continue
-        attempts.append(
-            {
-                "attempt": attempt.get("attempt"),
-                "outputText": output_text,
-                "outputCharCount": attempt.get("outputCharCount", len(output_text)),
-                "truncated": bool(attempt.get("truncated")),
-                "error": str(attempt.get("error", "") or ""),
-            }
-        )
+        normalized = _normalize_failed_attempt_evidence(attempt)
+        if normalized is not None:
+            attempts.append(dict(normalized))
     return attempts
 
 
@@ -1233,6 +1625,120 @@ def get_chunk_failed_attempts(chunk: dict[str, Any] | None) -> list[dict[str, An
         return []
     failed_attempts = normalize_failed_attempts_for_failure(chunk.get("failedAttempts"))
     return failed_attempts or normalize_failed_attempts_for_failure(chunk.get("rejectedCandidates"))
+
+
+def project_preserved_candidate_selection_attempt(value: Any) -> dict[str, Any] | None:
+    """Keep only text-free v2 selection attempts for soft-noop UI feedback."""
+
+    projected = _public_candidate_selection_event(value)
+    if not isinstance(projected, dict):
+        return None
+    if (
+        projected.get("event") != "candidate-selection"
+        or projected.get("schema") != "fyadr.chunk-candidate-selection"
+        or projected.get("schemaVersion") != 2
+    ):
+        return None
+    return projected
+
+
+_BATCH_FAILURE_MESSAGES = {
+    "structure": "候选未通过结构与格式保护校验；失败正文和原始错误已隐藏。",
+    "factual": "候选未通过事实关系保护校验；失败正文和原始错误已隐藏。",
+    "readability": "候选出现学术可读性回退；失败正文和原始错误已隐藏。",
+    "style": "候选未通过写作结构启发式校验；失败正文和原始错误已隐藏。",
+    "provider": "模型服务调用失败；上游响应、思考内容和原始错误已隐藏。",
+    "local_validation": "候选未通过本地安全校验；失败正文和原始错误已隐藏。",
+}
+
+
+def _batch_failure_reason(
+    error: object,
+    *,
+    guard_category: object = None,
+    issue_codes: object = None,
+) -> tuple[str, list[str], str]:
+    category, codes = _classify_failed_attempt_diagnostic(
+        error,
+        guard_category=guard_category,
+        issue_codes=issue_codes,
+    )
+    return category, codes, _BATCH_FAILURE_MESSAGES.get(
+        category,
+        _BATCH_FAILURE_MESSAGES["local_validation"],
+    )
+
+
+def _safe_batch_code(value: object, *, fallback: str = "") -> str:
+    normalized = str(value or "").strip()
+    return normalized if re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", normalized) else fallback
+
+
+def _project_batch_quality(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    if isinstance(value.get("needsReview"), bool):
+        result["needsReview"] = value.get("needsReview")
+    for key in ("flags", "advisoryFlags"):
+        raw_codes = value.get(key)
+        if isinstance(raw_codes, list):
+            result[key] = [
+                code
+                for code in (_safe_batch_code(item) for item in raw_codes[:24])
+                if code
+            ]
+    return result or None
+
+
+def project_batch_rerun_failure(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    failed_attempts = normalize_failed_attempts_for_failure(value.get("failedAttempts"))
+    latest_attempt = failed_attempts[-1] if failed_attempts else {}
+    category, issue_codes, message = _batch_failure_reason(
+        value.get("error", ""),
+        guard_category=(
+            value.get("guardCategory")
+            or latest_attempt.get("guardCategory")
+            or value.get("rerunFallbackGuardCategory")
+        ),
+        issue_codes=(
+            value.get("issueCodes")
+            or latest_attempt.get("issueCodes")
+            or value.get("rerunFallbackIssueCodes")
+        ),
+    )
+    result: dict[str, Any] = {
+        "chunkId": _safe_batch_code(value.get("chunkId")),
+        "error": message,
+        "guardCategory": category,
+        "issueCodes": issue_codes,
+        "errorStored": False,
+        "reasoningSuppressed": True,
+        "providerContentStored": False,
+    }
+    if failed_attempts:
+        result["failedAttempts"] = failed_attempts
+    for key in ("rerunStatus", "rerunFallbackMode", "scopeKey"):
+        code = _safe_batch_code(value.get(key))
+        if code:
+            result[key] = code
+    fallback_category = value.get("rerunFallbackGuardCategory")
+    fallback_codes = value.get("rerunFallbackIssueCodes")
+    if fallback_category or fallback_codes:
+        normalized_category, normalized_codes, _ = _batch_failure_reason(
+            "",
+            guard_category=fallback_category,
+            issue_codes=fallback_codes,
+        )
+        result["rerunFallbackGuardCategory"] = normalized_category
+        result["rerunFallbackIssueCodes"] = normalized_codes
+        result["rerunFallbackErrorStored"] = False
+    quality = _project_batch_quality(value.get("quality"))
+    if quality is not None:
+        result["quality"] = quality
+    return result
 
 
 def build_batch_rerun_failure(
@@ -1262,16 +1768,266 @@ def build_batch_rerun_failure(
             failure["rerunStatus"] = chunk.get("rerunStatus")
         if chunk.get("rerunFallbackMode"):
             failure["rerunFallbackMode"] = chunk.get("rerunFallbackMode")
-        if chunk.get("rerunFallbackError"):
-            failure["rerunFallbackError"] = chunk.get("rerunFallbackError")
+        if chunk.get("rerunFallbackGuardCategory"):
+            failure["rerunFallbackGuardCategory"] = chunk.get("rerunFallbackGuardCategory")
+        if isinstance(chunk.get("rerunFallbackIssueCodes"), list):
+            failure["rerunFallbackIssueCodes"] = chunk.get("rerunFallbackIssueCodes")
         quality = chunk.get("quality")
         if isinstance(quality, dict):
             failure["quality"] = {
                 key: quality.get(key)
-                for key in ("needsReview", "flags", "advisoryFlags", "reviewReasons", "rewriteAdvice")
+                for key in ("needsReview", "flags", "advisoryFlags")
                 if key in quality
             }
-    return failure, compare_payload
+    projected_failure = project_batch_rerun_failure(failure)
+    return projected_failure or {
+        "chunkId": _safe_batch_code(chunk_id),
+        "error": _BATCH_FAILURE_MESSAGES["local_validation"],
+        "guardCategory": "local_validation",
+        "issueCodes": ["validation_rejected_unspecified"],
+        "errorStored": False,
+        "reasoningSuppressed": True,
+        "providerContentStored": False,
+    }, compare_payload
+
+
+def _project_preserved_attempts(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    projected: list[dict[str, Any]] = []
+    for item in value[:256]:
+        if not isinstance(item, dict):
+            continue
+        attempt = project_preserved_candidate_selection_attempt(
+            item.get("candidateSelectionAttempt")
+        )
+        chunk_id = _safe_batch_code(item.get("chunkId"))
+        if attempt is not None and chunk_id:
+            projected.append(
+                {
+                    "chunkId": chunk_id,
+                    "candidateSelectionAttempt": attempt,
+                }
+            )
+    return projected
+
+
+def project_batch_rerun_event(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"phase": "unknown", "payloadStored": False}
+    provider_projected = project_provider_progress_event(value)
+    raw = provider_projected if isinstance(provider_projected, dict) else {}
+    if str(raw.get("phase", "") or "") in PROVIDER_PROGRESS_PHASES:
+        return raw
+    phase = _safe_batch_code(raw.get("phase"), fallback="unknown")
+    result: dict[str, Any] = {"phase": phase}
+    event_code = _safe_batch_code(raw.get("code"))
+    if event_code:
+        result["code"] = event_code
+    raw_mismatch_codes = raw.get("mismatchCodes")
+    if isinstance(raw_mismatch_codes, list):
+        result["mismatchCodes"] = [
+            code
+            for code in (_safe_batch_code(item) for item in raw_mismatch_codes[:24])
+            if code
+        ]
+    chunk_id = _safe_batch_code(raw.get("chunkId"))
+    if chunk_id:
+        result["chunkId"] = chunk_id
+    for key in (
+        "index",
+        "total",
+        "completed",
+        "success",
+        "failure",
+        "attempts",
+        "streamEventCount",
+        "finalTextChars",
+        "concurrency",
+        "configuredConcurrency",
+    ):
+        raw_number = raw.get(key)
+        if isinstance(raw_number, int) and not isinstance(raw_number, bool) and 0 <= raw_number <= 2_000_000_000:
+            result[key] = raw_number
+    for key in ("streamDone", "retryable", "reasoningSuppressed", "providerContentStored"):
+        if isinstance(raw.get(key), bool):
+            result[key] = raw.get(key)
+    for key in ("statusCode", "nextAttempt", "maxAttempts"):
+        raw_number = raw.get(key)
+        if isinstance(raw_number, int) and not isinstance(raw_number, bool) and 0 <= raw_number <= 100_000:
+            result[key] = raw_number
+    if raw.get("error") not in (None, ""):
+        category, issue_codes, message = _batch_failure_reason(
+            raw.get("error"),
+            guard_category=raw.get("guardCategory") or raw.get("errorCategory"),
+            issue_codes=raw.get("issueCodes"),
+        )
+        result.update(
+            {
+                "error": message,
+                "guardCategory": category,
+                "issueCodes": issue_codes,
+                "errorStored": False,
+                "reasoningSuppressed": True,
+                "providerContentStored": False,
+            }
+        )
+    failed_attempts = normalize_failed_attempts_for_failure(raw.get("failedAttempts"))
+    if failed_attempts:
+        result["failedAttempts"] = failed_attempts
+    if phase == "unknown":
+        result["payloadStored"] = False
+    return result
+
+
+def _project_batch_rerun_result(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    if isinstance(value.get("ok"), bool):
+        result["ok"] = value.get("ok")
+    run_id = _safe_batch_code(value.get("runId"))
+    if run_id:
+        result["runId"] = run_id
+    for key in ("outputPath", "comparePath"):
+        if isinstance(value.get(key), str):
+            result[key] = value.get(key)
+    compare = value.get("compare")
+    if isinstance(compare, dict):
+        result["compare"] = _normalize_compare_failed_attempts(copy.deepcopy(compare))
+    result["successChunkIds"] = [
+        chunk_id
+        for chunk_id in (_safe_batch_code(item) for item in (value.get("successChunkIds") or [])[:10_000])
+        if chunk_id
+    ] if isinstance(value.get("successChunkIds"), list) else []
+    result["preservedAttempts"] = _project_preserved_attempts(value.get("preservedAttempts"))
+    for key in ("totalCount", "completedCount", "successCount", "failureCount"):
+        raw_number = value.get(key)
+        if isinstance(raw_number, int) and not isinstance(raw_number, bool) and 0 <= raw_number <= 10_000_000:
+            result[key] = raw_number
+    if isinstance(value.get("canceled"), bool):
+        result["canceled"] = value.get("canceled")
+    raw_failures = value.get("failures")
+    result["failures"] = [
+        failure
+        for failure in (
+            project_batch_rerun_failure(item)
+            for item in (raw_failures[:10_000] if isinstance(raw_failures, list) else [])
+        )
+        if failure is not None
+    ]
+
+    # RateAudit strategy tasks intentionally reuse the BatchRerun status
+    # protocol.  Keep their safe, structured completion evidence instead of
+    # dropping it at the final privacy boundary.  The recursive projector
+    # removes excerpts, body/prompt/error/provider fields and reasoning-like
+    # payloads before the result can reach an API response or task snapshot.
+    raw_post_audit = value.get("postAudit")
+    if isinstance(raw_post_audit, dict):
+        projected_post_audit = _sanitize_public_diagnostic_value(
+            copy.deepcopy(raw_post_audit)
+        )
+        if isinstance(projected_post_audit, dict):
+            result["postAudit"] = projected_post_audit
+    raw_strategy_binding = value.get("strategyBinding")
+    if isinstance(raw_strategy_binding, dict):
+        projected_binding = _sanitize_public_diagnostic_value(
+            copy.deepcopy(raw_strategy_binding)
+        )
+        if isinstance(projected_binding, dict):
+            result["strategyBinding"] = projected_binding
+    for key in (
+        "strategyDecision",
+        "resultingStrategyDecision",
+        "plateauReason",
+        "compareRevisionBefore",
+        "compareRevisionAfter",
+    ):
+        code = _safe_batch_code(value.get(key))
+        if code:
+            result[key] = code
+    for key in (
+        "manualReviewRequired",
+        "manualReviewStillRequired",
+        "plateauReached",
+    ):
+        if isinstance(value.get(key), bool):
+            result[key] = value.get(key)
+    raw_manual_dimensions = value.get("blockingManualDimensions")
+    if isinstance(raw_manual_dimensions, list):
+        projected_dimensions = _sanitize_public_diagnostic_value(
+            copy.deepcopy(raw_manual_dimensions[:64])
+        )
+        if isinstance(projected_dimensions, list):
+            result["blockingManualDimensions"] = projected_dimensions
+    return result
+
+
+def project_batch_rerun_public_payload(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"ok": False, "status": "invalid", "completed": True}
+    result: dict[str, Any] = {}
+    if isinstance(value.get("ok"), bool):
+        result["ok"] = value.get("ok")
+    run_id = _safe_batch_code(value.get("runId"))
+    if run_id:
+        result["runId"] = run_id
+    if isinstance(value.get("outputPath"), str):
+        result["outputPath"] = value.get("outputPath")
+    result["status"] = _safe_batch_code(value.get("status"), fallback="unknown")
+    for key in ("completed", "cancelRequested", "restoredFromDisk"):
+        if isinstance(value.get(key), bool):
+            result[key] = value.get(key)
+    for key in (
+        "totalCount",
+        "completedCount",
+        "successCount",
+        "failureCount",
+        "currentIndex",
+        "eventCount",
+    ):
+        raw_number = value.get(key)
+        if isinstance(raw_number, int) and not isinstance(raw_number, bool) and 0 <= raw_number <= 10_000_000:
+            result[key] = raw_number
+    current_chunk_id = _safe_batch_code(value.get("currentChunkId"))
+    result["currentChunkId"] = current_chunk_id
+    result["successChunkIds"] = [
+        chunk_id
+        for chunk_id in (_safe_batch_code(item) for item in (value.get("successChunkIds") or [])[:10_000])
+        if chunk_id
+    ] if isinstance(value.get("successChunkIds"), list) else []
+    result["preservedAttempts"] = _project_preserved_attempts(value.get("preservedAttempts"))
+    raw_failures = value.get("failures")
+    result["failures"] = [
+        failure
+        for failure in (
+            project_batch_rerun_failure(item)
+            for item in (raw_failures[:10_000] if isinstance(raw_failures, list) else [])
+        )
+        if failure is not None
+    ]
+    last_event = value.get("lastEvent")
+    result["lastEvent"] = project_batch_rerun_event(last_event) if isinstance(last_event, dict) else None
+    result["result"] = _project_batch_rerun_result(value.get("result"))
+    if value.get("error") not in (None, ""):
+        category, issue_codes, message = _batch_failure_reason(value.get("error"))
+        result.update(
+            {
+                "error": message,
+                "guardCategory": category,
+                "issueCodes": issue_codes,
+                "errorStored": False,
+                "reasoningSuppressed": True,
+                "providerContentStored": False,
+            }
+        )
+    else:
+        result["error"] = None
+    for key in ("createdAt", "updatedAt", "persistedAt"):
+        raw_text = value.get(key)
+        if isinstance(raw_text, str):
+            result[key] = raw_text[:96]
+    return result
 
 
 def persist_batch_rerun_state(run_id: str) -> None:
@@ -1345,7 +2101,7 @@ def load_persisted_batch_rerun_summary(run_id: str) -> dict[str, Any] | None:
         summary["status"] = "interrupted"
         summary["cancelRequested"] = False
         summary["error"] = summary.get("error") or "Backend restarted before this batch rerun finished. Completed chunks were already written to disk."
-    return summary
+    return project_batch_rerun_public_payload(summary)
 
 
 def normalize_task_summary_item(summary: dict[str, Any], *, task_type: str, task_group: str) -> dict[str, Any]:
@@ -1396,8 +2152,9 @@ def append_batch_rerun_event(run_id: str, event: dict[str, Any]) -> None:
     state = BATCH_RERUN_STATES.get(run_id)
     if not state:
         return
+    safe_event = project_batch_rerun_event(event)
     with state.condition:
-        state.events.append(event)
+        state.events.append(safe_event)
         state.updated_at = time.time()
         state.condition.notify_all()
     persist_batch_rerun_state(run_id)
@@ -1408,8 +2165,12 @@ def finalize_batch_rerun(run_id: str, *, result: dict[str, Any] | None = None, e
     if not state:
         return
     with state.condition:
-        state.result = result
-        state.error = error
+        state.result = _project_batch_rerun_result(result)
+        state.error = (
+            _batch_failure_reason(error)[2]
+            if error
+            else None
+        )
         if error:
             state.status = "canceled" if state.cancel_requested else "failed"
         elif result and result.get("canceled"):
@@ -1439,20 +2200,57 @@ def merge_model_config_for_run(incoming: dict[str, Any]) -> dict[str, Any]:
     return hydrate_app_config_secrets(merged)
 
 
-def summarize_workspace_path(path: Path, *, label: str, kind: str) -> dict[str, Any]:
+# Directories that are never relevant to the user's workspace data but can hold
+# enormous file trees (git metadata, python venv, node modules, build output).
+# Skipping them keeps /api/health fast instead of stat-ing tens of thousands of files.
+WORKSPACE_STAT_SKIP_DIRS: tuple[str, ...] = (
+    ".git",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "dist",
+    "__pycache__",
+    ".cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".idea",
+    ".vscode",
+)
+
+
+def summarize_workspace_path(path: Path, *, label: str, kind: str, include_stats: bool = True) -> dict[str, Any]:
     exists = path.exists()
     file_count = 0
     size_bytes = 0
-    if exists:
+    if exists and include_stats:
         try:
             if path.is_file():
                 file_count = 1
                 size_bytes = path.stat().st_size
             else:
-                for child in path.rglob("*"):
-                    if child.is_file():
-                        file_count += 1
-                        size_bytes += child.stat().st_size
+                # Walk the tree manually so we can prune heavy, data-irrelevant
+                # subtrees instead of rglob-ing every file under them.
+                stack: list[Path] = [path]
+                while stack:
+                    current = stack.pop()
+                    try:
+                        for child in current.iterdir():
+                            name = child.name
+                            if child.is_dir():
+                                if name in WORKSPACE_STAT_SKIP_DIRS:
+                                    continue
+                                stack.append(child)
+                                continue
+                            if child.is_file():
+                                try:
+                                    size_bytes += child.stat().st_size
+                                except OSError:
+                                    pass
+                                file_count += 1
+                    except OSError:
+                        pass
         except OSError:
             pass
     writable_target = path if path.is_dir() else path.parent
@@ -1542,9 +2340,13 @@ def build_environment_diagnostics() -> dict[str, Any]:
         else "SQLite history index has not been created yet."
     )
     path_summaries = [
-        summarize_workspace_path(ROOT_DIR, label="项目根目录", kind="workspace"),
+        # ROOT_DIR is the whole repo — walking it on every health check is the
+        # single biggest public-latency cost. Skip the file/byte walk here; the
+        # diagnostic badge only needs exists/writable (O(1) stat). Same for the
+        # large intermediate tree. Smaller data dirs keep their counts.
+        summarize_workspace_path(ROOT_DIR, label="项目根目录", kind="workspace", include_stats=False),
         summarize_workspace_path(ORIGIN_DIR, label="源文档目录", kind="origin"),
-        summarize_workspace_path(ROOT_DIR / "finish" / "intermediate", label="中间产物目录", kind="intermediate"),
+        summarize_workspace_path(ROOT_DIR / "finish" / "intermediate", label="中间产物目录", kind="intermediate", include_stats=False),
         summarize_workspace_path(EXPORT_DIR, label="项目导出目录", kind="exports"),
         summarize_workspace_path(config_path, label="本地配置文件", kind="config"),
     ]
@@ -1662,7 +2464,13 @@ def parse_prompt_sequence_value(value: Any) -> list[str] | None:
     return None
 
 
-def run_round_async(run_id: str, source_path: str, model_config: dict[str, Any]) -> None:
+def run_round_async(
+    run_id: str,
+    source_path: str,
+    model_config: dict[str, Any],
+    expected_previous_compare_revision: str = "",
+    expected_parent_input_binding: dict[str, str] | None = None,
+) -> None:
     def is_cancelled() -> bool:
         state = RUN_STATES.get(run_id)
         return bool(state and state.cancel_requested)
@@ -1673,6 +2481,8 @@ def run_round_async(run_id: str, source_path: str, model_config: dict[str, Any])
             model_config,
             progress_callback=lambda event: append_progress_event(run_id, event),
             cancel_check=is_cancelled,
+            expected_previous_compare_revision=expected_previous_compare_revision,
+            expected_parent_input_binding=expected_parent_input_binding,
         )
         finalize_progress(run_id, result=result)
     except Exception as exc:
@@ -1683,6 +2493,8 @@ def batch_rerun_async(run_id: str, output_path: str, targets: list[dict[str, str
     current_output_path = output_path
     compare_path = ""
     latest_compare: dict[str, Any] | None = None
+    output_lock = get_output_rerun_lock(current_output_path)
+    output_lock.acquire()
     try:
         for index, target in enumerate(targets, start=1):
             state = BATCH_RERUN_STATES.get(run_id)
@@ -1718,17 +2530,36 @@ def batch_rerun_async(run_id: str, output_path: str, targets: list[dict[str, str
                 current_output_path = str(result.get("outputPath", current_output_path) or current_output_path)
                 compare_path = str(result.get("comparePath", compare_path) or compare_path)
                 latest_compare = result.get("compare") if isinstance(result.get("compare"), dict) else latest_compare
+                preserved_attempt = (
+                    project_preserved_candidate_selection_attempt(
+                        result.get("candidateSelectionAttempt")
+                    )
+                    if result.get("preservedExisting") is True
+                    else None
+                )
                 with state.condition:
                     state.completed_count += 1
                     state.success_count += 1
                     if chunk_id not in state.success_chunk_ids:
                         state.success_chunk_ids.append(chunk_id)
+                    if preserved_attempt is not None:
+                        state.preserved_attempts = [
+                            item
+                            for item in state.preserved_attempts
+                            if str(item.get("chunkId", "") or "") != chunk_id
+                        ]
+                        state.preserved_attempts.append(
+                            {
+                                "chunkId": chunk_id,
+                                "candidateSelectionAttempt": preserved_attempt,
+                            }
+                        )
                     state.updated_at = time.time()
                     state.condition.notify_all()
                 append_batch_rerun_event(
                     run_id,
                     {
-                        "phase": "chunk-complete",
+                        "phase": "chunk-preserved" if preserved_attempt is not None else "chunk-complete",
                         "index": index,
                         "total": len(targets),
                         "chunkId": chunk_id,
@@ -1751,7 +2582,10 @@ def batch_rerun_async(run_id: str, output_path: str, targets: list[dict[str, str
                         "index": index,
                         "total": len(targets),
                         "chunkId": chunk_id,
-                        "error": str(exc),
+                        "error": failure.get("error", _BATCH_FAILURE_MESSAGES["local_validation"]),
+                        "guardCategory": failure.get("guardCategory", "local_validation"),
+                        "issueCodes": failure.get("issueCodes", ["validation_rejected_unspecified"]),
+                        "errorStored": False,
                         "failedAttempts": failure.get("failedAttempts", []),
                     },
                 )
@@ -1772,6 +2606,7 @@ def batch_rerun_async(run_id: str, output_path: str, targets: list[dict[str, str
             "comparePath": compare_path,
             "compare": latest_compare,
             "successChunkIds": state.success_chunk_ids,
+            "preservedAttempts": state.preserved_attempts,
             "totalCount": state.total_count,
             "completedCount": state.completed_count,
             "successCount": state.success_count,
@@ -1792,6 +2627,98 @@ def batch_rerun_async(run_id: str, output_path: str, targets: list[dict[str, str
         finalize_batch_rerun(run_id, result=result_payload)
     except Exception as exc:
         finalize_batch_rerun(run_id, error=str(exc))
+    finally:
+        output_lock.release()
+
+
+def rate_audit_strategy_async(
+    run_id: str,
+    request_payload: dict[str, Any],
+    model_config: dict[str, Any],
+) -> None:
+    """Run a bound RateAudit plan while preserving BatchRerun status shape."""
+
+    def is_cancelled() -> bool:
+        state = BATCH_RERUN_STATES.get(run_id)
+        return bool(state and state.cancel_requested)
+
+    def on_progress(event: dict[str, Any]) -> None:
+        state = BATCH_RERUN_STATES.get(run_id)
+        if state is None:
+            return
+        phase = str(event.get("phase", "") or "")
+        chunk_id = str(event.get("chunkId", "") or "")
+        with state.condition:
+            state.status = "running"
+            state.current_index = int(event.get("index", state.current_index) or state.current_index)
+            state.current_chunk_id = chunk_id
+            if phase == "chunk-complete":
+                state.completed_count += 1
+                state.success_count += 1
+                if chunk_id and chunk_id not in state.success_chunk_ids:
+                    state.success_chunk_ids.append(chunk_id)
+            elif phase == "chunk-failed":
+                state.completed_count += 1
+                state.failure_count += 1
+                projected_failure = project_batch_rerun_failure(
+                    {
+                        "chunkId": chunk_id,
+                        "error": event.get("error", ""),
+                        "guardCategory": event.get("guardCategory") or event.get("errorCategory"),
+                        "issueCodes": event.get("issueCodes"),
+                        "failedAttempts": event.get("failedAttempts"),
+                    }
+                )
+                if projected_failure is not None:
+                    state.failures.append(projected_failure)
+            state.updated_at = time.time()
+            state.condition.notify_all()
+        append_batch_rerun_event(run_id, event)
+
+    try:
+        result = execute_rate_audit_strategy(
+            request_payload,
+            model_config,
+            progress_callback=on_progress,
+            cancel_check=is_cancelled,
+        )
+        result["runId"] = run_id
+        state = BATCH_RERUN_STATES.get(run_id)
+        if state is not None:
+            # Use the executor's authoritative final lists. The progress fields
+            # remain useful during polling but cannot drift from the result.
+            with state.condition:
+                state.completed_count = int(result.get("completedCount", state.completed_count) or 0)
+                state.success_count = int(result.get("successCount", state.success_count) or 0)
+                state.failure_count = int(result.get("failureCount", state.failure_count) or 0)
+                state.success_chunk_ids = list(result.get("successChunkIds", []) or [])
+                state.failures = list(result.get("failures", []) or [])
+                state.updated_at = time.time()
+                state.condition.notify_all()
+        append_batch_rerun_event(
+            run_id,
+            {
+                "phase": "batch-canceled" if result.get("canceled") else "batch-complete",
+                "total": result.get("totalCount", 0),
+                "completed": result.get("completedCount", 0),
+                "success": result.get("successCount", 0),
+                "failure": result.get("failureCount", 0),
+                "strategy": "rate-audit",
+            },
+        )
+        finalize_batch_rerun(run_id, result=result)
+    except StaleRateAuditStrategyPlanError as exc:
+        append_batch_rerun_event(
+            run_id,
+            {
+                "phase": "strategy-stale",
+                "code": "stale_strategy_plan",
+                "mismatchCodes": exc.mismatch_codes,
+            },
+        )
+        finalize_batch_rerun(run_id, error=str(exc))
+    except Exception as exc:
+        finalize_batch_rerun(run_id, error=str(exc))
 
 
 def require_query_value(key: str) -> str:
@@ -1808,6 +2735,27 @@ def optional_int_query_value(key: str) -> int | None:
     return int(raw_value)
 
 
+def bounded_int_query_value(key: str, *, minimum: int, maximum: int, default: int | None = None) -> int | None:
+    """Parse an integer query param, clamping it to [minimum, maximum].
+
+    A missing/empty value returns ``default``. An out-of-range or non-integer
+    value also falls back to ``default`` so a hostile or malformed request can
+    never force an unbounded response payload.
+    """
+    raw_value = request.args.get(key, "").strip()
+    if not raw_value:
+        return default
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum:
+        return minimum
+    if parsed > maximum:
+        return maximum
+    return parsed
+
+
 @app.route("/api/<path:_path>", methods=["OPTIONS"])
 @app.route("/api", methods=["OPTIONS"])
 def options_api(_path: str | None = None) -> Response:
@@ -1818,10 +2766,8 @@ def options_api(_path: str | None = None) -> Response:
 def add_cors_headers(response: Response) -> Response:
     origin = request.headers.get("Origin", "").strip()
     allowed_origins = {
-        "http://127.0.0.1:1420",
-        "http://localhost:1420",
-        "http://127.0.0.1:8765",
-        "http://localhost:8765",
+        *_local_origin(FRONTEND_DEV_PORT),
+        *_local_origin(WEB_PORT),
         *{
             item.strip()
             for item in os.getenv("FYADR_ALLOWED_ORIGINS", "").split(",")
@@ -1835,16 +2781,32 @@ def add_cors_headers(response: Response) -> Response:
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
     response.headers["Access-Control-Expose-Headers"] = (
         "Content-Disposition, X-Export-Path, X-Export-Format, X-Export-Layout-Mode, "
+        "X-Export-Evidence-Version, X-Export-Overall-Status, X-Export-Source-Kind, "
+        "X-Export-Content-Contract-Status, X-Export-Format-Lock-Status, X-Export-Checks-Performed, "
+        "X-Export-Attempt-Id, X-Export-Artifact-Sha256, X-Export-Evidence-Manifest-Path, "
+        "X-Export-Output-Path, X-Export-Doc-Id, X-Export-Round, X-Export-Compare-Revision, "
+        "X-Export-Content-Revision, X-Export-Artifact-Snapshot-Digest, "
         "X-Export-Paragraph-Source, X-Export-Format-Mode, X-Export-Format-Scope, "
         "X-Export-Content-Locked-Style-Count, X-Export-Table-Style-Count, X-Export-Table-Border-Count, "
         "X-Export-Validation-Path, X-Export-Audit-Path, X-Export-Audit-Issue-Count, "
         "X-Export-Ooxml-Audit-Path, X-Export-Ooxml-Audit-Issue-Count, "
+        "X-Export-Format-Lock-Path, X-Export-Format-Lock-Issue-Count, X-Export-Format-Lock-Editable-Checked, "
+        "X-Export-Content-Contract-Path, X-Export-Content-Contract-Ready, X-Export-Content-Contract-Issue-Count, "
+        "X-Export-Editable-Unit-Count, X-Export-Protected-Unit-Count, X-Export-Protected-Heading-Count, "
+        "X-Export-Editable-Heading-Count, X-Export-Model-Input-Scope-Match, "
         "X-Export-Preflight-Path, X-Export-Preflight-Issue-Count, X-Export-Preflight-Warning-Count, "
         "X-Export-Guard-Path, X-Export-Guard-Issue-Count, X-Export-Guard-Warning-Count, "
         "X-Export-Guard-Issue-Samples, X-Export-Audit-Issue-Samples, "
         "X-Export-Ooxml-Audit-Issue-Samples, X-Export-Preflight-Issue-Samples"
     )
-    response.headers["Cache-Control"] = "no-cache"
+    # API payloads can contain document/task metadata and must never be stored
+    # by shared caches.  Static responses set their own policy in the frontend
+    # serving helpers below; do not overwrite immutable hashed-asset caching.
+    if request.path == "/api" or request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    elif "Cache-Control" not in response.headers:
+        response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 
@@ -1868,10 +2830,8 @@ def get_prompts() -> tuple[Response, int] | Response:
                 "workflows": list_prompt_workflows(),
             }
         )
-    except ValueError as exc:
-        return error_response(str(exc), 400)
     except Exception as exc:
-        return error_response(str(exc), 500)
+        return error_response(str(exc))
 
 
 @app.route("/api/prompts/<prompt_id>", methods=["PUT", "DELETE"])
@@ -1883,10 +2843,8 @@ def update_prompt(prompt_id: str) -> tuple[Response, int] | Response:
         payload = request.get_json(silent=True) or {}
         item = save_prompt_content(prompt_id, payload.get("content"))
         return jsonify({"ok": True, "promptDir": "prompts", "item": item})
-    except ValueError as exc:
-        return error_response(str(exc), 400)
     except Exception as exc:
-        return error_response(str(exc), 500)
+        return error_response(str(exc))
 
 
 @app.route("/api/prompts/<prompt_id>/meta", methods=["PATCH"])
@@ -1895,10 +2853,8 @@ def update_prompt_meta(prompt_id: str) -> tuple[Response, int] | Response:
         payload = request.get_json(silent=True) or {}
         item = update_prompt_metadata(prompt_id, payload.get("label"), payload.get("description", ""))
         return jsonify({"ok": True, "promptDir": "prompts", "item": item})
-    except ValueError as exc:
-        return error_response(str(exc), 400)
     except Exception as exc:
-        return error_response(str(exc), 500)
+        return error_response(str(exc))
 
 
 @app.route("/api/prompts/<prompt_id>/restore-default", methods=["POST"])
@@ -1906,20 +2862,16 @@ def restore_prompt_default(prompt_id: str) -> tuple[Response, int] | Response:
     try:
         item = restore_default_prompt(prompt_id)
         return jsonify({"ok": True, "promptDir": "prompts", "item": item})
-    except ValueError as exc:
-        return error_response(str(exc), 400)
     except Exception as exc:
-        return error_response(str(exc), 500)
+        return error_response(str(exc))
 
 
 @app.route("/api/prompts/<prompt_id>/backups", methods=["GET"])
 def get_prompt_backups(prompt_id: str) -> tuple[Response, int] | Response:
     try:
         return jsonify({"ok": True, "items": list_prompt_backups(prompt_id)})
-    except ValueError as exc:
-        return error_response(str(exc), 400)
     except Exception as exc:
-        return error_response(str(exc), 500)
+        return error_response(str(exc))
 
 
 @app.route("/api/prompts/<prompt_id>/restore-backup", methods=["POST"])
@@ -1928,10 +2880,8 @@ def restore_prompt_from_backup(prompt_id: str) -> tuple[Response, int] | Respons
         payload = request.get_json(silent=True) or {}
         item = restore_prompt_backup(prompt_id, payload.get("relativePath"))
         return jsonify({"ok": True, "promptDir": "prompts", "item": item})
-    except ValueError as exc:
-        return error_response(str(exc), 400)
     except Exception as exc:
-        return error_response(str(exc), 500)
+        return error_response(str(exc))
 
 
 @app.route("/api/prompt-workflows/<workflow_id>", methods=["PATCH"])
@@ -1940,10 +2890,8 @@ def patch_prompt_workflow(workflow_id: str) -> tuple[Response, int] | Response:
         payload = request.get_json(silent=True) or {}
         workflows = update_prompt_workflow(workflow_id, payload)
         return jsonify({"ok": True, "promptDir": "prompts", "workflows": workflows})
-    except ValueError as exc:
-        return error_response(str(exc), 400)
     except Exception as exc:
-        return error_response(str(exc), 500)
+        return error_response(str(exc))
 
 
 @app.route("/api/ping", methods=["GET"])
@@ -1968,7 +2916,9 @@ def post_cleanup_task_state_snapshots() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
         mode = str(payload.get("mode", "expired")).strip() or "expired"
-        max_age_hours = int(payload.get("maxAgeHours", TASK_STATE_RETENTION_HOURS) or TASK_STATE_RETENTION_HOURS)
+        if mode not in {"expired", "completed", "all"}:
+            raise ValueError("mode must be one of: expired, completed, all.")
+        max_age_hours = positive_task_int(payload.get("maxAgeHours", TASK_STATE_RETENTION_HOURS)) or TASK_STATE_RETENTION_HOURS
         return jsonify(cleanup_task_state_snapshots(mode=mode, max_age_hours=max_age_hours))
     except Exception as exc:
         return error_response(str(exc))
@@ -2108,6 +3058,81 @@ def get_scope_diagnostics() -> tuple[Response, int] | Response:
         return error_response(str(exc))
 
 
+@app.route("/api/rate-audit", methods=["GET"])
+def get_rate_audit_route() -> tuple[Response, int] | Response:
+    try:
+        source_path = normalize_api_source_path(require_query_value("sourcePath"))
+        raw_output_path = str(request.args.get("outputPath", "") or "").strip()
+        output_path = normalize_api_output_path(raw_output_path) if raw_output_path else None
+        return jsonify(get_document_rate_audit(source_path, output_path))
+    except RoundArtifactSnapshotError as exc:
+        status = 423 if exc.code == "round_snapshot_busy" else 400
+        return error_response(
+            str(exc),
+            status=status,
+            code=exc.code,
+            retryable=exc.retryable,
+            details=exc.details or None,
+        )
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/rate-audit/execute", methods=["POST"])
+def post_rate_audit_execute() -> tuple[Response, int] | Response:
+    try:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            raise ValueError("RateAudit strategy request must be an object.")
+        model_config = payload.get("modelConfig")
+        if not isinstance(model_config, dict):
+            raise ValueError("modelConfig is required.")
+        if not isinstance(payload.get("sourcePath"), str):
+            raise ValueError("sourcePath must be a string.")
+        if not isinstance(payload.get("outputPath"), str):
+            raise ValueError("outputPath must be a string.")
+
+        source_path = normalize_api_source_path(payload["sourcePath"].strip())
+        output_path = normalize_api_output_path(payload["outputPath"].strip())
+        normalized_payload = {
+            **payload,
+            "sourcePath": source_path,
+            "outputPath": output_path,
+        }
+        _, binding = validate_rate_audit_strategy_request(normalized_payload)
+        target_chunk_ids = list(binding.get("targetChunkIds", []) or [])
+        effective_model_config = merge_model_config_for_run(model_config)
+
+        # Registration reserves the same output identity used by ordinary
+        # batch reruns. Never attach a strategy request to an unrelated active
+        # batch task: a conflict is explicit and retryable.
+        run_id, _ = register_batch_rerun(output_path, len(target_chunk_ids))
+        worker = threading.Thread(
+            target=rate_audit_strategy_async,
+            args=(run_id, normalized_payload, effective_model_config),
+            daemon=True,
+        )
+        worker.start()
+        return jsonify({"runId": run_id, "alreadyActive": False}), 202
+    except StaleRateAuditStrategyPlanError as exc:
+        return error_response(
+            str(exc),
+            status=409,
+            code="stale_strategy_plan",
+            mismatchCodes=exc.mismatch_codes,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status = 409 if "running batch rerun task" in message else 400
+        return error_response(
+            message,
+            status=status,
+            code="strategy_execution_conflict" if status == 409 else "invalid_strategy_request",
+        )
+    except Exception as exc:
+        return error_response(str(exc))
+
+
 @app.route("/api/history-documents", methods=["GET"])
 def get_history_list() -> tuple[Response, int] | Response:
     try:
@@ -2180,7 +3205,7 @@ def post_history_database_backup() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
         reason = str(payload.get("reason", "manual")).strip() or "manual"
-        keep = int(payload.get("keep", 12) or 12)
+        keep = coerce_backup_keep(payload.get("keep", DEFAULT_BACKUP_KEEP))
         return jsonify(backup_history_database_governance(reason=reason, keep=keep))
     except Exception as exc:
         return error_response(str(exc))
@@ -2191,7 +3216,7 @@ def post_history_database_compact() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
         create_backup = payload.get("createBackup", True)
-        keep = int(payload.get("keep", 12) or 12)
+        keep = coerce_backup_keep(payload.get("keep", DEFAULT_BACKUP_KEEP))
         return jsonify(compact_history_database_governance(create_backup=bool(create_backup), keep=keep))
     except Exception as exc:
         return error_response(str(exc))
@@ -2202,7 +3227,7 @@ def post_history_database_recover() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
         backup_path = str(payload.get("backupPath", "")).strip() or None
-        keep = int(payload.get("keep", 12) or 12)
+        keep = coerce_backup_keep(payload.get("keep", DEFAULT_BACKUP_KEEP))
         return jsonify(recover_history_database_governance(backup_path=backup_path, keep=keep))
     except Exception as exc:
         return error_response(str(exc))
@@ -2290,8 +3315,35 @@ def get_read_output() -> tuple[Response, int] | Response:
         return jsonify(
             read_output_text(
                 require_query_value("outputPath"),
-                max_chars=optional_int_query_value("maxChars"),
+                max_chars=bounded_int_query_value("maxChars", minimum=1, maximum=2_000_000, default=None),
             )
+        )
+    except Exception as exc:
+        return error_response(str(exc))
+
+
+@app.route("/api/round-snapshot", methods=["GET"])
+def get_round_snapshot() -> tuple[Response, int] | Response:
+    try:
+        return jsonify(
+            read_round_artifact_snapshot(
+                require_query_value("outputPath"),
+                max_preview_chars=bounded_int_query_value(
+                    "maxChars",
+                    minimum=1,
+                    maximum=2_000_000,
+                    default=None,
+                ),
+            )
+        )
+    except RoundArtifactSnapshotError as exc:
+        status = 423 if exc.code == "round_snapshot_busy" else 409
+        return error_response(
+            str(exc),
+            status=status,
+            code=exc.code,
+            retryable=exc.retryable,
+            details=exc.details or None,
         )
     except Exception as exc:
         return error_response(str(exc))
@@ -2300,7 +3352,7 @@ def get_read_output() -> tuple[Response, int] | Response:
 @app.route("/api/read-compare", methods=["GET"])
 def get_read_compare() -> tuple[Response, int] | Response:
     try:
-        return jsonify(read_round_compare(require_query_value("outputPath")))
+        return jsonify(read_round_compare(require_query_value("outputPath"), include_revision=True))
     except Exception as exc:
         return error_response(str(exc))
 
@@ -2319,11 +3371,46 @@ def post_review_decisions() -> tuple[Response, int] | Response:
         payload = request.get_json(silent=True) or {}
         output_path = str(payload.get("outputPath", "")).strip()
         decisions = payload.get("decisions")
+        expected_compare_revision = payload.get("expectedCompareRevision")
         if not output_path:
             raise ValueError("outputPath is required.")
         if not isinstance(decisions, dict):
             raise ValueError("decisions must be an object keyed by chunk id.")
-        return jsonify(save_review_decisions(output_path, decisions))
+        if expected_compare_revision is not None and not isinstance(expected_compare_revision, str):
+            raise ValueError("expectedCompareRevision must be a string.")
+        return jsonify(
+            save_review_decisions(
+                output_path,
+                decisions,
+                expected_compare_revision=expected_compare_revision,
+                require_compare_revision=True,
+            )
+        )
+    except ReviewRevisionRequiredError as exc:
+        return error_response(str(exc), status=428, code="review_revision_required")
+    except StaleReviewDecisionsError as exc:
+        return error_response(
+            str(exc),
+            status=409,
+            code="stale_review_decisions",
+            currentCompareRevision=exc.current_compare_revision,
+        )
+    except InconsistentReviewStateError as exc:
+        return error_response(
+            str(exc),
+            status=409,
+            code="review_state_inconsistent",
+            currentCompareRevision=exc.current_compare_revision,
+        )
+    except DocumentReleaseGateError as exc:
+        return error_response(
+            str(exc),
+            status=409,
+            code=exc.code,
+            chunkId=exc.chunk_id,
+            mode=exc.mode,
+            issueCodes=list(exc.issue_codes),
+        )
     except Exception as exc:
         return error_response(str(exc))
 
@@ -2349,7 +3436,11 @@ def post_rerun_chunk() -> tuple[Response, int] | Response:
         failure: dict[str, Any] | None = None
         if output_path and chunk_id:
             failure, _ = build_batch_rerun_failure(chunk_id, str(exc), output_path)
-        return error_response(str(exc), failure=failure)
+        public_message = (
+            str((failure or {}).get("error", "") or "")
+            or _batch_failure_reason(str(exc))[2]
+        )
+        return error_response(public_message, failure=failure)
 
 
 @app.route("/api/batch-rerun", methods=["POST"])
@@ -2444,10 +3535,28 @@ def post_run_round() -> tuple[Response, int] | Response:
         payload = request.get_json(silent=True) or {}
         source_path = str(payload.get("sourcePath", "")).strip()
         model_config = payload.get("modelConfig")
+        expected_previous_compare_revision = payload.get("expectedPreviousCompareRevision")
+        request_binding_fields = (
+            ("expectedPreviousCompareRevision", "compareRevision"),
+            ("expectedPreviousReviewRevision", "reviewRevision"),
+            ("expectedPreviousContentRevision", "contentRevision"),
+            ("expectedPreviousArtifactSnapshotDigest", "artifactSnapshotDigest"),
+            ("expectedPreviousEffectiveTextSha256", "effectiveTextSha256"),
+        )
         if not source_path:
             raise ValueError("sourcePath is required.")
         if not isinstance(model_config, dict):
             raise ValueError("modelConfig is required.")
+        expected_parent_input_binding: dict[str, str] = {}
+        for request_field, snapshot_field in request_binding_fields:
+            raw_value = payload.get(request_field)
+            if raw_value is None:
+                continue
+            if not isinstance(raw_value, str):
+                raise ValueError(f"{request_field} must be a string.")
+            value = raw_value.strip()
+            if value:
+                expected_parent_input_binding[snapshot_field] = value
 
         normalized_source_path = normalize_api_source_path(source_path)
         effective_model_config = merge_model_config_for_run(model_config)
@@ -2460,17 +3569,56 @@ def post_run_round() -> tuple[Response, int] | Response:
                     code="prompt_route_conflict",
                     routeConflict=route_conflict,
                 )
-        run_id, _, already_active = register_or_reuse_run(normalized_source_path)
+        input_binding = preflight_run_round_input(
+            normalized_source_path,
+            effective_model_config,
+            expected_previous_compare_revision=expected_previous_compare_revision,
+            expected_parent_input_binding=expected_parent_input_binding or None,
+            require_revision=True,
+        )
+        bound_parent_revision = str(input_binding.get("parentCompareRevision", "") or "")
+        bound_parent_input_binding = input_binding.get("parentInputBinding")
+        if not isinstance(bound_parent_input_binding, dict):
+            bound_parent_input_binding = {}
+        run_id, _, already_active = register_or_reuse_run(
+            normalized_source_path,
+            bound_parent_revision,
+            expected_parent_input_binding=bound_parent_input_binding,
+        )
         if already_active:
-            return jsonify({"runId": run_id, "alreadyActive": True}), 202
+            return jsonify({
+                "runId": run_id,
+                "alreadyActive": True,
+                "parentInputBinding": bound_parent_input_binding,
+            }), 202
 
         worker = threading.Thread(
             target=run_round_async,
-            args=(run_id, normalized_source_path, effective_model_config),
+            args=(
+                run_id,
+                normalized_source_path,
+                effective_model_config,
+                bound_parent_revision,
+                bound_parent_input_binding,
+            ),
             daemon=True,
         )
         worker.start()
-        return jsonify({"runId": run_id, "alreadyActive": False}), 202
+        return jsonify({
+            "runId": run_id,
+            "alreadyActive": False,
+            "parentInputBinding": bound_parent_input_binding,
+        }), 202
+    except RoundInputRevisionRequiredError as exc:
+        return error_response(str(exc), status=428, code="round_input_revision_required")
+    except StaleRoundInputError as exc:
+        return error_response(
+            str(exc),
+            status=409,
+            code="stale_round_input",
+            currentCompareRevision=exc.current_compare_revision,
+            mismatchCodes=exc.mismatch_codes,
+        )
     except ValueError as exc:
         message = str(exc)
         status = 409 if "already has a running task" in message else 400
@@ -2541,7 +3689,7 @@ def delete_round_progress_route() -> tuple[Response, int] | Response:
         source_path = str(payload.get("sourcePath", "")).strip()
         prompt_profile = str(payload.get("promptProfile", DEFAULT_PROMPT_PROFILE)).strip()
         prompt_sequence = parse_prompt_sequence_value(payload.get("promptSequence"))
-        round_number = int(payload.get("roundNumber", 0) or 0)
+        round_number = positive_task_int(payload.get("roundNumber", 0) or 0) or 0
         if not source_path or round_number <= 0:
             raise ValueError("sourcePath and roundNumber are required.")
         normalized_source_path = normalize_api_source_path(source_path)
@@ -2557,21 +3705,126 @@ def delete_round_progress_route() -> tuple[Response, int] | Response:
         return error_response(str(exc))
 
 
-@app.route("/api/export-round", methods=["GET"])
+@app.route("/api/export-round", methods=["GET", "POST"])
 def get_export_round() -> tuple[Response, int] | Response:
     try:
-        output_path = require_query_value("outputPath")
-        target_format = require_query_value("targetFormat")
-        stem = Path(output_path).stem or "current-round"
-        export_path = EXPORT_DIR / f"{stem}.{target_format}"
-        result = export_round_output(output_path, str(export_path), target_format)
+        revision_binding: dict[str, Any] = {}
+        if request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            output_path = str(payload.get("outputPath", "") or "").strip()
+            target_format = str(payload.get("targetFormat", "") or "").strip().lower()
+            if not output_path:
+                return error_response("outputPath is required.", 400)
+            if not target_format:
+                return error_response("targetFormat is required.", 400)
+            binding_fields = {
+                "expectedDocId": payload.get("expectedDocId"),
+                "expectedRound": payload.get("expectedRound"),
+                "expectedCompareRevision": payload.get("expectedCompareRevision"),
+                "expectedContentRevision": payload.get("expectedContentRevision"),
+                "expectedArtifactSnapshotDigest": payload.get("expectedArtifactSnapshotDigest"),
+            }
+            if any(value is not None for value in binding_fields.values()):
+                missing = [key for key, value in binding_fields.items() if value is None]
+                if missing:
+                    return error_response(
+                        "Revision-bound export fields must be supplied together: " + ", ".join(missing),
+                        400,
+                    )
+                for key in (
+                    "expectedDocId",
+                    "expectedCompareRevision",
+                    "expectedContentRevision",
+                    "expectedArtifactSnapshotDigest",
+                ):
+                    value = binding_fields[key]
+                    if not isinstance(value, str) or not value.strip() or len(value) > 512:
+                        return error_response(f"{key} must be a non-empty string.", 400)
+                    binding_fields[key] = value.strip()
+                raw_expected_round = binding_fields["expectedRound"]
+                if (
+                    isinstance(raw_expected_round, bool)
+                    or not isinstance(raw_expected_round, int)
+                    or raw_expected_round < 1
+                ):
+                    return error_response("expectedRound must be a positive integer.", 400)
+                for key in ("expectedContentRevision", "expectedArtifactSnapshotDigest"):
+                    if not re.fullmatch(r"[0-9a-f]{64}", str(binding_fields[key])):
+                        return error_response(f"{key} must be a lowercase SHA-256 digest.", 400)
+                revision_binding = {
+                    "expected_doc_id": binding_fields["expectedDocId"],
+                    "expected_round": raw_expected_round,
+                    "expected_compare_revision": binding_fields["expectedCompareRevision"],
+                    "expected_content_revision": binding_fields["expectedContentRevision"],
+                    "expected_artifact_snapshot_digest": binding_fields["expectedArtifactSnapshotDigest"],
+                }
+        else:
+            output_path = require_query_value("outputPath")
+            target_format = require_query_value("targetFormat").lower()
+        if target_format not in {"txt", "docx"}:
+            return error_response(f"Unsupported export format: {target_format}", 400)
+        # Path.stem yields only the basename, so it cannot escape EXPORT_DIR;
+        # we additionally sanitize it and validate the resolved export path
+        # stays under EXPORT_DIR as defense-in-depth against a malicious
+        # targetFormat (e.g. "../../evil") that could otherwise break out of
+        # the export directory via the f-string below.
+        raw_stem = Path(output_path).stem or "current-round"
+        stem = truncate_utf8_filename_component(
+            sanitize_filename(raw_stem),
+            max_bytes=96,
+            fallback="current-round",
+        )
+        output_identity = sha256(str(Path(output_path).expanduser().resolve()).encode("utf-8")).hexdigest()[:12]
+        export_path = (EXPORT_DIR / f"{stem}__{output_identity}.{target_format}").resolve()
+        if not is_path_under(export_path, EXPORT_DIR):
+            return error_response("Export path must stay under the export workspace directory.", 400)
+        result = export_round_output(output_path, str(export_path), target_format, **revision_binding)
+        required_evidence_fields = (
+            "evidenceVersion",
+            "overallStatus",
+            "sourceKind",
+            "contentContractStatus",
+            "formatLockStatus",
+            "checksPerformed",
+        )
+        missing_evidence_fields = [field for field in required_evidence_fields if field not in result]
+        if target_format == "docx":
+            missing_evidence_fields.extend(
+                field
+                for field in ("exportAttemptId", "artifactSha256", "evidenceManifestPath")
+                if field not in result
+            )
+        if missing_evidence_fields or not isinstance(result.get("checksPerformed"), list):
+            raise RuntimeError(
+                "Export service returned an incomplete evidence protocol: "
+                + ", ".join(missing_evidence_fields or ["checksPerformed"])
+            )
         file_path = Path(result["path"])
         mimetype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         if target_format == "txt":
             mimetype = "text/plain; charset=utf-8"
-        response = send_file(file_path, mimetype=mimetype, as_attachment=True, download_name=file_path.name)
+        response = send_file(file_path, mimetype=mimetype, as_attachment=True, download_name=f"{stem}.{target_format}")
         response.headers["X-Export-Path"] = make_ascii_header_value(file_path)
         response.headers["X-Export-Format"] = str(result.get("format", target_format))
+        response.headers["X-Export-Evidence-Version"] = str(result["evidenceVersion"])
+        response.headers["X-Export-Overall-Status"] = str(result["overallStatus"])
+        response.headers["X-Export-Certification"] = str(result.get("certification", ""))
+        response.headers["X-Export-Source-Kind"] = str(result["sourceKind"])
+        response.headers["X-Export-Content-Contract-Status"] = str(result["contentContractStatus"])
+        response.headers["X-Export-Format-Lock-Status"] = str(result["formatLockStatus"])
+        checks_performed = result["checksPerformed"]
+        response.headers["X-Export-Checks-Performed"] = ",".join(
+            str(item).strip() for item in checks_performed if str(item).strip()
+        )
+        response.headers["X-Export-Attempt-Id"] = str(result.get("exportAttemptId", ""))
+        response.headers["X-Export-Artifact-Sha256"] = str(result.get("artifactSha256", ""))
+        response.headers["X-Export-Evidence-Manifest-Path"] = make_ascii_header_value(result.get("evidenceManifestPath", ""))
+        response.headers["X-Export-Output-Path"] = make_ascii_header_value(result.get("outputPath", output_path))
+        response.headers["X-Export-Doc-Id"] = make_ascii_header_value(result.get("docId", ""))
+        response.headers["X-Export-Round"] = str(result.get("round", ""))
+        response.headers["X-Export-Compare-Revision"] = make_ascii_header_value(result.get("compareRevision", ""))
+        response.headers["X-Export-Content-Revision"] = str(result.get("contentRevision", ""))
+        response.headers["X-Export-Artifact-Snapshot-Digest"] = str(result.get("artifactSnapshotDigest", ""))
         response.headers["X-Export-Layout-Mode"] = str(result.get("layoutMode", ""))
         response.headers["X-Export-Paragraph-Source"] = str(result.get("paragraphSource", ""))
         response.headers["X-Export-Format-Mode"] = str(result.get("formatMode", ""))
@@ -2584,6 +3837,17 @@ def get_export_round() -> tuple[Response, int] | Response:
         response.headers["X-Export-Audit-Issue-Count"] = str(result.get("auditIssueCount", ""))
         response.headers["X-Export-Ooxml-Audit-Path"] = make_ascii_header_value(result.get("ooxmlAuditPath", ""))
         response.headers["X-Export-Ooxml-Audit-Issue-Count"] = str(result.get("ooxmlAuditIssueCount", ""))
+        response.headers["X-Export-Format-Lock-Path"] = make_ascii_header_value(result.get("formatLockPath", ""))
+        response.headers["X-Export-Format-Lock-Issue-Count"] = str(result.get("formatLockIssueCount", ""))
+        response.headers["X-Export-Format-Lock-Editable-Checked"] = str(result.get("formatLockEditableChecked", ""))
+        response.headers["X-Export-Content-Contract-Path"] = make_ascii_header_value(result.get("contentContractPath", ""))
+        response.headers["X-Export-Content-Contract-Ready"] = "1" if result.get("contentContractReady") else "0"
+        response.headers["X-Export-Content-Contract-Issue-Count"] = str(result.get("contentContractIssueCount", ""))
+        response.headers["X-Export-Editable-Unit-Count"] = str(result.get("editableUnitCount", ""))
+        response.headers["X-Export-Protected-Unit-Count"] = str(result.get("protectedUnitCount", ""))
+        response.headers["X-Export-Protected-Heading-Count"] = str(result.get("protectedHeadingCount", ""))
+        response.headers["X-Export-Editable-Heading-Count"] = str(result.get("editableHeadingCount", ""))
+        response.headers["X-Export-Model-Input-Scope-Match"] = "1" if result.get("modelInputMatchesEditableUnits") else "0"
         response.headers["X-Export-Preflight-Path"] = make_ascii_header_value(result.get("preflightPath", ""))
         response.headers["X-Export-Preflight-Issue-Count"] = str(result.get("preflightIssueCount", ""))
         response.headers["X-Export-Preflight-Warning-Count"] = str(result.get("preflightWarningCount", ""))
@@ -2594,6 +3858,9 @@ def get_export_round() -> tuple[Response, int] | Response:
         response.headers["X-Export-Audit-Issue-Samples"] = make_ascii_header_json(result.get("auditIssueSamples", []))
         response.headers["X-Export-Ooxml-Audit-Issue-Samples"] = make_ascii_header_json(result.get("ooxmlAuditIssueSamples", []))
         response.headers["X-Export-Preflight-Issue-Samples"] = make_ascii_header_json(result.get("preflightIssueSamples", []))
+        if request.method == "GET":
+            response.headers["Deprecation"] = "true"
+            response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
         return response
     except ExportRoundError as exc:
         return error_response(
@@ -2601,6 +3868,15 @@ def get_export_round() -> tuple[Response, int] | Response:
             status=400,
             code="docx_export_blocked",
             exportFailure=exc.export_failure,
+        )
+    except RoundArtifactSnapshotError as exc:
+        status = 423 if exc.code == "round_snapshot_busy" else 409
+        return error_response(
+            str(exc),
+            status=status,
+            code=exc.code,
+            retryable=exc.retryable,
+            details=exc.details or None,
         )
     except Exception as exc:
         return error_response(str(exc))
@@ -2673,16 +3949,89 @@ def not_found_api(_: Any) -> tuple[Response, int]:
     return error_response("Unknown route", 404)
 
 
-def main() -> None:
+def _serve_frontend_asset(asset_path: str) -> Response:
+    """Serve a real file from the production build with the right cache tier."""
+
+    if not WEB_STATIC_DIR:
+        return error_response("Frontend build not mounted", 404)
+    normalized_asset_path = str(asset_path or "").replace("\\", "/").lstrip("/")
+    if not normalized_asset_path or any(part.startswith(".") for part in Path(normalized_asset_path).parts):
+        return error_response("Not found", 404)
+    static_root = Path(WEB_STATIC_DIR).resolve()
+    candidate = (static_root / normalized_asset_path).resolve()
+    if not is_path_under(candidate, static_root):
+        return error_response("Forbidden", 403)
+    if not candidate.is_file():
+        return error_response("Not found", 404)
+    response = send_from_directory(str(static_root), normalized_asset_path, conditional=True)
+    if normalized_asset_path.startswith("assets/"):
+        # Vite assets are content-hashed, so a one-year immutable cache is safe.
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        # Public root files (logo/favicon) keep stable names and need revalidation.
+        response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path: str) -> Response:
+    """Serve real dist files and use index.html only for extensionless SPA routes."""
+
+    if not WEB_STATIC_DIR:
+        return error_response("Unknown route", 404)
+    normalized_path = str(path or "").replace("\\", "/").lstrip("/")
+    if normalized_path == "api" or normalized_path.startswith("api/"):
+        return error_response("Unknown route", 404)
+
+    static_root = Path(WEB_STATIC_DIR).resolve()
+    candidate = (static_root / normalized_path).resolve() if normalized_path else static_root
+    if normalized_path and is_path_under(candidate, static_root) and candidate.is_file():
+        return _serve_frontend_asset(normalized_path)
+
+    # Missing assets must be a real 404. Returning index.html with image/JS URLs
+    # hides deployment mistakes behind a misleading HTTP 200 and wrong MIME.
+    if normalized_path.startswith("assets/") or Path(normalized_path).suffix:
+        return error_response("Not found", 404)
+
+    index_path = static_root / "index.html"
+    if index_path.is_file():
+        response = send_file(str(index_path), mimetype="text/html", conditional=True)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+    return error_response("Frontend build not found", 404)
+
+
+def initialize_runtime(*, reason: str = "startup") -> dict[str, Any]:
+    """Run one-time writable-store checks before serving production traffic."""
+
     ensure_workspace_dirs()
-    task_state_readiness = ensure_task_state_store_ready(reason="startup", max_age_seconds=0)
+    task_state_readiness = ensure_task_state_store_ready(reason=reason, max_age_seconds=0)
     if task_state_readiness.get("action") not in {"", "none"}:
-        print(f"Task state startup check: {task_state_readiness.get('action')} (ok={bool(task_state_readiness.get('ok'))})")
-    readiness = ensure_history_database_ready(reason="startup", max_age_seconds=0, compact=True)
-    if readiness.get("action") not in {"", "none"}:
-        print(f"SQLite history startup check: {readiness.get('action')} (ok={bool(readiness.get('ok'))})")
-    print("Fuck your AI detection rate Web API running at http://127.0.0.1:8765")
-    app.run(host="127.0.0.1", port=8765, threaded=True)
+        print(
+            f"Task state {reason} check: {task_state_readiness.get('action')} "
+            f"(ok={bool(task_state_readiness.get('ok'))})"
+        )
+    history_readiness = ensure_history_database_ready(reason=reason, max_age_seconds=0, compact=True)
+    if history_readiness.get("action") not in {"", "none"}:
+        print(
+            f"SQLite history {reason} check: {history_readiness.get('action')} "
+            f"(ok={bool(history_readiness.get('ok'))})"
+        )
+    return {
+        "ok": bool(task_state_readiness.get("ok", True)) and bool(history_readiness.get("ok", True)),
+        "taskState": task_state_readiness,
+        "history": history_readiness,
+    }
+
+
+def main() -> None:
+    initialize_runtime(reason="startup")
+    print(f"fyadr Web API running at http://{WEB_HOST}:{WEB_PORT}")
+    # Gunicorn imports the module-level app and does not call main(); the
+    # container entrypoint invokes initialize_runtime explicitly before it
+    # starts Gunicorn. app.run is only the local diagnostic/development path.
+    app.run(host=WEB_HOST, port=WEB_PORT, threaded=True)
 
 
 if __name__ == "__main__":

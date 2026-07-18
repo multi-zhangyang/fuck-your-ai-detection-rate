@@ -213,7 +213,7 @@ def _run_targeted_rerun_chain_smoke(report: dict[str, Any], export_path: Path) -
         failures.append("targeted rerun should not persist removed detection-report metadata")
 
     post_rerun_export_path = export_path.with_name(f"{export_path.stem}_post_rerun{export_path.suffix}")
-    post_export_result = app_service.export_round_output(str(output_path), str(post_rerun_export_path), "docx")
+    post_export_result = app_service.export_round_output(str(output_path), str(post_rerun_export_path), "docx", "school_rules")
     post_format_audit = _audit_exported_editable_format(post_rerun_export_path, snapshot_path)
     if int(post_export_result.get("auditIssueCount", 0) or 0) != 0:
         failures.append(f"post-rerun export audit issues: {post_export_result.get('auditIssueCount')}")

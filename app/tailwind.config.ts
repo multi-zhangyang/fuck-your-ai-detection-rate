@@ -43,6 +43,20 @@ const config: Config = {
           DEFAULT: "hsl(var(--success))",
           foreground: "hsl(var(--success-foreground))",
         },
+        warning: {
+          DEFAULT: "hsl(var(--warning))",
+          foreground: "hsl(var(--warning-foreground))",
+        },
+        info: {
+          DEFAULT: "hsl(var(--info))",
+          foreground: "hsl(var(--info-foreground))",
+        },
+        status: {
+          success: "hsl(var(--success-text))",
+          warning: "hsl(var(--warning-text))",
+          info: "hsl(var(--info-text))",
+          danger: "hsl(var(--destructive-text))",
+        },
         card: {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
@@ -65,17 +79,12 @@ const config: Config = {
         sm: "calc(var(--radius) - 6px)",
       },
       fontFamily: {
-        sans: ["\"Geist\"", "\"Inter\"", "\"PingFang SC\"", "\"Microsoft YaHei UI\"", "sans-serif"],
-        serif: ["\"Source Serif 4\"", "\"Noto Serif SC\"", "serif"],
-        mono: ["\"Geist Mono\"", "\"JetBrains Mono\"", "\"Cascadia Code\"", "monospace"],
+        sans: ["ui-sans-serif", "-apple-system", "BlinkMacSystemFont", "\"Segoe UI Variable\"", "\"Segoe UI\"", "\"PingFang SC\"", "\"Microsoft YaHei UI\"", "sans-serif"],
+        serif: ["ui-serif", "\"Noto Serif SC\"", "\"Songti SC\"", "serif"],
+        mono: ["ui-monospace", "\"SFMono-Regular\"", "\"Cascadia Code\"", "\"JetBrains Mono\"", "monospace"],
       },
       boxShadow: {
-        glow: "0 18px 48px hsl(var(--foreground) / 0.08)",
-        soft: "0 8px 24px hsl(var(--foreground) / 0.06)",
-      },
-      backgroundImage: {
-        "hero-grid":
-          "linear-gradient(to right, rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.05) 1px, transparent 1px)",
+        soft: "0 1px 2px hsl(0 0% 0% / 0.05), 0 16px 40px -24px hsl(0 0% 0% / 0.24)",
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",

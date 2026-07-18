@@ -1,0 +1,60 @@
+export {
+  classifyRunFailure,
+  resolveFailureRetryRound,
+  shouldScheduleFailureAutoRetry,
+  materializeRunFailureUi,
+  buildStartRoundFailureInput,
+  buildAttachRoundFailureInput,
+  buildMaybeScheduleFailureAutoRetryInput,
+  planFailureAutoRetrySchedule,
+  buildFailureAutoRetryScheduleArgs,
+  type ClassifiedRunFailure,
+  type FinalizeFailedRoundInput,
+  type MaybeScheduleFailureAutoRetryInput,
+  type FailedRoundMode,
+  type BuildStartRoundFailureInput,
+  type BuildAttachRoundFailureInput,
+  type BuildMaybeScheduleFailureAutoRetryArgs,
+  type FailureAutoRetrySchedulePlan,
+} from "@/lib/runFailurePrep";
+
+export {
+  buildRunConfigForLaunch,
+  shouldSyncRunConfigToUi,
+  mergeSavedRunConfig,
+  selectMatchingCheckpointStatus,
+  resolveBackendConcurrencyGuardError,
+  planBackendConcurrencyReadyError,
+  buildWorkflowCompleteFeedback,
+  isWorkflowAlreadyComplete,
+  buildRunStartFeedback,
+  buildAttachActiveRunNotice,
+  buildBusyRunNotice,
+  buildMissingDocumentNotice,
+  planRunLaunchSeed,
+  planAttachRunSeed,
+  buildCompletedRunLaunchResult,
+  buildReadyLaunchResultPayload,
+  buildReadyRunExecutionResult,
+  buildPrepareAttachActiveRunResult,
+  pickLiveCompareSeed,
+  buildInitialRunProgress,
+  type PrepareRunLaunchResult,
+  type ReadyRunLaunchPrepared,
+  type BuildReadyRunLaunchResultInput,
+} from "@/lib/runLaunchPrep";
+
+export type {
+  RoundProgressViewUpdate,
+  MaterializedRoundProgressUpdate,
+} from "@/lib/runRoundProgressPrep";
+
+export {
+  buildRoundProgressViewUpdate,
+  buildRoundCompletedLoadingStep,
+  buildMergedCompletionReviewDecisions,
+  buildProgressReviewDecisionPatch,
+  materializeRoundProgressListenerUpdate,
+  buildRoundCompletionFeedback,
+  buildRunResultLoadingState,
+} from "@/lib/runRoundProgressPrep";

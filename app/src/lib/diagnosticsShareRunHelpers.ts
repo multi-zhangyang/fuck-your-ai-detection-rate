@@ -1,0 +1,60 @@
+import type { EnvironmentDiagnostics } from "@/types/app";
+import { redactLocalPath } from "@/lib/formatters";
+
+export function buildShareableDiagnosticsRuns(value: EnvironmentDiagnostics) {
+  return {
+    activeRuns: value.activeRuns.map((item) => ({
+      runId: item.runId,
+      sourcePath: redactLocalPath(item.sourcePath),
+      status: item.status,
+      cancelRequested: item.cancelRequested,
+      eventCount: item.eventCount,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      lastPhase: item.lastEvent?.phase,
+      lastChunk: item.lastEvent?.chunkId,
+      lastError: item.lastEvent?.error,
+    })),
+    recentRuns: (value.recentRuns ?? []).map((item) => ({
+      runId: item.runId,
+      sourcePath: redactLocalPath(item.sourcePath),
+      status: item.status,
+      completed: item.completed,
+      cancelRequested: item.cancelRequested,
+      eventCount: item.eventCount,
+      restoredFromDisk: item.restoredFromDisk,
+      persistedAt: item.persistedAt,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      lastPhase: item.lastEvent?.phase,
+      lastChunk: item.lastEvent?.chunkId,
+      lastError: item.lastEvent?.error,
+      error: item.error,
+    })),
+    activeBatchReruns: (value.activeBatchReruns ?? []).map((item) => ({
+      runId: item.runId,
+      outputPath: redactLocalPath(item.outputPath),
+      status: item.status,
+      cancelRequested: item.cancelRequested,
+      totalCount: item.totalCount,
+      completedCount: item.completedCount,
+      successCount: item.successCount,
+      failureCount: item.failureCount,
+      currentChunkId: item.currentChunkId,
+      updatedAt: item.updatedAt,
+    })),
+    recentBatchReruns: (value.recentBatchReruns ?? []).map((item) => ({
+      runId: item.runId,
+      outputPath: redactLocalPath(item.outputPath),
+      status: item.status,
+      totalCount: item.totalCount,
+      completedCount: item.completedCount,
+      successCount: item.successCount,
+      failureCount: item.failureCount,
+      currentChunkId: item.currentChunkId,
+      restoredFromDisk: item.restoredFromDisk,
+      persistedAt: item.persistedAt,
+      updatedAt: item.updatedAt,
+    })),
+  };
+}

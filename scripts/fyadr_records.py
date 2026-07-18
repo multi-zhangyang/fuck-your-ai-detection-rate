@@ -67,6 +67,7 @@ from prompt_library import (
     normalize_prompt_sequence,
     prompt_sequence_match_rank,
 )
+from path_utils import build_document_artifact_stem
 
 # Paths are computed relative to this file: scripts/ -> workspace root.
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -147,10 +148,58 @@ def _ensure_finish_dir() -> None:
     FINISH_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _write_records_json(normalized_records: Dict[str, Any]) -> None:
+def _write_records_json_atomic(
+    normalized_records: Dict[str, Any],
+    *,
+    only_if_absent: bool = False,
+) -> bool:
+    """Publish the compatibility JSON as one private filesystem generation.
+
+    Recovery must never expose a half-written JSON file: a reader seeing such
+    a file would classify it as invalid and could make the wrong authority
+    decision.  A same-directory temporary file plus ``replace`` keeps normal
+    writes atomic.  The recovery-only ``only_if_absent`` mode uses a hard link
+    as a no-clobber publish primitive so a JSON generation created while a
+    SQLite restore is running cannot be overwritten by that restore.
+    """
+
     _ensure_finish_dir()
     text = json.dumps(normalized_records, ensure_ascii=False, indent=2, sort_keys=True)
-    RECORDS_PATH.write_text(text, encoding="utf-8")
+    temporary_path = RECORDS_PATH.with_name(
+        f".{RECORDS_PATH.name}.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}.tmp"
+    )
+    file_descriptor = -1
+    try:
+        file_descriptor = os.open(
+            temporary_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            file_descriptor = -1
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        if only_if_absent:
+            try:
+                os.link(temporary_path, RECORDS_PATH)
+            except FileExistsError:
+                return False
+            temporary_path.unlink(missing_ok=True)
+        else:
+            os.replace(temporary_path, RECORDS_PATH)
+        if os.name != "nt":
+            os.chmod(RECORDS_PATH, 0o600)
+        return True
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        temporary_path.unlink(missing_ok=True)
+
+
+def _write_records_json(normalized_records: Dict[str, Any]) -> None:
+    _write_records_json_atomic(normalized_records)
 
 
 def load_records() -> Dict[str, Any]:
@@ -589,20 +638,379 @@ def compact_history_index(*, create_backup: bool = True, keep: int = 12, reason:
     return result
 
 
+def _capture_history_recovery_json_snapshot() -> Dict[str, Any]:
+    """Read one exact JSON generation for recovery authority decisions."""
+
+    snapshot: Dict[str, Any] = {
+        "exists": RECORDS_PATH.exists(),
+        "valid": False,
+        "records": {},
+        "recordsHash": "",
+        "documentCount": 0,
+        "roundCount": 0,
+        # This digest is an internal CAS seal.  It is intentionally never
+        # returned by the API because it fingerprints the private JSON bytes.
+        "generationSha256": "",
+    }
+    if not snapshot["exists"]:
+        return snapshot
+
+    try:
+        raw_bytes = RECORDS_PATH.read_bytes()
+        snapshot["generationSha256"] = hashlib.sha256(raw_bytes).hexdigest()
+        raw_json = json.loads(raw_bytes.decode("utf-8"))
+        if not isinstance(raw_json, dict):
+            return snapshot
+        normalized_json = normalize_records(raw_json)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return snapshot
+
+    snapshot.update(
+        {
+            "valid": True,
+            "records": normalized_json,
+            "recordsHash": _records_hash(normalized_json),
+            "documentCount": len(normalized_json),
+            "roundCount": sum(
+                len(entry.get("rounds", []))
+                for entry in normalized_json.values()
+                if isinstance(entry, dict)
+            ),
+        }
+    )
+    return snapshot
+
+
+def _history_recovery_reconciliation(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "source": "none",
+        "action": "recovery-failed",
+        "jsonExisted": bool(snapshot["exists"]),
+        "jsonValid": bool(snapshot["valid"]),
+        "jsonRecordsHash": str(snapshot["recordsHash"]),
+        "jsonDocumentCount": int(snapshot["documentCount"]),
+        "jsonRoundCount": int(snapshot["roundCount"]),
+        "jsonGenerationChangedDuringRecovery": False,
+        "recoveredRecordsHash": "",
+        "recoveredDocumentCount": 0,
+        "recoveredRoundCount": 0,
+    }
+
+
+def _update_history_recovery_json_evidence(
+    reconciliation: Dict[str, Any],
+    snapshot: Dict[str, Any],
+) -> None:
+    reconciliation.update(
+        {
+            "jsonExisted": bool(snapshot["exists"]),
+            "jsonValid": bool(snapshot["valid"]),
+            "jsonRecordsHash": str(snapshot["recordsHash"]),
+            "jsonDocumentCount": int(snapshot["documentCount"]),
+            "jsonRoundCount": int(snapshot["roundCount"]),
+        }
+    )
+
+
+def _history_recovery_failure(
+    reconciliation: Dict[str, Any],
+    *,
+    code: str,
+    action: str,
+    message: str,
+    base: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Build a public-safe failure without echoing raw exception text."""
+
+    result = dict(base or {})
+    result.update(
+        {
+            "ok": False,
+            "errorCode": code,
+            "error": message,
+            "reconciliation": reconciliation,
+        }
+    )
+    reconciliation["action"] = action
+    return result
+
+
 def recover_history_index(*, backup_path: str | None = None, keep: int = 12) -> Dict[str, Any]:
+    """Recover the SQLite index without rolling valid JSON history backwards.
+
+    ``fyadr_history.sqlite3`` is a query/index sidecar.  A low-level recovery
+    may legitimately restore an older healthy SQLite backup, while the JSON
+    compatibility file still contains newer normalized records.  The old
+    wrapper unconditionally exported the recovered index back to JSON and
+    could therefore discard records that survived the database corruption.
+
+    Capture a valid JSON generation before touching SQLite.  After the
+    low-level recovery, reconcile the healthy index *from that JSON* when the
+    logical hashes differ.  Only hydrate JSON from SQLite when the JSON file is
+    absent.  An invalid JSON file is preserved for manual recovery instead of
+    being silently overwritten.
+    """
+
+    json_snapshot = _capture_history_recovery_json_snapshot()
+    reconciliation = _history_recovery_reconciliation(json_snapshot)
+
+    # Fail before the low-level SQLite restore.  Restoring an old, healthy
+    # database and only then discovering invalid JSON leaves a readable stale
+    # index that a later compatibility refresh can export over the raw JSON.
+    if bool(json_snapshot["exists"]) and not bool(json_snapshot["valid"]):
+        reconciliation["source"] = "invalid_pre_recovery_json"
+        return _history_recovery_failure(
+            reconciliation,
+            code="invalid_json_history",
+            action="preserve-invalid-json-for-manual-review",
+            message="Existing JSON history is invalid and was preserved; manual reconciliation is required.",
+        )
+
     from fyadr_history_db import recover_history_index as _recover_history_index
 
     backup_dir = _history_backup_dir_override()
-    result = (
-        _recover_history_index(backup_path=backup_path, keep=keep, backup_dir=backup_dir)
-        if backup_dir
-        else _recover_history_index(backup_path=backup_path, keep=keep)
-    )
-    recovered_records = _load_records_from_history_index()
-    if recovered_records is not None:
-        _write_records_json(recovered_records)
+    try:
+        low_level_result = (
+            _recover_history_index(backup_path=backup_path, keep=keep, backup_dir=backup_dir)
+            if backup_dir
+            else _recover_history_index(backup_path=backup_path, keep=keep)
+        )
+    except Exception:
+        return _history_recovery_failure(
+            reconciliation,
+            code="sqlite_recovery_exception",
+            action="recovery-exception",
+            message="SQLite history recovery failed before JSON reconciliation.",
+        )
+    if not isinstance(low_level_result, dict):
+        return _history_recovery_failure(
+            reconciliation,
+            code="sqlite_recovery_protocol_invalid",
+            action="recovery-protocol-invalid",
+            message="SQLite history recovery returned an invalid result protocol.",
+        )
+
+    result = dict(low_level_result)
+    result["reconciliation"] = reconciliation
+    if not bool(result.get("ok")):
+        # The low-level layer can contain raw sqlite/path details in its error
+        # text.  Preserve its structured validation fields, but never echo the
+        # raw failure string through the API-facing wrapper.
+        return _history_recovery_failure(
+            reconciliation,
+            code="sqlite_recovery_failed",
+            action="recovery-failed",
+            message="SQLite history recovery failed before JSON reconciliation.",
+            base=result,
+        )
+
+    try:
+        # Re-read after the low-level restore.  A normal round completion may
+        # have published a newer JSON generation while the backup was being
+        # copied; reconciliation must use that newest valid generation.
+        current_snapshot = _capture_history_recovery_json_snapshot()
+        if (
+            current_snapshot["exists"] != json_snapshot["exists"]
+            or current_snapshot["generationSha256"] != json_snapshot["generationSha256"]
+        ):
+            reconciliation["jsonGenerationChangedDuringRecovery"] = True
+            if bool(current_snapshot["exists"]) and bool(current_snapshot["valid"]):
+                json_snapshot = current_snapshot
+                _update_history_recovery_json_evidence(reconciliation, json_snapshot)
+            else:
+                return _history_recovery_failure(
+                    reconciliation,
+                    code="json_generation_changed",
+                    action="json-generation-changed-during-recovery",
+                    message="JSON history changed during SQLite recovery; no JSON file was overwritten.",
+                    base=result,
+                )
+
+        recovered_records = _load_records_from_history_index()
+        recovered_hash = ""
+        if recovered_records is not None:
+            recovered_records = normalize_records(recovered_records)
+            recovered_hash = _records_hash(recovered_records)
+            reconciliation.update(
+                {
+                    "recoveredRecordsHash": recovered_hash,
+                    "recoveredDocumentCount": len(recovered_records),
+                    "recoveredRoundCount": sum(
+                        len(entry.get("rounds", []))
+                        for entry in recovered_records.values()
+                        if isinstance(entry, dict)
+                    ),
+                }
+            )
+
+        if bool(json_snapshot["valid"]):
+            from fyadr_history_db import (
+                check_history_index as _check_history_index,
+                get_history_index_status as _get_history_index_status,
+                rebuild_history_index as _rebuild_history_index,
+            )
+
+            reconciliation["source"] = "pre_recovery_json"
+            result["recoveredBackupAfter"] = result.get("after")
+            result["recoveredBackupValidation"] = result.get("validation")
+            indexed_hash = recovered_hash
+            rebuilt_any_generation = False
+
+            # A bounded CAS loop handles a JSON writer that finishes during
+            # reconciliation.  Success is published only when the final JSON
+            # bytes still match the generation proven by strict SQLite checks.
+            for attempt in range(1, 4):
+                json_records = normalize_records(json_snapshot["records"])
+                json_hash = str(json_snapshot["recordsHash"])
+                validation: Dict[str, Any] = {}
+
+                if indexed_hash == json_hash:
+                    try:
+                        validation = _check_history_index(
+                            json_records,
+                            records_hash=json_hash,
+                            strict=True,
+                        )
+                    except Exception:
+                        validation = {"ok": False}
+
+                needs_rebuild = indexed_hash != json_hash or not bool(validation.get("ok"))
+                if needs_rebuild:
+                    try:
+                        rebuild = _rebuild_history_index(json_records, records_hash=json_hash)
+                        validation = _check_history_index(
+                            json_records,
+                            records_hash=json_hash,
+                            strict=True,
+                        )
+                    except Exception:
+                        return _history_recovery_failure(
+                            reconciliation,
+                            code="json_reconciliation_exception",
+                            action="json-reconciliation-failed",
+                            message="Recovered SQLite index could not be reconciled with the preserved JSON history.",
+                            base=result,
+                        )
+                    result["jsonReconciliationRebuild"] = rebuild
+                    rebuilt_any_generation = True
+                    indexed_hash = json_hash
+
+                try:
+                    after = _get_history_index_status()
+                except Exception:
+                    return _history_recovery_failure(
+                        reconciliation,
+                        code="history_status_unavailable",
+                        action="json-reconciliation-failed",
+                        message="Final SQLite history status could not be verified.",
+                        base=result,
+                    )
+
+                result["jsonReconciliationValidation"] = validation
+                result["after"] = after
+                result["validation"] = validation
+                result["jsonReconciliationAttemptCount"] = attempt
+                after_matches = (
+                    bool(after.get("exists"))
+                    and str(after.get("recordsHash", "")) == json_hash
+                    and int(after.get("documentCount", -1) or 0) == int(json_snapshot["documentCount"])
+                    and int(after.get("roundCount", -1) or 0) == int(json_snapshot["roundCount"])
+                )
+                if not bool(validation.get("ok")) or not after_matches:
+                    return _history_recovery_failure(
+                        reconciliation,
+                        code="json_reconciliation_validation_failed",
+                        action="json-reconciliation-failed",
+                        message="Recovered SQLite index could not be reconciled with the preserved JSON history.",
+                        base=result,
+                    )
+
+                final_snapshot = _capture_history_recovery_json_snapshot()
+                if (
+                    bool(final_snapshot["valid"])
+                    and final_snapshot["generationSha256"] == json_snapshot["generationSha256"]
+                ):
+                    result["ok"] = True
+                    reconciliation["action"] = (
+                        "rebuild-index-from-preserved-json"
+                        if rebuilt_any_generation
+                        else "json-and-recovered-index-aligned"
+                    )
+                    return result
+
+                reconciliation["jsonGenerationChangedDuringRecovery"] = True
+                if bool(final_snapshot["exists"]) and bool(final_snapshot["valid"]):
+                    json_snapshot = final_snapshot
+                    _update_history_recovery_json_evidence(reconciliation, json_snapshot)
+                    continue
+                return _history_recovery_failure(
+                    reconciliation,
+                    code="json_generation_changed",
+                    action="json-generation-changed-during-reconciliation",
+                    message="JSON history changed during SQLite reconciliation; no JSON file was overwritten.",
+                    base=result,
+                )
+
+            return _history_recovery_failure(
+                reconciliation,
+                code="json_generation_unstable",
+                action="json-generation-unstable",
+                message="JSON history kept changing during SQLite reconciliation; retry after active history writes finish.",
+                base=result,
+            )
+
+        if recovered_records is None:
+            return _history_recovery_failure(
+                reconciliation,
+                code="recovered_index_unreadable",
+                action="recovered-index-unreadable",
+                message="Recovered SQLite index could not be materialized for reconciliation.",
+                base=result,
+            )
+
+        # JSON was genuinely absent both before and after low-level recovery.
+        # Publish only if it is still absent at the atomic link point.
+        try:
+            published = _write_records_json_atomic(recovered_records, only_if_absent=True)
+        except Exception:
+            return _history_recovery_failure(
+                reconciliation,
+                code="json_hydration_failed",
+                action="json-hydration-failed",
+                message="Recovered SQLite history could not be published to the missing JSON compatibility file.",
+                base=result,
+            )
+        if not published:
+            reconciliation["jsonGenerationChangedDuringRecovery"] = True
+            return _history_recovery_failure(
+                reconciliation,
+                code="json_generation_changed",
+                action="json-generation-created-during-recovery",
+                message="A JSON history generation appeared during recovery and was preserved without overwrite.",
+                base=result,
+            )
+
+        hydrated_snapshot = _capture_history_recovery_json_snapshot()
+        if (
+            not bool(hydrated_snapshot["valid"])
+            or hydrated_snapshot["recordsHash"] != recovered_hash
+        ):
+            return _history_recovery_failure(
+                reconciliation,
+                code="json_hydration_validation_failed",
+                action="json-hydration-failed",
+                message="Recovered JSON history could not be verified after publication.",
+                base=result,
+            )
+        _update_history_recovery_json_evidence(reconciliation, hydrated_snapshot)
+        reconciliation["source"] = "recovered_sqlite_backup"
+        reconciliation["action"] = "hydrate-missing-json-from-recovered-index"
+        result["ok"] = True
+        return result
+    finally:
+        # A successful low-level recovery changes the index even when a later
+        # reconciliation step fails; no readiness cache may survive it.
         _invalidate_history_ready_cache()
-    return result
 
 
 def get_history_index_maintenance_summary() -> Dict[str, Any]:
@@ -1085,10 +1493,11 @@ def _source_path_for_entry(doc_id: str, entry: Dict[str, Any]) -> Optional[Path]
 def _docx_processing_paths_for_source(source_path: Path) -> set[Path]:
     if source_path.suffix.lower() != ".docx":
         return set()
+    artifact_stem = build_document_artifact_stem(root_dir=ROOT_DIR, source_path=source_path)
     return {
-        (INTERMEDIATE_DIR / f"{source_path.stem}_docx_snapshot.json").resolve(),
-        (INTERMEDIATE_DIR / f"{source_path.stem}_extracted.txt").resolve(),
-        (INTERMEDIATE_DIR / f"{source_path.stem}_scope_diagnostics.json").resolve(),
+        (INTERMEDIATE_DIR / f"{artifact_stem}_docx_snapshot.json").resolve(),
+        (INTERMEDIATE_DIR / f"{artifact_stem}_extracted.txt").resolve(),
+        (INTERMEDIATE_DIR / f"{artifact_stem}_scope_diagnostics.json").resolve(),
     }
 
 

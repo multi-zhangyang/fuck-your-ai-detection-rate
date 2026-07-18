@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -42,6 +43,7 @@ from docx_pipeline import (  # noqa: E402
     _normalize_rewritten_text,
     _polish_rewritten_paragraph,
     _replace_paragraph_text,
+    _restore_rewritten_text_with_source_whitespace,
     get_docx_scope_diagnostics_path,
     get_docx_snapshot_path,
 )
@@ -140,10 +142,14 @@ def _run_english_run_spacing_regression() -> dict[str, Any]:
         failures.append("validation accepted corrupted English output")
     except ValueError:
         pass
-    bad_term_output = normalized_expected.replace("Key words: LoRA; QLoRA", "Key words: LoRA; QL")
+    # Use a unique protected term for the truncation probe.  QLoRA appears more
+    # than once in this fixture and occurrence counts are intentionally allowed
+    # to change during rewriting; truncating the unique versioned model token
+    # must still be rejected as a missing required term.
+    bad_term_output = normalized_expected.replace("Qwen2.5-1.5B-Instruct", "Qwen2.5-1.5B", 1)
     try:
         validate_chunk_output(normalized_expected, bad_term_output, "english-term-count-bad")
-        failures.append("validation accepted truncated English keyword term")
+        failures.append("validation accepted truncated protected technical term")
     except ValueError:
         pass
     return {
@@ -235,6 +241,78 @@ def _run_acknowledgement_boundary_regression() -> dict[str, Any]:
     if any("[1] Zhang" in text for text in references_case["editableTexts"]):
         failures.append("reference entries after acknowledgement should not be editable")
 
+    variant_boundaries: dict[str, int | None] = {}
+    for case_name, heading, entries in (
+        (
+            "reference_list",
+            "Reference List",
+            [
+                "[1] Smith J. Reliable control[J]. Systems Journal, 2021, 12(3): 44-59.",
+                "[2] Brown A. Boundary evaluation[M]. Academic Press, 2022.",
+            ],
+        ),
+        (
+            "sources_consulted",
+            "Sources Consulted",
+            [
+                "Smith, J. (2021). Reliable Control. Systems Journal, 12(3), 44-59.",
+                "Brown, A. (2022). Boundary Evaluation. Academic Press.",
+            ],
+        ),
+        (
+            "major_reference_materials_cn",
+            "主要参考资料",
+            [
+                "张三，李四. 时序约束研究[J]. 控制学报，2021，12(3)：44-52.",
+                "王五. 异构控制边界分析[M]. 北京：科学出版社，2022.",
+            ],
+        ),
+    ):
+        variant_case = _build_ack_boundary_sample(
+            REGRESSION_DIR / f"ack_boundary_{case_name}.docx",
+            [heading, *entries],
+        )
+        variant_scope = variant_case["diagnostics"].get("scope", {})
+        variant_boundaries[case_name] = variant_scope.get("postAcknowledgementBoundaryIndex")
+        if variant_boundaries[case_name] is None:
+            failures.append(f"{heading!r} should be recognized as a post-ack reference boundary")
+        for protected_text in (heading, *entries):
+            if protected_text in variant_case["editableTexts"]:
+                failures.append(f"{case_name}: reference heading/entry became editable: {protected_text}")
+
+    entry_run_case = _build_ack_boundary_sample(
+        REGRESSION_DIR / "ack_boundary_reference_entry_run.docx",
+        [
+            "[1] Taylor K. Robust sequence estimation[J]. Automation Journal, 2020, 6(1): 1-12.",
+            "[2] Clark M. Constraint propagation in practice[M]. Technical Press, 2021.",
+        ],
+    )
+    entry_run_scope = entry_run_case["diagnostics"].get("scope", {})
+    if entry_run_scope.get("postAcknowledgementBoundaryIndex") is None:
+        failures.append("two consecutive reference entries should establish a fail-safe post-ack boundary")
+    if any("Taylor K." in text or "Clark M." in text for text in entry_run_case["editableTexts"]):
+        failures.append("consecutive reference entries without a heading should not be editable")
+    entry_run_issue_codes = [
+        str(issue.get("code", ""))
+        for issue in entry_run_case["diagnostics"].get("issues", [])
+        if isinstance(issue, dict)
+    ]
+    if "unbounded_post_acknowledgement_tail" in entry_run_issue_codes:
+        failures.append("a confirmed consecutive reference run should be treated as a boundary, not an unbounded tail")
+
+    author_year_run_case = _build_ack_boundary_sample(
+        REGRESSION_DIR / "ack_boundary_author_year_reference_run.docx",
+        [
+            "Taylor, K. (2020). Robust Sequence Estimation. Automation Journal, 6(1), 1-12.",
+            "Clark, M. (2021). Constraint Propagation in Practice. Technical Press.",
+        ],
+    )
+    author_year_run_scope = author_year_run_case["diagnostics"].get("scope", {})
+    if author_year_run_scope.get("postAcknowledgementBoundaryIndex") is None:
+        failures.append("two consecutive author-year references should establish a fail-safe post-ack boundary")
+    if any("Taylor, K." in text or "Clark, M." in text for text in author_year_run_case["editableTexts"]):
+        failures.append("consecutive author-year references without a heading should not be editable")
+
     risky_tail_case = _build_ack_boundary_sample(
         REGRESSION_DIR / "ack_boundary_unbounded_tail.docx",
         ["[1] Zhang A. A sample reference entry without an explicit heading."],
@@ -252,6 +330,9 @@ def _run_acknowledgement_boundary_regression() -> dict[str, Any]:
         "failures": failures,
         "docEndIssueCodes": doc_end_issues,
         "referencesBoundaryIndex": references_scope.get("postAcknowledgementBoundaryIndex"),
+        "variantBoundaryIndexes": variant_boundaries,
+        "entryRunBoundaryIndex": entry_run_scope.get("postAcknowledgementBoundaryIndex"),
+        "authorYearRunBoundaryIndex": author_year_run_scope.get("postAcknowledgementBoundaryIndex"),
         "riskyTailIssueCodes": risky_codes,
     }
 
@@ -419,7 +500,15 @@ def create_regression_sample(path: Path) -> Path:
     add_paragraph(document, zh(0x7cfb, 0x7edf, 0x5b9e, 0x73b0, 0x8fb9, 0x754c, 0x6bb5, 0x843d, 0x63cf, 0x8ff0, 0x4e86, 0x79fb, 0x52a8, 0x7aef, 0x63a8, 0x7406, 0x4e0e, 0x7ed3, 0x679c, 0x5c55, 0x793a, 0x6d41, 0x7a0b, 0xff0c, 0x5e94, 0x5f53, 0x4f5c, 0x4e3a, 0x6b63, 0x6587, 0x53c2, 0x4e0e, 0x6539, 0x5199, 0x3002))
     add_paragraph(document, "3." + zh(0x7ed3, 0x679c, 0x5206, 0x6790))
     add_paragraph(document, zh(0x7ed3, 0x679c, 0x5206, 0x6790, 0x540e, 0x7684, 0x8fb9, 0x754c, 0x6bb5, 0x843d, 0x5bf9, 0x6a21, 0x578b, 0x8bef, 0x68c0, 0x60c5, 0x51b5, 0x8fdb, 0x884c, 0x8865, 0x5145, 0x8bf4, 0x660e, 0x3002))
-    add_paragraph(document, "1. " + zh(0x767b, 0x5f55, 0x6ce8, 0x518c, 0xff1a, 0x901a, 0x8fc7, 0x7528, 0x6237, 0x540d, 0x6216, 0x624b, 0x673a, 0x53f7, 0x521b, 0x5efa, 0x8d26, 0x6237, 0x5e76, 0x767b, 0x5f55, 0x7cfb, 0x7edf, 0xff0c, 0x4ee5, 0x8bbf, 0x95ee, 0x5e73, 0x53f0, 0x7684, 0x5404, 0x9879, 0x7ba1, 0x7406, 0x529f, 0x80fd, 0x3002))
+    # Keep one auto-numbered body paragraph with a measurable, safely removable
+    # style risk.  The targeted-rerun smoke later removes the content-light
+    # transition while preserving the numbering, facts and DOCX anchors.  This
+    # makes the production selector publish the fixture for a real combined
+    # style gain instead of relying on a zero-penalty synonym tie.
+    add_paragraph(
+        document,
+        "1. 登录注册：具体而言，用户通过用户名或手机号创建账户并登录系统，以访问平台的各项管理功能。",
+    )
     add_paragraph(document, "2." + zh(0x6743, 0x9650, 0x7ba1, 0x7406, 0x529f, 0x80fd, 0x8bf4, 0x660e))
     add_paragraph(document, zh(0x767b, 0x5f55, 0x6ce8, 0x518c, 0x6a21, 0x5757, 0x56f4, 0x7ed5, 0x8d26, 0x53f7, 0x521b, 0x5efa, 0x3001, 0x8eab, 0x4efd, 0x6821, 0x9a8c, 0x548c, 0x4f1a, 0x8bdd, 0x4fdd, 0x6301, 0x5c55, 0x5f00, 0x3002), style="List Number")
     add_paragraph(document, zh(0x56fe, 0x20) + "1 " + zh(0x70df, 0x53f6, 0x75c5, 0x6591, 0x533a, 0x57df, 0x793a, 0x610f), align=WD_ALIGN_PARAGRAPH.CENTER, bold=True)
@@ -584,7 +673,12 @@ def _audit_exported_text_integrity(export_path: Path, body_map: Any) -> dict[str
         if paragraph_index < 0 or paragraph_index >= len(document.paragraphs):
             issues.append({"type": "target_out_of_range", "unitIndex": unit_index, "target": target})
             continue
-        expected = _normalize_rewritten_text(str(getattr(unit, "current_text", "")))
+        expected = _restore_rewritten_text_with_source_whitespace(
+            str(getattr(unit, "current_text", "")),
+            original_text=str(getattr(unit, "original_text", "")),
+            leading_whitespace=str(getattr(unit, "leading_whitespace", "")),
+            trailing_whitespace=str(getattr(unit, "trailing_whitespace", "")),
+        )
         actual = document.paragraphs[paragraph_index].text
         check = {
             "unitIndex": unit_index,
@@ -627,7 +721,7 @@ def _run_export_text_integrity_block_regression(output_path: Path, export_path: 
     try:
         app_service.rebuild_docx_from_body_map_units = corrupting_rebuild
         try:
-            export_round_output(str(output_path), str(blocked_export_path), "docx")
+            export_round_output(str(output_path), str(blocked_export_path), "docx", "school_rules")
             failures.append("export accepted a corrupted rewritten DOCX target")
             export_failure: dict[str, Any] = {}
         except app_service.ExportRoundError as exc:
@@ -715,10 +809,7 @@ def _audit_snapshot_protection_scope(snapshot: Any | None, *, strict_sample_expe
         zh(0x7cfb, 0x7edf, 0x5b9e, 0x73b0, 0x8fb9, 0x754c, 0x6bb5, 0x843d),
         zh(0x7ed3, 0x679c, 0x5206, 0x6790, 0x540e, 0x7684, 0x8fb9, 0x754c, 0x6bb5, 0x843d),
         zh(0x767b, 0x5f55, 0x6ce8, 0x518c),
-        zh(0x6743, 0x9650, 0x7ba1, 0x7406, 0x529f, 0x80fd, 0x8bf4, 0x660e),
         zh(0x767b, 0x5f55, 0x6ce8, 0x518c, 0x6a21, 0x5757),
-        zh(0x611f, 0x8c22, 0x5bfc, 0x5e08),
-        zh(0x81f4, 0x8c22, 0x7b2c, 0x4e8c, 0x6bb5),
     ]
     for sample in expected_editable_samples:
         if not any(sample in unit.text and unit.editable for unit in units):
@@ -731,8 +822,11 @@ def _audit_snapshot_protection_scope(snapshot: Any | None, *, strict_sample_expe
         zh(0x6570, 0x636e, 0x4e0e, 0x65b9, 0x6cd5),
         "1.1 " + zh(0x7cfb, 0x7edf, 0x5b9e, 0x73b0),
         "3." + zh(0x7ed3, 0x679c, 0x5206, 0x6790),
+        "2." + zh(0x6743, 0x9650, 0x7ba1, 0x7406, 0x529f, 0x80fd, 0x8bf4, 0x660e),
         zh(0x56fe, 0x20) + "1",
         zh(0x6ce8, 0xff1a),
+        zh(0x611f, 0x8c22, 0x5bfc, 0x5e08),
+        zh(0x81f4, 0x8c22, 0x7b2c, 0x4e8c, 0x6bb5),
         zh(0x81f4, 0x8c22, 0x4e4b, 0x540e, 0x7684, 0x53c2, 0x8003, 0x6587, 0x732e),
         "post-ack protected page",
         zh(0x9644, 0x5f55) + "A " + zh(0x7cfb, 0x7edf, 0x622a, 0x56fe),
@@ -837,6 +931,58 @@ def _read_json(path: str | Path | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _audit_certified_export_bundle(export_result: dict[str, Any], latest_alias_path: Path) -> dict[str, Any]:
+    failures: list[str] = []
+    certified_path = Path(str(export_result.get("path", "") or ""))
+    attempt_id = str(export_result.get("exportAttemptId", "") or "")
+    artifact_sha256 = str(export_result.get("artifactSha256", "") or "")
+    manifest_path = Path(str(export_result.get("evidenceManifestPath", "") or ""))
+    if not certified_path.exists() or certified_path == latest_alias_path:
+        failures.append("certified export must use an existing immutable attempt path distinct from the latest alias")
+    if not attempt_id or attempt_id not in certified_path.name:
+        failures.append("certified export path is not bound to its attempt id")
+    actual_sha256 = hashlib.sha256(certified_path.read_bytes()).hexdigest() if certified_path.exists() else ""
+    if not artifact_sha256 or artifact_sha256 != actual_sha256:
+        failures.append("certified export SHA-256 does not match the immutable DOCX bytes")
+    if not latest_alias_path.exists() or (certified_path.exists() and latest_alias_path.read_bytes() != certified_path.read_bytes()):
+        failures.append("latest compatibility alias does not match the certified attempt bytes")
+
+    manifest = _read_json(manifest_path)
+    if not manifest:
+        failures.append("certified export evidence manifest is missing")
+    else:
+        if manifest.get("status") != "passed":
+            failures.append("certified export manifest status is not passed")
+        if manifest.get("exportAttemptId") != attempt_id:
+            failures.append("certified export manifest attempt id mismatch")
+        if manifest.get("artifactPath") != str(certified_path.resolve()):
+            failures.append("certified export manifest path mismatch")
+        if manifest.get("artifactSha256") != artifact_sha256:
+            failures.append("certified export manifest hash mismatch")
+        reports = manifest.get("reports") if isinstance(manifest.get("reports"), dict) else {}
+        if not reports:
+            failures.append("certified export manifest omitted reports")
+        for key, raw_report_path in reports.items():
+            report_path = Path(str(raw_report_path))
+            report = _read_json(report_path)
+            if not report:
+                failures.append(f"certified export report missing or invalid: {key}")
+                continue
+            if report.get("publishedArtifactPath") != str(certified_path.resolve()):
+                failures.append(f"certified export report path mismatch: {key}")
+            if report.get("artifactSha256") != artifact_sha256:
+                failures.append(f"certified export report hash mismatch: {key}")
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "certifiedPath": str(certified_path),
+        "latestAliasPath": str(latest_alias_path),
+        "attemptId": attempt_id,
+        "artifactSha256": artifact_sha256,
+        "manifestPath": str(manifest_path),
+    }
+
+
 def _chunk_text(chunk: dict[str, Any]) -> str:
     return str(chunk.get("outputText") or chunk.get("inputText") or "").strip()
 
@@ -864,9 +1010,188 @@ def _build_auto_numbered_rerun_feedback(chunk: dict[str, Any]) -> str:
     )
 
 
+def _run_tampered_targeted_rerun_contract_smoke(output_path: Path) -> dict[str, Any]:
+    failures: list[str] = []
+    compare_path = app_service._find_compare_path_for_output(output_path)
+    original_compare = compare_path.read_bytes()
+    compare_payload = json.loads(original_compare.decode("utf-8"))
+    chunks = compare_payload.get("chunks")
+    if not isinstance(chunks, list) or not chunks or not isinstance(chunks[0], dict):
+        return {"ok": False, "failures": ["no compare chunk was available for contract tamper smoke"]}
+    target_chunk = chunks[0]
+    target_chunk_id = str(target_chunk.get("chunkId", "") or "")
+    target_chunk["inputText"] = "论文标题不允许进入定点重跑模型输入"
+    compare_path.write_text(json.dumps(compare_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    builder_calls = 0
+    model_calls = 0
+    original_builder = app_service._build_transform_from_model_config
+
+    def fake_builder(_model_config: dict[str, Any]):
+        nonlocal builder_calls
+        builder_calls += 1
+
+        def should_never_run(chunk_text: str, _prompt_input: str, _round: int, _chunk_id: str) -> str:
+            nonlocal model_calls
+            model_calls += 1
+            return chunk_text
+
+        return should_never_run, "online"
+
+    blocked_message = ""
+    try:
+        app_service._build_transform_from_model_config = fake_builder
+        try:
+            app_service.rerun_compare_chunk(
+                str(output_path),
+                target_chunk_id,
+                {"baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
+            )
+        except ValueError as exc:
+            blocked_message = str(exc)
+        else:
+            failures.append("tampered DOCX targeted rerun was not blocked")
+    finally:
+        app_service._build_transform_from_model_config = original_builder
+        compare_path.write_bytes(original_compare)
+
+    if "冻结 chunk manifest" not in blocked_message:
+        failures.append(f"unexpected targeted-rerun contract block: {blocked_message}")
+    if builder_calls != 0 or model_calls != 0:
+        failures.append(f"targeted-rerun contract must block before model setup/call: builder={builder_calls}, model={model_calls}")
+
+    missing_body_map_builder_calls = 0
+    missing_body_map_model_calls = 0
+    missing_body_map_blocked_message = ""
+    body_map_path = app_service._find_body_map_path_for_output(output_path)
+    if body_map_path is None or not body_map_path.exists():
+        failures.append("DOCX round did not expose a body map for the missing-map contract smoke")
+    else:
+        original_body_map = body_map_path.read_bytes()
+
+        def missing_map_builder(_model_config: dict[str, Any]):
+            nonlocal missing_body_map_builder_calls
+            missing_body_map_builder_calls += 1
+
+            def should_never_run(chunk_text: str, _prompt_input: str, _round: int, _chunk_id: str) -> str:
+                nonlocal missing_body_map_model_calls
+                missing_body_map_model_calls += 1
+                return chunk_text
+
+            return should_never_run, "online"
+
+        try:
+            body_map_path.unlink()
+            app_service._build_transform_from_model_config = missing_map_builder
+            try:
+                app_service.rerun_compare_chunk(
+                    str(output_path),
+                    target_chunk_id,
+                    {"baseUrl": "http://localhost", "apiKey": "smoke", "model": "smoke-model"},
+                )
+            except ValueError as exc:
+                missing_body_map_blocked_message = str(exc)
+            else:
+                failures.append("DOCX targeted rerun without its frozen body map was not blocked")
+        finally:
+            app_service._build_transform_from_model_config = original_builder
+            body_map_path.write_bytes(original_body_map)
+
+        if "冻结 body map 缺失" not in missing_body_map_blocked_message:
+            failures.append(f"unexpected missing-body-map contract block: {missing_body_map_blocked_message}")
+        if missing_body_map_builder_calls != 0 or missing_body_map_model_calls != 0:
+            failures.append(
+                "missing body-map contract must block before model setup/call: "
+                f"builder={missing_body_map_builder_calls}, model={missing_body_map_model_calls}"
+            )
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "targetChunkId": target_chunk_id,
+        "builderCalls": builder_calls,
+        "modelCalls": model_calls,
+        "blockedMessage": blocked_message,
+        "missingBodyMap": {
+            "builderCalls": missing_body_map_builder_calls,
+            "modelCalls": missing_body_map_model_calls,
+            "blockedMessage": missing_body_map_blocked_message,
+        },
+    }
+
+
+def _run_atomic_docx_export_commit_smoke(output_path: Path, export_path: Path) -> dict[str, Any]:
+    failures: list[str] = []
+    if not export_path.exists():
+        return {"ok": False, "failures": ["successful baseline export is missing"]}
+
+    certified_bytes = export_path.read_bytes()
+    staging_pattern = f".{export_path.stem}.*.tmp{export_path.suffix}"
+    staging_before = {path.resolve() for path in export_path.parent.glob(staging_pattern)}
+    original_audit = app_service.audit_docx_export
+    blocked_stage = ""
+
+    def force_post_build_audit_failure(
+        _export_path: Path,
+        *,
+        source_path: Path,
+        snapshot_path: Path,
+        expected_source_sha256: str | None = None,
+        provenance_source_path: Path | None = None,
+        report_path: Path,
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "issueCount": 1,
+            "issues": [
+                {
+                    "code": "forced_atomic_commit_regression",
+                    "message": "forced post-build audit failure",
+                }
+            ],
+            "sourcePath": str(source_path),
+            "sourceSha256": str(expected_source_sha256 or ""),
+            "expectedSourceSha256": str(expected_source_sha256 or ""),
+            "sourceGenerationStable": True,
+            "provenanceSourcePath": str(provenance_source_path or ""),
+            "snapshotPath": str(snapshot_path),
+            "reportPath": str(report_path),
+        }
+
+    try:
+        app_service.audit_docx_export = force_post_build_audit_failure
+        try:
+            app_service.export_round_output(str(output_path), str(export_path), "docx", "school_rules")
+        except app_service.ExportRoundError as exc:
+            failure = exc.export_failure if isinstance(exc.export_failure, dict) else {}
+            blocked_stage = str(failure.get("stage", "") or "")
+        else:
+            failures.append("forced post-build DOCX audit failure did not block export")
+    finally:
+        app_service.audit_docx_export = original_audit
+
+    if blocked_stage != "audit":
+        failures.append(f"forced atomic export failure stopped at unexpected stage: {blocked_stage}")
+    if not export_path.exists() or export_path.read_bytes() != certified_bytes:
+        failures.append("failed DOCX export replaced or removed the previous certified file")
+    staging_after = {path.resolve() for path in export_path.parent.glob(staging_pattern)}
+    leaked_staging = sorted(str(path) for path in staging_after - staging_before)
+    if leaked_staging:
+        failures.append(f"failed DOCX export leaked staging files: {leaked_staging}")
+
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "blockedStage": blocked_stage,
+        "previousCertifiedFilePreserved": export_path.exists() and export_path.read_bytes() == certified_bytes,
+        "leakedStagingPaths": leaked_staging,
+    }
+
+
 def _run_auto_numbered_targeted_rerun_smoke(output_path: Path, export_path: Path, snapshot_path: Path) -> dict[str, Any]:
     failures: list[str] = []
-    rerun_marker = "AUTO_NUMBERED_RERUN_EXPORT_MARKER"
+    removable_transition = "具体而言，"
+    required_body_phrase = "用户通过用户名或手机号创建账户"
+    rerun_marker = "登录注册：用户通过"
     compare_payload = app_service.read_round_compare(str(output_path))
     target_chunk = _find_auto_numbered_body_chunk(compare_payload)
     if target_chunk is None:
@@ -880,7 +1205,19 @@ def _run_auto_numbered_targeted_rerun_smoke(output_path: Path, export_path: Path
     def fake_builder(_model_config: dict[str, Any]):
         def smoke_transform(chunk_text: str, prompt_input: str, _round: int, _chunk_id: str) -> str:
             prompts.append(prompt_input)
-            return f"{chunk_text} {rerun_marker}。"
+            # Exercise a real, minimal style repair by removing only a
+            # content-light mechanical transition.  The source therefore has a
+            # positive production style penalty and the fact-preserving
+            # candidate has a measurable combined gain.
+            if removable_transition not in chunk_text:
+                raise AssertionError(
+                    f"auto-numbered rerun fixture is missing {removable_transition!r}"
+                )
+            if required_body_phrase not in chunk_text:
+                raise AssertionError(
+                    f"auto-numbered rerun fixture is missing {required_body_phrase!r}"
+                )
+            return chunk_text.replace(removable_transition, "", 1)
 
         return smoke_transform, "online"
 
@@ -897,8 +1234,33 @@ def _run_auto_numbered_targeted_rerun_smoke(output_path: Path, export_path: Path
 
     rerun_chunk = rerun_result.get("chunk") if isinstance(rerun_result, dict) else {}
     output_text = str(rerun_chunk.get("outputText", "")) if isinstance(rerun_chunk, dict) else ""
+    selection = rerun_chunk.get("candidateSelection") if isinstance(rerun_chunk, dict) else None
+    selection = selection if isinstance(selection, dict) else {}
+    candidates = selection.get("candidates") if isinstance(selection.get("candidates"), list) else []
+    baseline_candidate = next(
+        (
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("origin") == "baseline"
+        ),
+        {},
+    )
+    selected_candidate = next(
+        (
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, dict)
+            and str(candidate.get("candidateId", "")) == str(selection.get("selectedCandidateId", ""))
+        ),
+        {},
+    )
+    output_sha256 = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
     if not AUTO_NUMBERED_BODY_RE.search(output_text):
         failures.append("targeted rerun did not preserve the auto-numbered paragraph prefix")
+    if removable_transition in output_text:
+        failures.append("auto-numbered targeted rerun did not remove the measured mechanical transition")
+    if rerun_marker not in output_text:
+        failures.append("auto-numbered targeted rerun did not publish the minimal transition removal")
     if not prompts or "AUTO_NUMBERED_RERUN_USER_FEEDBACK" not in prompts[0]:
         failures.append("auto-numbered targeted rerun prompt did not include the user feedback")
     if prompts and "[DETECTOR MICRO-REPAIR MODE]" in prompts[0]:
@@ -907,9 +1269,51 @@ def _run_auto_numbered_targeted_rerun_smoke(output_path: Path, export_path: Path
         failures.append("auto-numbered targeted rerun should not emit legacy candidate metadata")
     if isinstance(rerun_chunk, dict) and "rerunDetectorProfile" in rerun_chunk:
         failures.append("auto-numbered targeted rerun should not persist removed detection-report metadata")
+    if selection.get("schema") != "fyadr.chunk-candidate-selection" or selection.get("schemaVersion") != 2:
+        failures.append("auto-numbered targeted rerun did not persist the production candidate-selection schema")
+    if selection.get("decision") != "generated_selected":
+        failures.append(f"auto-numbered production selector did not publish the repaired candidate: {selection.get('decision')}")
+    if selection.get("publishedRewrite") is not True or selection.get("selectedOrigin") != "model":
+        failures.append("auto-numbered production selector evidence does not identify a published model rewrite")
+    if selection.get("runFailed") is not False:
+        failures.append("auto-numbered production selector incorrectly marked the published rerun as failed")
+    if "combined_style_penalty_improved" not in list(selection.get("reasonCodes") or []):
+        failures.append("auto-numbered production selector did not record a measurable combined style gain")
+    if len(prompts) != 1 or selection.get("modelAttemptCount") != 1 or selection.get("conditionalRetryCount") != 0:
+        failures.append(
+            "auto-numbered measurable-gain candidate should publish on the first bounded attempt: "
+            f"prompts={len(prompts)}, modelAttempts={selection.get('modelAttemptCount')}, "
+            f"conditionalRetries={selection.get('conditionalRetryCount')}"
+        )
+    if not baseline_candidate or not selected_candidate:
+        failures.append("auto-numbered production selector omitted baseline/selected candidate evidence")
+    else:
+        try:
+            baseline_penalty = float(baseline_candidate.get("stylePenalty"))
+            selected_penalty = float(selected_candidate.get("stylePenalty"))
+        except (TypeError, ValueError):
+            failures.append("auto-numbered production selector emitted invalid style penalties")
+        else:
+            if selected_penalty > baseline_penalty - 0.05:
+                failures.append(
+                    "auto-numbered selected candidate did not achieve the required style-penalty gain: "
+                    f"baseline={baseline_penalty}, selected={selected_penalty}"
+                )
+        if selected_candidate.get("hardValid") is not True or selected_candidate.get("safetyEligible") is not True:
+            failures.append("auto-numbered selected candidate did not pass the production hard/safety gates")
+        if selected_candidate.get("factualGuardPassed") is not True:
+            failures.append("auto-numbered selected candidate did not pass the factual-relation guard")
+        if selected_candidate.get("readabilityGuardPassed") is not True:
+            failures.append("auto-numbered selected candidate did not pass the academic-readability delta guard")
+    for hash_field in ("selectedTextSha256", "resultTextSha256", "publishedTextSha256"):
+        if selection.get(hash_field) != output_sha256:
+            failures.append(f"auto-numbered production selector {hash_field} is not bound to outputText")
+    for count_field in ("selectedCharCount", "resultCharCount", "publishedCharCount"):
+        if selection.get(count_field) != len(output_text):
+            failures.append(f"auto-numbered production selector {count_field} is not bound to outputText")
 
     post_export_path = export_path.with_name(f"{export_path.stem}_auto_numbered_post_rerun{export_path.suffix}")
-    post_export = app_service.export_round_output(str(output_path), str(post_export_path), "docx")
+    post_export = app_service.export_round_output(str(output_path), str(post_export_path), "docx", "school_rules")
     post_format_audit = _audit_exported_editable_format(post_export_path, snapshot_path)
     post_body_map = load_docx_body_map(output_path.with_name(f"{output_path.stem}_body_map.json"))
     post_text_integrity = _audit_exported_text_integrity(post_export_path, post_body_map)
@@ -919,8 +1323,16 @@ def _run_auto_numbered_targeted_rerun_smoke(output_path: Path, export_path: Path
         failures.append(f"auto-numbered post-rerun export OOXML audit issues: {post_export.get('ooxmlAuditIssueCount')}")
     if int(post_export.get("preflightIssueCount", 0) or 0) != 0:
         failures.append(f"auto-numbered post-rerun export preflight issues: {post_export.get('preflightIssueCount')}")
-    if not bool(post_format_audit.get("ok")):
-        failures.append(f"auto-numbered post-rerun format audit issues: {len(post_format_audit.get('issues', []) or [])}")
+    # School rules are diagnostic-only.  The exported file must keep the source
+    # format even when this legacy call explicitly requests ``school_rules``.
+    if str(post_export.get("formatMode", "")) != "preserve_original":
+        failures.append(f"auto-numbered post-rerun format mode escaped fidelity lock: {post_export.get('formatMode')}")
+    if int(post_export.get("formatLockIssueCount", 0) or 0) != 0:
+        failures.append(f"auto-numbered post-rerun format-lock issues: {post_export.get('formatLockIssueCount')}")
+    if not bool(post_export.get("contentContractReady")):
+        failures.append("auto-numbered post-rerun content contract did not pass")
+    if int(post_export.get("editableHeadingCount", 0) or 0) != 0:
+        failures.append(f"auto-numbered post-rerun exposed editable headings: {post_export.get('editableHeadingCount')}")
     if not bool(post_text_integrity.get("ok")):
         failures.append(f"auto-numbered post-rerun text integrity issues: {len(post_text_integrity.get('issues', []) or [])}")
     exported_text = "\n".join(paragraph.text for paragraph in Document(str(post_export_path.resolve())).paragraphs)
@@ -934,6 +1346,8 @@ def _run_auto_numbered_targeted_rerun_smoke(output_path: Path, export_path: Path
         "targetText": _chunk_text(target_chunk),
         "promptContainsUserFeedback": bool(prompts and "AUTO_NUMBERED_RERUN_USER_FEEDBACK" in prompts[0]),
         "prefixPreserved": bool(AUTO_NUMBERED_BODY_RE.search(output_text)),
+        "candidateSelection": selection,
+        "measuredTransitionRemoved": removable_transition not in output_text,
         "postRerunExport": post_export,
         "postRerunFormatAudit": post_format_audit,
         "postRerunTextIntegrity": post_text_integrity,
@@ -957,15 +1371,21 @@ def run_regression(
 
     previous_rules_bytes, applied_rules = _activate_school_spec_for_regression(school_spec_path)
     auto_numbered_rerun = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
+    tampered_targeted_rerun = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
+    atomic_export_commit = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
+    certified_export_bundle = {"ok": True, "skipped": True, "reason": "export not completed"}
     export_text_integrity_block = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
     body_map = None
     try:
         round_result = run_document_round(sample_path, identity_transform, round_number=1, prompt_profile="cn")
         output_path = Path(str(round_result["output_path"]))
-        export_result = export_round_output(str(output_path), str(export_path), "docx")
+        export_result = export_round_output(str(output_path), str(export_path), "docx", "school_rules")
+        certified_export_bundle = _audit_certified_export_bundle(export_result, export_path)
         body_map = load_docx_body_map(Path(str(round_result.get("body_map_path", ""))))
         if strict_sample_scope:
+            atomic_export_commit = _run_atomic_docx_export_commit_smoke(output_path, export_path)
             export_text_integrity_block = _run_export_text_integrity_block_regression(output_path, export_path)
+            tampered_targeted_rerun = _run_tampered_targeted_rerun_contract_smoke(output_path)
             auto_numbered_rerun = _run_auto_numbered_targeted_rerun_smoke(
                 output_path,
                 export_path,
@@ -1040,8 +1460,51 @@ def run_regression(
         failures.append(f"body map count mismatch: {len(body_map.units)} != {snapshot.editable_unit_count}")
     if strict_preflight and int(export_result.get("preflightIssueCount", 0) or 0) != 0:
         failures.append(f"preflight issues: {export_result.get('preflightIssueCount')}")
-    if not bool(format_audit.get("ok")):
-        failures.append(f"format audit issues: {len(format_audit.get('issues', []) or [])}")
+    # ``format_audit`` records differences from the optional school-rule
+    # reference and is no longer a pass/fail export condition.  Fidelity is
+    # asserted by the source-relative format lock below.
+    if str(export_result.get("formatMode", "")) != "preserve_original":
+        failures.append(f"unexpected product format mode: {export_result.get('formatMode')}")
+    if int(export_result.get("evidenceVersion", 0) or 0) != 1:
+        failures.append(f"unexpected export evidence version: {export_result.get('evidenceVersion')}")
+    if str(export_result.get("overallStatus", "")) != "passed":
+        failures.append(f"unexpected export evidence status: {export_result.get('overallStatus')}")
+    if str(export_result.get("sourceKind", "")) != "original_docx":
+        failures.append(f"unexpected export source kind: {export_result.get('sourceKind')}")
+    if str(export_result.get("contentContractStatus", "")) != "passed":
+        failures.append(f"content-contract evidence was not explicit: {export_result.get('contentContractStatus')}")
+    if str(export_result.get("formatLockStatus", "")) != "passed":
+        failures.append(f"format-lock evidence was not explicit: {export_result.get('formatLockStatus')}")
+    performed_checks = {
+        str(item)
+        for item in (export_result.get("checksPerformed") or [])
+        if str(item).strip()
+    }
+    required_checks = {
+        "document_generation",
+        "format_preflight",
+        "pre_export_guard",
+        "content_contract",
+        "text_integrity",
+        "protected_text_audit",
+        "ooxml_integrity",
+        "format_lock",
+        "post_export_contract",
+    }
+    if not required_checks.issubset(performed_checks):
+        failures.append(f"export evidence omitted performed checks: {sorted(required_checks - performed_checks)}")
+    if int(export_result.get("formatLockIssueCount", 0) or 0) != 0:
+        failures.append(f"format-lock issues: {export_result.get('formatLockIssueCount')}")
+    if not str(export_result.get("formatLockPath", "")).strip():
+        failures.append("missing format-lock audit path")
+    if not bool(export_result.get("contentContractReady")):
+        failures.append("content-only contract did not pass")
+    if int(export_result.get("contentContractIssueCount", 0) or 0) != 0:
+        failures.append(f"content-contract issues: {export_result.get('contentContractIssueCount')}")
+    if int(export_result.get("editableHeadingCount", 0) or 0) != 0:
+        failures.append(f"editable headings leaked into contract: {export_result.get('editableHeadingCount')}")
+    if not bool(export_result.get("modelInputMatchesEditableUnits")):
+        failures.append("model input does not match frozen editable units")
     if not bool(exported_text_integrity.get("ok")):
         failures.append(f"exported text integrity issues: {len(exported_text_integrity.get('issues', []) or [])}")
     if not bool(protection_scope_audit.get("ok")):
@@ -1062,6 +1525,12 @@ def run_regression(
             failures.append("scope diagnostics missing post-acknowledgement boundary")
     if not bool(auto_numbered_rerun.get("ok", True)):
         failures.extend(f"auto-numbered targeted rerun: {failure}" for failure in auto_numbered_rerun.get("failures", []) or [])
+    if not bool(tampered_targeted_rerun.get("ok", True)):
+        failures.extend(f"tampered targeted rerun contract: {failure}" for failure in tampered_targeted_rerun.get("failures", []) or [])
+    if not bool(atomic_export_commit.get("ok", True)):
+        failures.extend(f"atomic DOCX export commit: {failure}" for failure in atomic_export_commit.get("failures", []) or [])
+    if not bool(certified_export_bundle.get("ok", True)):
+        failures.extend(f"certified DOCX export bundle: {failure}" for failure in certified_export_bundle.get("failures", []) or [])
     for sample_key in ("guardIssueSamples", "auditIssueSamples", "ooxmlAuditIssueSamples", "preflightIssueSamples"):
         if sample_key not in export_result:
             failures.append(f"missing export issue sample field: {sample_key}")
@@ -1122,6 +1591,9 @@ def run_regression(
         "compareFallbackSpacing": compare_fallback_spacing,
         "comparePayloadIntegrity": compare_payload_integrity,
         "exportTextIntegrityBlock": export_text_integrity_block,
+        "atomicExportCommit": atomic_export_commit,
+        "certifiedExportBundle": certified_export_bundle,
+        "tamperedTargetedRerun": tampered_targeted_rerun,
         "autoNumberedRerun": auto_numbered_rerun,
         "audit": {
             "ok": bool(audit_report.get("ok")),

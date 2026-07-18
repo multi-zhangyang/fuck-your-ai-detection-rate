@@ -12,16 +12,36 @@ import shutil
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Iterable
 
 from prompt_library import LEGACY_PROMPT_PROFILE, is_prompt_sequence_customizable
+from path_utils import is_path_under
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FINISH_DIR = ROOT_DIR / "finish"
 DB_PATH = FINISH_DIR / "fyadr_history.sqlite3"
 BACKUP_DIR = FINISH_DIR / "history_db_backups"
 DEFAULT_BACKUP_KEEP = 12
+MAX_BACKUP_KEEP = 100
+
+
+def coerce_backup_keep(value: Any, *, default: int = DEFAULT_BACKUP_KEEP) -> int:
+    """Coerce a client-supplied ``keep`` value into a safe retention count.
+
+    Keeps the ``[1, MAX_BACKUP_KEEP]`` most recent backups. ``keep <= 0`` used
+    to prune every backup (including the one just written), so it is rejected
+    and clamped to the default rather than silently destroying all backups.
+    """
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if parsed <= 0:
+        parsed = default
+    if parsed > MAX_BACKUP_KEEP:
+        return MAX_BACKUP_KEEP
+    return parsed
 DEFAULT_COMPACT_DELETE_EVENT_THRESHOLD = 8
 DEFAULT_COMPACT_DELETED_ROW_THRESHOLD = 128
 DEFAULT_COMPACT_FREE_BYTES_THRESHOLD = 4 * 1024 * 1024
@@ -31,6 +51,30 @@ MIGRATION_IDS = (
     "001_initial_history_index",
     "002_history_integrity_governance",
 )
+
+# Concurrency tuning. SQLite serializes writes through its file lock; when a
+# background round-completion thread and an API request thread both touch the
+# history index at once, the default 5-second connect timeout raises
+# "database is locked" far too quickly. We raise the connect-level timeout
+# and set PRAGMA busy_timeout so the SQLite engine waits for the lock instead
+# of failing fast.
+HISTORY_DB_BUSY_TIMEOUT_SECONDS = 30.0
+
+
+def _connect_history_db(db_path: Path) -> sqlite3.Connection:
+    """Open a history-index connection with safe concurrency defaults.
+
+    Enables foreign keys and a busy_timeout so concurrent writers (round
+    completion vs. API requests) wait for the file lock instead of raising
+    ``database is locked``. Callers own the connection; use as a context
+    manager to commit/rollback.
+    """
+
+    connection = sqlite3.connect(str(db_path), timeout=HISTORY_DB_BUSY_TIMEOUT_SECONDS)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(f"PRAGMA busy_timeout = {int(HISTORY_DB_BUSY_TIMEOUT_SECONDS * 1000)}")
+    return connection
+
 
 PATH_FIELDS = (
     "input_path",
@@ -53,7 +97,7 @@ def rebuild_history_index(
 
     normalized_db_path = db_path.resolve()
     normalized_db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(normalized_db_path)) as connection:
+    with _connect_history_db(normalized_db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         _ensure_schema(connection)
         _clear_index(connection)
@@ -95,7 +139,7 @@ def upsert_document_record(
     normalized_doc_id = _normalize_record_path(doc_id)
     normalized_db_path = db_path.resolve()
     normalized_db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(normalized_db_path)) as connection:
+    with _connect_history_db(normalized_db_path) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         _ensure_schema(connection)
@@ -132,7 +176,7 @@ def delete_document_record(
     normalized_doc_id = _normalize_record_path(doc_id)
     normalized_db_path = db_path.resolve()
     normalized_db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(normalized_db_path)) as connection:
+    with _connect_history_db(normalized_db_path) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         _ensure_schema(connection)
@@ -184,6 +228,7 @@ def backup_history_index(
     backup_dir: Path = BACKUP_DIR,
     db_path: Path = DB_PATH,
 ) -> dict[str, Any]:
+    keep = coerce_backup_keep(keep)
     normalized_db_path = db_path.resolve()
     normalized_backup_dir = backup_dir.resolve()
     if not normalized_db_path.exists():
@@ -199,9 +244,9 @@ def backup_history_index(
     backup_path = _next_history_backup_path(normalized_backup_dir, reason)
     before_status = get_history_index_status(db_path=normalized_db_path)
     try:
-        with sqlite3.connect(str(normalized_db_path)) as source:
+        with _connect_history_db(normalized_db_path) as source:
             _checkpoint_connection(source)
-            with sqlite3.connect(str(backup_path)) as target:
+            with _connect_history_db(backup_path) as target:
                 source.backup(target)
     except Exception as exc:
         if backup_path.exists():
@@ -240,6 +285,7 @@ def compact_history_index(
     db_path: Path = DB_PATH,
     reason: str = "manual",
 ) -> dict[str, Any]:
+    keep = coerce_backup_keep(keep)
     normalized_db_path = db_path.resolve()
     if not normalized_db_path.exists():
         return {
@@ -262,7 +308,7 @@ def compact_history_index(
         }
 
     try:
-        with sqlite3.connect(str(normalized_db_path)) as connection:
+        with _connect_history_db(normalized_db_path) as connection:
             _checkpoint_connection(connection)
             connection.execute("VACUUM")
             connection.execute("ANALYZE")
@@ -329,7 +375,7 @@ def apply_history_delete_maintenance(
     event_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     row_delta = max(0, int(documents_deleted or 0)) + max(0, int(rounds_deleted or 0)) + max(0, int(artifact_rows_deleted or 0))
     file_delta = max(0, int(files_deleted or 0))
-    with sqlite3.connect(str(normalized_db_path)) as connection:
+    with _connect_history_db(normalized_db_path) as connection:
         connection.row_factory = sqlite3.Row
         _ensure_schema(connection)
         counters = _read_maintenance_counters(connection)
@@ -416,6 +462,7 @@ def recover_history_index(
     backup_dir: Path = BACKUP_DIR,
     db_path: Path = DB_PATH,
 ) -> dict[str, Any]:
+    keep = coerce_backup_keep(keep)
     normalized_db_path = db_path.resolve()
     normalized_backup_dir = backup_dir.resolve()
     try:
@@ -458,19 +505,11 @@ def recover_history_index(
             raw_current_backup = _copy_current_db_file(normalized_db_path, normalized_backup_dir, "pre_recover_raw")
 
     normalized_db_path.parent.mkdir(parents=True, exist_ok=True)
-    source_connection: sqlite3.Connection | None = None
-    target_connection: sqlite3.Connection | None = None
-    try:
-        source_connection = sqlite3.connect(str(resolved_backup))
-        target_connection = sqlite3.connect(str(normalized_db_path))
-        source_connection.backup(target_connection)
-        target_connection.commit()
-        _checkpoint_connection(target_connection)
-    finally:
-        if target_connection is not None:
-            target_connection.close()
-        if source_connection is not None:
-            source_connection.close()
+    with _connect_history_db(resolved_backup) as source_connection:
+        with _connect_history_db(normalized_db_path) as target_connection:
+            source_connection.backup(target_connection)
+            target_connection.commit()
+            _checkpoint_connection(target_connection)
     _delete_sqlite_journal_files(normalized_db_path)
 
     after_validation = check_history_index(db_path=normalized_db_path)
@@ -506,7 +545,7 @@ def get_history_index_status(*, db_path: Path = DB_PATH) -> dict[str, Any]:
             "appliedMigrations": [],
         }
 
-    with sqlite3.connect(str(normalized_db_path)) as connection:
+    with _connect_history_db(normalized_db_path) as connection:
         connection.row_factory = sqlite3.Row
         _ensure_schema(connection)
         applied_migrations = _applied_migrations(connection)
@@ -543,7 +582,7 @@ def load_records_from_index(
     if not normalized_db_path.exists():
         return None
     try:
-        with sqlite3.connect(str(normalized_db_path)) as connection:
+        with _connect_history_db(normalized_db_path) as connection:
             connection.row_factory = sqlite3.Row
             _ensure_schema(connection)
             if int(_get_metadata(connection, "schema_version") or 0) != SCHEMA_VERSION:
@@ -590,7 +629,7 @@ def list_referenced_artifact_paths(*, db_path: Path = DB_PATH, strict: bool = Fa
     if not normalized_db_path.exists():
         return None
     try:
-        with sqlite3.connect(str(normalized_db_path)) as connection:
+        with _connect_history_db(normalized_db_path) as connection:
             _ensure_schema(connection)
             if int(_get_metadata(connection, "schema_version") or 0) != SCHEMA_VERSION:
                 return None
@@ -634,7 +673,7 @@ def list_document_round_artifact_refs(
                 ])
             where_parts.append("(" + " OR ".join(filter_parts) + ")")
 
-        with sqlite3.connect(str(normalized_db_path)) as connection:
+        with _connect_history_db(normalized_db_path) as connection:
             connection.row_factory = sqlite3.Row
             _ensure_schema(connection)
             if int(_get_metadata(connection, "schema_version") or 0) != SCHEMA_VERSION:
@@ -768,7 +807,7 @@ def check_history_index(
         return _build_check_report(checked_at, normalized_db_path, status, expected_counts, issues)
 
     try:
-        with sqlite3.connect(str(normalized_db_path)) as connection:
+        with _connect_history_db(normalized_db_path) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             _ensure_schema(connection)
@@ -926,7 +965,7 @@ def _load_history_documents_from_index(
     if not normalized_db_path.exists():
         return None
 
-    with sqlite3.connect(str(normalized_db_path)) as connection:
+    with _connect_history_db(normalized_db_path) as connection:
         connection.row_factory = sqlite3.Row
         _ensure_schema(connection)
         if int(_get_metadata(connection, "schema_version") or 0) != SCHEMA_VERSION:
@@ -1063,7 +1102,7 @@ def _query_history_artifacts_from_index(
         return None
 
     filters = _normalize_artifact_query_filters(raw_filters)
-    with sqlite3.connect(str(normalized_db_path)) as connection:
+    with _connect_history_db(normalized_db_path) as connection:
         connection.row_factory = sqlite3.Row
         _ensure_schema(connection)
         if int(_get_metadata(connection, "schema_version") or 0) != SCHEMA_VERSION:
@@ -1317,14 +1356,24 @@ def _history_stats_artifact_kind(path: str, stored_kind: str) -> str:
 
 
 def _is_history_stats_safe_generated_artifact(path: str) -> bool:
-    absolute = _record_path_to_absolute(path)
-    if absolute is None:
+    # Fast path: the stored paths are slash-normalized strings. The "safe
+    # generated artifact" gate only ever returns True for paths rooted under
+    # <ROOT_DIR>/finish/intermediate|web_exports, so reject any path that is
+    # clearly outside ROOT_DIR without touching the filesystem (Path.resolve
+    # stats every component and dominated the per-round artifact-stats build
+    # for list_document_histories — ~50ms for a few hundred artifacts).
+    normalized = _normalize_record_path(path)
+    if not normalized:
         return False
-    try:
-        relative = absolute.relative_to(ROOT_DIR)
-    except ValueError:
+    root_str = str(ROOT_DIR).replace("\\", "/").rstrip("/")
+    if normalized.startswith(root_str + "/"):
+        rel = normalized[len(root_str) + 1:]
+    elif not PurePath(normalized).is_absolute():
+        rel = normalized
+    else:
         return False
-    parts = relative.parts
+    rel = rel.lstrip("/")
+    parts = [part for part in rel.split("/") if part]
     return len(parts) >= 2 and parts[0] == "finish" and parts[1] in {"intermediate", "web_exports"}
 
 
@@ -1683,7 +1732,7 @@ def _sqlite_storage_stats(db_path: Path) -> dict[str, Any]:
             "freeRatio": 0,
         }
     try:
-        with sqlite3.connect(str(normalized_db_path)) as connection:
+        with _connect_history_db(normalized_db_path) as connection:
             page_size = int(connection.execute("PRAGMA page_size").fetchone()[0] or 0)
             page_count = int(connection.execute("PRAGMA page_count").fetchone()[0] or 0)
             free_page_count = int(connection.execute("PRAGMA freelist_count").fetchone()[0] or 0)
@@ -1746,7 +1795,7 @@ def _read_maintenance_counters_from_db(db_path: Path) -> dict[str, Any]:
     if not normalized_db_path.exists():
         return _empty_maintenance_counters()
     try:
-        with sqlite3.connect(str(normalized_db_path)) as connection:
+        with _connect_history_db(normalized_db_path) as connection:
             connection.row_factory = sqlite3.Row
             _ensure_schema(connection)
             return _read_maintenance_counters(connection)
@@ -1800,7 +1849,7 @@ def _build_compaction_advice(
 
 def _mark_history_index_compacted(db_path: Path, reason: str) -> None:
     compacted_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(str(db_path.resolve())) as connection:
+    with _connect_history_db(db_path.resolve()) as connection:
         connection.row_factory = sqlite3.Row
         _ensure_schema(connection)
         counters = _empty_maintenance_counters()
@@ -1862,14 +1911,6 @@ def _prune_history_db_backups(backup_dir: Path, keep: int) -> list[str]:
     return pruned
 
 
-def _is_path_under(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
-
-
 def _resolve_history_backup_path(backup_path: str | Path | None, backup_dir: Path) -> Path | None:
     normalized_backup_dir = backup_dir.resolve()
     if backup_path is None or not str(backup_path).strip():
@@ -1887,7 +1928,7 @@ def _resolve_history_backup_path(backup_path: str | Path | None, backup_dir: Pat
     if not candidate.is_absolute():
         candidate = normalized_backup_dir / candidate
     candidate = candidate.resolve()
-    if not _is_path_under(candidate, normalized_backup_dir):
+    if not is_path_under(candidate, normalized_backup_dir):
         raise ValueError(f"Backup path must stay under {normalized_backup_dir}")
     if not candidate.exists() or not candidate.is_file():
         raise ValueError(f"Backup file does not exist: {candidate}")

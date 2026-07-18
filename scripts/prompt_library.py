@@ -20,6 +20,185 @@ DEFAULT_MAX_CONTINUATION_ROUNDS = 12
 MAX_PROMPT_SEQUENCE_ROUNDS = DEFAULT_MAX_PROMPT_SEQUENCE_ROUNDS
 PROMPT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 DEFAULT_PROMPT_SEQUENCE = ["prewrite", "round1", "round2"]
+
+# Each pass has a distinct editing responsibility so later rounds do not
+# mechanically rewrite the same sentence again.  Metrics are advisory quality
+# proxies, not authorship detectors and not targets to optimise at any cost.
+ROUND_PERTURBATION_DIMENSIONS: dict[str, dict[str, str]] = {
+    "prewrite": {
+        "id": "structure_warmup",
+        "label": "保守润色",
+        "description": "只修复明显生硬、重复或模板化的局部表达。",
+        "primaryMetric": "burstinessRatio",
+    },
+    "round1": {
+        "id": "sentence_structure",
+        "label": "句法与节奏",
+        "description": "处理连续同构、重复表层框架与不合理句界；不设置短句、被动句或句长比例配额。",
+        # Dual-check: burstiness remains the primary rhythm signal; structureConcentration
+        # is the forced sub-signal under sentence_structure (see _assess_dimension_direction).
+        "primaryMetric": "burstinessRatio",
+        "secondaryMetric": "structureConcentration",
+    },
+    "round2": {
+        "id": "connector_detail",
+        "label": "衔接与终稿",
+        "description": "修正机械衔接、指代和同义反复；只保留必要改动，不注入原文外细节。",
+        "primaryMetric": "connectorDensity",
+        "secondaryMetric": "burstConnectorDensity",
+    },
+    "template-repair": {
+        "id": "template_expression",
+        "label": "模板与空泛表达",
+        "description": "只处理模板句、泛化总结、空泛填充和不承载信息的套语。",
+        "primaryMetric": "templateDensity",
+        "secondaryMetric": "abstractPaddingDensity",
+    },
+}
+
+
+def _build_rate_audit_dimension_definition(
+    *,
+    dimension_id: str,
+    label: str,
+    description: str,
+    action: str,
+    risk_codes: tuple[str, ...],
+    repair_prompt_id: str = "",
+    target_scope: str = "chunk",
+    manual_review_reason: str = "",
+) -> dict[str, Any]:
+    """Build one honest diagnostic -> repair -> evaluator contract.
+
+    Executable metadata is derived from the prompt's real round dimension so
+    the RateAudit layer cannot silently claim that (for example) ``round2`` is
+    a rhythm repair while the round service actually evaluates connectors.
+    Dimensions without a real same-dimension evaluator stay manual-only.
+    """
+
+    prompt_dimension = ROUND_PERTURBATION_DIMENSIONS.get(repair_prompt_id, {})
+    can_execute = bool(repair_prompt_id and prompt_dimension)
+    evaluator_dimension_id = str(prompt_dimension.get("id", "") or "")
+    primary_metric = str(prompt_dimension.get("primaryMetric", "") or "")
+    secondary_metric = str(prompt_dimension.get("secondaryMetric", "") or "")
+    direction_evaluator = (
+        f"{evaluator_dimension_id}:{primary_metric}"
+        if can_execute and evaluator_dimension_id and primary_metric
+        else "manual_review"
+    )
+    return {
+        "id": dimension_id,
+        "dimensionId": dimension_id,
+        "label": label,
+        "description": description,
+        "action": action,
+        "riskCodes": risk_codes,
+        "repairPromptId": repair_prompt_id if can_execute else "",
+        "evaluatorDimensionId": evaluator_dimension_id if can_execute else "",
+        "primaryMetric": primary_metric if can_execute else "",
+        "secondaryMetric": secondary_metric if can_execute else "",
+        "directionEvaluator": direction_evaluator,
+        "targetScope": target_scope,
+        "maxAttempts": 2 if can_execute else 0,
+        "plateauPolicy": "hard_stop_preserve_previous" if can_execute else "manual_review_only",
+        "canExecute": can_execute,
+        "manualReviewReason": "" if can_execute else manual_review_reason,
+    }
+
+
+RATE_AUDIT_DIMENSION_REGISTRY_VERSION = 2
+RATE_AUDIT_DIMENSION_REGISTRY: tuple[dict[str, Any], ...] = (
+    _build_rate_audit_dimension_definition(
+        dimension_id="rhythm",
+        label="句法与节奏",
+        description="关注连续等长句、表层句模集中和刻意制造的短碎句。",
+        action="优先调整重复主语、开句方式和不合理句界；不要为了指标强拆短句或强塞复杂句。",
+        risk_codes=(
+            "low_burstiness_ratio",
+            "sentence_fragment_gaming",
+            "structure_template_concentration",
+        ),
+        repair_prompt_id="round1",
+        target_scope="chunk",
+    ),
+    _build_rate_audit_dimension_definition(
+        dimension_id="transitions",
+        label="衔接脚手架",
+        description="关注连接词密度和成组出现的机械推进结构。",
+        action="删除不承担逻辑作用的连接词，用上下文、指代和具体动作自然承接；必要逻辑词必须保留。",
+        risk_codes=(
+            "connector_overuse",
+            "mechanical_burst_pattern",
+        ),
+        repair_prompt_id="round2",
+        target_scope="chunk",
+    ),
+    _build_rate_audit_dimension_definition(
+        dimension_id="templates",
+        label="模板与空泛表达",
+        description="关注套话、泛化总结、空泛填充和不承载信息的四字公式。",
+        action="把空泛判断替换为原文已有的对象、动作和关系；不得新增数据、案例、机制或结论。",
+        risk_codes=(
+            "template_phrase_density",
+            "generic_closing_phrase",
+            "abstract_padding_density",
+            "chengyu_density_high",
+        ),
+        repair_prompt_id="template-repair",
+        target_scope="chunk",
+    ),
+    _build_rate_audit_dimension_definition(
+        dimension_id="structure",
+        label="段落与枚举结构",
+        description="关注过度整齐的段长、嵌套编号和冒号—分号并列模板。",
+        action="只在段内检查信息密度与表述顺序；严禁合并、拆分、重排自然段或破坏原有编号。",
+        risk_codes=(
+            "nested_number_scaffold",
+            "colon_parallel_scaffold",
+            "paragraph_length_symmetry",
+        ),
+        target_scope="document",
+        manual_review_reason="文档级段落与枚举结构尚无保持段落冻结契约的同维度收敛评估器。",
+    ),
+    _build_rate_audit_dimension_definition(
+        dimension_id="register",
+        label="语态与语域",
+        description="关注连续同构的被动表达，同时保留语义真正需要的被动句。",
+        action="检查连续被动句是否都必要；能明确动作主体时改为具体陈述，语义需要时保持原句。",
+        risk_codes=(
+            "passive_voice_overuse",
+        ),
+        target_scope="chunk",
+        manual_review_reason="语态与语域目前只有可读性诊断，没有能区分必要被动句的可靠自动收敛评估器。",
+    ),
+)
+
+
+def get_rate_audit_dimension_definition(dimension_id: object) -> dict[str, Any]:
+    normalized_id = str(dimension_id or "").strip()
+    for definition in RATE_AUDIT_DIMENSION_REGISTRY:
+        if str(definition.get("dimensionId", "")) == normalized_id:
+            payload = dict(definition)
+            payload["riskCodes"] = list(definition.get("riskCodes", ()))
+            return payload
+    return {
+        "id": normalized_id or "manual_review",
+        "dimensionId": normalized_id or "manual_review",
+        "label": "人工抽查",
+        "description": "当前诊断项没有注册可验证的自动修复维度。",
+        "action": "保留当前文本并人工核对，不要套用其他维度的提示词。",
+        "riskCodes": [],
+        "repairPromptId": "",
+        "evaluatorDimensionId": "",
+        "primaryMetric": "",
+        "secondaryMetric": "",
+        "directionEvaluator": "manual_review",
+        "targetScope": "manual_review",
+        "maxAttempts": 0,
+        "plateauPolicy": "manual_review_only",
+        "canExecute": False,
+        "manualReviewReason": "该维度没有注册同维度评估器。",
+    }
 DEFAULT_PROMPT_WORKFLOWS: list[dict[str, Any]] = [
     {
         "id": LEGACY_PROMPT_PROFILE,
@@ -69,7 +248,7 @@ DEFAULT_PROMPT_REGISTRY: list[dict[str, Any]] = [
     {
         "id": "prewrite",
         "label": "润色改写",
-        "description": "先做保守自然化与结构预热。",
+        "description": "只修复明显生硬、重复和模板化表达。",
         "relativePath": "prompts/prewrite.md",
         "defaultPath": "prompts/defaults/prewrite.md",
         "builtIn": True,
@@ -85,9 +264,18 @@ DEFAULT_PROMPT_REGISTRY: list[dict[str, Any]] = [
         "editable": True,
     },
     {
+        "id": "template-repair",
+        "label": "模板表达定点修复",
+        "description": "只处理模板句、泛化总结和空泛填充，不扩写正文。",
+        "relativePath": "prompts/template-repair.md",
+        "defaultPath": "prompts/defaults/template-repair.md",
+        "builtIn": True,
+        "editable": True,
+    },
+    {
         "id": "round1",
         "label": "规范改写",
-        "description": "正文主体降痕与语气调整。",
+        "description": "调整连续同构句式与不合理句界，不强造短句。",
         "relativePath": "prompts/rewrite-pass-1.md",
         "defaultPath": "prompts/defaults/rewrite-pass-1.md",
         "builtIn": True,
@@ -96,7 +284,7 @@ DEFAULT_PROMPT_REGISTRY: list[dict[str, Any]] = [
     {
         "id": "round2",
         "label": "专家改写",
-        "description": "最终降痕与连贯性修整。",
+        "description": "终稿校正衔接、指代和同义反复，不注入新细节。",
         "relativePath": "prompts/rewrite-pass-2.md",
         "defaultPath": "prompts/defaults/rewrite-pass-2.md",
         "builtIn": True,
@@ -868,3 +1056,33 @@ def get_prompt_id_for_round(prompt_profile: str | None, round_number: int, promp
 def get_chunk_metric(prompt_profile: str | None, prompt_sequence: object | None = None) -> str:
     normalized_profile = normalize_prompt_profile(prompt_profile)
     return str(get_prompt_workflow(normalized_profile).get("chunkMetric", "char") or "char")
+
+
+def get_round_dimension(prompt_profile: str | None, round_number: int, prompt_sequence: object | None = None) -> dict[str, str]:
+    """Return the distinct editing responsibility assigned to one round.
+
+    ``round_number`` first resolves to a prompt id, then to advisory dimension
+    metadata.  Unknown/custom prompts receive a neutral dimension so a quality
+    heuristic can never block the rewrite workflow.
+    """
+    prompt_id = get_prompt_id_for_round(prompt_profile, round_number, prompt_sequence)
+    dimension = ROUND_PERTURBATION_DIMENSIONS.get(prompt_id)
+    if dimension:
+        payload = {
+            "promptId": prompt_id,
+            "id": str(dimension.get("id", "neutral")),
+            "label": str(dimension.get("label", "")),
+            "description": str(dimension.get("description", "")),
+            "primaryMetric": str(dimension.get("primaryMetric", "")),
+        }
+        secondary = str(dimension.get("secondaryMetric", "") or "").strip()
+        if secondary:
+            payload["secondaryMetric"] = secondary
+        return payload
+    return {
+        "promptId": prompt_id,
+        "id": "neutral",
+        "label": "",
+        "description": "",
+        "primaryMetric": "",
+    }

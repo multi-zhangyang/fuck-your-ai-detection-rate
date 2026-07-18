@@ -1,0 +1,68 @@
+# ---- FYADR trusted-host Docker Compose (Flask serves API + static) ----
+# Visit latency stays low because the frontend is a *production build* (no vite
+# dev server, no HMR, gzipped, immutable hashed assets) served straight from
+# the same process/port as the API. No proxy hops, no cold HMR recompile.
+
+services:
+  fyadr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fyadr:latest
+    container_name: fyadr
+    restart: unless-stopped
+    # Keep a long rewrite/export job from starving SSH or unrelated VPS services.
+    # These are runtime limits as well as build-time limits; the application
+    # already keeps real-model rewriting at one concurrent call.
+    cpus: "1.0"
+    mem_limit: "2g"
+    memswap_limit: "2g"
+    pids_limit: 256
+    # Bound stdout/stderr retention so routine access logs cannot eventually
+    # consume the VPS disk. This does not discard application artifacts, which
+    # remain on the dedicated finish bind mount below.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      # Keep loopback-only. Remote access needs a separate authenticated gateway;
+      # TLS or FYADR_ALLOWED_ORIGINS alone is not access control.
+      - "127.0.0.1:8765:8765"
+    environment:
+      # --- network / server ---
+      WEB_HOST: "0.0.0.0"
+      WEB_PORT: "8765"
+      WEB_STATIC_DIR: "/app/static"
+      # In-flight run/cancel/SSE state is process-local; keep exactly one worker.
+      GUNICORN_WORKERS: "1"
+      GUNICORN_THREADS: "4"
+      # --- CORS: only needed if the frontend is served from ANOTHER origin.
+      #     With Flask-serving-dist (single origin) this can stay empty. ---
+      FYADR_ALLOWED_ORIGINS: ""
+      # --- request limits (match .env.example defaults) ---
+      FYADR_MAX_REQUEST_BYTES: "67108864"   # 64 MiB
+      FYADR_MAX_UPLOAD_BYTES: "41943040"    # 40 MiB
+      # --- config (provider keys) live on a mounted volume, NOT in the image ---
+      FYADR_APP_CONFIG_DIR: "/app/config"
+      # --- optional: history DB backup dir override (defaults under /app/finish) ---
+      # FYADR_HISTORY_BACKUP_DIR: "/app/finish/history_db_backups"
+      # Provider settings for the Web UI are saved through the UI in
+      # /app/config/config.json. The FYADR_*/OPENAI_* variables documented in
+      # .env.example are CLI fallbacks and do not pre-seed the Web UI.
+    volumes:
+      # --- PERSISTENT STATE (must survive container recreation) ---
+      - ./data/origin:/app/origin                 # uploaded source docs
+      - ./data/finish:/app/finish                 # exports, task state, history DB
+      - ./data/config:/app/config                 # app_config.json (provider keys)
+      - ./data/prompts-custom:/app/prompts/custom # user custom prompts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/ping').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    read_only: false   # finish/origin/config need writes; use volume mounts
+    # Entrypoint starts as root only to chown bind mounts, then execs Gunicorn as
+    # non-root UID 10001. Setting `user:` here would prevent that initialization.

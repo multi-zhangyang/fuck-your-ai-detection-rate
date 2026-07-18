@@ -151,8 +151,10 @@ def run_regression(spec_path: Path, report_path: Path) -> dict[str, Any]:
         failures.append(f"direct json body_text.cnFont: expected 仿宋, got {direct_body.get('cnFont')!r}")
 
     original_llm_completion = format_rules.llm_completion
+    captured_llm_options: dict[str, Any] = {}
 
-    def fake_messy_llm_completion(*_args: Any, **_kwargs: Any) -> str:
+    def fake_messy_llm_completion(*_args: Any, **kwargs: Any) -> str:
+        captured_llm_options.update(kwargs)
         return """
         好的，下面只保留 JSON：
         ```json
@@ -176,7 +178,7 @@ def run_regression(spec_path: Path, report_path: Path) -> dict[str, Any]:
         format_rules.llm_completion = fake_messy_llm_completion
         ai_wrapped_rules = parse_format_rules_from_text(
             "学校要求正文小四号宋体，一级标题三号黑体。",
-        model_config={"baseUrl": "http://localhost/v1", "apiKey": "x", "model": "local"},
+            model_config={"baseUrl": "http://localhost/v1", "apiKey": "x", "model": "local", "streaming": False},
         )
     finally:
         format_rules.llm_completion = original_llm_completion
@@ -185,6 +187,8 @@ def run_regression(spec_path: Path, report_path: Path) -> dict[str, Any]:
         "body_text": {"cnFont": "宋体", "enFont": "Times New Roman", "fontSizePt": 12.0, "lineSpacingPt": 22.0, "firstLineIndentPt": 21.0, "alignment": "justify"},
         "heading_1": {"cnFont": "黑体", "fontSizePt": 16.0, "alignment": "center"},
     }
+    if captured_llm_options.get("stream") is not False:
+        failures.append(f"format parser ignored explicit streaming=false: {captured_llm_options.get('stream')!r}")
     for role, expected in ai_wrapped_expectations.items():
         _expect_style(ai_wrapped_rules, role, expected, failures, checks)
 

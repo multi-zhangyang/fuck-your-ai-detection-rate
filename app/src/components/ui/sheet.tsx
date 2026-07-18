@@ -29,7 +29,7 @@ const SheetOverlay = React.forwardRef<
 SheetOverlay.displayName = SheetPrimitive.Overlay.displayName
 
 const sheetVariants = cva(
-  "fixed z-50 flex flex-col gap-4 bg-background p-6 shadow-[0_18px_48px_hsl(var(--foreground)/0.08)] transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
+  "fixed z-50 flex flex-col gap-4 border-border bg-background p-6 shadow-soft transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
   {
     variants: {
       side: {
@@ -63,9 +63,9 @@ const SheetContent = React.forwardRef<
       {...props}
     >
       {children}
-      <SheetPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-secondary [&_svg]:size-4">
+      <SheetPrimitive.Close className="absolute right-2 top-2 flex size-10 items-center justify-center rounded-md opacity-70 ring-offset-background transition-opacity hover:bg-secondary hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-secondary [&_svg]:size-4">
         <X />
-        <span className="sr-only">Close</span>
+        <span className="sr-only">关闭面板</span>
       </SheetPrimitive.Close>
     </SheetPrimitive.Content>
   </SheetPortal>
