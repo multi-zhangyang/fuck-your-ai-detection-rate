@@ -6925,6 +6925,11 @@ def _round_snapshot_sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _round_snapshot_normalize_newlines(value: str) -> str:
+    """Compare text artifacts independent of the host text-mode newline convention."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _round_snapshot_digest(parts: list[tuple[str, bytes | None]]) -> str:
     """Hash named, length-delimited artifact bytes without concatenation ambiguity."""
 
@@ -7634,7 +7639,10 @@ def _capture_round_artifact_snapshot_unlocked(
         "outputSha256": output_sha256,
         "bodyMapSha256": body_map_sha256,
         "manifestSha256": manifest_sha256,
-        "rawOutputMatchesEffective": raw_output_text == effective_text,
+        "rawOutputMatchesEffective": (
+            _round_snapshot_normalize_newlines(raw_output_text)
+            == _round_snapshot_normalize_newlines(effective_text)
+        ),
         "bodyMapMatchesEffective": (
             body_map_current_texts == paragraphs
             if body_map_current_texts is not None

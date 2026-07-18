@@ -276,6 +276,30 @@ def _test_base_snapshot_and_api(root: Path, checks: list[str]) -> None:
     _assert(full["_internal"]["compareBytes"] == fixture["compare"].read_bytes(), "compare bytes were not captured exactly")
     _assert(full["_internal"]["manifestBytes"] == fixture["manifest"].read_bytes(), "manifest bytes were not captured exactly")
 
+    crlf_effective = expected_effective.replace("\n", "\r\n")
+    fixture["output"].write_bytes(crlf_effective.encode("utf-8"))
+    crlf_snapshot = app_service.read_round_artifact_snapshot(
+        fixture["output"],
+        include_internal=True,
+    )
+    _assert(
+        crlf_snapshot["rawOutputMatchesEffective"] is True,
+        "platform CRLF output was incorrectly marked stale",
+    )
+    _assert(
+        crlf_snapshot["_internal"]["rawOutputText"] == crlf_effective,
+        "snapshot stopped retaining exact decoded CRLF output evidence",
+    )
+    _assert(
+        crlf_snapshot["outputSha256"] == hashlib.sha256(crlf_effective.encode("utf-8")).hexdigest(),
+        "newline normalization changed the exact output-byte hash",
+    )
+    _assert(
+        crlf_snapshot["outputSha256"] != crlf_snapshot["effectiveTextSha256"],
+        "CRLF fixture did not prove byte-level and semantic equality remain distinct",
+    )
+    fixture["output"].write_bytes(expected_effective.encode("utf-8"))
+
     limited = app_service.read_round_artifact_snapshot(fixture["output"], max_preview_chars=12)
     _assert(limited["effectivePreview"]["truncated"] is True, "maxChars did not truncate the preview")
     _assert(limited["effectivePreview"]["totalChars"] == len(expected_effective), "preview truncation changed totalChars")
@@ -309,7 +333,10 @@ def _test_base_snapshot_and_api(root: Path, checks: list[str]) -> None:
         legacy_revision["compareRevision"] == f"sha256:{legacy_revision['compareSha256']}",
         "legacy compare did not receive an exact-byte SHA CAS token",
     )
-    checks.append("base snapshot captures exact artifacts, exposes identity/revision chain, and limits preview only")
+    checks.append(
+        "base snapshot captures exact artifacts, normalizes platform newlines for semantic cache equality, "
+        "exposes identity/revision chain, and limits preview only"
+    )
 
 
 def _test_review_materialization_and_base_lag(root: Path, checks: list[str]) -> None:
