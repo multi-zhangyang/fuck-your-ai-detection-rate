@@ -27,7 +27,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import errno
-import fcntl
 import hashlib
 import json
 import os
@@ -41,6 +40,16 @@ from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 import uuid
 import zipfile
+
+try:  # POSIX advisory locking.
+    import fcntl  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - exercised by the Windows CI runner.
+    fcntl = None  # type: ignore[assignment]
+
+try:  # Windows advisory locking.
+    import msvcrt  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - exercised by POSIX runners.
+    msvcrt = None  # type: ignore[assignment]
 
 from docx import Document  # type: ignore[import]
 
@@ -425,6 +434,30 @@ def _require(condition: bool, code: str, category: str = "product_pipeline_failu
         raise E2EContractError(code, category)
 
 
+def _acquire_real_provider_file_lock(descriptor: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    if msvcrt is not None:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        # Windows byte-range locks may extend beyond EOF, so the lock file can
+        # remain empty and never retain PID/provider/run metadata.
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        return
+    raise OSError(errno.ENOSYS, "No supported advisory file-lock backend is available.")
+
+
+def _release_real_provider_file_lock(descriptor: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return
+    if msvcrt is not None:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        return
+    raise OSError(errno.ENOSYS, "No supported advisory file-lock backend is available.")
+
+
 @contextmanager
 def _real_provider_e2e_lock(
     lock_path: Path = REAL_E2E_LOCK_PATH,
@@ -432,15 +465,22 @@ def _real_provider_e2e_lock(
     """Hold the host-wide advisory lock for one real-provider E2E.
 
     The file is deliberately empty: it contains no PID, endpoint, model,
-    provider identity, credential, or run metadata.  ``flock`` releases the
-    lock automatically when the descriptor closes, including exception exits
-    and process termination.
+    provider identity, credential, or run metadata.  The OS-native advisory
+    lock releases when the descriptor closes, including exception exits and
+    process termination.
     """
 
     path = lock_path.expanduser().resolve()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+        descriptor = os.open(
+            path,
+            os.O_CREAT
+            | os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
     except OSError as exc:
         raise E2EContractError(
             "real_provider_e2e_lock_unavailable",
@@ -450,10 +490,10 @@ def _real_provider_e2e_lock(
     acquired = False
     try:
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _acquire_real_provider_file_lock(descriptor)
             acquired = True
         except OSError as exc:
-            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
                 raise E2EContractError(
                     REAL_E2E_LOCK_CONFLICT_CODE,
                     "concurrency_conflict",
@@ -476,7 +516,7 @@ def _real_provider_e2e_lock(
     finally:
         if acquired:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                _release_real_provider_file_lock(descriptor)
             except OSError:
                 pass
         os.close(descriptor)
