@@ -779,7 +779,11 @@ def _assert_cross_process_lock_contract(temp_dir: Path) -> None:
             int(conflict.get("lockAttemptMs", 10000)) < 1000,
             "lock conflict did not fail immediately",
         )
-        _assert_lock_file_has_no_runtime_metadata(lock_path, "lock file persisted runtime metadata")
+
+    # Windows byte-range locks also deny a second handle from reading the
+    # locked byte.  Inspect the metadata-free sentinel only after the owner
+    # has released it; contention itself is proven by the subprocess above.
+    _assert_lock_file_has_no_runtime_metadata(lock_path, "lock file persisted runtime metadata")
 
     class ExpectedProbeExit(RuntimeError):
         pass
