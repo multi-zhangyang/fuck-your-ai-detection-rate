@@ -51,6 +51,7 @@ REAL_TEMPLATE_PATH = (
 REAL_TEMPLATE_EXPECTED_TOTAL_UNITS = 396
 REAL_TEMPLATE_EXPECTED_EDITABLE_UNITS = 75
 REAL_TEMPLATE_EXPECTED_EDITABLE_BOOKMARK_INTERIORS = 60
+REQUIRE_REAL_TEMPLATE_ENV = "FYADR_REQUIRE_REAL_TEMPLATE_FIXTURE"
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -385,8 +386,22 @@ def _build_fixture(path: Path) -> None:
     document.save(path)
 
 
-def _assert_real_template_kind_aware_scope(temp_dir: Path) -> dict[str, int | bool]:
-    _assert(REAL_TEMPLATE_PATH.exists(), "authoritative university thesis template is missing")
+def _assert_real_template_kind_aware_scope(temp_dir: Path) -> dict[str, int | bool | str]:
+    if not REAL_TEMPLATE_PATH.exists():
+        _assert(
+            os.environ.get(REQUIRE_REAL_TEMPLATE_ENV, "").strip() != "1",
+            "required private university thesis fixture is missing",
+        )
+        # The authoritative university template is deliberately untracked and
+        # must never be copied into a public CI checkout.  Dedicated synthetic
+        # semantic-boundary regressions still cover bookmark/comment topology;
+        # this exact 396/75/60 inventory remains an opt-in local contract.
+        return {
+            "available": False,
+            "executed": False,
+            "skipReason": "private_fixture_not_available",
+            "kindAwareSemanticRangePolicy": True,
+        }
     isolated_source = temp_dir / "authoritative-university-thesis-template.docx"
     shutil.copy2(REAL_TEMPLATE_PATH, isolated_source)
     contract, freeze, _extracted_path, _snapshot_path, authoritative_snapshot = (
@@ -435,6 +450,8 @@ def _assert_real_template_kind_aware_scope(temp_dir: Path) -> dict[str, int | bo
         "public freeze summary lost the authoritative 396-unit inventory",
     )
     return {
+        "available": True,
+        "executed": True,
         "authoritativeTotalTextUnitCount": int(authoritative_snapshot.total_text_unit_count),
         "authoritativeEditableUnitCount": int(authoritative_snapshot.editable_unit_count),
         "editableBookmarkRangeInteriorUnitCount": int(
@@ -1171,28 +1188,39 @@ def run_regression() -> dict[str, object]:
             ):
                 _assert(forbidden not in case_raw_report, f"HTTP {status_code} report leaked provider details")
 
+        checks = [
+            "complete DOCX identity baseline is separated from bounded provider calls",
+            "three representative targets use production rerun/strategy paths",
+            "a superscript citation is hidden, restored, and accepted through a real-model target path",
+            "network retries, request timeout, and completion calls have explicit E2E budgets",
+            "every real-model call explicitly requests streaming and records text-free completion metadata",
+            "existing stream callbacks remain chained while event bodies are discarded",
+            "real-provider E2E uses a fail-closed cross-process advisory lock; offline mode is lock-free",
+            "kind-aware semantic ranges freeze anchors/comments while allowing safe bookmark interiors",
+            "failed-attempt v1 evidence keeps only stable enums, hash/count metadata, and suppression flags",
+            "candidate-selection v2 source-relative and cumulative document evidence are consumed fail-closed",
+            "only production-published, hash-bound, readability-passing candidates can be automated",
+            "stale preserved-baseline evidence with changed output is rejected before export",
+            "automated CAS is labeled automated_e2e and never presented as human review",
+            "selected/output/review-materialized hashes bind to one certified DOCX snapshot generation",
+            "offline HTTP 401/403 are provider-configuration failures, never model-output failures",
+            "full review CAS and certified DOCX audits pass",
+            "runtime provider plaintext is absent from changed artifacts and report",
+        ]
+        if real_template_scope.get("executed") is True:
+            checks.insert(
+                8,
+                "the private real template remains authoritative at 396 total / 75 editable / 60 bookmark-interior units",
+            )
+        else:
+            checks.insert(
+                8,
+                "the untracked private real-template inventory is explicitly skipped when unavailable",
+            )
+
         result = {
             "ok": True,
-            "checks": [
-                "complete DOCX identity baseline is separated from bounded provider calls",
-                "three representative targets use production rerun/strategy paths",
-                "a superscript citation is hidden, restored, and accepted through a real-model target path",
-                "network retries, request timeout, and completion calls have explicit E2E budgets",
-                "every real-model call explicitly requests streaming and records text-free completion metadata",
-                "existing stream callbacks remain chained while event bodies are discarded",
-                "real-provider E2E uses a fail-closed cross-process advisory lock; offline mode is lock-free",
-                "kind-aware semantic ranges freeze anchors/comments while allowing safe bookmark interiors",
-                "the real template remains authoritative at 396 total / 75 editable / 60 bookmark-interior units",
-                "failed-attempt v1 evidence keeps only stable enums, hash/count metadata, and suppression flags",
-                "candidate-selection v2 source-relative and cumulative document evidence are consumed fail-closed",
-                "only production-published, hash-bound, readability-passing candidates can be automated",
-                "stale preserved-baseline evidence with changed output is rejected before export",
-                "automated CAS is labeled automated_e2e and never presented as human review",
-                "selected/output/review-materialized hashes bind to one certified DOCX snapshot generation",
-                "offline HTTP 401/403 are provider-configuration failures, never model-output failures",
-                "full review CAS and certified DOCX audits pass",
-                "runtime provider plaintext is absent from changed artifacts and report",
-            ],
+            "checks": checks,
             "identityCallCount": int(baseline.get("identityTransformCallCount", 0) or 0),
             "boundedCallCount": int(real_model.get("callCount", 0) or 0),
             "providerFailureStatuses": provider_failure_statuses,
