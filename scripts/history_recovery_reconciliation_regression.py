@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -156,7 +157,13 @@ def main() -> int:
                 not list(temp_path.glob(".fyadr_records.json.*.tmp")),
                 "atomic hydration left a recovery temporary file behind",
             )
-            _assert((records_path.stat().st_mode & 0o777) == 0o600, "hydrated JSON was not private")
+            # POSIX exposes the 0600 contract through st_mode.  Windows ACLs
+            # do not map to Unix rw bits (a private inherited ACL can still
+            # report 0666), so only assert the portable atomic-file contract
+            # there instead of manufacturing a false permission failure.
+            _assert(records_path.is_file(), "hydrated JSON compatibility file is missing")
+            if os.name != "nt":
+                _assert((records_path.stat().st_mode & 0o777) == 0o600, "hydrated JSON was not private")
             checks.append("a genuinely missing JSON compatibility file is hydrated from the recovered index")
 
             empty_json_text = "{}\n"
