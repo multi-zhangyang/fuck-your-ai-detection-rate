@@ -755,6 +755,12 @@ print(json.dumps(result, sort_keys=True))
     return value
 
 
+def _assert_lock_file_has_no_runtime_metadata(lock_path: Path, message: str) -> None:
+    # POSIX leaves an empty lock file.  Windows ``msvcrt`` needs one physical
+    # byte to lock, so a single NUL sentinel is equally metadata-free.
+    _assert(lock_path.read_bytes() in {b"", b"\0"}, message)
+
+
 def _assert_cross_process_lock_contract(temp_dir: Path) -> None:
     lock_path = temp_dir / "real-e2e.lock"
     with runner._execution_mode_run_lock("real_provider", lock_path=lock_path):
@@ -773,7 +779,7 @@ def _assert_cross_process_lock_contract(temp_dir: Path) -> None:
             int(conflict.get("lockAttemptMs", 10000)) < 1000,
             "lock conflict did not fail immediately",
         )
-        _assert(lock_path.read_bytes() == b"", "lock file persisted runtime metadata")
+        _assert_lock_file_has_no_runtime_metadata(lock_path, "lock file persisted runtime metadata")
 
     class ExpectedProbeExit(RuntimeError):
         pass
@@ -785,7 +791,7 @@ def _assert_cross_process_lock_contract(temp_dir: Path) -> None:
         pass
     released = _run_lock_probe(lock_path)
     _assert(released.get("acquired") is True, "exception exit did not release the advisory lock")
-    _assert(lock_path.read_bytes() == b"", "released lock file contains provider/run data")
+    _assert_lock_file_has_no_runtime_metadata(lock_path, "released lock file contains provider/run data")
 
 
 def run_regression() -> dict[str, object]:

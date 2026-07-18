@@ -439,9 +439,14 @@ def _acquire_real_provider_file_lock(descriptor: int) -> None:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return
     if msvcrt is not None:
+        # ``msvcrt.locking`` cannot reliably lock a byte beyond EOF.  Keep a
+        # single NUL sentinel on Windows so an empty, freshly created lock
+        # file has a real byte-range to lock.  Writing before locking also
+        # turns a write denial from the current owner into the same immediate
+        # contention result as ``LK_NBLCK``.
         os.lseek(descriptor, 0, os.SEEK_SET)
-        # Windows byte-range locks may extend beyond EOF, so the lock file can
-        # remain empty and never retain PID/provider/run metadata.
+        os.write(descriptor, b"\0")
+        os.lseek(descriptor, 0, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
         return
     raise OSError(errno.ENOSYS, "No supported advisory file-lock backend is available.")
@@ -464,10 +469,11 @@ def _real_provider_e2e_lock(
 ) -> Iterator[None]:
     """Hold the host-wide advisory lock for one real-provider E2E.
 
-    The file is deliberately empty: it contains no PID, endpoint, model,
-    provider identity, credential, or run metadata.  The OS-native advisory
-    lock releases when the descriptor closes, including exception exits and
-    process termination.
+    The file contains no PID, endpoint, model, provider identity, credential,
+    or run metadata.  POSIX keeps it empty; Windows may keep one NUL byte as
+    the byte-range lock sentinel required by ``msvcrt``.  The OS-native
+    advisory lock releases when the descriptor closes, including exception
+    exits and process termination.
     """
 
     path = lock_path.expanduser().resolve()
@@ -502,11 +508,11 @@ def _real_provider_e2e_lock(
                 "real_provider_e2e_lock_unavailable",
                 "runtime_environment_failure",
             ) from exc
-        # Remove any stale bytes from an older implementation only after this
-        # process owns the advisory lock.  This implementation never writes
-        # data to the file.
+        # Remove stale bytes from an older implementation only after this
+        # process owns the advisory lock.  Windows must retain its one-byte
+        # NUL sentinel; POSIX retains no file content at all.
         try:
-            os.ftruncate(descriptor, 0)
+            os.ftruncate(descriptor, 1 if msvcrt is not None else 0)
         except OSError as exc:
             raise E2EContractError(
                 "real_provider_e2e_lock_unavailable",
