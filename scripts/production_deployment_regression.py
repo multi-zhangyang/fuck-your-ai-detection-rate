@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -19,22 +20,44 @@ def run_regression() -> dict[str, object]:
     checks: list[str] = []
     dockerfile = (ROOT_DIR / "Dockerfile").read_text(encoding="utf-8")
     compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    ci_workflow = (ROOT_DIR / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     entrypoint_path = ROOT_DIR / "docker-entrypoint.sh"
     entrypoint = entrypoint_path.read_text(encoding="utf-8")
 
-    syntax_check = subprocess.run(
-        ["bash", "-n", entrypoint_path.name],
-        cwd=str(ROOT_DIR),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
     _assert(
-        syntax_check.returncode == 0,
-        f"docker entrypoint shell syntax failed (exit={syntax_check.returncode}): {syntax_check.stderr}",
+        all(
+            marker in ci_workflow
+            for marker in (
+                "if: runner.os != 'Windows'",
+                "ubuntu-latest",
+                "macos-latest",
+                "bash -n docker-entrypoint.sh",
+            )
+        ),
+        "native POSIX platform jobs must validate the Docker entrypoint with bash -n",
     )
-    checks.append("docker entrypoint passes bash syntax validation")
+    checks.append("native POSIX CI jobs own Docker entrypoint bash syntax validation")
+
+    if os.name == "nt":
+        # Docker runs this script in a Linux container. Hosted Windows images
+        # expose several incompatible `bash` shims, so native POSIX matrix jobs
+        # own the executable syntax check while this job keeps the deployment
+        # and initialization contracts below.
+        checks.append("Windows deployment regression delegates executable shell syntax to native POSIX CI")
+    else:
+        syntax_check = subprocess.run(
+            ["bash", "-n", entrypoint_path.name],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        _assert(
+            syntax_check.returncode == 0,
+            f"docker entrypoint shell syntax failed (exit={syntax_check.returncode}): {syntax_check.stderr}",
+        )
+        checks.append("docker entrypoint passes bash syntax validation")
 
     _assert("--chdir /app/scripts" in entrypoint, "Gunicorn must import web_app from /app/scripts")
     _assert("initialize_runtime(reason='container-startup')" in entrypoint, "container must run production initialization before Gunicorn")

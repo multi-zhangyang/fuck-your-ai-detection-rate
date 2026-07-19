@@ -92,6 +92,7 @@ jobs:
         run: |
           test -x start_web.sh
           bash -n start_web.sh
+          bash -n docker-entrypoint.sh
           bash start_web.sh --help > /dev/null
 
       - name: Validate Windows launchers
