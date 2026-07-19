@@ -132,6 +132,12 @@ FRONTEND_DEV_PORT = 1420
 # Directory that holds the production frontend build (app/dist) served by Flask
 # in single-container deployments. Empty => not served (frontend runs elsewhere).
 WEB_STATIC_DIR = os.getenv("WEB_STATIC_DIR", "").strip()
+# Windows MIME registration is machine-dependent and does not consistently
+# recognize modern image formats. Keep production assets deterministic instead
+# of relying on a runner or end user's registry for formats the UI ships.
+FRONTEND_ASSET_MIME_TYPES = {
+    ".webp": "image/webp",
+}
 
 
 def _local_origin(port: int) -> set[str]:
@@ -3963,7 +3969,12 @@ def _serve_frontend_asset(asset_path: str) -> Response:
         return error_response("Forbidden", 403)
     if not candidate.is_file():
         return error_response("Not found", 404)
-    response = send_from_directory(str(static_root), normalized_asset_path, conditional=True)
+    response = send_from_directory(
+        str(static_root),
+        normalized_asset_path,
+        mimetype=FRONTEND_ASSET_MIME_TYPES.get(candidate.suffix.lower()),
+        conditional=True,
+    )
     if normalized_asset_path.startswith("assets/"):
         # Vite assets are content-hashed, so a one-year immutable cache is safe.
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"

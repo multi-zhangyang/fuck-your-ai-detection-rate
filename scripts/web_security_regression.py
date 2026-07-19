@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import tempfile
 from pathlib import Path
@@ -201,28 +202,52 @@ def run_regression() -> dict[str, object]:
             (static_dir / "brand-logo-96.webp").write_bytes(b"RIFFfixtureWEBP")
             (assets_dir / "index-AbCd1234.js").write_text("export const ready = true;", encoding="utf-8")
             original_static_dir = web_app.WEB_STATIC_DIR
+            original_guess_type = mimetypes.guess_type
+            static_responses: list[object] = []
             try:
                 web_app.WEB_STATIC_DIR = str(static_dir)
+
+                def guess_type_without_webp(url, strict=True):
+                    if str(url).lower().endswith(".webp"):
+                        return None, None
+                    return original_guess_type(url, strict=strict)
+
+                # Reproduce Windows hosts where the registry does not provide
+                # a WebP MIME association. The production route must not rely
+                # on that host-specific registration.
+                mimetypes.guess_type = guess_type_without_webp
                 root_logo = client.get("/brand-logo-32.png")
+                static_responses.append(root_logo)
                 sidebar_logo = client.get("/brand-logo-96.webp")
+                static_responses.append(sidebar_logo)
                 hashed_asset = client.get("/assets/index-AbCd1234.js")
+                static_responses.append(hashed_asset)
                 missing_asset = client.get("/assets/missing.js")
+                static_responses.append(missing_asset)
                 missing_root_file = client.get("/missing-logo.png")
+                static_responses.append(missing_root_file)
                 spa_route = client.get("/diagnostics")
+                static_responses.append(spa_route)
+
+                _assert(root_logo.status_code == 200 and root_logo.mimetype == "image/png", "root PNG asset must keep its image MIME")
+                _assert(sidebar_logo.status_code == 200 and sidebar_logo.mimetype == "image/webp", "root WebP asset must keep its image MIME")
+                _assert("max-age=86400" in root_logo.headers.get("Cache-Control", ""), "stable root assets should use the revalidating cache tier")
+                _assert(hashed_asset.status_code == 200 and hashed_asset.mimetype in {"application/javascript", "text/javascript"}, "hashed JS must use a JavaScript MIME")
+                _assert("immutable" in hashed_asset.headers.get("Cache-Control", ""), "hashed assets must retain immutable caching")
+                _assert(missing_asset.status_code == 404, "missing hashed assets must return 404 instead of SPA HTML")
+                _assert(missing_root_file.status_code == 404, "missing root files must return 404 instead of SPA HTML")
+                _assert(spa_route.status_code == 200 and spa_route.mimetype == "text/html", "extensionless frontend routes should use the SPA fallback")
+                _assert(spa_route.headers.get("Cache-Control") == "no-cache", "SPA entry HTML must revalidate")
+                _assert(allowed.headers.get("Cache-Control") == "no-store", "API responses must not be cached")
+                _assert(hashed_asset.headers.get("X-Content-Type-Options") == "nosniff", "static responses should disable MIME sniffing")
+                checks.append("production static files keep correct MIME, 404, and cache semantics")
             finally:
+                mimetypes.guess_type = original_guess_type
+                for static_response in static_responses:
+                    close_response = getattr(static_response, "close", None)
+                    if callable(close_response):
+                        close_response()
                 web_app.WEB_STATIC_DIR = original_static_dir
-            _assert(root_logo.status_code == 200 and root_logo.mimetype == "image/png", "root PNG asset must keep its image MIME")
-            _assert(sidebar_logo.status_code == 200 and sidebar_logo.mimetype == "image/webp", "root WebP asset must keep its image MIME")
-            _assert("max-age=86400" in root_logo.headers.get("Cache-Control", ""), "stable root assets should use the revalidating cache tier")
-            _assert(hashed_asset.status_code == 200 and hashed_asset.mimetype in {"application/javascript", "text/javascript"}, "hashed JS must use a JavaScript MIME")
-            _assert("immutable" in hashed_asset.headers.get("Cache-Control", ""), "hashed assets must retain immutable caching")
-            _assert(missing_asset.status_code == 404, "missing hashed assets must return 404 instead of SPA HTML")
-            _assert(missing_root_file.status_code == 404, "missing root files must return 404 instead of SPA HTML")
-            _assert(spa_route.status_code == 200 and spa_route.mimetype == "text/html", "extensionless frontend routes should use the SPA fallback")
-            _assert(spa_route.headers.get("Cache-Control") == "no-cache", "SPA entry HTML must revalidate")
-            _assert(allowed.headers.get("Cache-Control") == "no-store", "API responses must not be cached")
-            _assert(hashed_asset.headers.get("X-Content-Type-Options") == "nosniff", "static responses should disable MIME sniffing")
-            checks.append("production static files keep correct MIME, 404, and cache semantics")
 
             original_export_round_output = web_app.export_round_output
             try:
