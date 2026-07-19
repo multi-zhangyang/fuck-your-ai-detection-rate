@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -47,6 +48,7 @@ REAL_SAMPLE_PATH = (
 )
 PRIOR_V21_REAL_EDITABLE_COUNT = 78
 EXPECTED_REAL_EDITABLE_COUNT = 75
+REQUIRE_REAL_TEMPLATE_ENV = "FYADR_REQUIRE_REAL_TEMPLATE_FIXTURE"
 
 REAL_FROZEN_TARGETS = (
     {
@@ -232,7 +234,24 @@ def _assert_synthetic_scope(work_dir: Path, checks: list[str]) -> dict[str, Any]
 
 
 def _assert_real_sample_scope(work_dir: Path, checks: list[str]) -> dict[str, Any]:
-    _assert(REAL_SAMPLE_PATH.exists(), f"real university thesis sample is missing: {REAL_SAMPLE_PATH}")
+    if not REAL_SAMPLE_PATH.exists():
+        _assert(
+            os.environ.get(REQUIRE_REAL_TEMPLATE_ENV, "").strip() != "1",
+            "required private university thesis fixture is missing",
+        )
+        # The exact university template is deliberately excluded from the
+        # public repository. Synthetic coverage above remains mandatory in a
+        # clean checkout; only this private 396/75-unit inventory contract is
+        # skipped unless its local fixture is available.
+        checks.append(
+            "private real university template fixture unavailable; exact inventory contract explicitly skipped"
+        )
+        return {
+            "available": False,
+            "executed": False,
+            "skipReason": "private_fixture_not_available",
+        }
+
     snapshot = build_docx_snapshot(REAL_SAMPLE_PATH)
     _assert(snapshot.version == DOCX_SNAPSHOT_VERSION == 22, "real sample did not use snapshot v22")
     _assert(
@@ -364,6 +383,8 @@ def _assert_real_sample_scope(work_dir: Path, checks: list[str]) -> dict[str, An
     checks.append("u98/p108, u259/p282 and u276/p299 are absent from body-map, production compare and model callback input")
     checks.append("protection map and scope diagnostics expose three frozen template instructions with user-facing reasons")
     return {
+        "available": True,
+        "executed": True,
         "sourcePath": str(REAL_SAMPLE_PATH.relative_to(ROOT_DIR)),
         "totalTextUnitCount": snapshot.total_text_unit_count,
         "priorV21EditableUnitCount": PRIOR_V21_REAL_EDITABLE_COUNT,
