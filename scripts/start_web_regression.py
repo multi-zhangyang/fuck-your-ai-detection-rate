@@ -102,6 +102,10 @@ def run_regression() -> dict[str, Any]:
         "Get-NetTCPConnection" not in ps_text and "Get-CimInstance" not in ps_text,
         "PowerShell launcher must not discover and terminate arbitrary listeners",
     )
+    _assert(
+        "$Label:" not in ps_text,
+        "PowerShell interpolations followed by a colon must use an explicit braced variable",
+    )
     checks.append("Windows launcher keeps install, browser, loopback, and process-ownership contracts")
 
     _assert("--no-browser" in posix_text and "--install" in posix_text, "POSIX launcher switches drifted")

@@ -187,7 +187,7 @@ function Stop-OwnedProcess([System.Diagnostics.Process]$Process, [string]$Label)
         }
     }
     catch {
-        Write-Host "[FYADR] Could not fully stop $Label: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[FYADR] Could not fully stop ${Label}: $($_.Exception.Message)" -ForegroundColor Yellow
     }
     finally {
         $Process.Dispose()
