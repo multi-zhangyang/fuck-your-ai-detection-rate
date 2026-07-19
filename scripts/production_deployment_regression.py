@@ -23,14 +23,17 @@ def run_regression() -> dict[str, object]:
     entrypoint = entrypoint_path.read_text(encoding="utf-8")
 
     syntax_check = subprocess.run(
-        ["bash", "-n", str(entrypoint_path)],
+        ["bash", "-n", entrypoint_path.name],
         cwd=str(ROOT_DIR),
         capture_output=True,
         text=True,
         check=False,
         timeout=30,
     )
-    _assert(syntax_check.returncode == 0, f"docker entrypoint shell syntax failed: {syntax_check.stderr}")
+    _assert(
+        syntax_check.returncode == 0,
+        f"docker entrypoint shell syntax failed (exit={syntax_check.returncode}): {syntax_check.stderr}",
+    )
     checks.append("docker entrypoint passes bash syntax validation")
 
     _assert("--chdir /app/scripts" in entrypoint, "Gunicorn must import web_app from /app/scripts")
