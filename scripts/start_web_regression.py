@@ -63,11 +63,60 @@ def run_regression() -> dict[str, Any]:
     checks = _run_open_web_ui_probe()
     batch_text = (ROOT_DIR / "start_web.bat").read_text(encoding="utf-8", errors="replace")
     ps_text = (ROOT_DIR / "start_web.ps1").read_text(encoding="utf-8", errors="replace")
-    _assert("scripts\\open_web_ui.py" in batch_text, "start_web.bat must use the robust browser opener")
+    posix_text = (ROOT_DIR / "start_web.sh").read_text(encoding="utf-8", errors="replace")
+
+    _assert(
+        "-ExecutionPolicy Bypass" in batch_text
+        and '-File "%~dp0start_web.ps1" %*' in batch_text,
+        "start_web.bat must remain a non-persistent-policy PowerShell wrapper",
+    )
     _assert('start "" "http://127.0.0.1:1420"' not in batch_text, "start_web.bat must not rely on raw cmd URL opening")
-    _assert("FYADR_NO_BROWSER" in batch_text and "FYADR_NO_BROWSER" in ps_text, "NoBrowser switch must remain wired through the startup scripts")
-    checks.append("start_web.bat uses robust browser opener")
-    checks.append("NoBrowser switch remains wired")
+    _assert(
+        "Get-NetTCPConnection" not in batch_text
+        and "Get-CimInstance" not in batch_text
+        and "Stop-Process" not in batch_text,
+        "start_web.bat must never enumerate or stop unknown processes",
+    )
+    checks.append("start_web.bat delegates safely without owning process policy")
+
+    for switch in ("[switch]$NoBrowser", "[switch]$Install", "[switch]$Help"):
+        _assert(switch in ps_text, f"Windows launcher lost {switch}")
+    _assert(
+        'Join-Path $RepoRoot "scripts\\open_web_ui.py"' in ps_text
+        and "if (-not $NoBrowser)" in ps_text,
+        "PowerShell launcher must use the robust browser opener and honor NoBrowser",
+    )
+    _assert(
+        'SetEnvironmentVariable("WEB_HOST", "127.0.0.1", "Process")' in ps_text
+        and 'SetEnvironmentVariable("WEB_PORT", "8765", "Process")' in ps_text,
+        "PowerShell backend must remain loopback-only",
+    )
+    _assert(
+        "function Test-PortInUse" in ps_text
+        and "function Stop-OwnedProcess" in ps_text
+        and "$script:StartedBackend" in ps_text
+        and "$script:StartedFrontend" in ps_text,
+        "PowerShell launcher lost safe port refusal or owned-process cleanup",
+    )
+    _assert(
+        "Get-NetTCPConnection" not in ps_text and "Get-CimInstance" not in ps_text,
+        "PowerShell launcher must not discover and terminate arbitrary listeners",
+    )
+    checks.append("Windows launcher keeps install, browser, loopback, and process-ownership contracts")
+
+    _assert("--no-browser" in posix_text and "--install" in posix_text, "POSIX launcher switches drifted")
+    _assert(
+        "WEB_HOST=127.0.0.1 WEB_PORT=8765" in posix_text
+        and 'scripts/open_web_ui.py" --url "$FRONTEND_URL"' in posix_text,
+        "POSIX launcher lost loopback binding or robust browser opening",
+    )
+    _assert(
+        "stop_started_pid" in posix_text
+        and "STARTED_BACKEND" in posix_text
+        and "STARTED_FRONTEND" in posix_text,
+        "POSIX launcher lost launcher-owned PID cleanup",
+    )
+    checks.append("macOS/Linux launcher keeps install, browser, loopback, and owned-PID contracts")
     return {"ok": True, "checks": checks}
 
 

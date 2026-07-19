@@ -5,7 +5,7 @@
 ## 一、本地文件清理
 
 - 确认 `finish/`、`origin/`、`logs/` 中没有准备提交的运行产物。
-- 确认根目录没有个人论文、检测报告、截图、临时 Word、临时 PDF。
+- 确认根目录没有个人论文、检测报告、含真实数据的截图、临时 Word、临时 PDF；`docs/assets/readme/*.webp` 只能来自 synthetic fixture。
 - 确认没有提交 `.env`、`app/.env`、API Key、私有 Base URL、个人路径。
 - 确认根目录 `.env.example` 和 `app/.env.example` 只包含空值或占位说明。
 - 确认 `prompts/` 中核心 prompt 的改动是有意的。
@@ -67,7 +67,7 @@ python scripts/pre_release_check.py
 python scripts/pre_release_check.py --allow-dirty
 ```
 
-GitHub Actions 会在推送 `main`、创建 Pull Request 或手动触发时运行完整回归。CI 使用仓库内代码和空样例环境，不依赖本地论文、检测报告、截图或运行产物。
+GitHub Actions 会在推送 `main`、创建 Pull Request 或手动触发时运行完整回归。CI 使用仓库内代码和空样例环境，不依赖本地论文、检测报告、真实截图或运行产物；README WebP 使用仓库内 synthetic fixture 生成。
 
 单项回归：
 
@@ -100,6 +100,6 @@ npm --prefix app run build
 - `.github/ISSUE_TEMPLATE/` 和 Pull Request 模板能引导用户提供复现步骤与诊断信息。
 - `python scripts/open_source_audit.py` 无 error；特别确认没有 API Key、私有 Base URL、模型厂商 endpoint、个人路径、旧项目名和乱码。
 - `git ls-files -ci --exclude-standard` 没有输出；如有输出，先确认是否应从索引移除。
-- 审计 warning 中的 PDF、DOCX、截图、`finish/`、`origin/`、`logs/`、`app/dist/`、`app/node_modules/` 已确认不会提交。
+- 审计 warning 中的 PDF、DOCX、真实数据截图、`finish/`、`origin/`、`logs/`、`app/dist/`、`app/node_modules/` 已确认不会提交；仅允许 `docs/assets/readme/*.webp` synthetic 产品图。
 - 没有乱码文案、个人路径、个人模型地址或临时调试按钮。
 - 没有把浏览器下载到用户本地的文件描述成会被项目清理。

@@ -16,7 +16,7 @@ function RuleRow({ role, style, meta }: { role: string; style?: Record<string, u
     <div className="min-w-0 border-b border-border/70 p-3 last:border-b-0 xl:border-r xl:[&:nth-child(even)]:border-r-0">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 truncate font-medium text-foreground">{ROLE_LABELS[role] ?? role}</div>
-        <Badge variant={meta?.isInferred ? "warning" : meta ? "success" : "outline"}>{meta?.isInferred ? "继承" : meta ? `${Math.round((meta.confidence ?? 0.7) * 100)}%` : "默认"}</Badge>
+        <Badge variant={meta?.isInferred ? "warning" : meta ? "success" : "outline"}>{meta?.isInferred ? "继承" : meta ? `解析 ${Math.round((meta.confidence ?? 0.7) * 100)}%` : "默认"}</Badge>
       </div>
       <div className="mt-1 truncate text-sm text-muted-foreground">{styleSummary(style)} · {styleSpacing(style)} · {formatAlignment(style?.alignment)}</div>
     </div>

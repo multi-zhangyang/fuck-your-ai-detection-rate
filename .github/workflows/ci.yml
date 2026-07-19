@@ -39,7 +39,7 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       - name: Install Python dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
       - name: Install frontend dependencies
         run: npm --prefix app ci
@@ -48,3 +48,60 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         run: python scripts/run_regressions.py --fail-fast
+
+  platform-smoke:
+    name: Platform smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20.19.0"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        run: npm --prefix app ci
+
+      - name: Build production frontend
+        run: npm --prefix app run build
+
+      - name: Validate POSIX launcher
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          test -x start_web.sh
+          bash -n start_web.sh
+          bash start_web.sh --help > /dev/null
+
+      - name: Validate Windows launchers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start_web.ps1 -Help | Out-Null
+          cmd.exe /d /c start_web.bat -Help
+
+      - name: Run isolated platform smoke
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/platform_install_smoke.py

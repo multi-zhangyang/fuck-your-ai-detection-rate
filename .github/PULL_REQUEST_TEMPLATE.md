@@ -15,7 +15,7 @@
 
 ## Safety checklist
 
-- [ ] No private document, detector report, screenshot, API key, provider URL, or personal absolute path is included.
+- [ ] No private document, detector report, real-data screenshot, API key, provider URL, or personal absolute path is included; README WebP assets use only the reproducible synthetic fixture.
 - [ ] Core prompt files were not changed unless this PR is explicitly about prompt behavior.
 - [ ] Protected areas remain content-locked during rewrite.
 - [ ] Word export changes were validated when DOCX logic was touched.

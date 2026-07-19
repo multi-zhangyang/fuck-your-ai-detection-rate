@@ -78,12 +78,13 @@ python scripts/pre_release_check.py --include-browser-e2e
 python scripts/open_source_audit.py
 ```
 
-审计会拦截源码和文档中的敏感信息、个人路径、私有模型地址、旧项目名和乱码文本。本地样例、检测报告、截图和运行目录只作为 warning 提示；发布前仍要确认它们没有被 git 跟踪。
+审计会拦截源码和文档中的敏感信息、个人路径、私有模型地址、旧项目名和乱码文本。本地样例、检测报告、含真实数据的截图和运行目录只作为 warning 提示；发布前仍要确认它们没有被 git 跟踪。README 产品图是唯一例外：只能使用 `scripts/capture_readme_assets.mjs` 的 synthetic fixture，并保存为 `docs/assets/readme/*.webp`。
 
 ## 发布前人工确认
 
 - 不提交 `finish/`、`origin/`、`logs/` 中的运行产物。
-- 不提交真实论文、检测报告、截图、API Key、私有模型地址或本地绝对路径。
+- 不提交真实论文、检测报告、含真实论文/凭据/个人路径的截图、API Key、私有模型地址或本地绝对路径。
+- README 展示图只能放在 `docs/assets/readme/`，并且必须由可复现的 synthetic fixture 生成。
 - `README.md`、启动脚本、回归命令和实际代码保持一致。
 - `CHANGELOG.md` 已记录本次发布的主要能力、移除项和已知边界。
 - 核心 prompt 的任何变更都是明确、有意、可回滚的。

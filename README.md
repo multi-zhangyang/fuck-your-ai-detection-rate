@@ -1,593 +1,659 @@
-# FYADR
+<div align="center">
+  <img src="./app/public/brand-logo-96.webp" width="88" height="88" alt="FYADR 论文 AI 降检平台品牌标志" />
+  <h1>论文 AI 降检平台 FYADR</h1>
+  <p><strong>面向中国大学生毕业论文的中文论文 AI 痕迹优化、分轮审阅与 Word 原格式保真工具</strong></p>
+  <p>
+    本地优先 · OpenAI-compatible · 流式长任务 · 可解释质量门禁 · 人工 Diff 审阅 · DOCX 只改正文
+  </p>
 
-**Fuck your AI detection rate.**
+  <p>
+    <a href="https://github.com/multi-zhangyang/fuck-your-ai-detection-rate/actions/workflows/ci.yml"><img alt="FYADR CI" src="https://img.shields.io/github/actions/workflow/status/multi-zhangyang/fuck-your-ai-detection-rate/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=111111&amp;color=444444" /></a>
+    <a href="https://github.com/multi-zhangyang/fuck-your-ai-detection-rate/blob/main/LICENSE"><img alt="AGPL-3.0 License" src="https://img.shields.io/github/license/multi-zhangyang/fuck-your-ai-detection-rate?style=flat-square&amp;label=License&amp;labelColor=111111&amp;color=444444" /></a>
+    <a href="https://github.com/multi-zhangyang/fuck-your-ai-detection-rate"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/multi-zhangyang/fuck-your-ai-detection-rate?style=flat-square&amp;label=Stars&amp;labelColor=111111&amp;color=444444" /></a>
+    <a href="https://github.com/multi-zhangyang/fuck-your-ai-detection-rate/commits/main/"><img alt="Last Commit" src="https://img.shields.io/github/last-commit/multi-zhangyang/fuck-your-ai-detection-rate?style=flat-square&amp;label=Last%20commit&amp;labelColor=111111&amp;color=444444" /></a>
+  </p>
+  <p>
+    <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-111111?style=flat-square&amp;logo=python&amp;logoColor=white" /></a>
+    <a href="https://nodejs.org/"><img alt="Node.js 20.19+ 或 22.12+" src="https://img.shields.io/badge/Node.js-20.19%2B%20%7C%2022.12%2B-111111?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" /></a>
+    <a href="https://react.dev/"><img alt="React 18" src="https://img.shields.io/badge/React-18-111111?style=flat-square&amp;logo=react&amp;logoColor=white" /></a>
+    <a href="https://vite.dev/"><img alt="Vite 8" src="https://img.shields.io/badge/Vite-8-111111?style=flat-square&amp;logo=vite&amp;logoColor=white" /></a>
+    <a href="https://docs.docker.com/compose/"><img alt="Docker Compose Ready" src="https://img.shields.io/badge/Docker%20Compose-ready-111111?style=flat-square&amp;logo=docker&amp;logoColor=white" /></a>
+    <img alt="DOCX Format Preserving" src="https://img.shields.io/badge/DOCX-format%20preserving-111111?style=flat-square&amp;logo=microsoftword&amp;logoColor=white" />
+    <img alt="Local First" src="https://img.shields.io/badge/Privacy-local--first-111111?style=flat-square&amp;logo=shield&amp;logoColor=white" />
+  </p>
+</div>
 
-FYADR 是一个本地运行的中文论文 AI 检测率优化平台，通过多轮处理、可解释降检诊断、人工审阅和 Word 保真导出组成完整工作流。
+---
 
-项目重点不是“生成一篇新论文”，而是在尽量守住事实、术语、编号、引用、正文范围和 Word 版式的前提下，识别并降低已有论文中的模板化、机械衔接和重复句模等可解释风险信号。
+FYADR 是一个可本地运行的 **论文 AI 降检平台**。它面向“毕业论文怎么降 AI 率”“中文论文如何降低 AIGC 生成痕迹”“Word 论文怎样保持格式不变只改正文”等真实需求，把模型改写、候选质量检查、人工确认和 DOCX 格式保真连接成一条可审计工作流。
 
-> 本项目不提供 AIGC 检测服务，也不保证通过任何学校、期刊或第三方平台检测。
+项目不会简单地把原论文“换一种模板重写”。它更关心三件事：改写是否真的比原文自然，事实与术语是否仍然准确，以及标题、目录、公式、表格、参考文献等 Word 结构是否完全留在模型之外。
+
+> [!IMPORTANT]
+> FYADR **不是 AIGC 检测器**，风险点数也不是“AI 率”。项目不隶属于知网、维普、万方、Turnitin、GPTZero 或其他检测平台，不承诺通过任何学校、期刊或第三方系统。请遵守学校与机构的学术诚信规范，并对最终论文逐段人工复核。
+
+## 快速导航
+
+- [产品截图](#产品截图)
+- [核心能力](#核心能力)
+- [完整工作流](#完整工作流)
+- [降 AI 痕迹质量链](#降-ai-痕迹质量链)
+- [DOCX 只改正文与格式保真](#docx-只改正文与格式保真)
+- [快速开始](#快速开始)
+- [模型与提示词配置](#模型与提示词配置)
+- [开发、测试与 CI](#开发测试与-ci)
+- [常见问题](#常见问题)
+- [安全、隐私与学术诚信](#安全隐私与学术诚信)
+
+## 为什么选择 FYADR
+
+| 普通“论文改写器”常见问题 | FYADR 的处理方式 |
+| --- | --- |
+| 只追求同义替换，改完可读性明显下降 | 使用相对原文的学术语域、句法节奏、模板表达和文档级 delta 门禁 |
+| 模型擅自添加“仅、全部、必然”等限定词 | 事实范围限定词门禁检测新增、删除与类别变化，发布前重新验证 |
+| 长思考模型容易超时 | 默认支持流式接收、长超时、重试、checkpoint 与断点续跑 |
+| 模型思考内容混入正文 | reasoning / thinking 与正文分离，失败证据不保存思考文本和原始错误正文 |
+| Word 改写后目录、标题或格式乱掉 | 先冻结正文 body map，只向模型发送可编辑正文，再执行 OOXML 与格式锁审计 |
+| 自动选一个候选直接覆盖原稿 | 普通块使用可解释的安全默认，需复核候选必须显式确认；发布文本仍受 hash、revision 与 fresh gate 约束 |
+| 用一个“AI 分数”制造确定性 | RateAudit 只展示可解释的同文档相对风险，不冒充第三方检测概率 |
+
+## 产品截图
+
+以下界面均由真实生产前端和可复现的 synthetic fixture 生成，不包含真实论文、API Key、个人路径或用户历史。
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="./docs/assets/readme/01-workbench.webp"><img src="./docs/assets/readme/01-workbench.webp" alt="论文 AI 降检平台工作台：Word 论文导入、分轮处理与段落级 Diff 审阅" /></a>
+      <br /><strong>工作台与段落级 Diff</strong><br />
+      <sub>在一个页面中完成文档导入、分轮运行、质量状态、人工审阅与 Word 导出。</sub>
+    </td>
+    <td width="50%" valign="top">
+      <a href="./docs/assets/readme/02-quality-audit.webp"><img src="./docs/assets/readme/02-quality-audit.webp" alt="中文论文 AI 痕迹降检报告：风险信号趋势、维度变化与导出完整性" /></a>
+      <br /><strong>可解释降检报告</strong><br />
+      <sub>比较原文与当前轮的相对风险变化，定位问题热区，并同时检查正文与格式契约。</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="./docs/assets/readme/03-docx-protection.webp"><img src="./docs/assets/readme/03-docx-protection.webp" alt="DOCX 保护区地图：标题、目录、题注、公式、表格与参考文献格式保护" /></a>
+      <br /><strong>DOCX 保护区地图</strong><br />
+      <sub>直观看到哪些正文可以进入模型，以及标题、目录、题注、公式、表格和参考文献为何被冻结。</sub>
+    </td>
+    <td width="50%" valign="top">
+      <a href="./docs/assets/readme/04-model-routing.webp"><img src="./docs/assets/readme/04-model-routing.webp" alt="OpenAI 兼容模型配置：流式响应、思考内容隔离与并发重试" /></a>
+      <br /><strong>模型路由与流式安全</strong><br />
+      <sub>管理多个 OpenAI-compatible 服务商，为不同轮次指定模型，并控制流式、超时、重试和并发。</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="./docs/assets/readme/05-format-rules.webp"><img src="./docs/assets/readme/05-format-rules.webp" alt="大学论文学校格式要求解析：结构化规范供人工对照，导出保持原 Word" /></a>
+      <br /><strong>学校规范解析与人工对照</strong><br />
+      <sub>把粘贴的学校要求解析为结构化规范，供你与原稿人工对照；当前不自动判定 Word 是否合规，也不重排原稿。</sub>
+    </td>
+    <td width="50%" valign="top">
+      <a href="./docs/assets/readme/06-history.webp"><img src="./docs/assets/readme/06-history.webp" alt="论文处理历史记录：分轮恢复、审阅与 Word 导出" /></a>
+      <br /><strong>历史、恢复与资产治理</strong><br />
+      <sub>恢复文档与轮次、继续 checkpoint、查看导出资产，并维护本地 SQLite 历史索引。</sub>
+    </td>
+  </tr>
+</table>
 
 ## 适用场景
 
-- 中文毕业论文、课程论文、摘要、技术文档的段落级改写。
-- 使用长思考模型或自建 AI 中转站做慢速但质量更高的改写。
-- 对 DOCX 做“只改正文、保护版式”的导出。
-- 管理多轮历史、断点续跑、导出文件和提示词版本。
+FYADR 适合下面这些实际工作场景：
 
-## 它不会做什么
+- 中国大学生本科毕业论文降 AI 率、硕士论文降低 AI 生成痕迹。
+- 中文论文 AIGC 检测率优化、论文 AI 痕迹自然化与学术语气修整。
+- Word 论文固定格式、只改正文，不改标题、目录、公式、表格和参考文献。
+- 使用长思考模型、自建中转站或 OpenAI-compatible API 处理长篇论文。
+- 对模型改写结果做逐段 Diff、事实核对、引用保护和人工确认。
+- 在 Windows、macOS、Linux 工作站或可信 VPS 上进行本地部署。
 
-- 不内置检测平台，不声称能测出真实 AI 率。
-- 不自动改目录、图表、表格、公式、参考文献、封面等保护区内容。
-- 不把 API Key 写入仓库；Web 配置保存在本机用户目录。
-- 不重复调用同一段生成多份结果做自动竞赛，避免浪费 token。
-- 不替代学校、导师、期刊的学术诚信要求。
+它也可以用于课程论文、技术报告和结构复杂的学术 DOCX，但当前主要针对中文论文工作流设计。
 
-## 功能概览
+## 核心能力
 
-- 本地 Web UI：React、Vite、Tailwind、shadcn/ui 风格组件。
-- 暗黑 / 浅色 / 系统主题：默认暗黑模式。
-- 模型配置：支持 OpenAI 兼容的 Chat Completions 和 Responses 风格接口。
-- 多服务商管理：可配置多个 provider，并为不同轮次指定不同模型。
-- 自定义改写流程：默认支持“润色改写 -> 规范改写 -> 专家改写”，可调整流程组合。
-- 提示词 CRUD：可新建、修改、删除自定义 prompt；内置 prompt 支持恢复默认。
-- RateAudit 降检决策：上传后建立原文基线，对比分轮风险信号，定位问题段落，并明确给出停止、定点重跑或下一维度决策。
-- 并发改写：后端按 chunk 并行请求模型，最高并发 16，结果按原文顺序恢复。
-- 长请求容错：默认请求超时 600 秒，失败重试默认 3 次，带指数退避和随机抖动。
-- 断点续跑：中断或异常后保留已完成 chunk，下次优先从 checkpoint 继续。
-- 高风险审阅：模型输出未通过硬校验时，如果有可读输出，会进入高风险审阅而不是静默丢弃。
-- 双契约硬门：每轮运行和导出都同时验证“降检策略”与“只改正文/原格式固定”，标题进入模型数必须为 0。
-- Word 导出保护：DOCX 只回写冻结的可编辑正文，标题、目录、图表、表格、公式、参考文献、页眉页脚等保持原样。
-- 学校规范对照：可以解析学校格式要求做诊断，但不会将规则写回或重排用户上传的 Word。
-- 导出健康状态：前端汇总正文契约、格式锁、保护区、预检和 Word 结构证据，并区分阻断问题和非阻断提示。
-- SQLite 历史治理：用 SQLite 做历史索引，保留 JSON 兼容记录，并支持修复、备份、压缩、孤儿文件扫描。
+### 论文 AI 痕迹优化
 
-## 系统要求
+- `RateAudit`：对同一篇论文的原文和各轮结果做离线相对诊断，不调用模型、不消耗 Token。
+- `Source-relative delta`：判断候选是否相对原文新引入机械连接、套话、碎句、同构句式或语域漂移。
+- `Academic readability`：检查可读性、句法完整性、学术语气和段落衔接，避免“为了降 AI 而胡言乱语”。
+- `Dimension rotation`：按风险维度选择下一步，不在同一种改写模式里无限重复。
+- `Targeted rerun`：只重跑真正需要处理的段落，保留已经通过审核的内容。
 
-建议环境：
+### 事实与正文安全
 
-- Windows 10/11
-- Python 3.10+
-- Node.js 20.19+，或 22.12+
-- npm
+- 保护引用标记，如 `[1]`、`[3-5]`。
+- 保护数字、比例、单位、术语、协议名和结构编号。
+- 检查事实关系与主体、客体、否定、比较和范围限定词变化。
+- 阻止无依据新增“仅、只、唯一、全部、所有、必然、always、only”等表达。
+- 校验失败时保留原文或进入明确的失败状态，不把危险候选静默发布。
+- 发布阶段执行 fresh revalidation，旧证据不能绕过当前门禁。
 
-项目当前主要按 Windows 本地工具使用设计。macOS / Linux 可以手动启动后端和前端，但启动脚本主要服务 Windows。
+### 长任务与思考模型
 
-Docker 单容器方式见 [`DEPLOY.md`](DEPLOY.md)。Docker 默认同样只绑定本机
-`127.0.0.1:8765`，适用于个人主机或可信私网，不是带账号隔离的公网 SaaS。
+- Chat Completions 与 Responses 风格的 OpenAI-compatible 接口。
+- 默认流式接收，降低代理、网关和长思考模型的超时风险。
+- reasoning / thinking 内容与最终正文分离。
+- 默认超时 `600` 秒，可配置到 `3600` 秒。
+- 指数退避、随机抖动与可配置重试。
+- chunk 并发执行，按原文顺序恢复结果。
+- checkpoint、取消、刷新后重新连接与断点续跑。
+
+### Word 原格式保真
+
+- 识别并冻结可编辑正文范围。
+- 标题、目录、题注、公式、表格、参考文献、页眉页脚、声明和模板说明不进入模型。
+- 对 bookmark、comment range、field、drawing、math、numbering 和复杂 inline 结构执行保护。
+- 只回填冻结 body map 中的正文文字目标。
+- 导出前后检查正文契约、保护区、OOXML、样式、编号、节属性和格式签名。
+- 导出证据绑定 source、snapshot、review、compare、artifact hash 与 revision。
+
+### 产品工作台
+
+- 克制的 Vercel 风格深浅色 UI。
+- 多服务商、模型目录和分轮模型路由。
+- 提示词 CRUD、自定义工作流与内置模板恢复。
+- 段落级 Diff、筛选、定位、人工决定和冲突提示。
+- 导出健康面板与阻断原因展示。
+- SQLite 历史索引、备份、压缩、修复和孤儿资产扫描。
+- 桌面与移动端响应式布局。
+
+## 完整工作流
+
+```mermaid
+flowchart LR
+    A[导入 TXT / DOCX] --> B[冻结正文范围]
+    B --> C[原文 RateAudit 基线]
+    C --> D[按段落构建 Chunk]
+    D --> E[流式调用模型]
+    E --> F[候选事实与可读性门禁]
+    F -->|通过| G[段落级 Diff 审阅]
+    F -->|失败| H[保留原文 / 定点重试]
+    H --> G
+    G --> I[安全默认 / 人工覆盖与 CAS 绑定]
+    I --> J[发布前 Fresh Gate]
+    J --> K[只回填可编辑正文]
+    K --> L[OOXML / 格式锁 / 内容契约审计]
+    L --> M[经轮次校验的 TXT / 认证 DOCX 导出]
+```
+
+这条链路由两个互相独立、必须同时通过的契约控制：
+
+| 契约 | 解决的问题 | 关键证据 |
+| --- | --- | --- |
+| 降检质量契约 | 改写是否比原文更自然，是否损害事实与可读性 | 候选选择、source-relative delta、事实门禁、安全默认、显式人工决定与 fresh gate |
+| 正文与格式契约 | 是否只改允许的正文，是否破坏 Word 结构和版式 | snapshot、body map、scope digest、format digest、OOXML audit |
+
+任意一个契约失败，系统都不会把结果标记为可安全导出。
+
+## 降 AI 痕迹质量链
+
+### 1. RateAudit：不是 AI 检测器的可解释诊断
+
+RateAudit 对同一篇文档的原文与当前结果进行相对比较，覆盖：
+
+- 句式与节奏：连续等长句、句模集中、短碎句投机。
+- 衔接脚手架：连接词密度与成组机械推进。
+- 模板表达：套话、泛化总结、空泛填充和公式化短语。
+- 段落结构：段长过度整齐、嵌套编号、冒号—分号模板。
+- 语态与语域：连续同构被动表达、学术语气漂移。
+
+报告给出风险点轨迹、维度变化、问题段落热区和下一步建议，并在“停止自动处理”“定点重跑”“进入下一维度”“转人工复核”之间做明确决策。
+
+风险点是启发式信号，只适合比较同一篇文档的前后变化，不能换算成第三方 AIGC 检测率或通过概率。算法说明见 [RateAudit 设计文档](docs/RATE_AUDIT_DESIGN.md)。
+
+### 2. 候选不是越“像人”越好
+
+FYADR 不会为了改变统计分布强造短句、被动句、长定语或删除必要连接词。每个候选需要同时满足：
+
+1. 结构、编号、引用、数字、术语和语言一致性硬检查。
+2. 事实主体、关系、否定、比较和范围限定词检查。
+3. 相对原文的学术可读性与语域 delta 检查。
+4. 文档级重复模式与句法节奏检查。
+5. 候选选择证据与最终发布文本 hash 一致。
+
+如果候选只是“换了另一套 AI 模板”，系统可以保留原文，而不是为了制造改写数量强行采用。
+
+### 3. 可见审阅与强制确认
+
+Diff 区会展示每块的安全默认、风险原因和人工覆盖入口：
+
+- `采用改写`：普通候选通过门禁后可以作为安全默认，用户仍可逐段改为保留原文。
+- `保留原文`：候选没有可靠收益、触发风险回退，或用户明确选择原文。
+- `需处理`：定点策略或高风险块需要人工核对；要求确认的候选在确认前仍按原文导出。
+- `失败`：硬门禁、供应商调用或证据绑定失败。
+
+显式人工决定与 compare revision 和候选 hash 绑定，多标签页同时保存时使用 CAS 防止旧页面覆盖新决定。没有人工覆盖的普通块会在发布时重新计算确定性的安全默认，并与候选证据一起经过 fresh revalidation；系统不会把“默认采用”包装成“人工已确认”。
+
+## DOCX 只改正文与格式保真
+
+### 可编辑与保护范围
+
+| Word 内容 | 默认处理策略 |
+| --- | --- |
+| 普通正文段落 | 经结构识别和格式锚点检查后可进入模型 |
+| 自动编号正文 | 正文可改，编号标记与编号定义受保护 |
+| 中文/英文摘要正文 | 在边界与结构证据充分时可编辑 |
+| 标题与章节标题 | 保护，不进入模型 |
+| 自动目录与目录项 | 保护，不进入模型 |
+| 表格、表题、表注 | 保护，不进入模型 |
+| 图片、图题、图注 | 保护，不进入模型 |
+| 公式与数学对象 | 保护，不进入模型 |
+| 参考文献 | 保护，不进入模型 |
+| 页眉、页脚、页码、域 | 保护，不进入模型 |
+| 声明、附录和后置材料 | 保护，不进入模型 |
+| 模板撰写指导语 | 标记为 `template_instruction`，保护且不进入比较正文 |
+| Bookmark / Comment range anchor | 保护；只有无锚点且满足正文合同的内部正文才能编辑 |
+
+### 四个时间点的检查
+
+1. **导入时**：建立 DOCX snapshot、结构角色、语义范围与格式库存。
+2. **每轮开始时**：确认模型输入逐单元等于冻结可编辑正文。
+3. **导出前**：确认 review materialization、body map、source generation 和目标数量一致。
+4. **导出后**：重新审计保护区文字、OOXML 拓扑、样式、编号、表格、节属性与格式锁。
+
+> [!NOTE]
+> “原格式保真”指正文以外的结构和可见格式受到契约与审计保护，不代表整个 ZIP 包逐字节完全相同。Word 在重新序列化时可能调整包内元数据或 XML 字节排列；FYADR 检查的是内容边界、OOXML 结构、样式与格式语义是否保持。
+
+学校规范只用于解析和人工对照，当前不会自动拿 DOCX 与规则逐项比对并判定是否合规。产品导出固定使用 `preserve_original`，不会依据解析出的学校规则自动改字体、字号、行距、页边距或重排原 Word。技术设计见 [双契约设计文档](docs/DUAL_CONTRACT_DESIGN.md)。
 
 ## 快速开始
 
-在项目根目录执行：
+### Windows、macOS、Linux 支持状态
+
+| 平台 | 原生启动 | Docker | CI 安装与启动 Smoke |
+| --- | --- | --- | --- |
+| Windows 10 / 11 | `start_web.ps1` / `start_web.bat` | Docker Desktop | `windows-latest` |
+| macOS | `./start_web.sh` | Docker Desktop / OrbStack | `macos-latest` |
+| Linux | `./start_web.sh` | Docker Engine + Compose | `ubuntu-latest` |
+
+三平台应用级 smoke 都会在干净 runner 中安装 Python 与 npm 依赖、构建前端、启动随机本机端口的服务并加载 production build，再验证 `/api/ping`、`/api/health`、首页和静态资源。启动器本身另做 PowerShell 或 Bash 语法与帮助入口检查；这些验证不依赖本地论文、API Key、浏览器或真实模型。
+
+### 方式一：Docker Compose（推荐用于 Linux / VPS 本机运行）
+
+```bash
+git clone https://github.com/multi-zhangyang/fuck-your-ai-detection-rate.git
+cd fuck-your-ai-detection-rate
+docker compose up -d --build
+```
+
+打开：
+
+```text
+http://127.0.0.1:8765
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:8765/api/ping
+```
+
+默认 Compose 约束：
+
+- 只发布 `127.0.0.1:8765`，不直接开放公网。
+- 1 CPU、2 GiB 内存、256 PIDs。
+- 1 个 Gunicorn worker、4 个 threads。
+- `json-file` 日志单文件 10 MiB，最多 3 个。
+- `origin / finish / config / prompts-custom` 使用持久化 bind mounts。
+
+完整部署和升级说明见 [DEPLOY.md](DEPLOY.md)。
+
+### 方式二：Windows 一键启动
+
+环境要求：
+
+- Windows 10 / 11
+- Python 3.10+
+- Node.js `20.19+` 或 `22.12+`
+- npm
+
+首次启动或需要重新安装项目依赖：
 
 ```powershell
-pip install -r requirements.txt
-cd app
-npm install
-cd ..
+.\start_web.bat -Install
+```
+
+启动：
+
+```powershell
+.\start_web.bat
+```
+
+批处理入口会临时使用 `ExecutionPolicy Bypass` 调用项目脚本，不会永久修改系统执行策略。执行策略允许时，也可以直接运行：
+
+```powershell
 .\start_web.ps1
 ```
 
-也可以直接双击：
-
-```text
-start_web.bat
-```
-
-默认地址：
-
-- 前端页面：http://127.0.0.1:1420
-- 后端 API：http://127.0.0.1:8765
-- 后端探针：http://127.0.0.1:8765/api/ping
-- 后端诊断：http://127.0.0.1:8765/api/health
-
-如果不想自动打开浏览器：
+不自动打开浏览器：
 
 ```powershell
-.\start_web.ps1 -NoBrowser
+.\start_web.bat -NoBrowser
 ```
 
-## 手动启动
+开发模式默认地址：
 
-开两个终端。
+- 前端：`http://127.0.0.1:1420`
+- 后端：`http://127.0.0.1:8765`
+- 健康检查：`http://127.0.0.1:8765/api/health`
 
-终端 1，启动后端：
+### 方式三：macOS / Linux 一键启动
 
-```powershell
+首次启动或需要自动补齐依赖：
+
+```bash
+./start_web.sh --install
+```
+
+已经安装依赖时：
+
+```bash
+./start_web.sh
+```
+
+不自动打开浏览器：
+
+```bash
+./start_web.sh --no-browser
+```
+
+脚本不会为了抢占端口而终止未知进程：如果发现已健康的 FYADR 后端会安全复用；如果端口被其他服务占用则明确失败。脚本退出时只清理由它自己启动的前后端进程。
+
+### 方式四：手动启动
+
+后端：
+
+```bash
 python scripts/web_app.py
 ```
 
-终端 2，启动前端：
+前端：
 
-```powershell
-cd app
-npm run dev:web
+```bash
+npm --prefix app run dev:web
 ```
 
 ## 基本使用流程
 
-1. 打开 Web 页面。
-2. 进入模型配置，填写 Base URL、API Key、模型名和接口类型。
-3. 点击连通性测试，确认本地服务可以访问模型服务商。
-4. 上传 TXT 或 DOCX。
-5. 打开“降检报告”，查看原文基线和首批问题段落。
-6. 选择改写流程和轮次数。
-7. 设置并发、超时、重试等参数。
-8. 开始改写；运行中断时可从 checkpoint 继续。
-9. 每轮完成后查看风险信号变化，优先处理退化维度和问题热区。
-10. 在 Diff 区审阅需处理和高风险内容，确认事实、引用与结构没有被破坏。
-11. 满意后导出 TXT 或 DOCX；不满意时可以继续追加后续轮次。
+1. 在“模型配置”中填写 OpenAI-compatible Base URL、API Key 和模型名。
+2. 打开流式响应，根据供应商能力设置超时、重试和并发。
+3. 上传 TXT 或 DOCX；DOCX 会先生成正文边界与保护区证据。
+4. 在“降检报告”查看原文基线、风险维度与问题热区。
+5. 选择提示词流程和分轮模型路由，启动第一轮。
+6. 长任务可以取消、刷新页面或在异常后从 checkpoint 继续。
+7. 在 Diff 中逐段查看原文、候选、质量原因和审核绑定。
+8. 复核系统的采用或保留默认；按需显式覆盖，定点策略与需复核候选必须人工确认。
+9. 查看新的 RateAudit delta，决定停止、下一维度或继续人工处理。
+10. 导出前确认正文与格式双契约均为 ready。
+11. 导出 TXT 或认证 DOCX，并保留本地证据与历史记录。
 
-## RateAudit 降检诊断
+## 模型与提示词配置
 
-RateAudit 使用 FYADR 内部同一套可解释规则，对原文和每轮结果进行离线对比，不调用模型，也不消耗 API Token。
+### 模型配置
 
-当前诊断覆盖：
+主要字段：
 
-- 句法与节奏：连续等长句、表层句模集中、短碎句投机。
-- 衔接脚手架：连接词密度和成组机械推进。
-- 模板与空泛表达：套话、泛化总结、空泛填充和四字公式。
-- 段落与枚举结构：段长过整齐、嵌套编号、冒号—分号模板。
-- 语态与语域：连续同构的被动表达。
+| 字段 | 说明 |
+| --- | --- |
+| `baseUrl` | OpenAI-compatible API 根地址 |
+| `apiKey` | 本机保存的模型密钥 |
+| `model` | 默认模型名 |
+| `apiType` | `chat_completions` 或 `responses` |
+| `streaming` | 是否流式接收；长任务建议开启 |
+| `temperature` | 模型温度 |
+| `requestTimeoutSeconds` | 单次请求超时，默认 600 秒 |
+| `maxRetries` | 传输或可恢复错误的重试次数 |
+| `rewriteConcurrency` | chunk 并发，范围 1–16 |
+| `modelProviders` | 多服务商配置列表 |
+| `roundModels` | 不同轮次的模型路由快照 |
 
-报告会展示原文到各轮结果的风险点数轨迹、五维变化、最多 12 个问题段落热区，以及能直接定位到 Diff 的下一步策略。策略会在“停止自动改写”“定点重跑”“进入下一维度”之间给出明确选择；若正文边界或格式锁未通过，则直接阻断。风险点数是同一篇文档内的加权启发式计数，不是“AI 率”、通过率或第三方检测概率。诊断算法见 [`docs/RATE_AUDIT_DESIGN.md`](docs/RATE_AUDIT_DESIGN.md)，双契约与格式固定机制见 [`docs/DUAL_CONTRACT_DESIGN.md`](docs/DUAL_CONTRACT_DESIGN.md)。
-
-## 只改正文与原格式固定
-
-DOCX 会先冻结可编辑正文目标，再把按顺序连接的正文单元交给模型。标题、封面、目录域、图表、表格、公式、图注、参考文献、页眉页脚和复杂 Word 结构不会进入模型。
-
-每轮开始前、轮次完成后、导出前和导出后都会生成正文与格式契约，至少检查：
-
-- 可编辑标题数必须为 `0`；
-- 模型输入必须与冻结正文逐单元完全一致；
-- body map 不能改指向标题或保护区；
-- 导出正文数必须与冻结目标数一致；
-- 保护区文字、OOXML 结构、样式、编号、表格、节属性和每个段落的非文本格式签名必须与原文一致。
-
-产品导出固定为 `preserve_original`。旧配置或显式传入的 `school_rules` 会自动迁移为保真模式；学校规则只作为诊断对照，不能再改变字体、字号、段距、页边距或其他现有格式。
-
-## 模型配置
-
-Web 端模型配置保存在本机，不写入仓库：
+Web 端只接收脱敏后的已保存密钥状态，不会把完整 API Key 写入浏览器 localStorage。配置位置：
 
 - Windows：`%APPDATA%\FYADR\config.json`
-- 其他系统：`~/.fyadr/config.json`
+- macOS / Linux：`~/.fyadr/config.json`
+- Docker：挂载到 `/app/config`
 
-配置项包括：
+POSIX 系统会把配置目录和文件权限收紧为 `0700 / 0600`，保存使用原子替换。
 
-- `baseUrl`：模型服务地址。
-- `apiKey`：模型密钥。
-- `model`：默认模型名。
-- `apiType`：`chat_completions` 或 `responses`。
-- `temperature`：温度。
-- `requestTimeoutSeconds`：单次请求超时，默认 `600`，范围 `30` 到 `3600`。
-- `maxRetries`：失败重试次数，默认 `3`，范围 `0` 到 `10`。
-- `rewriteConcurrency`：改写并发，默认 `2`，最高 `16`。
-- `modelProviders`：多服务商列表。
-- `roundModels`：每轮单独模型路由。
+### 内置提示词
 
-前端读取配置时会拿到脱敏字段，API Key 不会完整回传给浏览器界面。已保存密钥用占位符和尾号预览表示。
-
-## 并发与长思考模型
-
-本项目的改写请求大多是网络 I/O 密集型。并发可以明显减少整轮等待时间，但不是越高越稳。
-
-当前并发档位：
-
-```text
-1, 2, 3, 4, 6, 8, 12, 16
-```
-
-建议：
-
-- 普通 API：从 `2` 或 `4` 开始。
-- 自建中转站：先用 `4` 验证稳定性，再尝试 `6`、`8`、`12` 或 `16`。
-- 长思考模型：建议把超时保持在 `600` 秒或更高。
-- 如果上游经常 500、502、503、504：先降低并发，再观察重试是否能恢复。
-- 如果只剩一个 chunk 卡住，可以中断后继续；已完成 chunk 会保留。
-
-后端会把 chunk 并行提交给模型，但写回和 compare 数据会按原文 chunk 顺序恢复，避免 Diff 顺序错乱。
-
-## 改写算法思路
-
-核心流程：
-
-1. 从 TXT 或 DOCX 提取可编辑正文。
-2. 按项目当前分段策略构建 chunk manifest。
-3. 每个 chunk 拼接当前轮 prompt、语言约束、段落约束、引用和结构保护约束。
-4. 并发调用模型。
-5. 对输出做结构、编号、引用、数字、术语、语言、长度和事实关系校验。
-6. 校验失败时追加修复提示重试。
-7. 多次失败但模型有输出时，把输出作为高风险内容放入审阅。
-8. 恢复为完整文本并保存 Diff compare 数据。
-9. 写入历史记录、checkpoint、质量摘要和审阅决策。
-
-项目会保护这些内容：
-
-- 引用标记，如 `[1]`、`[3-5]`。
-- 关键数字、比例、公式样式数字。
-- 结构编号，如 `1`、`1.1`、`1.1.1`、`（1）`、`1）`。
-- 术语和事实关系。
-- 英文段落语言稳定性。
-- 段落数量和段落角色。
-
-自动编号段落本身可以参与改写，但编号标记会被保护，避免模型把章节结构改乱。
-
-当前自然度诊断只用于发现相对原文新引入的重复句模、碎句、空泛套语或机械衔接，
-不是作者身份判断器，也不会为了提高单一统计值强制制造短句、被动句、长定语或删除
-必要连接词。系统不会用无语法解析的标点替换来“拉开句长”。最终判断仍应以事实锁、
-Diff 审阅和人工确认优先。
-
-## 提示词体系
-
-当前内置 prompt：
-
-| ID | UI 名称 | 文件 |
+| ID | UI 名称 | 目标 |
 | --- | --- | --- |
-| `prewrite` | 润色改写 | `prompts/prewrite.md` |
-| `classical` | 经典改写 | `prompts/classical-rewrite.md` |
-| `round1` | 规范改写 | `prompts/rewrite-pass-1.md` |
-| `round2` | 专家改写 | `prompts/rewrite-pass-2.md` |
+| `prewrite` | 润色改写 | 保守自然化与结构预热 |
+| `template-repair` | 模板表达定点修复 | 只处理模板句与空泛填充 |
+| `classical` | 经典改写 | 慢节奏解释型改写 |
+| `round1` | 规范改写 | 调整同构句式与不合理句界 |
+| `round2` | 专家改写 | 终稿衔接、指代与同义反复校正 |
 
 默认可见流程：
 
 ```text
-润色改写 -> 规范改写 -> 专家改写
+润色改写 → 规范改写 → 专家改写
 ```
 
-相关文件：
+内置提示词可编辑并恢复默认，自定义提示词可以创建、改名、保存、删除和恢复备份。流程注册位于：
 
-- `prompts/prompt-registry.json`：prompt 注册表。
-- `prompts/prompt-workflows.json`：改写流程注册表。
-- `prompts/defaults/`：内置 prompt 默认版本。
-- `prompts/custom/`：用户新建 prompt。
-- `finish/prompt_backups/`：修改 prompt 前的自动备份。
+- `prompts/prompt-registry.json`
+- `prompts/prompt-workflows.json`
+- `prompts/defaults/`
+- `prompts/custom/`
 
-提示词 UI 支持：
+## 历史、恢复与本地资产
 
-- 新建自定义 prompt。
-- 修改名称、描述和正文。
-- 删除自定义 prompt。
-- 保存当前内容。
-- 恢复内置默认版本。
-- 查看并恢复 prompt 备份。
-- 修改自定义流程组合。
+FYADR 使用 JSON 兼容记录与 SQLite 索引共同管理历史：
 
-内置 prompt 可以编辑，但不能删除；自定义 prompt 可以删除。
+- 文档、轮次、模型路由和产物引用索引。
+- 历史列表与当前文档恢复。
+- checkpoint 和后台任务摘要恢复。
+- 删除影响预览，避免误删共享资产。
+- 孤儿文件扫描与安全清理。
+- SQLite 健康检查、备份、压缩和恢复。
 
-## DOCX 正文保护与导出
-
-DOCX 处理目标是：只改正文，最大限度保留原 Word 的结构和版式。
-
-默认正文范围：
+运行目录：
 
 ```text
-从“摘要”开始，到“致谢”结束
+origin/                         # 内容寻址的上传源文档
+finish/intermediate/            # manifest、compare、review、body map、checkpoint
+finish/web_exports/             # Web 导出副本
+finish/fyadr_history.sqlite3    # SQLite 历史索引
+finish/history_db_backups/      # 数据库备份
 ```
 
-正文之外会尽量保护：
+上传文件按完整内容 SHA-256 进入独立目录。同名但内容不同的论文不会覆盖，完全相同的内容可以安全复用。
 
-- 封面。
-- 目录。
-- 页眉页脚相关字段。
-- 图、图题、图注。
-- 表格、表题、表注、表格内文字。
-- 公式。
-- 参考文献。
-- 附录和其他后置材料。
+以上运行目录均被 `.gitignore` 排除，不应提交到公开仓库。
 
-导出策略：
+## 技术架构
 
-- 优先基于原 DOCX 的 body map 回写正文段落。
-- 只允许回写顶层正文段落，不把表格单元格当正文改写。
-- 导出前检查正文段落数量、目标顺序、重复目标、空段落、语言漂移和长度异常。
-- 导出后生成 guard、audit、preflight 等报告。
-- 学校规范明确的格式要求优先应用。
-- 学校规范未说明的段前、段后、缩进、样式细节，优先沿用上传 DOCX 的原有格式，避免无依据重排。
-
-如果导出失败，通常是正文映射不一致、Word 结构异常、段落数量变化或保护区 guard 拦截。请优先查看导出错误和对应的审计文件。
-
-## 学校规范解析
-
-学校规范用于辅助导出，不会把保护区内容送入模型改写。
-
-当前覆盖方向：
-
-- 标题层级格式。
-- 摘要、Abstract、关键词区域。
-- 正文常见字体、字号、行距和缩进。
-- 图表题注和三线表相关提示。
-- 参考文献和致谢区域。
-- 页边距、页码等页面要求。
-
-规范中没有明确说明的部分，不应由系统强行臆造。更稳的策略是沿用上传文档自身格式，并在审计报告中提示缺失或不确定项。
-
-## 高风险与需处理
-
-Diff 区主要有三类需要关注的内容：
-
-- 需处理：模型输出通过基本校验，但质量摘要提示需要确认。
-- 高风险：模型给出了输出，但硬校验认为它可能改变了编号、术语、事实、语言或结构。
-- 失败：重跑或改写请求本身失败，需要继续、重试或回退。
-
-高风险默认更保守，系统不会自动采用危险输出。用户可以在 Diff 区查看原文、安全文本、模型输出和失败原因，再决定采用哪个版本。
-
-## 历史记录与 SQLite
-
-项目保留兼容 JSON 记录，同时使用 SQLite 做历史索引和治理。
-
-主要文件：
-
-- `finish/fyadr_records.json`：兼容历史记录。
-- `finish/fyadr_history.sqlite3`：SQLite 历史索引。
-- `finish/history_db_backups/`：SQLite 自动或手动备份。
-- `finish/intermediate/`：中间文件、manifest、checkpoint、compare、quality、body map。
-- `finish/web_exports/`：Web 导出副本。
-- `origin/`：上传的原始文档副本。
-- `logs/`：本地日志。
-
-SQLite 负责：
-
-- 文档、轮次、产物引用的索引。
-- 历史列表查询。
-- 删除影响预览。
-- 孤儿产物扫描和清理。
-- 数据库健康检查。
-- 自动修复、备份和压缩。
-
-`finish/`、`origin/`、`logs/` 是本地运行目录，默认不应提交到公开仓库。
-
-上传文件采用内容寻址目录：`origin/<完整内容 SHA-256>/<原文件名>`。同名但内容不同的
-论文会落入不同目录，不会覆盖旧源文件；重复上传完全相同的内容会安全复用已有副本，
-界面和历史记录仍显示原文件名。中间产物文件名还会加入规范化文档身份的短哈希，避免
-不同目录下的同名文档共享快照、manifest、body map 或轮次输出。旧产物只在能够证明
-唯一归属时只读兼容，归属不明的共享旧路径会被拒绝。
-
-## 环境变量
-
-常用环境变量：
-
-| 变量 | 作用 |
+| 层 | 技术与职责 |
 | --- | --- |
-| `FYADR_API_KEY` | CLI 脚本默认 API Key |
-| `FYADR_MODEL` | CLI 脚本默认模型 |
-| `FYADR_BASE_URL` | CLI 脚本默认 Base URL |
-| `FYADR_API_TYPE` | CLI 脚本默认接口类型 |
-| `OPENAI_API_KEY` | 当 `FYADR_API_KEY` 为空时作为兼容输入 |
-| `OPENAI_BASE_URL` | 当 `FYADR_BASE_URL` 为空时作为兼容输入 |
-| `FYADR_ALLOWED_ORIGINS` | 额外允许访问本地 API 的前端 Origin，逗号分隔 |
-| `FYADR_MAX_REQUEST_BYTES` | JSON 请求体上限，默认 64 MB |
-| `FYADR_MAX_UPLOAD_BYTES` | 单文件上传上限，默认 40 MB |
-| `VITE_FYADR_API_BASE` | 前端构建后访问的后端 API 地址 |
+| Web UI | React 18、TypeScript、Vite、Tailwind CSS、Radix / shadcn 风格组件 |
+| API | Flask、Gunicorn、SSE、线程安全任务注册表 |
+| 模型连接 | OpenAI-compatible Chat Completions / Responses、流式解析、重试与限流 |
+| 论文算法 | chunk manifest、candidate selection、RateAudit、source-relative delta、事实门禁 |
+| DOCX | python-docx、OOXML snapshot、body map、保护区与格式锁审计 |
+| 状态 | JSON 兼容记录、SQLite 索引、checkpoint、CAS review sidecar |
+| 部署 | Windows / macOS / Linux 原生启动脚本、Docker 多阶段 production build、本机-only Compose |
 
-本地开发通常不需要 `.env`。如果要配置，可参考：
-
-- `.env.example`
-- `app/.env.example`
-
-不要提交真实 `.env`、API Key、私有中转地址或个人路径。
-
-## 目录结构
+项目结构：
 
 ```text
 .
-├─ app/                         # React Web 前端
-├─ docs/                        # 开发、发布和检查文档
-├─ prompts/                     # 内置 prompt、默认版本、注册表和自定义 prompt
-├─ references/                  # 优化路线和参考资料
-├─ scripts/                     # Flask 后端、算法、导出和回归脚本
-├─ start_web.bat                # Windows 一键启动
-├─ start_web.ps1                # PowerShell 一键启动
-├─ requirements.txt             # Python 依赖
-├─ SECURITY.md                  # 安全说明
-├─ CONTRIBUTING.md              # 贡献指南
-└─ README.md
+├─ app/                         # React / TypeScript 前端
+├─ scripts/                     # Flask、论文算法、DOCX 与回归脚本
+├─ prompts/                     # 提示词、默认版本与工作流注册表
+├─ docs/                        # 设计、开发、发布与 README 展示资产
+├─ references/                  # 格式规范与优化路线资料
+├─ assets-source/               # 品牌源文件
+├─ Dockerfile                   # 前端构建 + Python runtime 多阶段镜像
+├─ docker-compose.yml           # 本机-only 生产部署
+├─ start_web.ps1                # Windows 一键启动
+├─ start_web.bat
+├─ start_web.sh                 # macOS / Linux 一键启动
+└─ requirements.txt
 ```
 
-运行后会生成：
+## 开发、测试与 CI
 
-```text
-origin/
-finish/
-logs/
-app/node_modules/
-app/dist/
-```
+### 常用命令
 
-这些目录默认不提交。
+安装：
 
-## 开发命令
-
-安装依赖：
-
-```powershell
+```bash
 pip install -r requirements.txt
-npm --prefix app install
+npm --prefix app ci
 ```
 
-前端完整检查（文案、类型、安全存储与审阅保存队列）：
+前端文案、类型与专项回归：
 
-```powershell
+```bash
 npm --prefix app run check
 ```
 
-前端构建：
+前端生产构建：
 
-```powershell
+```bash
 npm --prefix app run build
-```
-
-后端和算法回归：
-
-```powershell
-python scripts/run_regressions.py --skip-frontend-build
 ```
 
 完整回归：
 
-```powershell
+```bash
 python scripts/run_regressions.py
 ```
 
-发布前总闸：
+Fail-fast CI 形式：
 
-```powershell
-python scripts/pre_release_check.py
+```bash
+python scripts/run_regressions.py --fail-fast
 ```
 
-开源审计：
+浏览器 smoke：
 
-```powershell
-python scripts/open_source_audit.py
-```
-
-注意：`history_db_regression.py` 这类历史治理回归可能比较慢，完整回归不是秒级检查。
-
-## 常用专项回归
-
-```powershell
-python scripts/state_machine_regression.py
-python scripts/parallel_round_regression.py
-python scripts/llm_client_regression.py
-python scripts/format_rules_regression.py
-python scripts/docx_export_regression.py --rebuild-sample
-python scripts/web_security_regression.py
+```bash
 npm --prefix app run test:e2e:smoke
 ```
 
-如果没有本地真实 DOCX 样例，部分真实文档冒烟测试会跳过。
+开源泄密与仓库卫生审计：
 
-可选的真实模型质量门控只发送脚本内置的合成段落，不读取上传论文：
-
-```powershell
-$env:FYADR_RUN_REAL_LLM = "1"
-python scripts/real_rewrite_e2e_regression.py
-python scripts/real_dimension_gain_regression.py
-python scripts/real_structure_ood_regression.py
+```bash
+python scripts/open_source_audit.py
 ```
 
-三个脚本合计正常执行 6 次 completion；若模型输出触发管线校验修复，理论上最多 12 次，
-传输层重试关闭。它们验证保守改写合同，不测试或承诺任何第三方 AIGC 检测平台分数。
+当前回归注册表覆盖 96 项基础命令，并在默认全量模式追加前端 production build。覆盖范围包括：
+
+- 流式输出与思考内容隔离。
+- candidate-selection、事实门禁与 source-relative delta。
+- review CAS、round snapshot 与发布 revision 绑定。
+- RateAudit 决策与策略执行。
+- DOCX snapshot、正文边界、bookmark/comment range 和格式保真。
+- 历史数据库、断点恢复、Web 安全、部署约束与开源审计。
+- TypeScript 类型检查、前端状态一致性和 Vite build。
+
+GitHub Actions 包含两层检查：
+
+- `windows-latest` 执行 Python 3.11、Node.js 24 和完整 fail-fast 回归。
+- `windows-latest / macos-latest / ubuntu-latest` 三平台矩阵执行干净安装、前端 production build 和本机服务 smoke。
+
+默认 CI 使用离线 fixture，不读取真实论文、不需要 API Key，也不会调用付费模型。
+
+详细开发文档见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)，发布门禁见 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)。
 
 ## 常见问题
 
-### 页面提示连不上本地服务
+### 中国大学生毕业论文怎么降低 AI 检测率？
 
-先确认后端是否启动：
+先不要直接对全文做多轮同义替换。更稳妥的流程是：建立原文基线，定位模板化与机械句式集中的段落，只对问题块做保守改写，再逐段核对事实、引用、数字和可读性。FYADR 把这套流程实现为 RateAudit、定点重跑、Diff 审阅和发布门禁。
 
-```text
-http://127.0.0.1:8765/api/ping
-```
+### FYADR 能保证降低知网、维普、万方或其他平台的论文 AI 率吗？
 
-如果打不开，重新运行 `start_web.bat` 或 `python scripts/web_app.py`。
+不能保证。不同检测平台的模型、版本和规则并不公开，而且会持续变化。FYADR 与这些平台没有隶属或合作关系，也不会伪造一个“通过率”。它提供的是可解释的文本优化与格式安全工具，最终结果必须以学校要求和用户人工审核为准。
 
-### 模型测试失败
+### 这是论文 AI 降重工具吗？
 
-重点检查：
+FYADR 主要处理 AI 写作痕迹、模板表达、句式节奏和机械衔接，不提供查重数据库，也不计算传统文字复制率。“AI 降检”和“论文查重降重”不是同一个任务。
 
-- Base URL 是否正确。
-- API Key 是否正确。
-- 模型名是否存在。
-- 接口类型是否选对。
-- 代理或自建中转站是否可访问。
-- 目标服务是否要求 `/v1/chat/completions` 或 `/v1/responses`。
+### 改写后会不会可读性下降或胡言乱语？
 
-### 长思考模型经常超时
+候选需要通过事实、数字、引用、术语、范围限定词、学术可读性和 source-relative delta 门禁。普通块会得到可解释的采用或保留默认，定点策略与需复核候选则必须人工明确确认；无论系统默认如何，最终提交前都应由作者逐段检查，不可靠候选可以直接保留原文。
 
-把 `requestTimeoutSeconds` 调到 `600` 或更高。长思考模型单段超过 2 分钟是正常情况。
+### Word 论文格式会不会变化？
 
-如果上游服务返回空响应或 500，项目会按重试策略处理。重试仍失败时，保留 checkpoint，用户可以继续当前轮。
+DOCX 模式先冻结可编辑正文，只回填对应正文文字，并在导出前后检查保护区、OOXML、样式、编号、表格和节属性。复杂或证据不足的结构会 fail-closed，而不是冒险写回。请仍然使用 Microsoft Word 或兼容软件打开最终文件进行人工复核。
 
-### 并发设了但看起来没有跑满
+### 标题、目录、公式、表格和参考文献会被发送给模型吗？
 
-实际并发会受这些因素影响：
+默认不会。这些内容被识别为保护区，不进入 body map、模型输入或改写 Diff。模板说明和致谢指导语也会作为 `template_instruction` 冻结。
 
-- 当前剩余 chunk 数。
-- 后端最高并发限制 16。
-- 当前运行任务是否已有 checkpoint。
-- 轮次是否只剩少量 chunk。
-- 上游服务是否限流或返回错误。
+### 思考模型会不会把 reasoning 写进论文？
 
-如果只剩 1 个 chunk，实际并发自然就是 1。
+流式解析会区分 reasoning/thinking 与最终正文。思考内容不会作为候选正文展示或回填；失败证据也不会保存原始思考文本。
 
-### 中断后为什么能继续
+### 长思考模型总是超时怎么办？
 
-每个 chunk 完成后都会写入 checkpoint。中断、刷新、后端重启后，只要 checkpoint 兼容，下次执行会跳过已完成 chunk。
+保持流式开启，把 `requestTimeoutSeconds` 调到 `600` 或更高，从并发 `2` 或 `4` 开始。若上游频繁返回 500/502/503/504，先降低并发；中断后可以利用 checkpoint 继续，已完成块不会重新调用。
 
-如果用户明确放弃当前进度，系统会清理对应轮次 checkpoint；此后再启动会按新的轮次状态计算。
+### 论文会上传到项目作者的服务器吗？
 
-### 导出 Word 失败
+不会上传到项目作者维护的服务器。FYADR 是本地优先工具，文档、配置、历史和导出保存在你的运行环境中；论文改写时，只把冻结后的可编辑正文发送到你自己配置的模型服务商。若使用“学校规范”AI 解析，粘贴的学校说明也会发送给所选服务商；“测试连接”会发出最小测试请求。请只连接你信任的服务，并确认其数据保留政策。
 
-常见原因：
+### 可以直接把 8765 端口开放到公网吗？
 
-- 原 DOCX 结构复杂，正文范围识别不稳定。
-- 改写后段落数量不一致。
-- body map 指向的段落已变化。
-- 输出包含异常换行。
-- 保护区 guard 认为导出会破坏正文外内容。
+不建议。当前 API 没有内置账号系统、多用户隔离或细粒度权限控制。Docker 默认只绑定 `127.0.0.1:8765`。远程使用应通过可信网络、SSH 隧道或具备身份认证、来源限制和限流的前置网关。
 
-优先查看页面提示，以及 `finish/web_exports/` 和 `finish/intermediate/` 中生成的 audit、guard、preflight 文件。
+### 为什么有时系统选择保留原文？
 
-### 上传提示文件过大
+因为“产生了不同文本”不等于“得到更好的论文”。如果候选收益不足、事实风险增加、语域漂移或证据不完整，保留原文是更安全的发布决定。
 
-默认单文件上传上限是 40 MB。可以用环境变量调整：
+## 安全、隐私与学术诚信
 
-```powershell
-$env:FYADR_MAX_UPLOAD_BYTES = "83886080"
-python scripts/web_app.py
-```
+- 不要把真实论文、检测报告、API Key、私有模型地址和个人路径提交到公开仓库或 Issue。
+- 不要在截图中暴露论文正文、学校、姓名、学号、导师、密钥或供应商后台。
+- Web 配置保存在本机，前端只显示脱敏密钥状态。
+- 论文改写只发送冻结的可编辑正文；学校规范 AI 解析会发送粘贴的规范文本，连接测试也会向所选服务商发出测试请求。
+- 模型调用记录只保留必要的结构化状态，不把 prompt、输出正文、reasoning 或原始供应商错误写进运行报告。
+- 对外开放前必须自行增加认证、授权、TLS、来源限制、请求限流和审计。
+- 使用模型处理未公开论文前，请确认学校规定、保密义务和模型服务商的数据条款。
+- FYADR 用于辅助作者修订自己有权处理的文档，不应用于代写、伪造研究或规避学术诚信责任。
 
-### API Key 会不会进仓库
+发现安全问题请阅读 [SECURITY.md](SECURITY.md)，不要在公开 Issue 中提交敏感复现材料。
 
-Web 配置保存在系统用户目录，不在项目目录。前端不会把完整 API Key 缓存在 localStorage。
+## 相关主题
 
-开源前仍建议运行：
+本项目主要对应以下中文主题：
 
-```powershell
-python scripts/open_source_audit.py
-git status --short
-git ls-files -ci --exclude-standard
-```
+`毕业论文降 AI 率` · `论文 AIGC 检测率优化` · `中国大学生毕业论文 AI 痕迹` · `中文论文降 AI` · `硕士论文 AI 检测` · `本科论文 AI 降检` · `Word 论文格式不变` · `DOCX 只改正文` · `本地部署论文降检工具` · `OpenAI 兼容论文改写`
 
-## 安全与隐私
+这些关键词用于说明项目能力边界，不构成任何检测平台通过承诺。
 
-- 不要把真实论文、检测报告、API Key、私有模型地址、个人路径提交到公开仓库。
-- 不要在 Issue 里粘贴完整论文或完整检测报告。
-- 需要报错复现时，优先构造最小样例。
-- Web 后端默认只允许本机前端 Origin 访问。
-- 如果通过 `FYADR_ALLOWED_ORIGINS` 放开访问，请确认自己知道风险。
-- 当前 API 没有内置登录、用户隔离或细粒度授权；CORS 与 HTTPS 都不能替代鉴权。
-- 不要把 8765 端口直接暴露到公网。远程使用应在可信网络内进行，或在前置网关完成鉴权、来源限制和请求限流。
-- API 能上传/读取工作区文档、调用付费模型、修改配置以及删除或恢复历史数据，因此只应授权给完全可信的使用者。
-- 已保存 API Key 只会在 Base URL 未变化时复用；更换服务商地址需要重新输入密钥。
-- POSIX 系统上的配置目录和文件分别使用 `0700`/`0600`，配置保存采用原子替换。
+## 贡献
 
-## 开源发布前检查
+欢迎提交 Bug、跨平台兼容性问题、脱敏最小复现和改进建议：
 
-建议至少执行：
+- [提交 Bug](https://github.com/multi-zhangyang/fuck-your-ai-detection-rate/issues/new?template=bug_report.yml)
+- [提出功能建议](https://github.com/multi-zhangyang/fuck-your-ai-detection-rate/issues/new?template=feature_request.yml)
+- [贡献指南](CONTRIBUTING.md)
 
-```powershell
-npm --prefix app run check:text
-npm --prefix app run build
-python scripts/open_source_audit.py
-python scripts/run_regressions.py --skip-frontend-build
-git status --short
-```
-
-发布前人工确认：
-
-- `finish/`、`origin/`、`logs/` 没有被提交。
-- 没有真实 DOCX、PDF、截图、数据库和浏览器缓存。
-- README、启动脚本、回归命令与实际代码一致。
-- Prompt 变更是明确需要的，不是顺手改动。
-- `CHANGELOG.md` 和发布检查文档已同步更新。
+提交 Pull Request 前请运行完整回归和开源审计。不得提交真实论文、真实检测报告或真实凭据；README 产品截图只允许使用可复现的 synthetic fixture。
 
 ## 项目来源与致谢
 
 本项目早期基础设施和使用思路参考了 [baibaiAIGC](https://github.com/poleHansen/baibaiAIGC)。
 
-部分中文改写 prompt 的设计参考了 [Linux.do](https://linux.do/) 社区中的公开讨论、经验总结和用户整理内容。当前 prompt 已重新整理为适配本项目流程的版本。继续分发或二次开发时，请尊重原社区内容贡献者和对应平台规则。
+部分中文改写提示词的设计参考了 [Linux.do](https://linux.do/) 社区的公开讨论、经验总结和用户整理内容。当前提示词已经重新组织为适配本项目双契约与人工审阅流程的版本。继续分发或二次开发时，请尊重原内容贡献者和对应平台规则。
 
-## 协议
+## License
 
-本项目以 AGPL-3.0 协议发布，详见 [LICENSE](LICENSE)。
+FYADR 以 [AGPL-3.0](LICENSE) 协议发布。通过网络向用户提供修改后的程序时，请遵守 AGPL-3.0 的源码开放义务。
+
+---
+
+<div align="center">
+  <strong>先守住事实与格式，再谈论文 AI 痕迹优化。</strong>
+  <br />
+  <sub>If FYADR helps your workflow, consider giving the repository a Star.</sub>
+</div>

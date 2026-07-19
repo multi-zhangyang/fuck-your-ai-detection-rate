@@ -69,7 +69,7 @@ export function SchoolFormatCard({
           <div className="flex min-w-0 items-center gap-3">
             <span className="vercel-icon-frame size-9"><GraduationCap className="size-4" /></span>
             <div className="min-w-0">
-              <div className="vercel-kicker mb-1">Format diagnostics</div>
+              <div className="vercel-kicker mb-1">Requirement parser</div>
               <CardTitle className="text-lg">学校规范对照</CardTitle>
             </div>
           </div>
@@ -79,7 +79,7 @@ export function SchoolFormatCard({
 
       <CardContent className="flex flex-col gap-4 p-4">
         <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-xs leading-5 text-muted-foreground">
-          这里的规则只用于诊断原稿是否符合学校要求，不会重排上传 Word。导出始终以原文件格式为唯一真相源，只回填可编辑正文文字。
+          这里会把粘贴的学校说明解析为结构化规范，供你与原稿人工对照；当前不会自动判定 Word 是否合规，也不会重排上传文件。导出始终以原文件格式为唯一真相源，只回填可编辑正文文字。
         </div>
         <SchoolFormatParserSection
           busy={busy}

@@ -41,6 +41,16 @@ def _read_manifest(result: dict[str, object]) -> tuple[Path, dict[str, object]]:
     return manifest_path, payload
 
 
+def _json_contains_string(value: object, expected: str) -> bool:
+    if isinstance(value, str):
+        return expected in value
+    if isinstance(value, dict):
+        return any(_json_contains_string(child, expected) for child in value.values())
+    if isinstance(value, list):
+        return any(_json_contains_string(child, expected) for child in value)
+    return False
+
+
 def main() -> int:
     checks: list[str] = []
     regression_root = ROOT_DIR / "finish" / "web_exports"
@@ -75,7 +85,12 @@ def main() -> int:
                 _assert(report_path.exists(), f"certified report is missing: {report_path}")
                 report_text = report_path.read_text(encoding="utf-8")
                 _assert(".tmp.docx" not in report_text, "certified report still points to a deleted staging DOCX")
-                _assert(str(artifact_path.resolve()) in report_text or report_path.name.endswith("_format_preflight.json"), "certified report is not bound to its immutable artifact")
+                report_payload = json.loads(report_text)
+                _assert(
+                    _json_contains_string(report_payload, str(artifact_path.resolve()))
+                    or report_path.name.endswith("_format_preflight.json"),
+                    "certified report is not bound to its immutable artifact",
+                )
         checks.append("repeated DOCX exports publish immutable hash-bound artifact bundles")
 
         protected = app_service._collect_referenced_history_artifacts([str(second_path)])
