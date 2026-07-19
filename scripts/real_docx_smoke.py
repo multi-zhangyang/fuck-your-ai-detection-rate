@@ -15,7 +15,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import app_service  # noqa: E402
-from docx_export_regression import DEFAULT_SCHOOL_SPEC_PATH, _audit_exported_editable_format, run_regression  # noqa: E402
+from docx_export_regression import _audit_exported_editable_format, run_regression  # noqa: E402
 
 SMOKE_OUTPUT_DIRS = (
     ROOT_DIR / "finish" / "intermediate",
@@ -213,12 +213,10 @@ def _run_targeted_rerun_chain_smoke(report: dict[str, Any], export_path: Path) -
         failures.append("targeted rerun should not persist removed detection-report metadata")
 
     post_rerun_export_path = export_path.with_name(f"{export_path.stem}_post_rerun{export_path.suffix}")
-    post_export_result = app_service.export_round_output(str(output_path), str(post_rerun_export_path), "docx", "school_rules")
+    post_export_result = app_service.export_round_output(str(output_path), str(post_rerun_export_path), "docx", "preserve_original")
     post_format_audit = _audit_exported_editable_format(post_rerun_export_path, snapshot_path)
     if int(post_export_result.get("auditIssueCount", 0) or 0) != 0:
         failures.append(f"post-rerun export audit issues: {post_export_result.get('auditIssueCount')}")
-    if int(post_export_result.get("preflightIssueCount", 0) or 0) != 0:
-        failures.append(f"post-rerun export preflight issues: {post_export_result.get('preflightIssueCount')}")
 
     return {
         "ok": not failures,
@@ -238,9 +236,7 @@ def run_smoke(
     report_path: Path,
     *,
     strict_missing: bool,
-    strict_preflight: bool,
     strict_format_audit: bool,
-    school_spec_path: Path | None,
 ) -> dict[str, Any]:
     if not sample_path.exists():
         report = {
@@ -267,8 +263,6 @@ def run_smoke(
         export_path.resolve(),
         report_path.resolve(),
         rebuild_sample=False,
-        strict_preflight=strict_preflight,
-        school_spec_path=school_spec_path,
         strict_sample_scope=False,
     )
     original_failures = list(report.get("failures", []) or [])
@@ -312,19 +306,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--export", type=Path, default=DEFAULT_EXPORT_PATH)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT_PATH)
     parser.add_argument("--strict-missing", action="store_true", help="Fail when the real DOCX sample is missing.")
-    parser.add_argument("--strict-preflight", action="store_true", help="Fail when formatting preflight reports any issue.")
     parser.add_argument("--strict-format-audit", action="store_true", help="Fail on sample-specific editable font/line-spacing audit issues.")
-    parser.add_argument("--school-spec", type=Path, default=DEFAULT_SCHOOL_SPEC_PATH)
-    parser.add_argument("--no-school-spec", action="store_true", help="Do not activate school rules for this smoke run.")
     args = parser.parse_args(argv)
     report = run_smoke(
         args.sample.resolve(),
         args.export.resolve(),
         args.report.resolve(),
         strict_missing=args.strict_missing,
-        strict_preflight=args.strict_preflight,
         strict_format_audit=args.strict_format_audit,
-        school_spec_path=None if args.no_school_spec else args.school_spec.resolve(),
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["ok"] else 1

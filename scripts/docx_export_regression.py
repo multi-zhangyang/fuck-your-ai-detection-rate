@@ -24,7 +24,6 @@ if str(ROOT_DIR) not in sys.path:
 
 import app_service  # noqa: E402
 from app_service import export_round_output  # noqa: E402
-from format_rules import ACTIVE_RULES_PATH, extract_deterministic_format_rules, merge_deterministic_rules, save_active_format_rules  # noqa: E402
 from docx_audit import audit_docx_export, audit_docx_ooxml_integrity, get_docx_audit_report_path, get_docx_ooxml_audit_report_path  # noqa: E402
 from docx_bodymap import load_docx_body_map, validate_docx_body_map  # noqa: E402
 from docx_export_guard import run_docx_pre_export_guard  # noqa: E402
@@ -54,7 +53,6 @@ REGRESSION_DIR = ROOT_DIR / "finish" / "regression"
 DEFAULT_SAMPLE_PATH = REGRESSION_DIR / "fyadr_regression_sample.docx"
 DEFAULT_EXPORT_PATH = REGRESSION_DIR / "fyadr_regression_export.docx"
 DEFAULT_REPORT_PATH = REGRESSION_DIR / "fyadr_regression_report.json"
-DEFAULT_SCHOOL_SPEC_PATH = ROOT_DIR / "references" / "school_format_instruction.md"
 AUTO_NUMBERED_BODY_RE = re.compile(r"^\s*(?:\d+(?:\.\d+)*|[一二三四五六七八九十]+)[\.．、)]\s*\S")
 
 
@@ -545,28 +543,6 @@ def create_regression_sample(path: Path) -> Path:
 
 def identity_transform(chunk_text: str, prompt_input: str, round_number: int, chunk_id: str) -> str:
     return chunk_text
-
-
-def _activate_school_spec_for_regression(spec_path: Path | None) -> tuple[bytes | None, dict[str, Any] | None]:
-    if spec_path is None or not spec_path.exists():
-        return None, None
-    previous_bytes = ACTIVE_RULES_PATH.read_bytes() if ACTIVE_RULES_PATH.exists() else None
-    instruction_text = spec_path.read_text(encoding="utf-8")
-    deterministic_rules = extract_deterministic_format_rules(instruction_text)
-    rules = merge_deterministic_rules({}, deterministic_rules)
-    rules["schoolName"] = "FYADR regression school spec"
-    rules["sourceSummary"] = f"Deterministic rules parsed from {spec_path.name}."
-    save_active_format_rules(rules, ACTIVE_RULES_PATH)
-    return previous_bytes, rules
-
-
-def _restore_active_rules(previous_bytes: bytes | None) -> None:
-    if previous_bytes is None:
-        if ACTIVE_RULES_PATH.exists():
-            ACTIVE_RULES_PATH.unlink()
-        return
-    ACTIVE_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ACTIVE_RULES_PATH.write_bytes(previous_bytes)
 
 
 def _pt_value(value: Any) -> float | None:
@@ -1313,7 +1289,7 @@ def _run_auto_numbered_targeted_rerun_smoke(output_path: Path, export_path: Path
             failures.append(f"auto-numbered production selector {count_field} is not bound to outputText")
 
     post_export_path = export_path.with_name(f"{export_path.stem}_auto_numbered_post_rerun{export_path.suffix}")
-    post_export = app_service.export_round_output(str(output_path), str(post_export_path), "docx", "school_rules")
+    post_export = app_service.export_round_output(str(output_path), str(post_export_path), "docx", "preserve_original")
     post_format_audit = _audit_exported_editable_format(post_export_path, snapshot_path)
     post_body_map = load_docx_body_map(output_path.with_name(f"{output_path.stem}_body_map.json"))
     post_text_integrity = _audit_exported_text_integrity(post_export_path, post_body_map)
@@ -1321,10 +1297,6 @@ def _run_auto_numbered_targeted_rerun_smoke(output_path: Path, export_path: Path
         failures.append(f"auto-numbered post-rerun export audit issues: {post_export.get('auditIssueCount')}")
     if int(post_export.get("ooxmlAuditIssueCount", 0) or 0) != 0:
         failures.append(f"auto-numbered post-rerun export OOXML audit issues: {post_export.get('ooxmlAuditIssueCount')}")
-    if int(post_export.get("preflightIssueCount", 0) or 0) != 0:
-        failures.append(f"auto-numbered post-rerun export preflight issues: {post_export.get('preflightIssueCount')}")
-    # School rules are diagnostic-only.  The exported file must keep the source
-    # format even when this legacy call explicitly requests ``school_rules``.
     if str(post_export.get("formatMode", "")) != "preserve_original":
         failures.append(f"auto-numbered post-rerun format mode escaped fidelity lock: {post_export.get('formatMode')}")
     if int(post_export.get("formatLockIssueCount", 0) or 0) != 0:
@@ -1362,37 +1334,31 @@ def run_regression(
     report_path: Path,
     *,
     rebuild_sample: bool,
-    strict_preflight: bool,
-    school_spec_path: Path | None = DEFAULT_SCHOOL_SPEC_PATH,
     strict_sample_scope: bool = True,
 ) -> dict[str, Any]:
     if rebuild_sample or not sample_path.exists():
         create_regression_sample(sample_path)
 
-    previous_rules_bytes, applied_rules = _activate_school_spec_for_regression(school_spec_path)
     auto_numbered_rerun = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
     tampered_targeted_rerun = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
     atomic_export_commit = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
     certified_export_bundle = {"ok": True, "skipped": True, "reason": "export not completed"}
     export_text_integrity_block = {"ok": True, "skipped": True, "reason": "strict sample scope is disabled"}
     body_map = None
-    try:
-        round_result = run_document_round(sample_path, identity_transform, round_number=1, prompt_profile="cn")
-        output_path = Path(str(round_result["output_path"]))
-        export_result = export_round_output(str(output_path), str(export_path), "docx", "school_rules")
-        certified_export_bundle = _audit_certified_export_bundle(export_result, export_path)
-        body_map = load_docx_body_map(Path(str(round_result.get("body_map_path", ""))))
-        if strict_sample_scope:
-            atomic_export_commit = _run_atomic_docx_export_commit_smoke(output_path, export_path)
-            export_text_integrity_block = _run_export_text_integrity_block_regression(output_path, export_path)
-            tampered_targeted_rerun = _run_tampered_targeted_rerun_contract_smoke(output_path)
-            auto_numbered_rerun = _run_auto_numbered_targeted_rerun_smoke(
-                output_path,
-                export_path,
-                get_docx_snapshot_path(sample_path),
-            )
-    finally:
-        _restore_active_rules(previous_rules_bytes)
+    round_result = run_document_round(sample_path, identity_transform, round_number=1, prompt_profile="cn")
+    output_path = Path(str(round_result["output_path"]))
+    export_result = export_round_output(str(output_path), str(export_path), "docx", "preserve_original")
+    certified_export_bundle = _audit_certified_export_bundle(export_result, export_path)
+    body_map = load_docx_body_map(Path(str(round_result.get("body_map_path", ""))))
+    if strict_sample_scope:
+        atomic_export_commit = _run_atomic_docx_export_commit_smoke(output_path, export_path)
+        export_text_integrity_block = _run_export_text_integrity_block_regression(output_path, export_path)
+        tampered_targeted_rerun = _run_tampered_targeted_rerun_contract_smoke(output_path)
+        auto_numbered_rerun = _run_auto_numbered_targeted_rerun_smoke(
+            output_path,
+            export_path,
+            get_docx_snapshot_path(sample_path),
+        )
 
     snapshot_path = get_docx_snapshot_path(sample_path)
     snapshot = _load_docx_snapshot(snapshot_path)
@@ -1416,7 +1382,6 @@ def run_regression(
             snapshot_path=snapshot_path,
             report_path=get_docx_ooxml_audit_report_path(export_path),
         )
-    preflight_report = _read_json(export_result.get("preflightPath"))
     format_audit = _audit_exported_editable_format(export_path, snapshot_path)
     exported_text_integrity = _audit_exported_text_integrity(export_path, body_map)
     protection_scope_audit = _audit_snapshot_protection_scope(snapshot, strict_sample_expectations=strict_sample_scope)
@@ -1458,11 +1423,8 @@ def run_regression(
         failures.append("missing body map")
     elif snapshot is not None and len(body_map.units) != snapshot.editable_unit_count:
         failures.append(f"body map count mismatch: {len(body_map.units)} != {snapshot.editable_unit_count}")
-    if strict_preflight and int(export_result.get("preflightIssueCount", 0) or 0) != 0:
-        failures.append(f"preflight issues: {export_result.get('preflightIssueCount')}")
-    # ``format_audit`` records differences from the optional school-rule
-    # reference and is no longer a pass/fail export condition.  Fidelity is
-    # asserted by the source-relative format lock below.
+    # ``format_audit`` is a source-relative diagnostic for editable paragraph
+    # styling. Fidelity is asserted by the dedicated format-lock contract.
     if str(export_result.get("formatMode", "")) != "preserve_original":
         failures.append(f"unexpected product format mode: {export_result.get('formatMode')}")
     if int(export_result.get("evidenceVersion", 0) or 0) != 1:
@@ -1482,7 +1444,6 @@ def run_regression(
     }
     required_checks = {
         "document_generation",
-        "format_preflight",
         "pre_export_guard",
         "content_contract",
         "text_integrity",
@@ -1531,7 +1492,7 @@ def run_regression(
         failures.extend(f"atomic DOCX export commit: {failure}" for failure in atomic_export_commit.get("failures", []) or [])
     if not bool(certified_export_bundle.get("ok", True)):
         failures.extend(f"certified DOCX export bundle: {failure}" for failure in certified_export_bundle.get("failures", []) or [])
-    for sample_key in ("guardIssueSamples", "auditIssueSamples", "ooxmlAuditIssueSamples", "preflightIssueSamples"):
+    for sample_key in ("guardIssueSamples", "auditIssueSamples", "ooxmlAuditIssueSamples"):
         if sample_key not in export_result:
             failures.append(f"missing export issue sample field: {sample_key}")
         elif not isinstance(export_result.get(sample_key), list):
@@ -1569,17 +1530,11 @@ def run_regression(
             "reasonCounts": scope_diagnostics.get("reasonCounts", {}) if isinstance(scope_diagnostics.get("reasonCounts"), dict) else {},
             "sampleIssues": (scope_diagnostics.get("issues", []) or [])[:5] if isinstance(scope_diagnostics.get("issues"), list) else [],
         },
-        "schoolRules": {
-            "specPath": str(school_spec_path.resolve()) if school_spec_path is not None and school_spec_path.exists() else "",
-            "deterministicHits": int((applied_rules or {}).get("quality", {}).get("deterministicHits", 0)) if isinstance(applied_rules, dict) else 0,
-            "warningCount": int((applied_rules or {}).get("quality", {}).get("warningCount", 0)) if isinstance(applied_rules, dict) else 0,
-        },
         "export": export_result,
         "exportIssueSamples": {
             "guard": len(export_result.get("guardIssueSamples", []) or []),
             "audit": len(export_result.get("auditIssueSamples", []) or []),
             "ooxmlAudit": len(export_result.get("ooxmlAuditIssueSamples", []) or []),
-            "preflight": len(export_result.get("preflightIssueSamples", []) or []),
         },
         "formatAudit": format_audit,
         "exportedTextIntegrity": exported_text_integrity,
@@ -1606,11 +1561,6 @@ def run_regression(
             "issueCount": int(ooxml_audit_report.get("issueCount", 0) or 0),
             "path": str(export_result.get("ooxmlAuditPath", "")),
         },
-        "preflight": {
-            "issueCount": int(export_result.get("preflightIssueCount", 0) or 0),
-            "path": str(export_result.get("preflightPath", "")),
-            "sampleIssues": (preflight_report.get("issues", []) or [])[:5] if isinstance(preflight_report.get("issues"), list) else [],
-        },
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1623,9 +1573,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--export", type=Path, default=DEFAULT_EXPORT_PATH)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT_PATH)
     parser.add_argument("--rebuild-sample", action="store_true", help="Recreate the regression sample DOCX before running.")
-    parser.add_argument("--strict-preflight", action="store_true", help="Fail when formatting preflight reports any issue.")
-    parser.add_argument("--school-spec", type=Path, default=DEFAULT_SCHOOL_SPEC_PATH, help="School formatting instruction text used to activate deterministic rules for this regression.")
-    parser.add_argument("--no-school-spec", action="store_true", help="Do not activate any school instruction file before export.")
     args = parser.parse_args(argv)
 
     report = run_regression(
@@ -1633,8 +1580,6 @@ def main(argv: list[str] | None = None) -> int:
         args.export.resolve(),
         args.report.resolve(),
         rebuild_sample=args.rebuild_sample,
-        strict_preflight=args.strict_preflight,
-        school_spec_path=None if args.no_school_spec else args.school_spec,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["ok"] else 1

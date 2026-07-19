@@ -80,6 +80,8 @@ from fyadr_round_service import (  # noqa: E402
     FAILED_ATTEMPT_GUARD_CATEGORIES,
     FAILED_ATTEMPT_ISSUE_CODES,
     FAILED_ATTEMPT_PUBLIC_FORBIDDEN_KEYS,
+    HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
+    MAX_TOTAL_MODEL_ATTEMPTS,
 )
 from prompt_library import (  # noqa: E402
     ROUND_PERTURBATION_DIMENSIONS,
@@ -683,6 +685,67 @@ def _provider_configuration_failure_for_error(
     return _provider_configuration_failure_summary(_provider_error_descriptor(error))
 
 
+def _model_output_validation_failure_for_error(
+    error: BaseException,
+) -> dict[str, Any] | None:
+    """Project a production hard-validation failure without parsing prose."""
+
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        raw_events = getattr(current, "validation_events", None)
+        events = [event for event in raw_events if isinstance(event, dict)] if isinstance(raw_events, list) else []
+        terminal = next(
+            (
+                event
+                for event in reversed(events)
+                if event.get("event") == "candidate-selection"
+                and event.get("runFailed") is True
+                and event.get("decision") == "hard_failure_preserved_baseline"
+            ),
+            None,
+        )
+        if terminal is not None:
+            issue_codes: list[str] = []
+            guard_categories: list[str] = []
+            for event in events:
+                if event.get("event") != "validation-retry":
+                    continue
+                guard_category = str(event.get("guardCategory", "") or "").strip()
+                if (
+                    guard_category in FAILED_ATTEMPT_GUARD_CATEGORIES
+                    and guard_category not in guard_categories
+                ):
+                    guard_categories.append(guard_category)
+                raw_codes = event.get("issueCodes")
+                for raw_code in raw_codes if isinstance(raw_codes, list) else []:
+                    code = str(raw_code or "").strip()
+                    if code in FAILED_ATTEMPT_ISSUE_CODES and code not in issue_codes:
+                        issue_codes.append(code)
+            try:
+                attempt_count = max(0, min(16, int(terminal.get("modelAttemptCount", 0) or 0)))
+            except (TypeError, ValueError):
+                attempt_count = 0
+            chunk_id = str(terminal.get("chunkId", "") or "").strip()
+            if re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", chunk_id) is None:
+                chunk_id = ""
+            return {
+                "status": "model_output_failure",
+                "category": "model_output_failure",
+                "code": "model_output_hard_validation_failed",
+                "chunkId": chunk_id,
+                "modelAttemptCount": attempt_count,
+                "guardCategories": guard_categories[:8],
+                "issueCodes": issue_codes[:16],
+                "failedCandidateTextStored": False,
+                "validationErrorStored": False,
+                "providerContentStored": False,
+            }
+        current = current.__cause__ or current.__context__
+    return None
+
+
 @contextmanager
 def _patched_completion(replacement: Callable[..., Any]) -> Iterator[None]:
     original = app_service.llm_completion
@@ -793,6 +856,21 @@ def _build_freeze_summary(source_path: Path, snapshot: Any, snapshot_path: Path)
         "formula": [],
         "references": [],
     }
+    # A lone author/year-shaped sentence in the body can match the broad
+    # reference-entry heuristic (for example “Facebook 于 2017 年…”). Only
+    # the confirmed references phase or an explicit structural-role decision
+    # is evidence that a unit belongs to the protected bibliography surface.
+    confirmed_reference_heading_index = next(
+        (
+            int(unit.unit_index)
+            for unit in snapshot.units
+            if isinstance(unit_diagnostics.get(int(unit.unit_index), {}).get("flags"), dict)
+            and bool(
+                unit_diagnostics.get(int(unit.unit_index), {}).get("flags", {}).get("referencesHeading")
+            )
+        ),
+        None,
+    )
     for unit in snapshot.units:
         diagnostic = unit_diagnostics.get(int(unit.unit_index), {})
         flags = diagnostic.get("flags") if isinstance(diagnostic.get("flags"), dict) else {}
@@ -805,9 +883,19 @@ def _build_freeze_summary(source_path: Path, snapshot: Any, snapshot_path: Path)
             categories["toc"].append(unit)
         if bool(flags.get("formula")) or bool(unit.has_math):
             categories["formula"].append(unit)
+        explicit_reference_role = unit.structural_role in {
+            "references_heading",
+            "reference_entry",
+        }
+        confirmed_reference_entry = bool(
+            confirmed_reference_heading_index is not None
+            and int(unit.unit_index) >= confirmed_reference_heading_index
+            and bool(flags.get("referenceEntry"))
+        )
         if (
             bool(flags.get("referencesHeading"))
-            or bool(flags.get("referenceEntry"))
+            or explicit_reference_role
+            or confirmed_reference_entry
             or str(unit.protect_reason or "") == "references"
         ):
             categories["references"].append(unit)
@@ -1049,29 +1137,106 @@ def _summarize_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     compare = snapshot.get("compare") if isinstance(snapshot.get("compare"), dict) else {}
     review = snapshot.get("review") if isinstance(snapshot.get("review"), dict) else {}
     chunks = [item for item in compare.get("chunks", []) if isinstance(item, dict)]
+    validation_events = [
+        item for item in compare.get("validationEvents", []) if isinstance(item, dict)
+    ]
     selections = [
         item.get("candidateSelection")
         for item in chunks
         if isinstance(item.get("candidateSelection"), dict)
     ]
+    chunk_ids = {
+        str(item.get("chunkId", "") or "")
+        for item in chunks
+        if str(item.get("chunkId", "") or "")
+    }
+    selection_chunk_ids = {
+        str(item.get("chunkId", "") or "")
+        for item in chunks
+        if isinstance(item.get("candidateSelection"), dict)
+        and str(item.get("chunkId", "") or "")
+    }
+    frozen_events = [
+        event
+        for event in validation_events
+        if event.get("event") == "chunk-frozen"
+    ]
+    frozen_events_by_chunk: dict[str, list[dict[str, Any]]] = {}
+    invalid_frozen_event_count = 0
+    for event in frozen_events:
+        chunk_id = str(event.get("chunkId", "") or "")
+        if (
+            not chunk_id
+            or event.get("reasonCode") != "structure_or_metadata_preserved"
+        ):
+            invalid_frozen_event_count += 1
+            continue
+        frozen_events_by_chunk.setdefault(chunk_id, []).append(event)
+    frozen_identity_ids: set[str] = set()
+    invalid_frozen_identity_count = 0
+    for chunk in chunks:
+        chunk_id = str(chunk.get("chunkId", "") or "")
+        if not chunk_id or isinstance(chunk.get("candidateSelection"), dict):
+            continue
+        input_text = str(chunk.get("inputText", "") or "")
+        output_text = str(chunk.get("outputText", "") or "")
+        matching_events = frozen_events_by_chunk.get(chunk_id, [])
+        if input_text.strip() and input_text == output_text and len(matching_events) == 1:
+            frozen_identity_ids.add(chunk_id)
+        else:
+            invalid_frozen_identity_count += 1
+    frozen_event_chunk_ids = set(frozen_events_by_chunk)
+    frozen_identity_event_count = len(frozen_events)
+    frozen_identity_unknown_event_count = len(frozen_event_chunk_ids - chunk_ids)
+    frozen_identity_selection_overlap_count = len(frozen_event_chunk_ids & selection_chunk_ids)
+    frozen_identity_bound = bool(
+        frozen_identity_event_count == len(frozen_identity_ids)
+        and invalid_frozen_event_count == 0
+        and invalid_frozen_identity_count == 0
+        and frozen_identity_unknown_event_count == 0
+        and frozen_identity_selection_overlap_count == 0
+    )
+    covered_chunk_ids = selection_chunk_ids | frozen_identity_ids
     v2_selections = [
         item
         for item in selections
         if item.get("schema") == CANDIDATE_SELECTION_SCHEMA
         and item.get("schemaVersion") == CANDIDATE_SELECTION_VERSION
     ]
-    source_relative_values: list[object] = []
+    selection_count = len(selections)
+    release_critical_source_relative_values: list[object] = []
+    rejected_candidate_source_relative_evidence_count = 0
     for selection in v2_selections:
-        source_relative_values.append(selection.get("resultSourceRelativeStyleDelta"))
+        release_critical_source_relative_values.append(
+            selection.get("resultSourceRelativeStyleDelta")
+        )
+        selected_candidate_id = str(selection.get("selectedCandidateId", "") or "")
         raw_candidates = selection.get("candidates")
         if isinstance(raw_candidates, list):
-            source_relative_values.extend(
-                candidate.get("sourceRelativeStyleDelta")
-                for candidate in raw_candidates
-                if isinstance(candidate, dict)
-            )
+            for candidate in raw_candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                if (
+                    str(candidate.get("origin", "") or "") == "baseline"
+                    or str(candidate.get("candidateId", "") or "") == selected_candidate_id
+                ):
+                    release_critical_source_relative_values.append(
+                        candidate.get("sourceRelativeStyleDelta")
+                    )
+                else:
+                    rejected_candidate_source_relative_evidence_count += 1
     valid_source_relative_count = sum(
-        1 for value in source_relative_values if source_relative_style_delta_passed(value)
+        1
+        for value in release_critical_source_relative_values
+        if source_relative_style_delta_passed(value)
+    )
+    all_release_critical_source_relative_evidence_valid = bool(
+        selection_count == 0
+        or (
+            bool(release_critical_source_relative_values)
+            and valid_source_relative_count
+            == len(release_critical_source_relative_values)
+        )
     )
     raw_profile_registry = compare.get("sourcePatternProfiles")
     profile_registry_count = len(raw_profile_registry) if isinstance(raw_profile_registry, dict) else 0
@@ -1110,12 +1275,29 @@ def _summarize_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             "claimsDetectionRateFalseCount": sum(
                 1 for item in v2_selections if item.get("claimsDetectionRate") is False
             ),
-            "sourceRelativeEvidenceCount": len(source_relative_values),
-            "validSourceRelativeEvidenceCount": valid_source_relative_count,
-            "allSourceRelativeEvidenceValid": (
-                bool(source_relative_values)
-                and valid_source_relative_count == len(source_relative_values)
+            "sourceRelativeEvidenceCount": len(release_critical_source_relative_values),
+            "releaseCriticalSourceRelativeEvidenceCount": len(
+                release_critical_source_relative_values
             ),
+            "rejectedCandidateSourceRelativeEvidenceCount": (
+                rejected_candidate_source_relative_evidence_count
+            ),
+            "validSourceRelativeEvidenceCount": valid_source_relative_count,
+            "allReleaseCriticalSourceRelativeEvidenceValid": (
+                all_release_critical_source_relative_evidence_valid
+            ),
+            "allSourceRelativeEvidenceValid": (
+                all_release_critical_source_relative_evidence_valid
+            ),
+            "frozenIdentityCount": len(frozen_identity_ids),
+            "frozenIdentityEventCount": frozen_identity_event_count,
+            "frozenIdentityBound": frozen_identity_bound,
+            "frozenIdentityInvalidCount": invalid_frozen_identity_count,
+            "frozenIdentityInvalidEventCount": invalid_frozen_event_count,
+            "frozenIdentityUnknownEventCount": frozen_identity_unknown_event_count,
+            "frozenIdentitySelectionOverlapCount": frozen_identity_selection_overlap_count,
+            "decisionCoverageCount": len(covered_chunk_ids),
+            "allChunkDecisionsCovered": len(covered_chunk_ids) == len(chunks),
             "sourcePatternProfileRegistryCount": profile_registry_count,
             "sourceRelativeDocumentDeltaPresent": isinstance(document_delta, dict),
             "sourceRelativeDocumentDeltaPassed": source_relative_document_delta_passed(document_delta),
@@ -1136,8 +1318,14 @@ def _require_v2_snapshot_candidate_evidence(summary: dict[str, Any]) -> None:
     chunk_count = int(summary.get("chunkCount", 0) or 0)
     selection_count = int(evidence.get("selectionCount", 0) or 0)
     v2_count = int(evidence.get("v2SelectionCount", 0) or 0)
+    frozen_identity_count = int(evidence.get("frozenIdentityCount", 0) or 0)
     _require(chunk_count > 0, "candidate_evidence_snapshot_empty")
-    _require(selection_count == chunk_count, "candidate_selection_evidence_incomplete")
+    _require(
+        selection_count + frozen_identity_count == chunk_count
+        and evidence.get("allChunkDecisionsCovered") is True
+        and evidence.get("frozenIdentityBound") is True,
+        "candidate_selection_evidence_incomplete",
+    )
     _require(
         evidence.get("allSelectionsV2") is True and v2_count == selection_count,
         "candidate_selection_v2_evidence_invalid",
@@ -1148,7 +1336,8 @@ def _require_v2_snapshot_candidate_evidence(summary: dict[str, Any]) -> None:
         "candidate_selection_heuristic_claims_invalid",
     )
     _require(
-        evidence.get("allSourceRelativeEvidenceValid") is True,
+        evidence.get("allReleaseCriticalSourceRelativeEvidenceValid") is True
+        and evidence.get("allSourceRelativeEvidenceValid") is True,
         "candidate_source_relative_style_evidence_invalid",
     )
     _require(
@@ -1922,9 +2111,20 @@ def _summarize_format_anchor_executions(
     }
 
 
-def _passed_e2e_status(*, manual_review: bool, changed_rewrite_count: int) -> str:
+def _passed_e2e_status(
+    *,
+    manual_review: bool,
+    changed_rewrite_count: int,
+    source_fallback_count: int = 0,
+) -> str:
     """Describe a successful release without using rewrite count as a quota."""
 
+    if source_fallback_count > 0:
+        return (
+            "passed_with_source_fallbacks_and_manual_review"
+            if manual_review
+            else "passed_with_source_fallbacks"
+        )
     if changed_rewrite_count <= 0:
         return (
             "passed_baseline_preserved_with_manual_review"
@@ -1932,6 +2132,114 @@ def _passed_e2e_status(*, manual_review: bool, changed_rewrite_count: int) -> st
             else "passed_baseline_preserved"
         )
     return "passed_with_manual_review" if manual_review else "passed"
+
+
+def _summarize_full_round_candidate_outcomes(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Decompose every full-round chunk without treating fallback as a rewrite."""
+
+    compare = snapshot.get("compare") if isinstance(snapshot.get("compare"), dict) else {}
+    chunks = [item for item in compare.get("chunks", []) if isinstance(item, dict)]
+    published_rewrite_count = 0
+    preserved_baseline_count = 0
+    preserved_baseline_without_fallback_count = 0
+    source_fallback_count = 0
+    frozen_identity_count = 0
+    unclassified_selection_count = 0
+    invalid_source_fallback_evidence_count = 0
+    model_attempt_count = 0
+
+    for chunk in chunks:
+        selection = (
+            chunk.get("candidateSelection")
+            if isinstance(chunk.get("candidateSelection"), dict)
+            else None
+        )
+        if selection is None:
+            frozen_identity_count += 1
+            continue
+
+        try:
+            current_model_attempt_count = max(
+                0,
+                int(selection.get("modelAttemptCount", 0) or 0),
+            )
+        except (TypeError, ValueError):
+            unclassified_selection_count += 1
+            continue
+        model_attempt_count += current_model_attempt_count
+
+        is_published = bool(
+            selection.get("publishedRewrite") is True
+            and selection.get("runFailed") is False
+            and str(selection.get("decision", "") or "") == "generated_selected"
+            and str(selection.get("selectedOrigin", "") or "") == "model"
+        )
+        is_preserved = bool(
+            selection.get("publishedRewrite") is False
+            and selection.get("runFailed") is False
+            and str(selection.get("decision", "") or "") == "preserved_baseline"
+            and str(selection.get("selectedOrigin", "") or "") == "baseline"
+        )
+        is_source_fallback = chunk.get("fallbackMode") == "source"
+        if is_published:
+            published_rewrite_count += 1
+        elif is_preserved:
+            preserved_baseline_count += 1
+            if is_source_fallback:
+                source_fallback_count += 1
+            else:
+                preserved_baseline_without_fallback_count += 1
+        else:
+            unclassified_selection_count += 1
+
+        if not is_source_fallback:
+            continue
+        quality = chunk.get("quality") if isinstance(chunk.get("quality"), dict) else {}
+        flags = quality.get("flags") if isinstance(quality.get("flags"), list) else []
+        failed_attempts = (
+            chunk.get("failedAttempts")
+            if isinstance(chunk.get("failedAttempts"), list)
+            else []
+        )
+        source_fallback_valid = bool(
+            is_preserved
+            and str(chunk.get("inputText", "") or "") == str(chunk.get("outputText", "") or "")
+            and chunk.get("fallbackReason") == HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED
+            and HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED
+            in (selection.get("reasonCodes") if isinstance(selection.get("reasonCodes"), list) else [])
+            and current_model_attempt_count == MAX_TOTAL_MODEL_ATTEMPTS
+            and len(failed_attempts) == MAX_TOTAL_MODEL_ATTEMPTS
+            and quality.get("needsReview") is True
+            and "source_fallback" in flags
+        )
+        if not source_fallback_valid:
+            invalid_source_fallback_evidence_count += 1
+
+    classified_selection_count = (
+        published_rewrite_count
+        + preserved_baseline_without_fallback_count
+        + source_fallback_count
+    )
+    selection_count = classified_selection_count + unclassified_selection_count
+    return {
+        "applicable": True,
+        "chunkCount": len(chunks),
+        "candidateSelectionCount": selection_count,
+        "frozenIdentityCount": frozen_identity_count,
+        "modelAttemptCount": model_attempt_count,
+        "publishedRewriteCount": published_rewrite_count,
+        "preservedBaselineSelectionCount": preserved_baseline_count,
+        "preservedBaselineWithoutFallbackCount": preserved_baseline_without_fallback_count,
+        "sourceFallbackCount": source_fallback_count,
+        "sourceFallbacksCountAsPublishedRewrites": False,
+        "unclassifiedSelectionCount": unclassified_selection_count,
+        "invalidSourceFallbackEvidenceCount": invalid_source_fallback_evidence_count,
+        "outcomeDecompositionValid": bool(
+            classified_selection_count == selection_count
+            and selection_count + frozen_identity_count == len(chunks)
+        ),
+        "sourceFallbackEvidenceValid": invalid_source_fallback_evidence_count == 0,
+    }
 
 
 def _execute_bounded_real_targets(
@@ -2254,6 +2562,9 @@ def _build_review_decisions(
     candidate_evidence_failures = 0
     readability_failures = 0
     preserved_baseline_count = 0
+    source_fallback_count = 0
+    preserved_baseline_without_fallback_count = 0
+    frozen_identity_count = 0
     for chunk in chunks:
         chunk_id = str(chunk.get("chunkId", "") or "")
         _require(bool(chunk_id), "review_chunk_id_missing")
@@ -2272,6 +2583,13 @@ def _build_review_decisions(
         strategy_converged = chunk.get("rerunDimensionConverged") is True
         default = app_service._default_export_decision_for_chunk(chunk)
         release_evidence = _candidate_release_evidence(chunk, compare=compare)
+        frozen_identity = bool(
+            not isinstance(chunk.get("candidateSelection"), dict)
+            and input_text.strip()
+            and output_text.strip() == input_text.strip()
+        )
+        if frozen_identity:
+            frozen_identity_count += 1
         candidate_release_ready = bool(release_evidence.get("eligible"))
         if release_evidence.get("readabilityPassed") is not True and output_text.strip() != input_text.strip():
             readability_failures += 1
@@ -2280,8 +2598,15 @@ def _build_review_decisions(
             and str((chunk.get("candidateSelection") or {}).get("decision", "") or "") == "preserved_baseline"
         ):
             preserved_baseline_count += 1
+            if chunk.get("fallbackMode") == "source":
+                source_fallback_count += 1
+            else:
+                preserved_baseline_without_fallback_count += 1
 
-        if chunk_id not in real_candidate_ids and baseline_mode == "identity":
+        if frozen_identity:
+            decision = "source_confirmed"
+            reason = "frozen_identity"
+        elif chunk_id not in real_candidate_ids and baseline_mode == "identity":
             decision = "source_confirmed"
             reason = "identity_baseline_unselected"
         elif strategy_pending:
@@ -2318,9 +2643,19 @@ def _build_review_decisions(
                 decision = "source_confirmed"
                 reason = "server_default_source_or_hard_invalid"
         elif baseline_mode == "full_real_round":
-            if candidate_release_ready and default == "rewrite" and hard_ok:
+            if chunk.get("fallbackMode") == "source":
+                decision = "source_confirmed"
+                if release_evidence.get("baselinePreservedSafely") is True:
+                    reason = "full_real_round_source_fallback"
+                else:
+                    reason = "full_real_round_source_fallback_evidence_invalid"
+                    candidate_evidence_failures += 1
+            elif candidate_release_ready and default == "rewrite" and hard_ok:
                 decision = "rewrite_confirmed"
                 reason = "full_real_round_production_selected_hash_bound_and_readable"
+            elif release_evidence.get("baselinePreservedSafely") is True:
+                decision = "source_confirmed"
+                reason = "full_real_round_baseline_preserved"
             else:
                 decision = "source_confirmed"
                 if release_evidence.get("readabilityPassed") is not True:
@@ -2350,6 +2685,9 @@ def _build_review_decisions(
         "candidateEvidenceFailureCount": candidate_evidence_failures,
         "academicReadabilityFailureCount": readability_failures,
         "preservedBaselineSelectionCount": preserved_baseline_count,
+        "preservedBaselineWithoutFallbackCount": preserved_baseline_without_fallback_count,
+        "sourceFallbackCount": source_fallback_count,
+        "frozenIdentityCount": frozen_identity_count,
         "reasonCounts": dict(sorted(reasons.items())),
         "allDecisionsExplicit": all(value in {"source_confirmed", "rewrite_confirmed"} for value in decisions.values()),
         "reviewActor": "automated_e2e",
@@ -2379,7 +2717,6 @@ def _export_and_verify(
     _require(actual_path.exists() and actual_path.is_file(), "certified_export_missing")
     required_checks = {
         "document_generation",
-        "format_preflight",
         "pre_export_guard",
         "content_contract",
         "text_integrity",
@@ -2399,7 +2736,6 @@ def _export_and_verify(
         "ooxmlAuditIssueCount",
         "formatLockIssueCount",
         "contentContractIssueCount",
-        "preflightIssueCount",
         "guardIssueCount",
     ):
         _require(int(result.get(key, 0) or 0) == 0, f"export_{key}_nonzero")
@@ -2449,7 +2785,7 @@ def _export_and_verify(
         )
 
     reports: dict[str, Any] = {}
-    for key in ("guardPath", "auditPath", "ooxmlAuditPath", "formatLockPath", "contentContractPath", "preflightPath"):
+    for key in ("guardPath", "auditPath", "ooxmlAuditPath", "formatLockPath", "contentContractPath"):
         report_path = Path(str(result.get(key, ""))).resolve()
         _require(report_path.exists() and report_path.is_file(), f"export_report_missing_{key}")
         reports[key] = {"path": str(report_path), "sha256": _sha256_file(report_path)}
@@ -2470,7 +2806,6 @@ def _export_and_verify(
         "ooxmlAuditIssueCount": int(result.get("ooxmlAuditIssueCount", 0) or 0),
         "formatLockIssueCount": int(result.get("formatLockIssueCount", 0) or 0),
         "contentContractIssueCount": int(result.get("contentContractIssueCount", 0) or 0),
-        "preflightIssueCount": int(result.get("preflightIssueCount", 0) or 0),
         "guardIssueCount": int(result.get("guardIssueCount", 0) or 0),
         "contentContractReady": bool(result.get("contentContractReady")),
         "modelInputMatchesEditableUnits": bool(result.get("modelInputMatchesEditableUnits")),
@@ -2727,6 +3062,7 @@ def _run_e2e_unlocked(
     }
     work_source: Path | None = None
     real_call_auditor: CompletionCallAuditor | None = None
+    real_call_scope = ""
     try:
         phase = "copy_source"
         work_source, sample_sha256 = _copy_unique_work_source(sample_path, run_id)
@@ -2764,7 +3100,7 @@ def _run_e2e_unlocked(
         phase = "full_document_baseline"
         if full_round:
             baseline_mode = "full_real_round"
-            baseline_auditor = CompletionCallAuditor(
+            real_call_auditor = CompletionCallAuditor(
                 EnvironmentProviderTransport(app_service.llm_completion, provider),
                 max_calls=max(
                     1,
@@ -2772,14 +3108,15 @@ def _run_e2e_unlocked(
                     * E2E_MAX_COMPLETIONS_PER_TARGET,
                 ),
             )
-            with _patched_completion(baseline_auditor):
+            real_call_scope = "full_document_baseline"
+            with _patched_completion(real_call_auditor):
                 round_result = app_service.run_round_for_app(
                     str(work_source),
                     model_config,
                     round_number=1,
                     progress_callback=baseline_progress,
                 )
-            baseline_provider_calls = baseline_auditor.public_summary()
+            baseline_provider_calls = real_call_auditor.public_summary()
             if execution_mode == "real_provider":
                 _require(
                     baseline_provider_calls.get("allRealCallsRequestedStreaming") is True,
@@ -2808,6 +3145,14 @@ def _run_e2e_unlocked(
         report["baselineMode"] = baseline_mode
         report["baselineExecution"] = {**baseline_execution, "progress": baseline_progress.public_summary()}
         report["round"] = _summarize_round_result(round_result, preflight_contract)
+        source_fallback_count = int(report["round"].get("sourceFallbackCount", 0) or 0)
+        report["modelOutputSafety"] = {
+            "sourceFallbackCount": source_fallback_count,
+            "allEditableChunksPublishedByModel": False,
+            "fallbacksCountAsSuccessfulRewrites": False,
+            "failedCandidateTextStored": False,
+            "requiresReview": source_fallback_count > 0,
+        }
         output_path = Path(str(round_result["outputPath"])).resolve()
 
         phase = "initial_unified_snapshot"
@@ -2825,7 +3170,15 @@ def _run_e2e_unlocked(
         report["rateAudit"] = {"beforeRealTargets": _summarize_rate_audit(initial_audit)}
 
         phase = "representative_target_selection"
-        targets = _select_representative_targets(initial_snapshot, initial_audit, max_targets=int(max_real_targets))
+        targets = (
+            []
+            if full_round
+            else _select_representative_targets(
+                initial_snapshot,
+                initial_audit,
+                max_targets=int(max_real_targets),
+            )
+        )
         internal_body_map = (initial_snapshot.get("_internal") or {}).get("bodyMapPayload")
         internal_units = internal_body_map.get("units") if isinstance(internal_body_map, dict) else []
         available_format_anchor_count = sum(
@@ -2838,7 +3191,7 @@ def _run_e2e_unlocked(
             for target in targets
             if int(target.get("formatAnchorCount", 0) or 0) > 0
         }
-        if available_format_anchor_count > 0:
+        if available_format_anchor_count > 0 and not full_round:
             _require(bool(format_anchor_target_ids), "format_anchor_representative_target_missing")
         report["representativeTargets"] = {
             "count": len(targets),
@@ -2850,42 +3203,131 @@ def _run_e2e_unlocked(
         }
 
         phase = "bounded_real_model_execution"
-        real_call_auditor = CompletionCallAuditor(
-            EnvironmentProviderTransport(app_service.llm_completion, provider),
-            max_calls=int(max_real_targets) * E2E_MAX_COMPLETIONS_PER_TARGET,
-        )
-        with _patched_completion(real_call_auditor):
-            (
-                executions,
-                real_candidate_ids,
-                strategy_summary,
-                provider_configuration_failure_ids,
-                external_failure_ids,
-                product_failure_ids,
-            ) = _execute_bounded_real_targets(
-                source_path=work_source,
-                output_path=output_path,
-                initial_snapshot=initial_snapshot,
-                initial_audit=initial_audit,
-                targets=targets,
-                model_config=model_config,
-                call_auditor=real_call_auditor,
+        if full_round:
+            executions = []
+            real_candidate_ids = {
+                str(chunk.get("chunkId", "") or "")
+                for chunk in (initial_snapshot.get("compare") or {}).get("chunks", [])
+                if isinstance(chunk, dict)
+                and isinstance(chunk.get("candidateSelection"), dict)
+                and chunk["candidateSelection"].get("publishedRewrite") is True
+            }
+            strategy_summary = {
+                "executed": False,
+                "outcome": "not_applicable_full_real_round",
+                "realCallCount": 0,
+            }
+            provider_configuration_failure_ids = []
+            external_failure_ids = []
+            product_failure_ids = []
+        else:
+            real_call_auditor = CompletionCallAuditor(
+                EnvironmentProviderTransport(app_service.llm_completion, provider),
+                max_calls=int(max_real_targets) * E2E_MAX_COMPLETIONS_PER_TARGET,
             )
+            real_call_scope = "bounded_real_model_execution"
+            with _patched_completion(real_call_auditor):
+                (
+                    executions,
+                    real_candidate_ids,
+                    strategy_summary,
+                    provider_configuration_failure_ids,
+                    external_failure_ids,
+                    product_failure_ids,
+                ) = _execute_bounded_real_targets(
+                    source_path=work_source,
+                    output_path=output_path,
+                    initial_snapshot=initial_snapshot,
+                    initial_audit=initial_audit,
+                    targets=targets,
+                    model_config=model_config,
+                    call_auditor=real_call_auditor,
+                )
         real_call_summary = real_call_auditor.public_summary()
         format_anchor_execution_summary = _summarize_format_anchor_executions(
             executions,
             format_anchor_target_ids,
         )
-        failed_attempt_evidence = [
-            attempt
-            for execution in executions
-            for attempt in (
-                execution.get("failedAttempts")
-                if isinstance(execution.get("failedAttempts"), list)
-                else []
+        if full_round:
+            failed_attempt_evidence = [
+                attempt
+                for chunk in (initial_snapshot.get("compare") or {}).get("chunks", [])
+                if isinstance(chunk, dict)
+                for attempt in _summarize_failed_attempts(chunk)
+            ]
+        else:
+            failed_attempt_evidence = [
+                attempt
+                for execution in executions
+                for attempt in (
+                    execution.get("failedAttempts")
+                    if isinstance(execution.get("failedAttempts"), list)
+                    else []
+                )
+                if isinstance(attempt, dict)
+            ]
+        full_round_candidate_outcomes = (
+            _summarize_full_round_candidate_outcomes(initial_snapshot)
+            if full_round
+            else {"applicable": False}
+        )
+        if full_round:
+            _require(
+                full_round_candidate_outcomes.get("outcomeDecompositionValid") is True,
+                "full_round_candidate_outcome_decomposition_invalid",
             )
-            if isinstance(attempt, dict)
-        ]
+            _require(
+                full_round_candidate_outcomes.get("sourceFallbackEvidenceValid") is True,
+                "full_round_source_fallback_evidence_invalid",
+            )
+            _require(
+                int(full_round_candidate_outcomes.get("sourceFallbackCount", 0) or 0)
+                == source_fallback_count,
+                "full_round_source_fallback_count_mismatch",
+            )
+            _require(
+                int(full_round_candidate_outcomes.get("publishedRewriteCount", 0) or 0)
+                == len(real_candidate_ids),
+                "full_round_published_rewrite_count_mismatch",
+            )
+            report["modelOutputSafety"].update(
+                {
+                    "publishedRewriteCount": int(
+                        full_round_candidate_outcomes.get("publishedRewriteCount", 0) or 0
+                    ),
+                    "preservedBaselineWithoutFallbackCount": int(
+                        full_round_candidate_outcomes.get(
+                            "preservedBaselineWithoutFallbackCount",
+                            0,
+                        )
+                        or 0
+                    ),
+                    "allEditableChunksPublishedByModel": bool(
+                        int(full_round_candidate_outcomes.get("candidateSelectionCount", 0) or 0)
+                        > 0
+                        and int(full_round_candidate_outcomes.get("publishedRewriteCount", 0) or 0)
+                        == int(full_round_candidate_outcomes.get("candidateSelectionCount", 0) or 0)
+                    ),
+                }
+            )
+        audited_model_attempt_count = (
+            int(full_round_candidate_outcomes.get("modelAttemptCount", 0) or 0)
+            if full_round
+            else None
+        )
+        call_count_matches_model_attempts = (
+            bool(
+                int(real_call_summary.get("callCount", 0) or 0)
+                == audited_model_attempt_count
+            )
+            if audited_model_attempt_count is not None
+            else None
+        )
+        if full_round:
+            _require(
+                call_count_matches_model_attempts,
+                "full_round_real_call_count_model_attempt_mismatch",
+            )
         invalid_failed_attempt_evidence_count = sum(
             1
             for attempt in failed_attempt_evidence
@@ -2893,8 +3335,14 @@ def _run_e2e_unlocked(
         )
         report["realModel"] = {
             **real_call_summary,
+            "callScope": real_call_scope,
             "targetCount": len(targets),
             "successfulCandidateCount": len(real_candidate_ids),
+            "sourceFallbackCount": source_fallback_count,
+            "sourceFallbacksCountAsSuccessfulCandidates": False,
+            "modelAttemptCount": audited_model_attempt_count,
+            "callCountMatchesModelAttemptCount": call_count_matches_model_attempts,
+            "fullRoundCandidateOutcomes": full_round_candidate_outcomes,
             **format_anchor_execution_summary,
             "providerConfigurationFailureTargetCount": len(provider_configuration_failure_ids),
             "externalFailureTargetCount": len(external_failure_ids),
@@ -2915,7 +3363,7 @@ def _run_e2e_unlocked(
             "failed_attempt_evidence_invalid",
             "security_failure",
         )
-        if execution_mode == "real_provider":
+        if execution_mode == "real_provider" and not full_round:
             _require(int(report["realModel"]["callCount"]) > 0, "bounded_real_provider_made_zero_calls")
             _require(
                 report["realModel"].get("allRealCallsRequestedStreaming") is True,
@@ -2941,6 +3389,11 @@ def _run_e2e_unlocked(
             real_candidate_ids=real_candidate_ids,
             executions=executions,
         )
+        if full_round:
+            _require(
+                int(decision_summary.get("sourceFallbackCount", 0) or 0) == source_fallback_count,
+                "full_round_review_source_fallback_count_mismatch",
+            )
         save_result = app_service.save_review_decisions(
             str(output_path),
             decisions,
@@ -2986,7 +3439,8 @@ def _run_e2e_unlocked(
         report["convergence"] = {
             "strategyDecision": final_decision,
             "automaticStop": final_decision == "stop",
-            "manualReviewRequired": final_decision in {"manual_review", "targeted_rerun", "blocked"}
+            "manualReviewRequired": source_fallback_count > 0
+            or final_decision in {"manual_review", "targeted_rerun", "blocked"}
             or any(
                 isinstance(item.get("sameDimension"), dict)
                 and item["sameDimension"].get("available") is True
@@ -3046,6 +3500,8 @@ def _run_e2e_unlocked(
         if release_rejections:
             raise E2EContractError("bounded_target_candidate_release_rejected", "model_output_failure")
         if (
+            not full_round
+            and
             available_format_anchor_count > 0
             and int(report["realModel"].get("formatAnchorSafelyResolvedTargetCount", 0) or 0) <= 0
         ):
@@ -3068,7 +3524,10 @@ def _run_e2e_unlocked(
         report["artifactRuntimeParameterScan"] = artifact_scan
         _require(bool(artifact_scan.get("ok")), "runtime_parameter_plaintext_persisted", "security_failure")
 
-        manual_review = bool(report["convergence"]["manualReviewRequired"])
+        manual_review = bool(
+            report["convergence"]["manualReviewRequired"]
+            or source_fallback_count > 0
+        )
         changed_rewrite_count = int(
             (report.get("review") or {}).get("changedRewriteConfirmedCount", 0) or 0
         )
@@ -3078,9 +3537,11 @@ def _run_e2e_unlocked(
         report["status"] = _passed_e2e_status(
             manual_review=manual_review,
             changed_rewrite_count=changed_rewrite_count,
+            source_fallback_count=source_fallback_count,
         )
     except Exception as exc:
         provider_configuration_failure = _provider_configuration_failure_for_error(exc)
+        model_output_failure = _model_output_validation_failure_for_error(exc)
         if isinstance(exc, E2EContractError):
             code = exc.code
             category = exc.category
@@ -3090,6 +3551,9 @@ def _run_e2e_unlocked(
         elif _is_external_provider_failure(exc):
             code = "external_provider_unavailable"
             category = "external_unavailable"
+        elif model_output_failure is not None:
+            code = str(model_output_failure["code"])
+            category = "model_output_failure"
         else:
             code = "unhandled_pipeline_exception"
             category = "product_pipeline_failure"
@@ -3117,13 +3581,18 @@ def _run_e2e_unlocked(
                             break
             if provider_configuration_failure is not None:
                 report["failure"]["providerFailure"] = provider_configuration_failure
+        if category == "model_output_failure" and model_output_failure is not None:
+            report["failure"]["modelOutputFailure"] = model_output_failure
     finally:
         report["completedAt"] = _utc_now()
         report["durationMs"] = round((time.monotonic() - started) * 1000)
         if work_source is not None and work_source.exists():
             report.setdefault("source", {})["workSourceFinalSha256"] = _sha256_file(work_source)
         if real_call_auditor is not None and "realModel" not in report:
-            report["realModel"] = real_call_auditor.public_summary()
+            report["realModel"] = {
+                **real_call_auditor.public_summary(),
+                "callScope": real_call_scope,
+            }
         _write_report_atomically(normalized_report_path, report, api_key=provider.api_key)
         report["reportPath"] = str(normalized_report_path)
         report["reportSha256"] = _sha256_file(normalized_report_path)

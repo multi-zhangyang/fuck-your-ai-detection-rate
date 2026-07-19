@@ -255,8 +255,8 @@ def _assert_real_sample_scope(work_dir: Path, checks: list[str]) -> dict[str, An
     snapshot = build_docx_snapshot(REAL_SAMPLE_PATH)
     _assert(snapshot.version == DOCX_SNAPSHOT_VERSION == 22, "real sample did not use snapshot v22")
     _assert(
-        snapshot.structural_role_policy_version == DOCX_STRUCTURAL_ROLE_POLICY_VERSION == 5,
-        "real sample did not use structural-role policy v5",
+        snapshot.structural_role_policy_version == DOCX_STRUCTURAL_ROLE_POLICY_VERSION == 6,
+        "real sample did not use structural-role policy v6",
     )
     _assert(snapshot.total_text_unit_count == 396, "real sample top-level structural inventory drifted")
     _assert(
@@ -379,7 +379,7 @@ def _assert_real_sample_scope(work_dir: Path, checks: list[str]) -> dict[str, An
         int(result.get("input_segment_count", 0)) > 0 and model_inputs,
         "real compare/model exclusion proof executed no production chunks",
     )
-    checks.append("real university sample editable scope falls from v21's 78 units to exactly 75 under v22/v5")
+    checks.append("real university sample keeps exactly 75 editable units under snapshot v22 / role policy v6")
     checks.append("u98/p108, u259/p282 and u276/p299 are absent from body-map, production compare and model callback input")
     checks.append("protection map and scope diagnostics expose three frozen template instructions with user-facing reasons")
     return {
@@ -419,7 +419,7 @@ def main() -> int:
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     checks: list[str] = []
     with tempfile.TemporaryDirectory(
-        prefix="docx-template-instruction-v5-",
+        prefix="docx-template-instruction-v6-",
         dir=REPORT_PATH.parent,
     ) as temp_dir:
         work_dir = Path(temp_dir)

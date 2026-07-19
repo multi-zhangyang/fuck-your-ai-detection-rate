@@ -98,6 +98,7 @@ const SELECTION_REASON_LABELS: Record<string, string> = {
   combined_style_penalty_not_worse: "综合风格惩罚没有变差",
   no_measurable_combined_style_gain: "没有可测的净收益，保留 baseline",
   all_model_candidates_failed_hard_validation: "所有模型候选均未通过硬门禁",
+  hard_validation_exhausted_source_preserved: "硬门禁重试已耗尽，显式保留原文并等待人工审阅",
   baseline_preserved_but_round_failed: "运行失败并显式保留 baseline",
   document_pattern_delta_accumulation_blocked: "全文累计模式达到阻断线，已保留 baseline",
   repeated_opening_family_introduced: "候选使重复开头在全文累计超线",

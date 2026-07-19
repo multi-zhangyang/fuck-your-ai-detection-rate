@@ -89,12 +89,6 @@ from fyadr_round_service import (
     _sanitize_public_diagnostic_value,
 )
 from fyadr_history_db import DEFAULT_BACKUP_KEEP, coerce_backup_keep
-from format_rules import (
-    get_default_format_rules,
-    load_active_format_rules,
-    parse_format_rules_from_text,
-    save_active_format_rules,
-)
 from prompt_library import (
     DEFAULT_PROMPT_PROFILE,
     create_prompt,
@@ -2793,17 +2787,15 @@ def add_cors_headers(response: Response) -> Response:
         "X-Export-Output-Path, X-Export-Doc-Id, X-Export-Round, X-Export-Compare-Revision, "
         "X-Export-Content-Revision, X-Export-Artifact-Snapshot-Digest, "
         "X-Export-Paragraph-Source, X-Export-Format-Mode, X-Export-Format-Scope, "
-        "X-Export-Content-Locked-Style-Count, X-Export-Table-Style-Count, X-Export-Table-Border-Count, "
         "X-Export-Validation-Path, X-Export-Audit-Path, X-Export-Audit-Issue-Count, "
         "X-Export-Ooxml-Audit-Path, X-Export-Ooxml-Audit-Issue-Count, "
         "X-Export-Format-Lock-Path, X-Export-Format-Lock-Issue-Count, X-Export-Format-Lock-Editable-Checked, "
         "X-Export-Content-Contract-Path, X-Export-Content-Contract-Ready, X-Export-Content-Contract-Issue-Count, "
         "X-Export-Editable-Unit-Count, X-Export-Protected-Unit-Count, X-Export-Protected-Heading-Count, "
         "X-Export-Editable-Heading-Count, X-Export-Model-Input-Scope-Match, "
-        "X-Export-Preflight-Path, X-Export-Preflight-Issue-Count, X-Export-Preflight-Warning-Count, "
         "X-Export-Guard-Path, X-Export-Guard-Issue-Count, X-Export-Guard-Warning-Count, "
         "X-Export-Guard-Issue-Samples, X-Export-Audit-Issue-Samples, "
-        "X-Export-Ooxml-Audit-Issue-Samples, X-Export-Preflight-Issue-Samples"
+        "X-Export-Ooxml-Audit-Issue-Samples"
     )
     # API payloads can contain document/task metadata and must never be stored
     # by shared caches.  Static responses set their own policy in the frontend
@@ -2935,55 +2927,6 @@ def post_model_config() -> tuple[Response, int] | Response:
     try:
         payload = request.get_json(silent=True) or {}
         return jsonify(redact_app_config(save_app_config(payload)))
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/format-rules", methods=["GET"])
-def get_format_rules() -> tuple[Response, int] | Response:
-    try:
-        return jsonify(load_active_format_rules())
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/format-rules/reset", methods=["POST"])
-def post_reset_format_rules() -> tuple[Response, int] | Response:
-    try:
-        path = save_active_format_rules(get_default_format_rules())
-        return jsonify({"ok": True, "path": str(path), "rules": load_active_format_rules()})
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/format-rules/parse", methods=["POST"])
-def post_parse_format_rules() -> tuple[Response, int] | Response:
-    try:
-        payload = request.get_json(silent=True) or {}
-        document_text = str(payload.get("text", "")).strip()
-        model_config = payload.get("modelConfig")
-        if not document_text:
-            raise ValueError("Format instruction text is required.")
-        if model_config is not None and not isinstance(model_config, dict):
-            raise ValueError("modelConfig must be an object when provided.")
-        rules = parse_format_rules_from_text(
-            document_text,
-            model_config=hydrate_app_config_secrets(model_config) if isinstance(model_config, dict) else model_config,
-        )
-        return jsonify({"ok": True, "path": "", "rules": rules})
-    except Exception as exc:
-        return error_response(str(exc))
-
-
-@app.route("/api/format-rules/activate", methods=["POST"])
-def post_activate_format_rules() -> tuple[Response, int] | Response:
-    try:
-        payload = request.get_json(silent=True) or {}
-        rules = payload.get("rules")
-        if not isinstance(rules, dict):
-            raise ValueError("rules must be an object.")
-        path = save_active_format_rules(rules)
-        return jsonify({"ok": True, "path": str(path), "rules": load_active_format_rules()})
     except Exception as exc:
         return error_response(str(exc))
 
@@ -3835,9 +3778,6 @@ def get_export_round() -> tuple[Response, int] | Response:
         response.headers["X-Export-Paragraph-Source"] = str(result.get("paragraphSource", ""))
         response.headers["X-Export-Format-Mode"] = str(result.get("formatMode", ""))
         response.headers["X-Export-Format-Scope"] = str(result.get("formatScope", ""))
-        response.headers["X-Export-Content-Locked-Style-Count"] = str(result.get("contentLockedStyleCount", ""))
-        response.headers["X-Export-Table-Style-Count"] = str(result.get("tableStyleCount", ""))
-        response.headers["X-Export-Table-Border-Count"] = str(result.get("tableBorderCount", ""))
         response.headers["X-Export-Validation-Path"] = make_ascii_header_value(result.get("validationPath", ""))
         response.headers["X-Export-Audit-Path"] = make_ascii_header_value(result.get("auditPath", ""))
         response.headers["X-Export-Audit-Issue-Count"] = str(result.get("auditIssueCount", ""))
@@ -3854,16 +3794,12 @@ def get_export_round() -> tuple[Response, int] | Response:
         response.headers["X-Export-Protected-Heading-Count"] = str(result.get("protectedHeadingCount", ""))
         response.headers["X-Export-Editable-Heading-Count"] = str(result.get("editableHeadingCount", ""))
         response.headers["X-Export-Model-Input-Scope-Match"] = "1" if result.get("modelInputMatchesEditableUnits") else "0"
-        response.headers["X-Export-Preflight-Path"] = make_ascii_header_value(result.get("preflightPath", ""))
-        response.headers["X-Export-Preflight-Issue-Count"] = str(result.get("preflightIssueCount", ""))
-        response.headers["X-Export-Preflight-Warning-Count"] = str(result.get("preflightWarningCount", ""))
         response.headers["X-Export-Guard-Path"] = make_ascii_header_value(result.get("guardPath", ""))
         response.headers["X-Export-Guard-Issue-Count"] = str(result.get("guardIssueCount", ""))
         response.headers["X-Export-Guard-Warning-Count"] = str(result.get("guardWarningCount", ""))
         response.headers["X-Export-Guard-Issue-Samples"] = make_ascii_header_json(result.get("guardIssueSamples", []))
         response.headers["X-Export-Audit-Issue-Samples"] = make_ascii_header_json(result.get("auditIssueSamples", []))
         response.headers["X-Export-Ooxml-Audit-Issue-Samples"] = make_ascii_header_json(result.get("ooxmlAuditIssueSamples", []))
-        response.headers["X-Export-Preflight-Issue-Samples"] = make_ascii_header_json(result.get("preflightIssueSamples", []))
         if request.method == "GET":
             response.headers["Deprecation"] = "true"
             response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"

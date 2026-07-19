@@ -60,8 +60,6 @@ const USE_PROMPT_PREVIEW_DRAFT_STATE_PATH = resolve(ROOT_DIR, "app", "src", "hoo
 const USE_DIFF_PANEL_SCROLL_EFFECTS_PATH = resolve(ROOT_DIR, "app", "src", "hooks", "useDiffPanelScrollEffects.ts");
 const USE_DIFF_PANEL_FILTER_EFFECTS_PATH = resolve(ROOT_DIR, "app", "src", "hooks", "useDiffPanelFilterEffects.ts");
 const HISTORY_DOCUMENT_ROUND_HEADER_PATH = resolve(ROOT_DIR, "app", "src", "components", "HistoryDocumentRoundHeader.tsx");
-const SCHOOL_FORMAT_PARSER_TEXT_ACTIONS_PATH = resolve(ROOT_DIR, "app", "src", "components", "SchoolFormatParserTextActions.tsx");
-const SCHOOL_FORMAT_PARSER_CONTROLS_PATH = resolve(ROOT_DIR, "app", "src", "components", "SchoolFormatParserControls.tsx");
 const MODEL_PROVIDER_PARAM_FIELDS_PATH = resolve(ROOT_DIR, "app", "src", "components", "ModelProviderParamFields.tsx");
 const MODEL_PROVIDER_IDENTITY_FIELDS_PATH = resolve(ROOT_DIR, "app", "src", "components", "ModelProviderIdentityFields.tsx");
 const DOCUMENT_RESTORE_SESSION_FAILURE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "documentRestoreSessionFailureHelpers.ts");
@@ -128,8 +126,6 @@ const BATCH_RERUN_MATERIALIZE_HANDLERS_PATH = resolve(ROOT_DIR, "app", "src", "l
 const RESULT_CARD_SM_WRAPPERS_PATH = resolve(ROOT_DIR, "app", "src", "components", "ResultCardSmWrappers.tsx");
 const DIAGNOSTICS_SHARE_RUN_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "diagnosticsShareRunHelpers.ts");
 const DIAGNOSTICS_SHARE_CORE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "diagnosticsShareCoreHelpers.ts");
-const FORMAT_RULES_CONFIRM_HANDLERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "formatRulesConfirmHandlers.ts");
-const FORMAT_RULES_PARSE_HANDLERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "formatRulesParseHandlers.ts");
 const AUTO_RUN_ACTION_BUILD_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "autoRunActionBuildHelpers.ts");
 const AUTO_RUN_ACTION_FORMAT_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "autoRunActionFormatHelpers.ts");
 const RUN_SESSION_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "hooks", "runSessionHelpers.ts");
@@ -165,7 +161,6 @@ const RESULT_CARD_EXPORT_ACTIONS_PATH = resolve(ROOT_DIR, "app", "src", "compone
 const HISTORY_DOCUMENT_ROUND_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "HistoryDocumentRoundCard.tsx");
 const HOME_RUN_APPEND_ISSUE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "homeRunAppendIssueHelpers.ts");
 const HISTORY_DOCUMENT_CLEANUP_ACTIONS_PATH = resolve(ROOT_DIR, "app", "src", "components", "HistoryDocumentCleanupActions.tsx");
-const APP_BOOTSTRAP_FORMAT_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appBootstrapFormatHelpers.ts");
 const APP_BOOTSTRAP_HISTORY_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appBootstrapHistoryHelpers.ts");
 const APP_BOOTSTRAP_CONFIG_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appBootstrapConfigHelpers.ts");
 const MODEL_ROUTE_PROVIDER_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "modelRouteProviderHelpers.ts");
@@ -183,8 +178,6 @@ const RUNTIME_TASK_CENTER_DIFF_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "l
 const RUNTIME_TASK_CENTER_PHASE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "runtimeTaskCenterPhaseHelpers.ts");
 const RUNTIME_TASK_CENTER_ACTIVE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "runtimeTaskCenterActiveHelpers.ts");
 const RUNTIME_TASK_CENTER_TYPES_PATH = resolve(ROOT_DIR, "app", "src", "lib", "runtimeTaskCenterTypes.ts");
-const SCHOOL_FORMAT_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "SchoolFormatCard.tsx");
-const SCHOOL_FORMAT_PARSER_SECTION_PATH = resolve(ROOT_DIR, "app", "src", "components", "SchoolFormatParserSection.tsx");
 const BATCH_RERUN_STATUS_ALERT_PATH = resolve(ROOT_DIR, "app", "src", "components", "BatchRerunStatusAlert.tsx");
 const APP_OPTIONAL_UI_FEEDBACK_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appOptionalUiFeedbackHelpers.ts");
 const RUNTIME_TASK_CENTER_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "runtimeTaskCenterHelpers.ts");
@@ -196,7 +189,6 @@ const PROMPT_PREVIEW_EDITOR_PANEL_PATH = resolve(ROOT_DIR, "app", "src", "compon
 const PROMPT_PREVIEW_EDITOR_EMPTY_PATH = resolve(ROOT_DIR, "app", "src", "components", "PromptPreviewEditorEmpty.tsx");
 const PROMPT_PREVIEW_ACTIVE_EDITOR_PATH = resolve(ROOT_DIR, "app", "src", "components", "PromptPreviewActiveEditor.tsx");
 const PROMPT_PREVIEW_CREATE_EDITOR_PATH = resolve(ROOT_DIR, "app", "src", "components", "PromptPreviewCreateEditor.tsx");
-const SCHOOL_FORMAT_CARD_VIEW_MODEL_PATH = resolve(ROOT_DIR, "app", "src", "lib", "schoolFormatCardViewModel.ts");
 const EXPORT_LIVE_HINT_PATH = resolve(ROOT_DIR, "app", "src", "components", "ExportLiveHint.tsx");
 const EXPORT_FAILURE_PANELS_PATH = resolve(ROOT_DIR, "app", "src", "components", "ExportFailurePanels.tsx");
 const EXPORT_HEALTH_DETAILS_DIALOG_PATH = resolve(ROOT_DIR, "app", "src", "components", "ExportHealthDetailsDialog.tsx");
@@ -310,7 +302,6 @@ const WEB_SERVICE_MODEL_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServic
 const WEB_SERVICE_DOCUMENTS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceDocuments.ts");
 const WEB_SERVICE_HISTORY_API_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceHistoryApi.ts");
 const WEB_SERVICE_ROUNDS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceRounds.ts");
-const WEB_SERVICE_FORMAT_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceFormat.ts");
 const WEB_SERVICE_FILES_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceFiles.ts");
 const WEB_SERVICE_FILE_SIZE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceFileSizeHelpers.ts");
 const WEB_SERVICE_FILE_PICKER_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceFilePicker.ts");
@@ -399,7 +390,6 @@ function runRegression() {
       existsSync(MODEL_ROUTE_ROUND_PROVIDER_HELPERS_PATH) ? readFileSync(MODEL_ROUTE_ROUND_PROVIDER_HELPERS_PATH, "utf-8") : "",
       existsSync(APP_BOOTSTRAP_CONFIG_HELPERS_PATH) ? readFileSync(APP_BOOTSTRAP_CONFIG_HELPERS_PATH, "utf-8") : "",
       existsSync(APP_BOOTSTRAP_HISTORY_HELPERS_PATH) ? readFileSync(APP_BOOTSTRAP_HISTORY_HELPERS_PATH, "utf-8") : "",
-      existsSync(APP_BOOTSTRAP_FORMAT_HELPERS_PATH) ? readFileSync(APP_BOOTSTRAP_FORMAT_HELPERS_PATH, "utf-8") : "",
       existsSync(HISTORY_DOCUMENT_CLEANUP_ACTIONS_PATH) ? readFileSync(HISTORY_DOCUMENT_CLEANUP_ACTIONS_PATH, "utf-8") : "",
       existsSync(HOME_RUN_APPEND_ISSUE_HELPERS_PATH) ? readFileSync(HOME_RUN_APPEND_ISSUE_HELPERS_PATH, "utf-8") : "",
           existsSync(HISTORY_DOCUMENT_ROUND_CARD_PATH) ? readFileSync(HISTORY_DOCUMENT_ROUND_CARD_PATH, "utf-8") : "",
@@ -437,8 +427,6 @@ function runRegression() {
       existsSync(RUN_SESSION_HELPERS_PATH) ? readFileSync(RUN_SESSION_HELPERS_PATH, "utf-8") : "",
       existsSync(AUTO_RUN_ACTION_FORMAT_HELPERS_PATH) ? readFileSync(AUTO_RUN_ACTION_FORMAT_HELPERS_PATH, "utf-8") : "",
       existsSync(AUTO_RUN_ACTION_BUILD_HELPERS_PATH) ? readFileSync(AUTO_RUN_ACTION_BUILD_HELPERS_PATH, "utf-8") : "",
-      existsSync(FORMAT_RULES_PARSE_HANDLERS_PATH) ? readFileSync(FORMAT_RULES_PARSE_HANDLERS_PATH, "utf-8") : "",
-      existsSync(FORMAT_RULES_CONFIRM_HANDLERS_PATH) ? readFileSync(FORMAT_RULES_CONFIRM_HANDLERS_PATH, "utf-8") : "",
       existsSync(DIAGNOSTICS_SHARE_CORE_HELPERS_PATH) ? readFileSync(DIAGNOSTICS_SHARE_CORE_HELPERS_PATH, "utf-8") : "",
       existsSync(DIAGNOSTICS_SHARE_RUN_HELPERS_PATH) ? readFileSync(DIAGNOSTICS_SHARE_RUN_HELPERS_PATH, "utf-8") : "",
       existsSync(RESULT_CARD_SM_WRAPPERS_PATH) ? readFileSync(RESULT_CARD_SM_WRAPPERS_PATH, "utf-8") : "",
@@ -505,8 +493,6 @@ function runRegression() {
       existsSync(DOCUMENT_RESTORE_SESSION_FAILURE_HELPERS_PATH) ? readFileSync(DOCUMENT_RESTORE_SESSION_FAILURE_HELPERS_PATH, "utf-8") : "",
       existsSync(MODEL_PROVIDER_IDENTITY_FIELDS_PATH) ? readFileSync(MODEL_PROVIDER_IDENTITY_FIELDS_PATH, "utf-8") : "",
       existsSync(MODEL_PROVIDER_PARAM_FIELDS_PATH) ? readFileSync(MODEL_PROVIDER_PARAM_FIELDS_PATH, "utf-8") : "",
-      existsSync(SCHOOL_FORMAT_PARSER_CONTROLS_PATH) ? readFileSync(SCHOOL_FORMAT_PARSER_CONTROLS_PATH, "utf-8") : "",
-      existsSync(SCHOOL_FORMAT_PARSER_TEXT_ACTIONS_PATH) ? readFileSync(SCHOOL_FORMAT_PARSER_TEXT_ACTIONS_PATH, "utf-8") : "",
       existsSync(HISTORY_DOCUMENT_ROUND_HEADER_PATH) ? readFileSync(HISTORY_DOCUMENT_ROUND_HEADER_PATH, "utf-8") : "",
           existsSync(USE_DIFF_PANEL_FILTER_EFFECTS_PATH) ? readFileSync(USE_DIFF_PANEL_FILTER_EFFECTS_PATH, "utf-8") : "",
       existsSync(USE_DIFF_PANEL_SCROLL_EFFECTS_PATH) ? readFileSync(USE_DIFF_PANEL_SCROLL_EFFECTS_PATH, "utf-8") : "",
@@ -675,7 +661,6 @@ function runRegression() {
   const webServiceDocumentsSource = loadSource(WEB_SERVICE_DOCUMENTS_PATH, failures);
   const webServiceHistoryApiSource = loadSource(WEB_SERVICE_HISTORY_API_PATH, failures);
   const webServiceRoundsSource = loadSource(WEB_SERVICE_ROUNDS_PATH, failures);
-  const webServiceFormatSource = loadSource(WEB_SERVICE_FORMAT_PATH, failures);
   const webServiceFilesSource = loadSource(WEB_SERVICE_FILES_PATH, failures);
   const webServiceExportSource = [
     loadSource(WEB_SERVICE_EXPORT_PATH, failures),
@@ -694,7 +679,6 @@ function runRegression() {
     webServiceDocumentsSource,
     webServiceHistoryApiSource,
     webServiceRoundsSource,
-    webServiceFormatSource,
     webServiceFilesSource,
     webServiceExportSource,
     webServiceRunStreamSource,
@@ -1138,7 +1122,7 @@ function runRegression() {
     assertIncludes(resultDiffSource, "+ formatLockIssueCount", "Export health must include source-format lock issues.", failures);
     assertIncludes(resultDiffSource, "+ contentContractBlockingCount", "Export health must include normalized body-only contract issues.", failures);
     assertNotIncludes(resultDiffSource, "contentContractIssueCount + editableHeadingCount", "Export health must not double-count editable headings already represented by the contract.", failures);
-    assertIncludes(resultDiffSource, "guardWarningCount + preflightWarningCount", "Export health must surface non-blocking guard and preflight warnings.", failures);
+    assertIncludes(resultDiffSource, "warningCount = guardWarningCount", "Export health must surface non-blocking guard warnings.", failures);
     assertIncludes(resultDiffSource, "buildExportHealthSection", "Export health details must format report samples consistently.", failures);
     assertNotIncludes(resultDiffSource, "T.adoptAllRejected", "Output export actions must not expose removed candidate adoption.", failures);
     assertNotIncludes(appSource, "collectAdoptableRejectedCandidates", "Home must not compute removed candidate adoption state.", failures);

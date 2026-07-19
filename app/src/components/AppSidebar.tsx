@@ -28,7 +28,7 @@ export function AppSidebar({
 }) {
   const { isMobile, setOpenMobile } = useSidebar();
   const primaryItems = WORKBENCH_NAV_ITEMS.filter((item) => ["home", "quality", "model"].includes(item.view));
-  const documentItems = WORKBENCH_NAV_ITEMS.filter((item) => ["prompts", "format", "protection", "history"].includes(item.view));
+  const documentItems = WORKBENCH_NAV_ITEMS.filter((item) => ["prompts", "protection", "history"].includes(item.view));
   const systemItems = WORKBENCH_NAV_ITEMS.filter((item) => ["diagnostics"].includes(item.view));
   const renderNavItems = (items: typeof WORKBENCH_NAV_ITEMS) => items.map((item) => {
     const Icon = item.icon;

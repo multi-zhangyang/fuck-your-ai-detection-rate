@@ -36,6 +36,10 @@ NEGATION_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 FACTUAL_SCOPE_QUALIFIER_CHANGED = "factual_scope_qualifier_changed"
+SCOPE_QUALIFIER_PROMPT_EXAMPLES = (
+    "仅、只、只有、唯有、唯一、全部、全都、所有、任何、任一、一律、均、"
+    "必然、必定、势必 / only, solely, all, every, any, necessarily, always"
+)
 
 # Scope-bearing Chinese qualifiers are compared as a provider-independent
 # delta.  Long constructions must precede their one-character members so a
@@ -112,6 +116,7 @@ class EntityOccurrence:
 
 @dataclass(frozen=True)
 class ScopeQualifierOccurrence:
+    token: str
     kind: str
     paragraph_index: int
 
@@ -128,6 +133,8 @@ def build_factual_relation_guard(text: str) -> str:
     entity_sequences = extract_order_sensitive_entity_sequences(text)
     number_sequences = extract_order_sensitive_number_sequences(text)
     parallel_pairs = extract_parallel_entity_number_pairs(text)
+    scope_occurrences = _scope_qualifier_occurrences(text)
+    scope_kind_counts = Counter(occurrence.kind for occurrence in scope_occurrences)
     lines = [
         "[FACT RELATION LOCK]",
         "- Do not add, remove, move, or strengthen exclusivity, totality, universal-scope, or certainty qualifiers.",
@@ -135,6 +142,24 @@ def build_factual_relation_guard(text: str) -> str:
         "- Preserve factual order and item-value bindings exactly.",
         "- Do not reorder algorithms, models, metrics, years, versions, citations, or numeric values.",
     ]
+    if scope_occurrences:
+        kind_summary = ", ".join(
+            f"{kind}={count}"
+            for kind, count in sorted(scope_kind_counts.items())
+        )
+        lines.extend(
+            [
+                f"- Source protected scope-qualifier count: {len(scope_occurrences)} ({kind_summary}).",
+                "- Keep those protected qualifier class/count totals in the same natural paragraph; do not create a stylistic substitute in another class.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- Source protected scope-qualifier count: 0. Output protected scope-qualifier count must also be 0.",
+                f"- Do not introduce these logical operators as stylistic intensifiers: {SCOPE_QUALIFIER_PROMPT_EXAMPLES}.",
+            ]
+        )
     for sequence in entity_sequences[:4]:
         lines.append(f"- Keep item order: {' -> '.join(sequence[:10])}")
     for sequence in number_sequences[:3]:
@@ -142,6 +167,67 @@ def build_factual_relation_guard(text: str) -> str:
     if parallel_pairs:
         preview = "; ".join(f"{term}={number}" for term, number in parallel_pairs[:8])
         lines.append(f"- Keep item-value bindings: {preview}")
+    return "\n".join(lines)
+
+
+def build_factual_scope_repair_guard(input_text: str, output_text: str) -> str:
+    """Describe only the bounded scope-token delta for an in-memory retry.
+
+    The rejected candidate is never persisted.  This prompt-only diagnostic
+    gives a model the concrete operator it introduced (or dropped) instead of
+    repeating a generic warning that may be ignored on the next attempt.
+    """
+
+    input_occurrences = _scope_qualifier_occurrences(input_text)
+    output_occurrences = _scope_qualifier_occurrences(output_text)
+
+    def occurrence_key(occurrence: ScopeQualifierOccurrence) -> str:
+        return f"p{occurrence.paragraph_index}:{occurrence.kind}"
+
+    input_profile = Counter(occurrence_key(item) for item in input_occurrences)
+    output_profile = Counter(occurrence_key(item) for item in output_occurrences)
+    added_profile = output_profile - input_profile
+    removed_profile = input_profile - output_profile
+    if not added_profile and not removed_profile:
+        return ""
+
+    def delta_tokens(
+        occurrences: list[ScopeQualifierOccurrence],
+        delta: Counter[str],
+    ) -> list[str]:
+        remaining = Counter(delta)
+        tokens: list[str] = []
+        for occurrence in occurrences:
+            key = occurrence_key(occurrence)
+            if remaining.get(key, 0) <= 0:
+                continue
+            remaining[key] -= 1
+            if occurrence.token not in tokens:
+                tokens.append(occurrence.token)
+        return tokens[:12]
+
+    added_tokens = delta_tokens(output_occurrences, added_profile)
+    removed_tokens = delta_tokens(input_occurrences, removed_profile)
+    lines = [
+        "[SCOPE QUALIFIER RETRY DIFF]",
+        "- The previous candidate changed a protected logical operator inventory; repair this exact delta before pursuing style changes.",
+        f"- Source protected qualifier count: {len(input_occurrences)}; previous candidate count: {len(output_occurrences)}.",
+    ]
+    if added_tokens:
+        lines.append(
+            "- Newly introduced operator token(s) to remove: "
+            + ", ".join(added_tokens)
+            + ". Do not replace them with another exclusivity, totality, universal, or certainty word."
+        )
+    if removed_tokens:
+        lines.append(
+            "- Source operator token(s) that must be restored: "
+            + ", ".join(removed_tokens)
+            + ". Preserve their logical class and paragraph."
+        )
+    lines.append(
+        "- If a safe rewrite is uncertain, return the [INPUT TEXT] verbatim; an exact source copy is preferred to any changed scope."
+    )
     return "\n".join(lines)
 
 
@@ -298,7 +384,13 @@ def _scope_qualifier_occurrences(text: str) -> list[ScopeQualifierOccurrence]:
         for match in SCOPE_QUALIFIER_TOKEN_RE.finditer(paragraph):
             kind = _scope_qualifier_kind(paragraph, match)
             if kind:
-                occurrences.append(ScopeQualifierOccurrence(kind=kind, paragraph_index=paragraph_index))
+                occurrences.append(
+                    ScopeQualifierOccurrence(
+                        token=match.group(0),
+                        kind=kind,
+                        paragraph_index=paragraph_index,
+                    )
+                )
         for match in EN_SCOPE_QUALIFIER_TOKEN_RE.finditer(paragraph):
             token = match.group(0).casefold()
             if token in {"only", "solely"}:
@@ -311,7 +403,13 @@ def _scope_qualifier_occurrences(text: str) -> list[ScopeQualifierOccurrence]:
                 kind = "universal_any"
             else:
                 kind = "certainty_absolute"
-            occurrences.append(ScopeQualifierOccurrence(kind=kind, paragraph_index=paragraph_index))
+            occurrences.append(
+                ScopeQualifierOccurrence(
+                    token=token,
+                    kind=kind,
+                    paragraph_index=paragraph_index,
+                )
+            )
     return occurrences
 
 

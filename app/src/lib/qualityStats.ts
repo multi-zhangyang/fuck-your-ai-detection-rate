@@ -42,7 +42,6 @@ export function buildQualityStats(
     protectedTokenCount,
     machineLikeRiskCount,
     guardIssueCount: exportResult?.guardIssueCount ?? 0,
-    preflightIssueCount: exportResult?.preflightIssueCount ?? 0,
     auditIssueCount: exportResult?.auditIssueCount ?? 0,
     ooxmlAuditIssueCount: exportResult?.ooxmlAuditIssueCount ?? 0,
     formatLockIssueCount: exportResult?.formatLockIssueCount ?? 0,
@@ -98,14 +97,7 @@ export function buildExportRiskMessages(
   if (stats.missingCitationCount > 0) messages.push(`${stats.missingCitationCount} 处引用可能缺失`);
   if (stats.machineLikeRiskCount > 0) messages.push(`${stats.machineLikeRiskCount} 条表达提示`);
   if (stats.exportEvidenceBlockingCount > 0) messages.push("导出证据缺失或不完整，不能视为结构通过");
-  if (
-    exportResult?.format === "docx"
-    && !(exportResult.checksPerformed ?? []).includes("format_preflight")
-  ) {
-    messages.push("本次 Word 导出未执行排版预检");
-  }
   if (stats.guardIssueCount > 0) messages.push(`${stats.guardIssueCount} 个导出硬审计问题`);
-  if (stats.preflightIssueCount > 0) messages.push(`${stats.preflightIssueCount} 个排版预检问题`);
   if (stats.auditIssueCount > 0) messages.push(`${stats.auditIssueCount} 个保护区审计问题`);
   if (stats.ooxmlAuditIssueCount > 0) messages.push(`${stats.ooxmlAuditIssueCount} 个 Word 结构审计问题`);
   if (stats.formatLockIssueCount > 0) messages.push(`${stats.formatLockIssueCount} 个格式保真问题`);

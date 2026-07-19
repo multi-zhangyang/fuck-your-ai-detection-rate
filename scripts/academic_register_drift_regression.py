@@ -174,62 +174,37 @@ def main() -> int:
     if summary.get("introducedColloquialPhraseCount") != 0:
         raise AssertionError("accepted-round summary still reports rejected colloquial wording")
 
-    # A failed chunk has no checkpointed output, but its validation evidence
-    # must survive a compatible resume and reach the final compare artifact.
+    # Exhausting the bounded academic-register retries completes with an
+    # explicit source fallback. The run itself succeeds, while the compare
+    # artifact keeps the text-free failures and requires manual review.
     resume_output_path = work_dir / "resume_round1.txt"
     resume_manifest_path = work_dir / "resume_round1_manifest.json"
-    resume_checkpoint_path = f.get_round_checkpoint_path(resume_output_path)
     failed_resume_calls: list[str] = []
 
     def always_colloquial(_text: str, _prompt: str, _round: int, chunk_id: str) -> str:
         failed_resume_calls.append(chunk_id)
         return COLLOQUIAL_REWRITE
 
-    try:
-        f.run_round(
-            doc_id="academic-register-drift-checkpoint-regression",
-            round_number=1,
-            input_path=source_path,
-            output_path=resume_output_path,
-            manifest_path=resume_manifest_path,
-            transform=always_colloquial,
-            prompt_profile="cn_custom",
-            prompt_sequence=["classical"],
-            chunk_limit=1000,
-        )
-    except RuntimeError as exc:
-        if "academic_register_drift" not in str(exc):
-            raise AssertionError(f"checkpoint fixture failed for the wrong reason: {exc}") from exc
-    else:
-        raise AssertionError("checkpoint fixture must fail after bounded academic-register retries")
-    if len(failed_resume_calls) != f.MAX_VALIDATION_ATTEMPTS or not resume_checkpoint_path.exists():
-        raise AssertionError("failed academic-register attempts were not checkpointed")
-    checkpoint = json.loads(resume_checkpoint_path.read_text(encoding="utf-8"))
-    checkpoint_register_retries = [
-        event
-        for event in (checkpoint.get("validation_events") or [])
-        if event.get("event") == "validation-retry"
-        and event.get("guardCategory") == "readability"
-        and event.get("issueCodes") == ["academic_register_stability"]
-        and event.get("textStored") is False
-        and event.get("errorStored") is False
-    ]
-    if len(checkpoint_register_retries) != f.MAX_VALIDATION_ATTEMPTS:
-        raise AssertionError("checkpoint omitted rejected academic-register attempts")
-
-    resumed_result = f.run_round(
+    fallback_result = f.run_round(
         doc_id="academic-register-drift-checkpoint-regression",
         round_number=1,
         input_path=source_path,
         output_path=resume_output_path,
         manifest_path=resume_manifest_path,
-        transform=lambda _text, _prompt, _round, _chunk_id: FORMAL_REWRITE,
+        transform=always_colloquial,
         prompt_profile="cn_custom",
         prompt_sequence=["classical"],
         chunk_limit=1000,
     )
-    resumed_compare = json.loads(Path(resumed_result["compare_path"]).read_text(encoding="utf-8"))
-    resumed_register_retries = [
+    if len(failed_resume_calls) != f.MAX_TOTAL_MODEL_ATTEMPTS:
+        raise AssertionError("academic-register fallback did not use the bounded attempt budget")
+    if resume_output_path.read_text(encoding="utf-8") != FORMAL_SOURCE:
+        raise AssertionError("academic-register fallback did not preserve the exact source")
+    resume_checkpoint_path = f.get_round_checkpoint_path(resume_output_path)
+    if resume_checkpoint_path.exists():
+        raise AssertionError("completed academic-register fallback left a stale checkpoint")
+    resumed_compare = json.loads(Path(fallback_result["compare_path"]).read_text(encoding="utf-8"))
+    checkpoint_register_retries = [
         event
         for event in (resumed_compare.get("validationEvents") or [])
         if event.get("event") == "validation-retry"
@@ -238,10 +213,24 @@ def main() -> int:
         and event.get("textStored") is False
         and event.get("errorStored") is False
     ]
-    if len(resumed_register_retries) != f.MAX_VALIDATION_ATTEMPTS:
-        raise AssertionError("compatible resume erased academic-register validation history")
+    if len(checkpoint_register_retries) != f.MAX_TOTAL_MODEL_ATTEMPTS:
+        raise AssertionError("compare omitted rejected academic-register attempts")
+    source_fallback_events = [
+        event
+        for event in (resumed_compare.get("validationEvents") or [])
+        if event.get("event") == "source-fallback"
+    ]
+    if len(source_fallback_events) != 1 or source_fallback_events[0].get("reasonCode") != f.HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED:
+        raise AssertionError("compare omitted the explicit academic-register source fallback")
+    selection_events = [
+        event
+        for event in (resumed_compare.get("validationEvents") or [])
+        if event.get("event") == "candidate-selection"
+    ]
+    if len(selection_events) != 1 or selection_events[0].get("decision") != "preserved_baseline" or selection_events[0].get("runFailed") is not False:
+        raise AssertionError("academic-register fallback selection was not an explicit completed baseline decision")
     resumed_failed_attempts = (resumed_compare.get("chunks") or [{}])[0].get("failedAttempts") or []
-    if len(resumed_failed_attempts) != f.MAX_VALIDATION_ATTEMPTS or not all(
+    if len(resumed_failed_attempts) != f.MAX_TOTAL_MODEL_ATTEMPTS or not all(
         attempt.get("guardCategory") == "readability"
         and attempt.get("issueCodes") == ["academic_register_stability"]
         and attempt.get("textStored") is False
@@ -250,9 +239,11 @@ def main() -> int:
         and "error" not in attempt
         for attempt in resumed_failed_attempts
     ):
-        raise AssertionError("final compare did not materialize checkpointed academic-register failures")
-    if resume_checkpoint_path.exists():
-        raise AssertionError("successful resume did not clear the completed checkpoint")
+        raise AssertionError("final compare did not materialize academic-register failures")
+    if (resumed_compare.get("chunks") or [{}])[0].get("fallbackMode") != "source":
+        raise AssertionError("final compare did not expose source fallback mode")
+    if (fallback_result.get("quality_summary") or {}).get("sourceFallbackCount") != 1:
+        raise AssertionError("quality summary did not count the academic-register source fallback")
 
     print("academic register drift regression passed")
     return 0

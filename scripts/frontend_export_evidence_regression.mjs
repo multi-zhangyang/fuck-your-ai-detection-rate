@@ -54,7 +54,7 @@ const noticeSource = readFileSync(resolve(APP_DIR, "src/lib/exportNoticeFormatHe
 const qualityPageSource = readFileSync(resolve(APP_DIR, "src/components/QualityReportPage.tsx"), "utf8");
 const exportHandlerSource = readFileSync(resolve(APP_DIR, "src/lib/exportExecuteHandlers.ts"), "utf8");
 const historyExportHandlerSource = readFileSync(resolve(APP_DIR, "src/lib/historyDocumentLoadHandlers.ts"), "utf8");
-const webServiceFormatSource = readFileSync(resolve(APP_DIR, "src/lib/webServiceFormat.ts"), "utf8");
+const webServiceExportSource = readFileSync(resolve(APP_DIR, "src/lib/webServiceExport.ts"), "utf8");
 const appSource = readFileSync(resolve(APP_DIR, "src/App.tsx"), "utf8");
 const historyRoundCardSource = readFileSync(resolve(APP_DIR, "src/components/HistoryDocumentRoundCard.tsx"), "utf8");
 
@@ -69,7 +69,6 @@ const originalDocxHeaders = headers({
   "X-Export-Evidence-Manifest-Path": encodeURIComponent("/tmp/attempt-1.evidence.json"),
   "X-Export-Checks-Performed": [
     "document_generation",
-    "format_preflight",
     "pre_export_guard",
     "content_contract",
     "text_integrity",
@@ -106,7 +105,7 @@ const generatedDocxHeaders = headers({
   "X-Export-Attempt-Id": "attempt-2",
   "X-Export-Artifact-Sha256": "b".repeat(64),
   "X-Export-Evidence-Manifest-Path": encodeURIComponent("/tmp/attempt-2.evidence.json"),
-  "X-Export-Checks-Performed": "document_generation,format_preflight",
+  "X-Export-Checks-Performed": "document_generation",
 });
 evidenceModule.assertExportEvidenceCanDownload(
   evidenceModule.parseExportEvidence(generatedDocxHeaders),
@@ -153,7 +152,7 @@ expectBlocked(
 const incompleteOriginalHeaders = new Headers(originalDocxHeaders);
 incompleteOriginalHeaders.set(
   "X-Export-Checks-Performed",
-  "document_generation,format_preflight,pre_export_guard,content_contract,text_integrity,protected_text_audit,ooxml_integrity,post_export_contract",
+  "document_generation,pre_export_guard,content_contract,text_integrity,protected_text_audit,ooxml_integrity,post_export_contract",
 );
 expectBlocked(
   () => evidenceModule.assertExportEvidenceCanDownload(
@@ -220,10 +219,10 @@ if (
   throw new Error("export evidence panels must only receive evidence for the active output path");
 }
 if (
-  !webServiceFormatSource.includes('"/api/export-round"')
-  || !webServiceFormatSource.includes('method: "POST"')
-  || webServiceFormatSource.includes("/api/export-round?outputPath=")
-  || !webServiceFormatSource.includes("body: JSON.stringify({ outputPath, targetFormat, ...options })")
+  !webServiceExportSource.includes('"/api/export-round"')
+  || !webServiceExportSource.includes('method: "POST"')
+  || webServiceExportSource.includes("/api/export-round?outputPath=")
+  || !webServiceExportSource.includes("body: JSON.stringify({ outputPath, targetFormat, ...options })")
 ) {
   throw new Error("non-idempotent export creation must use a revision-bound POST");
 }

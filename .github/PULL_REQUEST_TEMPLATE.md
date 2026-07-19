@@ -10,7 +10,7 @@
 - [ ] Detection report feedback
 - [ ] History / artifacts
 - [ ] DOCX export / formatting
-- [ ] School format parsing
+- [ ] DOCX scope and format preservation
 - [ ] Documentation / open-source cleanup
 
 ## Safety checklist

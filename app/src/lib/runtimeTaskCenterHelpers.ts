@@ -51,7 +51,6 @@ export function buildRuntimeTaskCenterItems(input: RuntimeTaskCenterInput): Runt
     currentBatchRerunToken: input.currentBatchRerunToken,
     busy: input.busy,
     progressPercent: input.progressPercent,
-    formatParseAbortActive: input.formatParseAbortActive,
     modelCatalogAbortActive: input.modelCatalogAbortActive,
     actions: input.actions,
   });

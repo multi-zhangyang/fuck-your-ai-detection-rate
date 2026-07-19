@@ -13,7 +13,11 @@ if str(ROOT_DIR / "scripts") not in sys.path:
 
 import app_service  # noqa: E402
 from chunking import Chunk  # noqa: E402
-from factual_guards import FACTUAL_SCOPE_QUALIFIER_CHANGED  # noqa: E402
+from factual_guards import (  # noqa: E402
+    FACTUAL_SCOPE_QUALIFIER_CHANGED,
+    build_factual_relation_guard,
+    build_factual_scope_repair_guard,
+)
 import fyadr_round_service as service  # noqa: E402
 
 
@@ -78,24 +82,27 @@ def _assert_text_free_failed_attempt_chain(checks: list[str]) -> None:
         prompts.append(prompt)
         return V12_CANDIDATE
 
-    try:
-        service._rewrite_round_chunk(
-            index=0,
-            chunk=Chunk("p0_c0", 0, 0, SOURCE, len(SOURCE), 0),
-            round_number=1,
-            normalized_prompt_profile="cn_custom",
-            prompt_text="保持事实范围并做轻量自然化。",
-            transform=transform,
-            global_style_profile=service.build_global_style_profile_from_texts([SOURCE]),
-            round_dimension={"id": "neutral", "primaryMetric": ""},
-        )
-    except ValueError as exc:
-        events = list(getattr(exc, "validation_events", []) or [])
-    else:
-        raise AssertionError("two unsafe v12 candidates did not fail the bounded rewrite")
+    result = service._rewrite_round_chunk(
+        index=0,
+        chunk=Chunk("p0_c0", 0, 0, SOURCE, len(SOURCE), 0),
+        round_number=1,
+        normalized_prompt_profile="cn_custom",
+        prompt_text="保持事实范围并做轻量自然化。",
+        transform=transform,
+        global_style_profile=service.build_global_style_profile_from_texts([SOURCE]),
+        round_dimension={"id": "neutral", "primaryMetric": ""},
+    )
+    events = list(result.validation_events)
+    _assert(result.output_text == SOURCE, "unsafe v12 candidates did not preserve the exact source fallback")
+    fallback_events = [event for event in events if event.get("event") == "source-fallback"]
+    _assert(
+        len(fallback_events) == 1
+        and fallback_events[0].get("reasonCode") == service.HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
+        "unsafe v12 candidates lost the explicit source-fallback event",
+    )
 
     retries = [event for event in events if event.get("event") == "validation-retry"]
-    _assert(len(retries) == service.MAX_VALIDATION_ATTEMPTS, "scope failure did not consume the bounded attempts")
+    _assert(len(retries) == service.MAX_TOTAL_MODEL_ATTEMPTS, "scope failure did not consume the bounded attempts")
     for event in retries:
         _assert(event.get("guardCategory") == "factual", "scope failure used the wrong guard category")
         _assert(
@@ -105,9 +112,49 @@ def _assert_text_free_failed_attempt_chain(checks: list[str]) -> None:
         serialized = json.dumps(event, ensure_ascii=False, sort_keys=True)
         _assert(SOURCE not in serialized and V12_CANDIDATE not in serialized, "failed attempt retained body text")
         _assert("error" not in event and "preview" not in event, "failed attempt retained raw diagnostic prose")
-    _assert(len(prompts) == service.MAX_VALIDATION_ATTEMPTS, "bounded retry prompt count drifted")
+    _assert(len(prompts) == service.MAX_TOTAL_MODEL_ATTEMPTS, "bounded retry prompt count drifted")
     _assert("scope qualifier" in prompts[-1], "retry prompt did not carry the scope-specific repair constraint")
+    _assert(
+        "Source protected scope-qualifier count: 0" in prompts[0],
+        "first-attempt relation lock omitted the zero-qualifier inventory",
+    )
+    _assert(
+        "Output protected scope-qualifier count must also be 0" in prompts[-1]
+        and "仅、只、只有" in prompts[-1]
+        and "only, solely, all" in prompts[-1],
+        "scope retry did not turn the zero inventory into an executable bilingual constraint",
+    )
+    _assert(
+        "Newly introduced operator token(s) to remove: 仅" in prompts[-1],
+        "scope retry did not identify the concrete operator introduced by the rejected candidate",
+    )
+    _assert(
+        "[FINAL SAFE RECOVERY]" in prompts[-1]
+        and "reproduce [INPUT TEXT] verbatim" in prompts[-1],
+        "hard-validation exhaustion did not receive an explicit source-copy recovery instruction",
+    )
     checks.append("bounded retry emits factual, text-free scope evidence without failed prose")
+
+
+def _assert_scope_inventory_contract(checks: list[str]) -> None:
+    zero_inventory = build_factual_relation_guard(SOURCE)
+    _assert(
+        "Source protected scope-qualifier count: 0" in zero_inventory,
+        "zero-qualifier source lost its explicit relation-lock inventory",
+    )
+    protected_inventory = build_factual_relation_guard(SAFE_SOURCE)
+    _assert(
+        "Source protected scope-qualifier count: 1" in protected_inventory
+        and "exclusive_restriction=1" in protected_inventory,
+        "protected qualifier inventory lost its class/count binding",
+    )
+    repair = build_factual_scope_repair_guard(SOURCE, V12_CANDIDATE)
+    _assert(
+        "Newly introduced operator token(s) to remove: 仅" in repair
+        and "Source protected qualifier count: 0" in repair,
+        "prompt-only retry diff lost the concrete scope operator delta",
+    )
+    checks.append("relation lock binds zero and nonzero scope-qualifier inventories")
 
 
 def _assert_stale_compare_release_fails_closed(checks: list[str]) -> list[str]:
@@ -184,6 +231,7 @@ def _assert_stale_compare_release_fails_closed(checks: list[str]) -> list[str]:
 def main() -> int:
     checks: list[str] = []
     candidate = _assert_candidate_selector_chain(checks)
+    _assert_scope_inventory_contract(checks)
     _assert_text_free_failed_attempt_chain(checks)
     release_issue_codes = _assert_stale_compare_release_fails_closed(checks)
     report = {

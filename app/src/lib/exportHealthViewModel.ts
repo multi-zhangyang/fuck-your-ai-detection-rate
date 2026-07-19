@@ -80,9 +80,6 @@ export function deriveExportHealthPanelState(exportResult: ExportResult | null):
   const guardIssueCount = Number(exportResult.guardIssueCount ?? 0) || 0;
   const guardWarningCount = Number(exportResult.guardWarningCount ?? 0) || 0;
   const auditIssueCount = Number(exportResult.auditIssueCount ?? 0) || 0;
-  const preflightIssueCount = Number(exportResult.preflightIssueCount ?? 0) || 0;
-  const preflightWarningCount = Number(exportResult.preflightWarningCount ?? 0) || 0;
-  const preflightBlockingCount = Math.max(0, preflightIssueCount - preflightWarningCount);
   const ooxmlAuditIssueCount = Number(exportResult.ooxmlAuditIssueCount ?? 0) || 0;
   const formatLockIssueCount = Number(exportResult.formatLockIssueCount ?? 0) || 0;
   const contentContractIssueCount = Number(exportResult.contentContractIssueCount ?? 0) || 0;
@@ -96,11 +93,10 @@ export function deriveExportHealthPanelState(exportResult: ExportResult | null):
   const blockingIssueCount = evidenceBlockingCount
     + guardIssueCount
     + auditIssueCount
-    + preflightBlockingCount
     + ooxmlAuditIssueCount
     + formatLockIssueCount
     + contentContractBlockingCount;
-  const warningCount = guardWarningCount + preflightWarningCount;
+  const warningCount = guardWarningCount;
   const statusLabel = evidenceBlockingCount > 0
     ? "证据缺失"
     : blockingIssueCount > 0
@@ -144,7 +140,6 @@ export function deriveExportHealthPanelState(exportResult: ExportResult | null):
       : buildUnavailableSection("导出证据", "unknown"),
     buildEvidenceAwareSection({ label: "保护", checkId: "pre_export_guard", trustedEvidence, checksPerformed, sourceKind: exportResult.sourceKind, issueCount: guardIssueCount, warningCount: guardWarningCount, path: exportResult.guardPath, samples: exportResult.guardIssueSamples }),
     buildEvidenceAwareSection({ label: "审计", checkId: "protected_text_audit", trustedEvidence, checksPerformed, sourceKind: exportResult.sourceKind, issueCount: auditIssueCount, path: exportResult.auditPath, samples: exportResult.auditIssueSamples }),
-    buildEvidenceAwareSection({ label: "预检", checkId: "format_preflight", trustedEvidence, checksPerformed, sourceKind: exportResult.sourceKind, issueCount: preflightBlockingCount, warningCount: preflightWarningCount, path: exportResult.preflightPath, samples: exportResult.preflightIssueSamples }),
     buildEvidenceAwareSection({ label: "结构", checkId: "ooxml_integrity", trustedEvidence, checksPerformed, sourceKind: exportResult.sourceKind, issueCount: ooxmlAuditIssueCount, path: exportResult.ooxmlAuditPath, samples: exportResult.ooxmlAuditIssueSamples }),
     buildEvidenceAwareSection({ label: "格式锁", checkId: "format_lock", trustedEvidence, checksPerformed, sourceKind: exportResult.sourceKind, issueCount: formatLockIssueCount, path: exportResult.formatLockPath, explicitStatus: exportResult.formatLockStatus }),
     buildEvidenceAwareSection({ label: "正文契约", checkId: "content_contract", trustedEvidence, checksPerformed, sourceKind: exportResult.sourceKind, issueCount: contentContractBlockingCount, path: exportResult.contentContractPath, explicitStatus: exportResult.contentContractStatus }),

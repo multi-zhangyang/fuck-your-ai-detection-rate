@@ -72,7 +72,6 @@ def build_commands(
     strict_samples: bool,
 ) -> list[dict[str, Any]]:
     commands: list[dict[str, Any]] = [
-        {"name": "format rules regression", "command": [sys.executable, "scripts/format_rules_regression.py"]},
         {"name": "batch rerun task regression", "command": [sys.executable, "scripts/batch_rerun_task_regression.py"]},
         {"name": "frontend batch rerun regression", "command": ["node", "scripts/frontend_batch_rerun_regression.mjs"]},
         {"name": "frontend state machine regression", "command": ["node", "scripts/frontend_state_machine_regression.mjs"]},
@@ -144,7 +143,6 @@ def build_commands(
         {"name": "DOCX targeted format-anchor regression", "command": [sys.executable, "scripts/docx_targeted_format_anchor_regression.py"]},
         {"name": "DOCX TOC boundary regression", "command": [sys.executable, "scripts/docx_toc_boundary_regression.py"]},
         {"name": "DOCX numbered structure boundary regression", "command": [sys.executable, "scripts/docx_numbered_structure_boundary_regression.py"]},
-        {"name": "DOCX template-role regression", "command": [sys.executable, "scripts/docx_template_role_regression.py"]},
         {"name": "DOCX fidelity real verification", "command": [sys.executable, "scripts/fidelity_real_verification.py"]},
         {"name": "DOCX fidelity multi-round verification", "command": [sys.executable, "scripts/fidelity_multiround_verification.py"]},
         {"name": "style-dimensions regression", "command": [sys.executable, "scripts/style_dimensions_regression.py"]},

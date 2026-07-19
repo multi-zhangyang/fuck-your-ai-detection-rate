@@ -10,8 +10,8 @@ import type {
 
 const CANDIDATE_SELECTION_SCHEMA = "fyadr.chunk-candidate-selection";
 const CANDIDATE_SELECTION_VERSION = 2;
-const MAX_CANDIDATES = 3;
-const MAX_MODEL_ATTEMPTS = 2;
+const MAX_CANDIDATES = 4;
+const MAX_MODEL_ATTEMPTS = 3;
 const ACADEMIC_READABILITY_DELTA_SCHEMA = "fyadr.academic-readability-delta";
 const ACADEMIC_READABILITY_DELTA_VERSION = 1;
 const SOURCE_RELATIVE_STYLE_DELTA_SCHEMA = "fyadr.source-relative-style-delta";

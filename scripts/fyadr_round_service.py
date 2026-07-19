@@ -26,6 +26,7 @@ from chunking import ChunkManifest, DEFAULT_CHUNK_LIMIT, build_manifest, restore
 from factual_guards import (
     FACTUAL_SCOPE_QUALIFIER_CHANGED,
     build_factual_relation_guard,
+    build_factual_scope_repair_guard,
     collect_factual_relation_issues,
     validate_factual_relation_stability,
 )
@@ -79,13 +80,16 @@ CancelCheck = Callable[[], bool]
 ROUND_CHECKPOINT_VERSION = 6
 ROUND_COMPARE_VERSION = 3
 MAX_VALIDATION_ATTEMPTS = 2
+MAX_HARD_VALIDATION_RECOVERY_ATTEMPTS = 1
+MAX_TOTAL_MODEL_ATTEMPTS = MAX_VALIDATION_ATTEMPTS + MAX_HARD_VALIDATION_RECOVERY_ATTEMPTS
 MAX_FAILED_OUTPUT_CHARS = 12000
 CANDIDATE_SELECTION_SCHEMA = "fyadr.chunk-candidate-selection"
 CANDIDATE_SELECTION_VERSION = 2
 FAILED_ATTEMPT_EVIDENCE_SCHEMA = "fyadr.failed-attempt-evidence"
 FAILED_ATTEMPT_EVIDENCE_VERSION = 1
 DOCUMENT_PATTERN_ACCUMULATION_BLOCKED = "document_pattern_delta_accumulation_blocked"
-MAX_CHUNK_CANDIDATE_COUNT = MAX_VALIDATION_ATTEMPTS + 1  # baseline + bounded model attempts
+HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED = "hard_validation_exhausted_source_preserved"
+MAX_CHUNK_CANDIDATE_COUNT = MAX_TOTAL_MODEL_ATTEMPTS + 1  # baseline + bounded model attempts
 LEXICAL_RETENTION_MIN_SCORE = 0.58
 CANDIDATE_STYLE_REGRESSION_TOLERANCE = 0.75
 CANDIDATE_STYLE_MIN_GAIN = 0.05
@@ -188,6 +192,7 @@ CANDIDATE_PUBLIC_REASON_CODES = frozenset(
         "no_measurable_combined_style_gain",
         "same_dimension_not_effective",
         "all_model_candidates_failed_hard_validation",
+        HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
         "baseline_preserved_but_round_failed",
         "baseline_preserved_but_rerun_failed",
         DOCUMENT_PATTERN_ACCUMULATION_BLOCKED,
@@ -453,7 +458,7 @@ NON_PROSE_HEADING_RE = re.compile(
     r"^(?:"
     r"摘\s*要|目录|参考文献|致\s*谢|Abstract|References|Acknowledg(?:e)?ments?"
     r"|关键词\s*[:：]?.*|Key\s+words?\s*[:：]?.*"
-    r"|第[一二三四五六七八九十百零0-9]+[章节]\s*.*"
+    r"|第[一二三四五六七八九十百零0-9]+[章节]\s*[^\n，,。！？!?；;]{0,72}"
     r"|\d+(?:\.\d+){0,4}\s+[^\n。！？!?]{1,72}"
     r"|(?:\d+|[一二三四五六七八九十]+)[.．、]\s*[^\n：:。！？；!?;]{1,60}"
     r")$",
@@ -512,7 +517,7 @@ SHARED_OUTPUT_CONTRACT = """
 - Keep conditional/causal pairs, correlative constructions, item-value lists, and citations attached to the clauses they qualify.
 - Avoid newly introducing generic closings or content-free padding such as 综上所述 / 具有重要意义 / 在……背景下 / 随着……的发展, unless the source already uses them.
 - Keep total length close to the source; do not pad with empty elaboration.
-- Invalid output is rejected. There is no silent source fallback for failed validation.
+- Invalid model output is rejected and is never published. After bounded validation exhaustion, the system may explicitly preserve the exact source text and require manual review.
 """.strip()
 
 DISALLOWED_OUTPUT_PATTERNS = (
@@ -594,8 +599,15 @@ def build_paragraph_guard(chunk_text: str) -> str:
     )
 
 
-def _build_retry_note(chunk_text: str, validation_error: str) -> str:
+def _build_retry_note(
+    chunk_text: str,
+    validation_error: str,
+    *,
+    failed_output: str = "",
+    final_recovery: bool = False,
+) -> str:
     repair_steps = _build_validation_repair_steps(validation_error)
+    scope_repair = build_factual_scope_repair_guard(chunk_text, failed_output)
     language_retry = (
         "- Your previous output violated the language lock.\n"
         "- Rewrite the chunk again in English only.\n"
@@ -617,6 +629,15 @@ def _build_retry_note(chunk_text: str, validation_error: str) -> str:
     note_body = f"{note_body}{paragraph_retry}"
     if repair_steps:
         note_body = f"{note_body}\n{repair_steps}"
+    if scope_repair:
+        note_body = f"{note_body}\n{scope_repair}"
+    if final_recovery:
+        note_body = (
+            f"{note_body}\n[FINAL SAFE RECOVERY]\n"
+            "- This is the last bounded recovery attempt. Safety overrides every style objective.\n"
+            "- If any rewrite could alter a term, fact, qualifier, relation, citation, number, or paragraph boundary, reproduce [INPUT TEXT] verbatim.\n"
+            "- Do not explain the fallback and do not add a label; return the exact input body only."
+        )
     return f"[RETRY NOTE]\n{note_body}\n{details}"
 
 
@@ -631,8 +652,11 @@ def _build_validation_repair_steps(validation_error: str) -> str:
             ]
         )
     if FACTUAL_SCOPE_QUALIFIER_CHANGED in error or "scope qualifier" in error:
-        steps.append(
-            "- Restore the source scope exactly: do not add, remove, move, or strengthen only/all/any/necessarily qualifiers."
+        steps.extend(
+            [
+                "- Restore the source scope exactly: do not add, remove, move, or strengthen only/all/any/necessarily qualifiers.",
+                "- Re-check the [FACT RELATION LOCK] inventory. If its source count is 0, the output must contain none of 仅、只、只有、唯有、唯一、全部、全都、所有、任何、任一、一律、均、必然、必定、势必 / only, solely, all, every, any, necessarily, always.",
+            ]
         )
     if "number" in error or "numeric" in error:
         steps.append("- Preserve all numbers, ranges, percentages, metric names, and nearby labels exactly.")
@@ -697,8 +721,8 @@ def should_freeze_chunk(prompt_profile: str, chunk_text: str) -> bool:
 def _estimate_api_calls(manifest: ChunkManifest) -> dict[str, int]:
     return {
         "estimatedApiCalls": manifest.chunk_count,
-        "estimatedMaxApiCalls": manifest.chunk_count * MAX_VALIDATION_ATTEMPTS,
-        "maxApiCallsPerEditableChunk": MAX_VALIDATION_ATTEMPTS,
+        "estimatedMaxApiCalls": manifest.chunk_count * MAX_TOTAL_MODEL_ATTEMPTS,
+        "maxApiCallsPerEditableChunk": MAX_TOTAL_MODEL_ATTEMPTS,
     }
 
 
@@ -2010,7 +2034,7 @@ def _public_candidate_evidence(candidate: dict[str, object]) -> dict[str, object
     if candidate_id != "baseline" and not re.fullmatch(r"model-attempt-[1-9][0-9]?", candidate_id):
         candidate_id = "invalid"
     origin = candidate.get("origin") if candidate.get("origin") in {"baseline", "model"} else "invalid"
-    attempt = _bounded_evidence_int(candidate.get("attempt"), maximum=MAX_VALIDATION_ATTEMPTS)
+    attempt = _bounded_evidence_int(candidate.get("attempt"), maximum=MAX_TOTAL_MODEL_ATTEMPTS)
     char_count = _bounded_evidence_int(candidate.get("charCount"), maximum=10_000_000)
     readability = candidate.get("academicReadabilityDelta") if isinstance(candidate.get("academicReadabilityDelta"), dict) else {}
     retention = candidate.get("deterministicLexicalRetentionProxy") if isinstance(candidate.get("deterministicLexicalRetentionProxy"), dict) else {}
@@ -2103,8 +2127,8 @@ def _public_candidate_selection_event(value: object) -> dict[str, object] | None
             "claimsDetectionRate": False if retention.get("claimsDetectionRate") is False else None,
         },
         "candidateLimit": _bounded_evidence_int(value.get("candidateLimit"), maximum=MAX_CHUNK_CANDIDATE_COUNT),
-        "modelAttemptLimit": _bounded_evidence_int(value.get("modelAttemptLimit"), maximum=MAX_VALIDATION_ATTEMPTS),
-        "modelAttemptCount": _bounded_evidence_int(value.get("modelAttemptCount"), maximum=MAX_VALIDATION_ATTEMPTS),
+        "modelAttemptLimit": _bounded_evidence_int(value.get("modelAttemptLimit"), maximum=MAX_TOTAL_MODEL_ATTEMPTS),
+        "modelAttemptCount": _bounded_evidence_int(value.get("modelAttemptCount"), maximum=MAX_TOTAL_MODEL_ATTEMPTS),
         "conditionalRetryCount": _bounded_evidence_int(value.get("conditionalRetryCount"), maximum=MAX_VALIDATION_ATTEMPTS),
         "decision": value.get("decision") if value.get("decision") in {"generated_selected", "preserved_baseline", "hard_failure_preserved_baseline"} else "invalid",
         "publishedRewrite": value.get("publishedRewrite") if isinstance(value.get("publishedRewrite"), bool) else None,
@@ -2173,7 +2197,7 @@ def _build_candidate_selection_event(
             "claimsDetectionRate": False,
         },
         "candidateLimit": MAX_CHUNK_CANDIDATE_COUNT,
-        "modelAttemptLimit": MAX_VALIDATION_ATTEMPTS,
+        "modelAttemptLimit": MAX_TOTAL_MODEL_ATTEMPTS,
         "modelAttemptCount": len([candidate for candidate in candidates if candidate.get("origin") == "model"]),
         "conditionalRetryCount": conditional_retry_count,
         "decision": resolved_decision,
@@ -3831,7 +3855,7 @@ def _public_validation_event(value: object) -> dict[str, object] | None:
         return _public_candidate_selection_event(value)
     if event_name == "candidate-selection-retry":
         candidate = value.get("candidate")
-        attempt = _bounded_evidence_int(value.get("attempt"), maximum=MAX_VALIDATION_ATTEMPTS)
+        attempt = _bounded_evidence_int(value.get("attempt"), maximum=MAX_TOTAL_MODEL_ATTEMPTS)
         return {
             "event": event_name,
             "schema": CANDIDATE_SELECTION_SCHEMA if value.get("schema") == CANDIDATE_SELECTION_SCHEMA else "",
@@ -3854,8 +3878,12 @@ def _public_validation_event(value: object) -> dict[str, object] | None:
         return {
             "event": event_name,
             **location,
-            "reasonCode": "legacy_source_fallback",
-            "attempts": _bounded_evidence_int(value.get("attempts"), maximum=MAX_VALIDATION_ATTEMPTS),
+            "reasonCode": (
+                HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED
+                if value.get("reasonCode") == HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED
+                else "legacy_source_fallback"
+            ),
+            "attempts": _bounded_evidence_int(value.get("attempts"), maximum=MAX_TOTAL_MODEL_ATTEMPTS),
             "guardCategory": guard_category,
             "issueCodes": issue_codes,
             "textStored": False,
@@ -4079,11 +4107,14 @@ def _build_round_compare_payload(
             chunk_payload.update(
                 {
                     "fallbackMode": "source",
-                    "fallbackReason": fallback_event.get("reason", "validation-exhausted"),
+                    "fallbackReason": fallback_event.get(
+                        "reasonCode",
+                        HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
+                    ),
                     "fallbackIssueCodes": list(fallback_event.get("issueCodes") or []),
                     "fallbackGuardCategory": fallback_event.get("guardCategory", "local_validation"),
                     "fallbackErrorStored": False,
-                    "fallbackAttempts": fallback_event.get("attempts", MAX_VALIDATION_ATTEMPTS),
+                    "fallbackAttempts": fallback_event.get("attempts", MAX_TOTAL_MODEL_ATTEMPTS),
                     "fallbackAt": fallback_event.get("createdAt", ""),
                 }
             )
@@ -5086,17 +5117,20 @@ def _apply_source_fallback_quality(
         {
             "code": "source_fallback",
             "level": "high",
-            "message": "历史记录：模型曾未通过硬校验。当前管线已改为硬失败，不再静默回落原文并标为成功。",
+            "message": "本块所有模型候选均未通过硬校验，系统已显式保留原文；该块不计为成功改写。",
             "evidence": {
-                "reason": fallback_event.get("reason", "validation-exhausted"),
-                "attempts": fallback_event.get("attempts", MAX_VALIDATION_ATTEMPTS),
+                "reason": fallback_event.get(
+                    "reasonCode",
+                    HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
+                ),
+                "attempts": fallback_event.get("attempts", MAX_TOTAL_MODEL_ATTEMPTS),
                 "guardCategory": fallback_event.get("guardCategory", "local_validation"),
                 "issueCodes": list(fallback_event.get("issueCodes") or []),
                 "errorStored": False,
             },
         },
     )
-    rewrite_advice.insert(0, "该标记仅兼容历史 compare；请定向重跑此块。新一轮失败会直接报错，不会伪装成功。")
+    rewrite_advice.insert(0, "本块未发布模型改写；请保留原文、人工审阅，或稍后定向重跑。")
     next_quality["flags"] = list(dict.fromkeys(flags))
     next_quality["reviewReasons"] = review_reasons
     next_quality["rewriteAdvice"] = list(dict.fromkeys(rewrite_advice))
@@ -5460,10 +5494,20 @@ def _rewrite_round_chunk(
     candidates: list[dict[str, object]] = [baseline_candidate]
     selection_retry_note: str | None = None
     conditional_retry_count = 0
+    last_failed_output = ""
 
-    for validation_attempt in range(1, MAX_VALIDATION_ATTEMPTS + 1):
+    for validation_attempt in range(1, MAX_TOTAL_MODEL_ATTEMPTS + 1):
         retry_note = _merge_generation_notes(
-            _build_retry_note(chunk.text, str(validation_error)) if validation_error is not None else None,
+            (
+                _build_retry_note(
+                    chunk.text,
+                    str(validation_error),
+                    failed_output=last_failed_output,
+                    final_recovery=validation_attempt > MAX_VALIDATION_ATTEMPTS,
+                )
+                if validation_error is not None
+                else None
+            ),
             selection_retry_note,
         )
         raw_chunk_output = transform(
@@ -5555,6 +5599,7 @@ def _rewrite_round_chunk(
             break
         except ValueError as exc:
             validation_error = exc
+            last_failed_output = output_for_review
             failed_candidate = _evaluate_rewrite_candidate(
                 input_text=chunk.text,
                 output_text=output_for_review,
@@ -5595,41 +5640,71 @@ def _rewrite_round_chunk(
         if (
             validation_error is not None
             and validation_attempt >= MAX_VALIDATION_ATTEMPTS
+            and hard_valid_generated
+        ):
+            # The standard bounded selector already has a hard-valid model
+            # candidate.  The extra recovery call exists only when every
+            # standard attempt failed hard validation.
+            break
+        if (
+            validation_error is not None
+            and validation_attempt >= MAX_TOTAL_MODEL_ATTEMPTS
             and not hard_valid_generated
         ):
+            validation_events.append(
+                {
+                    "event": "source-fallback",
+                    "round": round_number,
+                    "chunkId": chunk.chunk_id,
+                    "paragraphIndex": chunk.paragraph_index,
+                    "chunkIndex": chunk.chunk_index,
+                    "reasonCode": HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
+                    "attempts": validation_attempt,
+                    "guardCategory": failed_output_payload.get("guardCategory", "local_validation"),
+                    "issueCodes": list(failed_output_payload.get("issueCodes") or []),
+                    "textStored": False,
+                    "errorStored": False,
+                    "reasoningSuppressed": True,
+                    "providerContentStored": False,
+                }
+            )
             validation_events.append(
                 _build_candidate_selection_event(
                     chunk_id=chunk.chunk_id,
                     round_number=round_number,
                     candidates=candidates,
                     selected=baseline_candidate,
-                    reason_codes=["all_model_candidates_failed_hard_validation", "baseline_preserved_but_round_failed"],
+                    reason_codes=[
+                        "all_model_candidates_failed_hard_validation",
+                        HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
+                    ],
                     conditional_retry_count=conditional_retry_count,
-                    decision="hard_failure_preserved_baseline",
-                    run_failed=True,
+                    decision="preserved_baseline",
+                    run_failed=False,
                 )
             )
             progress_events.append(
                 {
-                    "phase": "chunk-validation-failed",
+                    "phase": "chunk-source-fallback",
                     "round": round_number,
                     "chunkId": chunk.chunk_id,
                     "paragraphIndex": chunk.paragraph_index,
                     "chunkIndex": chunk.chunk_index,
                     "attempts": validation_attempt,
-                    "message": "候选未通过确定性安全校验；失败正文和原始错误已隐藏。",
+                    "message": "全部候选未通过确定性安全校验；本块显式保留原文并标记为需要审阅。",
                     "guardCategory": failed_output_payload.get("guardCategory", "local_validation"),
                     "issueCodes": list(failed_output_payload.get("issueCodes") or []),
                     "textStored": False,
                     "errorStored": False,
                 }
             )
-            failure = ValueError(
-                f"Chunk {chunk.chunk_id} failed hard validation after {validation_attempt} attempts: {validation_error}"
+            return ChunkRewriteResult(
+                index,
+                chunk.chunk_id,
+                chunk.text,
+                validation_events,
+                progress_events,
             )
-            setattr(failure, "validation_events", list(validation_events))
-            setattr(failure, "progress_events", list(progress_events))
-            raise failure from validation_error
 
     selected_candidate, selection_reasons = _select_rewrite_candidate(
         candidates,

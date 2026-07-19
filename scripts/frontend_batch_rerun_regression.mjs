@@ -140,7 +140,6 @@ const WEB_SERVICE_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webService.ts")
 const WEB_SERVICE_HTTP_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceHttp.ts");
 const WEB_SERVICE_EXPORT_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceExport.ts");
 const WEB_SERVICE_ROUNDS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceRounds.ts");
-const WEB_SERVICE_FORMAT_API_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceFormat.ts");
 const REPORT_PATH = resolve(ROOT_DIR, "finish", "regression", "frontend_batch_rerun_regression_report.json");
 
 async function importTypeScriptModule(relativePath) {
@@ -580,10 +579,8 @@ function checkExportIssueSampleContract(webServiceSource, failures) {
   assertIncludes(webServiceSource, "path: exportPath,", "Export result path must be the backend artifact path, not only the download name.", failures);
   assertIncludes(webServiceSource, "X-Export-Guard-Issue-Samples", "Export response parser must read guard issue samples.", failures);
   assertIncludes(webServiceSource, "X-Export-Audit-Issue-Samples", "Export response parser must read audit issue samples.", failures);
-  assertIncludes(webServiceSource, "X-Export-Preflight-Issue-Samples", "Export response parser must read preflight issue samples.", failures);
   assertIncludes(webServiceSource, "guardIssueSamples,", "Export result must carry guard issue samples.", failures);
   assertIncludes(webServiceSource, "auditIssueSamples,", "Export result must carry audit issue samples.", failures);
-  assertIncludes(webServiceSource, "preflightIssueSamples,", "Export result must carry preflight issue samples.", failures);
 }
 
 function runRegression() {
@@ -644,8 +641,7 @@ function runRegression() {
     existsSync(WEB_SERVICE_EXPORT_RESULT_PATH) ? readFileSync(WEB_SERVICE_EXPORT_RESULT_PATH, "utf-8") : "",
   ].join("\n");
   const webServiceRoundsSource = failures.length || !existsSync(WEB_SERVICE_ROUNDS_PATH) ? "" : readFileSync(WEB_SERVICE_ROUNDS_PATH, "utf-8");
-  const webServiceFormatApiSource = failures.length || !existsSync(WEB_SERVICE_FORMAT_API_PATH) ? "" : readFileSync(WEB_SERVICE_FORMAT_API_PATH, "utf-8");
-  const webServiceSource = `${webServiceMainSource}\n${webServiceHttpSource}\n${webServiceExportSource}\n${webServiceRoundsSource}\n${webServiceFormatApiSource}`;
+  const webServiceSource = `${webServiceMainSource}\n${webServiceHttpSource}\n${webServiceExportSource}\n${webServiceRoundsSource}`;
   if (source) {
     assertIncludes(readFileSync(resolve(ROOT_DIR, "app", "src", "types", "app.ts"), "utf-8"), "export type BatchRerunFailure = {", "Batch rerun failure type should exist.", failures);
     assertIncludes([

@@ -39,7 +39,6 @@ const ModelConfigCard = lazy(() => import("@/components/ModelConfigCard").then((
 const PromptPreviewPage = lazy(() => import("@/components/PromptPreviewPage").then((m) => ({ default: m.PromptPreviewPage })));
 const ProtectionMapCard = lazy(() => import("@/components/ProtectionMapCard").then((m) => ({ default: m.ProtectionMapCard })));
 const QualityReportPage = lazy(() => import("@/components/QualityReportPage").then((m) => ({ default: m.QualityReportPage })));
-const SchoolFormatCard = lazy(() => import("@/components/SchoolFormatCard").then((m) => ({ default: m.SchoolFormatCard })));
 import { UnifiedConfirmDialog } from "@/components/UnifiedConfirmDialog";
 import { formatFileScopeLabel } from "@/lib/formatters";
 import { stringifyError } from "@/lib/errorText";
@@ -219,17 +218,6 @@ import {
   normalizeReviewDecisionsForSave,
   normalizeSavedReviewDecisionsForCompare,
 } from "@/lib/reviewDecisions";
-import {
-  FORMAT_RULE_ACTIVE_KEY,
-  FORMAT_RULE_DRAFT_KEY,
-  FORMAT_RULE_PENDING_KEY,
-} from "@/lib/storageKeys";
-import {
-  loadStoredFormatParserRoute,
-  loadStoredFormatRules,
-  loadStoredText,
-  saveStoredFormatRules,
-} from "@/lib/formatStorage";
 import { normalizeStoredPromptSequence, persistActiveDocument, readStoredPromptSequence } from "@/lib/promptStorage";
 import { clearAutoSnapshotSuppression } from "@/lib/autoSnapshot";
 import {
@@ -277,21 +265,6 @@ import {
   buildSingleChunkBatchRerunTargets,
   buildSingleChunkRerunIdentity,
 } from "@/lib/singleChunkRerunHelpers";
-import {
-  buildDefaultFormatRulesApplyInput,
-  buildFormatParseSuccessApplyInput,
-  buildFormatParseRequestSetup,
-  buildFormatParserModelConfig,
-  buildFormatDefaultRulesFailureRuntimeStep,
-  buildFormatDefaultRulesLoadingRuntimeStep,
-  buildFormatParseAbortFeedback,
-  buildFormatParseBusyNotice,
-  buildFormatParseFailureRuntimeStep,
-  buildFormatParseLoadingRuntimeStep,
-  getFormatParserTimeoutSeconds,
-  planFormatDefaultRulesApply,
-  planFormatParsePendingApply,
-} from "@/lib/formatParseHelpers";
 import { getProgressPercent } from "@/lib/progressHelpers";
 import { resolveNextModelFromCatalog,
   planTestConnectionSuccessFeedback,
@@ -329,7 +302,6 @@ import { resolveNextModelFromCatalog,
   refreshOneProviderModelPatch,
 } from "@/lib/providerModelHelpers";
 import { createModelCatalogHandlers } from "@/lib/modelCatalogHandlers";
-import { createFormatRulesHandlers } from "@/lib/formatRulesHandlers";
 import { createPromptHandlers } from "@/lib/promptHandlers";
 import { createHistoryHandlers } from "@/lib/historyHandlers";
 import { createBatchRerunHandlers } from "@/lib/batchRerunHandlers";
@@ -386,8 +358,6 @@ import type {
   ExportFailureDetails,
   ExportIssueSample,
   ExportResult,
-  FormatParserModelRoute,
-  FormatRules,
   HistoryArtifactGovernanceMode,
   HistoryArtifactQueryFilters,
   HistoryArtifactQueryResponse,
@@ -487,17 +457,12 @@ export function App({ service }: Props) {
   const notificationMessageKeyRef = useRef("");
   const taskTicketRef = useRef(0);
   const taskPhaseRef = useRef<TaskPhase>("idle");
-  const formatParseAbortRef = useRef<AbortController | null>(null);
   const modelCatalogAbortRef = useRef<AbortController | null>(null);
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const promptPreviewDirtyRef = useRef(false);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogResult | null>(null);
   const [modelCatalogBusy, setModelCatalogBusy] = useState(false);
   const [modelCatalogError, setModelCatalogError] = useState("");
-  const [pendingFormatRules, setPendingFormatRules] = useState<FormatRules | null>(() => loadStoredFormatRules(FORMAT_RULE_PENDING_KEY));
-  const [activeFormatRules, setActiveFormatRules] = useState<FormatRules | null>(() => loadStoredFormatRules(FORMAT_RULE_ACTIVE_KEY));
-  const [formatRuleText, setFormatRuleTextState] = useState(() => loadStoredText(FORMAT_RULE_DRAFT_KEY));
-  const [formatParserRoute, setFormatParserRoute] = useState<FormatParserModelRoute>(() => loadStoredFormatParserRoute());
   const [activeView, setActiveView] = useState<WorkbenchView>("home");
   const [reviewDecisions, setReviewDecisions] = useState<Record<string, ReviewDecision>>({});
   const [reviewRevision, setReviewRevision] = useState("");
@@ -1250,31 +1215,6 @@ const {
     applyErrorRuntimeStep,
     applyOptionalUiFeedback,
     refreshDocumentState});
-  const {
-    setFormatRuleText,
-    setFormatParserModelRoute,
-    handleFormatParserProviderChange,
-    applyFormatRulesPlan,
-    handleParseFormatRules,
-    handleCancelFormatRulesParse,
-    handleConfirmFormatRules,
-    handleResetFormatRules} = createFormatRulesHandlers({
-    service,
-    getModelConfig: () => modelConfig,
-    getFormatParserRoute: () => formatParserRoute,
-    getPendingFormatRules: () => pendingFormatRules,
-    getFormatParseAbortRef: () => formatParseAbortRef.current,
-    setFormatParseAbortRef: (controller) => { formatParseAbortRef.current = controller; },
-    setFormatRuleTextState,
-    setFormatParserRoute,
-    setActiveFormatRules,
-    setPendingFormatRules,
-    setNotice,
-    setRuntimeStep,
-    beginTask: (kind, options) => beginTask(kind, options),
-    finishTask,
-    applyErrorRuntimeStep,
-    applyOptionalUiFeedback});
   useAppBootstrap({
     service,
     setError,
@@ -1284,8 +1224,7 @@ const {
     refreshModelCatalog,
     setHistoryItems,
     setHistoryArtifactQuery,
-    setHistoryListReady,
-    setActiveFormatRules});
+    setHistoryListReady});
   useActiveRunProbes({
     service,
     documentSourcePath: documentStatus?.sourcePath,
@@ -1437,7 +1376,6 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
     roundProgressStatus,
     taskPhase,
     busy,
-    formatParseAbortActive: Boolean(formatParseAbortRef.current),
     modelCatalogAbortActive: Boolean(modelCatalogAbortRef.current),
     diagnostics,
     activeCompareData,
@@ -1453,7 +1391,6 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
       rejectPendingAutoAction,
       handleCancelRunRound,
       handleCancelBatchRerun,
-      handleCancelFormatRulesParse,
       handleCancelModelCatalogRequest}}), [activeCompareData, activeRerunFailures, busy, currentBatchRerunToken, currentRunToken, diagnostics, documentStatus?.promptProfile, documentStatus?.promptSequence, documentStatus?.sourcePath, error, pendingAutoAction, progress, progressPercent, promptOptions, promptWorkflows, reviewDecisions, roundProgressStatus, taskPhase]);
   const activeRuntimeTaskCount = runtimeTaskItems.filter((item) => item.running).length;
   const statusAutoAction = !error && pendingAutoAction ? pendingAutoAction : null;
@@ -1474,30 +1411,6 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
     />
   );
 
-  const formatPanel = (
-    <SchoolFormatCard
-      busy={uiBusy}
-      formatRuleText={formatRuleText}
-      activeFormatRules={activeFormatRules}
-      modelConfig={modelConfig}
-      modelCatalog={modelCatalog}
-      parserProviderId={formatParserRoute.providerId}
-      parserModel={formatParserRoute.model || ""}
-      onFormatRuleTextChange={setFormatRuleText}
-      onParseFormatRules={(text) => void handleParseFormatRules(text)}
-      formatParsing={taskPhase === "parsing-format"}
-      onCancelParseFormatRules={handleCancelFormatRulesParse}
-      onParserProviderChange={handleFormatParserProviderChange}
-      onParserModelChange={(model) => setFormatParserModelRoute({ ...formatParserRoute, model })}
-      pendingFormatRules={pendingFormatRules}
-      onConfirmFormatRules={() => void handleConfirmFormatRules()}
-      onDiscardFormatRules={() => {
-        setPendingFormatRules(null);
-        saveStoredFormatRules(FORMAT_RULE_PENDING_KEY, null);
-      }}
-      onResetFormatRules={() => void handleResetFormatRules()}
-    />
-  );
   const activeViewMeta = WORKBENCH_NAV_ITEMS.find((item) => item.view === activeView) ?? WORKBENCH_NAV_ITEMS[0];
   const ActiveViewIcon = activeViewMeta.icon;
   const operationStatusText = runtimeLabel && runtimeLabel !== "待命" ? runtimeLabel : runtimeStatus;
@@ -1770,10 +1683,6 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
                     onConfirmDiscardChanges={requestPromptPreviewDiscardConfirmation}
                   />
                 </Suspense>
-              </div>
-            ) : activeView === "format" ? (
-              <div className="h-full min-h-0 overflow-auto">
-                <Suspense fallback={<WorkbenchViewSkeleton label="学校规范" />}>{formatPanel}</Suspense>
               </div>
             ) : activeView === "protection" ? (
               <div className="h-full min-h-0 overflow-auto">

@@ -136,8 +136,8 @@ from docx_pipeline import (
     verify_docx_snapshot_derivation,
     write_docx_text,
 )
+from factual_guards import build_factual_relation_guard, build_factual_scope_repair_guard
 from docx_protection_map import build_docx_protection_map
-from docx_template import DocxFormatPreflightError, apply_school_format_rules
 from document_edit_contract import (
     assert_document_edit_contract_ready,
     build_document_edit_contract,
@@ -164,7 +164,8 @@ from rate_audit import build_rate_audit_report
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_PREVIEW_MAX_CHARS = 12000
-TARGETED_RERUN_VALIDATION_ATTEMPTS = 2
+TARGETED_RERUN_SELECTION_ATTEMPTS = 2
+TARGETED_RERUN_VALIDATION_ATTEMPTS = 3
 # A compare artifact only needs profiles referenced by its current candidate
 # selections.  Content-addressing plus bounded garbage collection prevents
 # repeated targeted reruns from growing the sidecar without limit.
@@ -4008,9 +4009,7 @@ HISTORY_ORPHAN_SCAN_DIRS: dict[str, Path] = {
     "exports": ROOT_DIR / "finish" / "web_exports",
     "reports": ROOT_DIR / "finish" / "detection_reports",
 }
-HISTORY_ORPHAN_EXCLUDED_FILENAMES = {
-    "active_format_rules.json",
-}
+HISTORY_ORPHAN_EXCLUDED_FILENAMES: set[str] = set()
 ROUND_ARTIFACT_PATTERN = re.compile(r"_round\d+(?:[_.]|$)")
 
 
@@ -5378,9 +5377,9 @@ def _resolve_docx_format_mode() -> str:
     """Return the only product-safe DOCX export mode.
 
     Older builds persisted ``school_rules`` and accepted an explicit export
-    override that rewrote typography and paragraph layout.  The product's
-    content-only contract now forbids that branch: school rules are diagnostic
-    guidance, while the source DOCX remains the sole formatting truth.
+    override that rewrote typography and paragraph layout. The product now
+    removes that branch entirely: the legacy value is only migrated, while the
+    source DOCX remains the sole formatting truth.
     """
 
     return "preserve_original"
@@ -5471,7 +5470,6 @@ def _prepare_docx_export_evidence_bundle(
     if source_kind == "original_docx":
         required_checks.update(
             {
-                "format_preflight",
                 "pre_export_guard",
                 "content_contract",
                 "text_integrity",
@@ -5489,7 +5487,6 @@ def _prepare_docx_export_evidence_bundle(
                 "ooxmlAuditPath",
                 "formatLockPath",
                 "contentContractPath",
-                "preflightPath",
             }
         )
         if result.get("contentContractStatus") != "passed" or result.get("formatLockStatus") != "passed":
@@ -5521,7 +5518,6 @@ def _prepare_docx_export_evidence_bundle(
         "ooxmlAuditPath",
         "formatLockPath",
         "contentContractPath",
-        "preflightPath",
     )
     published_reports: dict[str, str] = {}
     expected_report_outcome = {
@@ -5530,7 +5526,6 @@ def _prepare_docx_export_evidence_bundle(
         "ooxmlAuditPath": "ok",
         "formatLockPath": "ok",
         "contentContractPath": "ready",
-        "preflightPath": "ok",
     }
     for key in report_keys:
         raw_path = str(result.get(key, "") or "").strip()
@@ -5665,7 +5660,6 @@ def _cleanup_unpublished_docx_evidence_bundle(
         "ooxmlAuditPath",
         "formatLockPath",
         "contentContractPath",
-        "preflightPath",
     ):
         value = str(result.get(key, "") or "").strip()
         if value:
@@ -6505,44 +6499,9 @@ def _build_and_audit_docx_round(
         write_docx_text(blocks, normalized_export_path)
     if source_anchor is not None:
         _assert_docx_source_generation_seal(source_anchor["seal"], stage="after_rebuild")
-    text_fingerprint_before_format = _collect_docx_text_fingerprint(normalized_export_path)
-    try:
-        format_result = apply_school_format_rules(
-            normalized_export_path,
-            snapshot_path=origin_docx_bundle[1] if origin_docx_bundle is not None else None,
-            preserve_original_format=preserve_original_format,
-            report_export_path=evidence_export_path,
-        )
-    except DocxFormatPreflightError as exc:
-        message = str(exc)
-        raise ExportRoundError(
-            message,
-            _build_export_failure(
-                stage="preflight",
-                label="格式预检",
-                message=message,
-                report=exc.report,
-                sample_keys=("blockingIssues", "issues"),
-            ),
-        ) from exc
-    text_fingerprint_after_format = _collect_docx_text_fingerprint(normalized_export_path)
-    if text_fingerprint_after_format != text_fingerprint_before_format:
-        message = "DOCX 导出已拦截：排版规则意外改变了文档文本内容。"
-        raise ExportRoundError(
-            message,
-            _build_export_failure(
-                stage="format-text",
-                label="排版文本",
-                message=message,
-                issue_count=1,
-                samples=[
-                    {
-                        "code": "format_changed_text",
-                        "message": "排版规则改变了文档文本内容",
-                    }
-                ],
-            ),
-        )
+    # Source DOCX exports are complete after snapshot reconstruction.  The
+    # immutable source layout is audited below by the dedicated format-lock and
+    # OOXML checks; no school-rule parser or style rewrite runs here.
     if expected_text_targets:
         text_integrity_performed = True
         text_integrity_report = _audit_exported_docx_text_targets(normalized_export_path, expected_text_targets)
@@ -6629,7 +6588,6 @@ def _build_and_audit_docx_round(
                     sample_keys=("issues",),
                 ),
             )
-    preflight_report = _read_json_report(format_result.get("preflightPath", ""))
     format_lock_report: dict[str, Any] | None = None
     if origin_docx_bundle is not None and preserve_original_format:
         # Fidelity-lock mode is a hard contract: all paragraph wrappers and
@@ -6699,8 +6657,6 @@ def _build_and_audit_docx_round(
                 ),
             ) from exc
     checks_performed = ["document_generation"]
-    if str(format_result.get("preflightPath", "") or "").strip():
-        checks_performed.append("format_preflight")
     if guard_report is not None:
         checks_performed.append("pre_export_guard")
     if content_contract_report is not None and origin_docx_bundle is not None:
@@ -6735,10 +6691,7 @@ def _build_and_audit_docx_round(
         "provenanceSourcePath": str(provenance_source_path or ""),
         "sourceAnchorPath": str((source_anchor or {}).get("anchorPath", "") or ""),
         "_sourceGenerationSeal": copy.deepcopy((source_anchor or {}).get("seal")),
-        "formatScope": str(format_result.get("formatScope", "")),
-        "contentLockedStyleCount": int(format_result.get("contentLockedStyleCount", 0) or 0),
-        "tableStyleCount": int(format_result.get("tableStyleCount", 0) or 0),
-        "tableBorderCount": int(format_result.get("tableBorderCount", 0) or 0),
+        "formatScope": "editable_body_only" if origin_docx_bundle is not None else "generated_content_only",
         "validationPath": str(validation_path) if validation_path is not None else "",
         "auditPath": str(audit_report_path) if audit_report is not None else "",
         "auditIssueCount": int(audit_report.get("issueCount", 0) or 0) if audit_report is not None else 0,
@@ -6791,36 +6744,13 @@ def _build_and_audit_docx_round(
             (content_contract_report or {}).get("editableSemanticPointReferenceUnitCount", 0) or 0
         ),
         "modelInputMatchesEditableUnits": bool((content_contract_report or {}).get("modelInputMatchesEditableUnits", False)),
-        "preflightPath": str(format_result.get("preflightPath", "")),
-        "preflightIssueCount": int(format_result.get("preflightIssueCount", 0) or 0),
-        "preflightWarningCount": int(
-            format_result.get(
-                "preflightWarningCount",
-                preflight_report.get("warningCount", 0) if preflight_report is not None else 0,
-            )
-            or 0
-        ),
         "guardPath": str(guard_report.get("reportPath", "")) if guard_report is not None else "",
         "guardIssueCount": int(guard_report.get("blockingIssueCount", 0) or 0) if guard_report is not None else 0,
         "guardWarningCount": int(guard_report.get("warningCount", 0) or 0) if guard_report is not None else 0,
         "guardIssueSamples": _collect_issue_samples(guard_report, keys=("blockingIssues", "warnings")),
         "auditIssueSamples": _collect_issue_samples(audit_report, keys=("issues",)),
         "ooxmlAuditIssueSamples": _collect_issue_samples(ooxml_audit_report, keys=("issues",)),
-        "preflightIssueSamples": _collect_issue_samples(preflight_report, keys=("blockingIssues", "issues")),
     }
-
-
-def _collect_docx_text_fingerprint(path: Path) -> list[tuple[str, str]]:
-    document = Document(str(path.resolve()))
-    fingerprint: list[tuple[str, str]] = []
-    for index, paragraph in enumerate(document.paragraphs):
-        fingerprint.append((f"p:{index}", paragraph.text))
-    for table_index, table in enumerate(document.tables):
-        for row_index, row in enumerate(table.rows):
-            for cell_index, cell in enumerate(row.cells):
-                for paragraph_index, paragraph in enumerate(cell.paragraphs):
-                    fingerprint.append((f"t:{table_index}:{row_index}:{cell_index}:{paragraph_index}", paragraph.text))
-    return fingerprint
 
 
 def _build_docx_text_targets_from_body_map(body_map: Any) -> list[tuple[dict[str, Any], str]]:
@@ -8197,8 +8127,15 @@ def _build_compact_round_brief(
     ]
 
 
-def _build_targeted_validation_retry_note(validation_error: str) -> str:
+def _build_targeted_validation_retry_note(
+    validation_error: str,
+    *,
+    input_text: str = "",
+    failed_output: str = "",
+    final_recovery: bool = False,
+) -> str:
     repair_steps = _build_validation_repair_steps(validation_error)
+    scope_repair = build_factual_scope_repair_guard(input_text, failed_output)
     sections = [
         "[TARGETED VALIDATION RETRY]",
         "- The previous targeted rerun output failed local hard validation.",
@@ -8207,6 +8144,15 @@ def _build_targeted_validation_retry_note(validation_error: str) -> str:
     ]
     if repair_steps:
         sections.append(repair_steps)
+    if scope_repair:
+        sections.append(scope_repair)
+    if final_recovery:
+        sections.append(
+            "[FINAL SAFE RECOVERY]\n"
+            "- This is the last bounded recovery attempt. Safety overrides every style objective.\n"
+            "- If any repair could alter a term, fact, qualifier, relation, citation, number, or paragraph boundary, reproduce [INPUT TEXT] verbatim.\n"
+            "- Do not explain the fallback and do not add a label; return the exact input body only."
+        )
     sections.append(f"- Validation error: {validation_error.strip()}")
     return "\n".join(sections)
 
@@ -8446,6 +8392,9 @@ def _build_targeted_rerun_prompt_input(
     paragraph_guard = build_paragraph_guard(protected_input_text)
     if paragraph_guard:
         sections.append(paragraph_guard)
+    relation_guard = build_factual_relation_guard(protected_input_text)
+    if relation_guard:
+        sections.append(relation_guard)
 
     if issue_cards:
         sections.append("[REPAIR CARDS]\n" + "\n".join(issue_cards[:10]))
@@ -8621,7 +8570,7 @@ def _run_bounded_app_candidate_selection(
             )
             candidates.append(candidate)
             if (
-                attempt < TARGETED_RERUN_VALIDATION_ATTEMPTS
+                attempt < TARGETED_RERUN_SELECTION_ATTEMPTS
                 and _candidate_requires_conditional_retry(
                     candidate,
                     baseline,
@@ -8657,7 +8606,20 @@ def _run_bounded_app_candidate_selection(
                 )
             )
             record_hard_failure(attempt, safe_error, output_for_review)
-            retry_note = _build_targeted_validation_retry_note(safe_error)
+            retry_note = _build_targeted_validation_retry_note(
+                safe_error,
+                input_text=input_text,
+                failed_output=output_for_review,
+                final_recovery=(attempt + 1) > TARGETED_RERUN_SELECTION_ATTEMPTS,
+            )
+            if (
+                attempt >= TARGETED_RERUN_SELECTION_ATTEMPTS
+                and any(
+                    candidate.get("origin") == "model" and candidate.get("hardValid")
+                    for candidate in candidates
+                )
+            ):
+                break
 
     hard_valid_generated = [
         candidate

@@ -168,7 +168,7 @@ def main() -> int:
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     checks: list[str] = []
     with tempfile.TemporaryDirectory(
-        prefix="docx-structural-role-v5-",
+        prefix="docx-structural-role-v6-",
         dir=REPORT_PATH.parent,
     ) as temp_dir:
         work_dir = Path(temp_dir)
@@ -194,8 +194,8 @@ def main() -> int:
         )
         _assert(snapshot.version == DOCX_SNAPSHOT_VERSION == 22, "snapshot schema did not advance to v22")
         _assert(
-            snapshot.structural_role_policy_version == DOCX_STRUCTURAL_ROLE_POLICY_VERSION == 5,
-            "snapshot lost structural-role policy v5",
+            snapshot.structural_role_policy_version == DOCX_STRUCTURAL_ROLE_POLICY_VERSION == 6,
+            "snapshot lost structural-role policy v6",
         )
         _assert(
             snapshot.structural_inventory_version == DOCX_STRUCTURAL_INVENTORY_VERSION == 3,
@@ -269,7 +269,7 @@ def main() -> int:
         _assert(diagnostics.get("protectedTableParagraphCount") == 4, "scope diagnostics omitted protected table paragraphs")
         protection_map = build_docx_protection_map(source_path)
         _assert(protection_map["summary"]["tableUnits"] == 4, "protection map omitted explicit table units")
-        _assert(protection_map["summary"]["structuralRolePolicyVersion"] == 5, "protection map omitted role policy")
+        _assert(protection_map["summary"]["structuralRolePolicyVersion"] == 6, "protection map omitted role policy")
         _assert(protection_map["summary"]["structuralInventoryVersion"] == 3, "protection map omitted kind-aware recursive inventory version")
         checks.append("merged cells and nested tables are recursively inventoried as protected evidence and cannot affect body scope")
 

@@ -31,6 +31,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import app_config  # noqa: E402
 import app_service  # noqa: E402
 import real_thesis_model_e2e as runner  # noqa: E402
+import fyadr_round_service as round_service  # noqa: E402
 
 
 ENV_VALUES = {
@@ -215,6 +216,82 @@ def _candidate_snapshot(chunk: dict[str, object]) -> dict[str, object]:
             ]
         },
     }
+
+
+def _assert_snapshot_decision_coverage_contract() -> None:
+    baseline = (
+        "首先，系统读取用户提交的论文段落并建立任务记录。"
+        "其次，服务按照段落边界生成改写单元并保留原有编号。"
+        "此外，校验模块核对术语、数值和引用标记。"
+        "因此，只有通过事实与格式检查的文本才会进入结果页，审阅者仍需确认每处修改。"
+    )
+    output = (
+        "系统读取用户提交的论文段落并建立任务记录，服务再按照段落边界生成改写单元，同时保留原有编号。"
+        "校验模块负责核对术语、数值和引用标记；文本仅在通过事实与格式检查后进入结果页，"
+        "审阅者仍需确认每处修改。"
+    )
+    frozen_text = "第二章介绍实验数据集、模型框架与评估指标。"
+    snapshot = _candidate_snapshot(_candidate_chunk(baseline, output))
+    snapshot["compare"]["chunks"].append(
+        {
+            "chunkId": "p1_c0",
+            "paragraphIndex": 1,
+            "chunkIndex": 0,
+            "inputText": frozen_text,
+            "outputText": frozen_text,
+            "quality": {"needsReview": False, "flags": []},
+        }
+    )
+    snapshot["compare"]["validationEvents"] = [
+        {
+            "event": "chunk-frozen",
+            "chunkId": "p1_c0",
+            "reasonCode": "structure_or_metadata_preserved",
+        }
+    ]
+    snapshot["compare"]["sourceRelativeDocumentDelta"] = (
+        app_service.assess_source_relative_document_delta(
+            [baseline, frozen_text],
+            [output, frozen_text],
+        )
+    )
+
+    summary = runner._summarize_snapshot(snapshot)
+    runner._require_v2_snapshot_candidate_evidence(summary)
+    evidence = summary.get("candidateSelectionEvidence") or {}
+    _assert(int(evidence.get("selectionCount", 0)) == 1, "candidate coverage drifted")
+    _assert(int(evidence.get("frozenIdentityCount", 0)) == 1, "frozen identity was not counted")
+    _assert(int(evidence.get("decisionCoverageCount", 0)) == 2, "mixed decision coverage is incomplete")
+    _assert(evidence.get("frozenIdentityBound") is True, "valid frozen identity failed closed")
+
+    invalid_cases = []
+    changed_output = copy.deepcopy(snapshot)
+    changed_output["compare"]["chunks"][1]["outputText"] = frozen_text + " "
+    invalid_cases.append(("changed frozen output", changed_output))
+    missing_event = copy.deepcopy(snapshot)
+    missing_event["compare"]["validationEvents"] = []
+    invalid_cases.append(("missing frozen event", missing_event))
+    duplicate_event = copy.deepcopy(snapshot)
+    duplicate_event["compare"]["validationEvents"].append(
+        copy.deepcopy(duplicate_event["compare"]["validationEvents"][0])
+    )
+    invalid_cases.append(("duplicate frozen event", duplicate_event))
+    wrong_reason = copy.deepcopy(snapshot)
+    wrong_reason["compare"]["validationEvents"][0]["reasonCode"] = "forged-reason"
+    invalid_cases.append(("wrong frozen reason", wrong_reason))
+
+    for label, invalid_snapshot in invalid_cases:
+        try:
+            runner._require_v2_snapshot_candidate_evidence(
+                runner._summarize_snapshot(invalid_snapshot)
+            )
+        except runner.E2EContractError as exc:
+            _assert(
+                exc.code == "candidate_selection_evidence_incomplete",
+                f"{label} failed with the wrong code",
+            )
+        else:
+            raise AssertionError(f"{label} was accepted as a frozen source identity")
 
 
 def _assert_candidate_release_contract() -> None:
@@ -629,6 +706,92 @@ def _assert_completion_auditor_stream_contract() -> None:
     )
 
 
+def _assert_full_round_model_failure_audit_contract() -> None:
+    private_prompt = "PRIVATE_FULL_ROUND_FAILURE_PROMPT_MUST_NOT_PERSIST"
+    private_output = "PRIVATE_FULL_ROUND_FAILURE_OUTPUT_MUST_NOT_PERSIST"
+
+    def delegate(_prompt: str, **kwargs: object) -> str:
+        callback = kwargs.get("stream_callback")
+        _assert(callable(callback), "full-round failure auditor received no stream callback")
+        callback({"eventCount": 2, "done": True, "text": private_output})
+        return private_output
+
+    auditor = runner.CompletionCallAuditor(delegate, max_calls=4)
+    _assert(auditor(private_prompt, stream=True) == private_output, "failure auditor changed provider output")
+    failed_attempt = {
+        "event": "validation-retry",
+        "schema": round_service.FAILED_ATTEMPT_EVIDENCE_SCHEMA,
+        "schemaVersion": round_service.FAILED_ATTEMPT_EVIDENCE_VERSION,
+        "round": 1,
+        "chunkId": "p10_c0",
+        "paragraphIndex": 10,
+        "chunkIndex": 0,
+        "attempt": 2,
+        "guardCategory": "factual",
+        "issueCodes": ["factual_scope_qualifier_changed"],
+        "outputCharCount": len(private_output),
+        "outputTextSha256": runner._sha256_text(private_output),
+        "textStored": False,
+        "errorStored": False,
+        "reasoningSuppressed": True,
+        "providerContentStored": False,
+        "truncated": False,
+    }
+    terminal = round_service._build_candidate_selection_event(
+        chunk_id="p10_c0",
+        round_number=1,
+        candidates=[],
+        selected={
+            "candidateId": "baseline",
+            "origin": "baseline",
+            "textSha256": runner._sha256_text("baseline"),
+            "charCount": len("baseline"),
+            "sourceRelativeStyleDelta": {},
+        },
+        reason_codes=[
+            "all_model_candidates_failed_hard_validation",
+            "baseline_preserved_but_round_failed",
+        ],
+        conditional_retry_count=0,
+        decision="hard_failure_preserved_baseline",
+        run_failed=True,
+    )
+    validation_error = ValueError("PRIVATE_VALIDATION_ERROR_MUST_NOT_PERSIST")
+    setattr(validation_error, "validation_events", [failed_attempt, terminal])
+    pipeline_error = RuntimeError("PRIVATE_PIPELINE_ERROR_MUST_NOT_PERSIST")
+    pipeline_error.__cause__ = validation_error
+
+    failure = runner._model_output_validation_failure_for_error(pipeline_error)
+    _assert(isinstance(failure, dict), "full-round hard failure was not recognized from structured events")
+    _assert(
+        failure
+        == {
+            "status": "model_output_failure",
+            "category": "model_output_failure",
+            "code": "model_output_hard_validation_failed",
+            "chunkId": "p10_c0",
+            "modelAttemptCount": 0,
+            "guardCategories": ["factual"],
+            "issueCodes": ["factual_scope_qualifier_changed"],
+            "failedCandidateTextStored": False,
+            "validationErrorStored": False,
+            "providerContentStored": False,
+        },
+        f"full-round model failure projection drifted: {failure}",
+    )
+    summary = {**auditor.public_summary(), "callScope": "full_document_baseline"}
+    _assert(int(summary.get("callCount", 0)) == 1, "full-round failure lost the completed real call")
+    _assert(summary.get("allSuccessfulCallsStreamCompleted") is True, "full-round failure lost stream completion")
+    encoded = json.dumps({"failure": failure, "realModel": summary}, ensure_ascii=False, sort_keys=True)
+    for forbidden in (
+        private_prompt,
+        private_output,
+        "PRIVATE_VALIDATION_ERROR_MUST_NOT_PERSIST",
+        "PRIVATE_PIPELINE_ERROR_MUST_NOT_PERSIST",
+    ):
+        _assert(forbidden not in encoded, "full-round failure evidence retained private content")
+
+
 def _assert_output_non_overwrite_contract(temp_dir: Path) -> None:
     report_path = temp_dir / "existing-report.json"
     export_path = temp_dir / "existing-export.docx"
@@ -736,6 +899,91 @@ def _assert_pass_status_contract() -> None:
         == "passed_with_manual_review",
         "changed-candidate pass statuses drifted",
     )
+    _assert(
+        runner._passed_e2e_status(
+            manual_review=True,
+            changed_rewrite_count=0,
+            source_fallback_count=2,
+        ) == "passed_with_source_fallbacks_and_manual_review",
+        "source-fallback pass status lost its manual-review disclosure",
+    )
+    _assert(
+        runner._passed_e2e_status(
+            manual_review=False,
+            changed_rewrite_count=1,
+            source_fallback_count=1,
+        ) == "passed_with_source_fallbacks",
+        "source-fallback pass status was treated as a normal rewrite pass",
+    )
+
+
+def _assert_full_round_fallback_outcome_contract() -> None:
+    def selection(*, decision: str, origin: str, published: bool, attempts: int, reasons: list[str]) -> dict[str, object]:
+        return {
+            "decision": decision,
+            "selectedOrigin": origin,
+            "publishedRewrite": published,
+            "runFailed": False,
+            "modelAttemptCount": attempts,
+            "reasonCodes": reasons,
+        }
+
+    snapshot = {
+        "compare": {
+            "chunks": [
+                {
+                    "chunkId": "published",
+                    "inputText": "source-a",
+                    "outputText": "changed-a",
+                    "candidateSelection": selection(
+                        decision="generated_selected",
+                        origin="model",
+                        published=True,
+                        attempts=1,
+                        reasons=[],
+                    ),
+                },
+                {
+                    "chunkId": "preserved",
+                    "inputText": "source-b",
+                    "outputText": "source-b",
+                    "candidateSelection": selection(
+                        decision="preserved_baseline",
+                        origin="baseline",
+                        published=False,
+                        attempts=2,
+                        reasons=["no_measurable_combined_style_gain"],
+                    ),
+                },
+                {
+                    "chunkId": "fallback",
+                    "inputText": "source-c",
+                    "outputText": "source-c",
+                    "fallbackMode": "source",
+                    "fallbackReason": round_service.HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
+                    "quality": {"needsReview": True, "flags": ["source_fallback"]},
+                    "failedAttempts": [{"attempt": index} for index in range(round_service.MAX_TOTAL_MODEL_ATTEMPTS)],
+                    "candidateSelection": selection(
+                        decision="preserved_baseline",
+                        origin="baseline",
+                        published=False,
+                        attempts=round_service.MAX_TOTAL_MODEL_ATTEMPTS,
+                        reasons=[round_service.HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED],
+                    ),
+                },
+                {"chunkId": "frozen", "inputText": "source-d", "outputText": "source-d"},
+            ]
+        }
+    }
+    summary = runner._summarize_full_round_candidate_outcomes(snapshot)
+    _assert(summary.get("outcomeDecompositionValid") is True, "full-round outcome decomposition rejected valid categories")
+    _assert(summary.get("sourceFallbackEvidenceValid") is True, "valid source-fallback evidence was rejected")
+    _assert(summary.get("publishedRewriteCount") == 1, "published full-round outcome count drifted")
+    _assert(summary.get("preservedBaselineWithoutFallbackCount") == 1, "baseline-preserved count drifted")
+    _assert(summary.get("sourceFallbackCount") == 1, "source-fallback count drifted")
+    _assert(summary.get("frozenIdentityCount") == 1, "frozen identity count drifted")
+    _assert(summary.get("modelAttemptCount") == 6, "full-round model attempt total drifted")
+    _assert(summary.get("sourceFallbacksCountAsPublishedRewrites") is False, "source fallback was counted as a published rewrite")
 
 
 def _run_lock_probe(lock_path: Path) -> dict[str, object]:
@@ -816,10 +1064,13 @@ def _assert_cross_process_lock_contract(temp_dir: Path) -> None:
 
 
 def run_regression() -> dict[str, object]:
+    _assert_snapshot_decision_coverage_contract()
     _assert_candidate_release_contract()
     _assert_completion_auditor_stream_contract()
+    _assert_full_round_model_failure_audit_contract()
     _assert_format_anchor_resolution_contract()
     _assert_pass_status_contract()
+    _assert_full_round_fallback_outcome_contract()
     finish_regression = ROOT_DIR / "finish" / "regression"
     finish_regression.mkdir(parents=True, exist_ok=True)
     previous_env = {key: os.environ.get(key) for key in ENV_VALUES}
@@ -915,6 +1166,9 @@ def run_regression() -> dict[str, object]:
         _assert(int(baseline.get("providerCallCount", -1)) == 0, "identity baseline claimed provider calls")
         real_model = report.get("realModel") or {}
         _assert(int(real_model.get("callCount", 0)) >= 3, "bounded fake provider was not called")
+        _assert(int(real_model.get("sourceFallbackCount", -1)) == 0, "offline fake unexpectedly reported source fallbacks")
+        _assert(real_model.get("sourceFallbacksCountAsSuccessfulCandidates") is False, "source fallback success semantics are undisclosed")
+        _assert(real_model.get("callCountMatchesModelAttemptCount") is None, "bounded mode falsely claimed full-round attempt reconciliation")
         _assert(
             int(real_model.get("maxCallCount", 0)) == 3 * runner.E2E_MAX_COMPLETIONS_PER_TARGET,
             "bounded E2E completion budget drifted",
@@ -1006,7 +1260,8 @@ def run_regression() -> dict[str, object]:
                 f"{label} snapshot lost candidate-selection v2",
             )
             _assert(
-                candidate_evidence.get("allSourceRelativeEvidenceValid") is True,
+                candidate_evidence.get("allReleaseCriticalSourceRelativeEvidenceValid") is True
+                and candidate_evidence.get("allSourceRelativeEvidenceValid") is True,
                 f"{label} snapshot contains invalid source-relative evidence",
             )
             _assert(
@@ -1036,6 +1291,7 @@ def run_regression() -> dict[str, object]:
                     "failed attempt output identity is invalid",
                 )
         review = report.get("review") or {}
+        _assert(int(review.get("sourceFallbackCount", -1)) == 0, "offline review falsely reported source fallback")
         _assert(int(review.get("decisionCount", 0)) == int(review.get("chunkCount", -1)), "review decisions are not full coverage")
         _assert(int(review.get("changedRewriteConfirmedCount", 0)) >= 1, "no changed fake candidate reached export")
         _assert(review.get("reviewActor") == "automated_e2e", "E2E CAS report omitted its automated actor")
@@ -1199,6 +1455,7 @@ def run_regression() -> dict[str, object]:
             "kind-aware semantic ranges freeze anchors/comments while allowing safe bookmark interiors",
             "failed-attempt v1 evidence keeps only stable enums, hash/count metadata, and suppression flags",
             "candidate-selection v2 source-relative and cumulative document evidence are consumed fail-closed",
+            "candidate selections and frozen source identities cover every chunk exactly once",
             "only production-published, hash-bound, readability-passing candidates can be automated",
             "stale preserved-baseline evidence with changed output is rejected before export",
             "automated CAS is labeled automated_e2e and never presented as human review",

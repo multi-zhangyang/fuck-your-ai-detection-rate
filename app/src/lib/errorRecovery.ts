@@ -17,13 +17,6 @@ export function getErrorRecoveryPlan(message: string): { target: WorkbenchView; 
       tone: "amber",
     };
   }
-  if (message.includes("学校") || message.includes("规范") || message.includes("解析")) {
-    return {
-      target: "format",
-      actionLabel: "查看学校规范",
-      tone: "amber",
-    };
-  }
   if (message.includes("导出") || message.includes("Word") || message.includes("审计")) {
     return {
       target: "quality",

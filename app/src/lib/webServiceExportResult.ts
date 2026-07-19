@@ -95,9 +95,6 @@ export async function exportResponseToResult(
   const paragraphSource = response.headers.get("X-Export-Paragraph-Source") || "";
   const formatMode = response.headers.get("X-Export-Format-Mode") || "";
   const formatScope = response.headers.get("X-Export-Format-Scope") || "";
-  const contentLockedStyleCount = Number(response.headers.get("X-Export-Content-Locked-Style-Count") || "0") || 0;
-  const tableStyleCount = Number(response.headers.get("X-Export-Table-Style-Count") || "0") || 0;
-  const tableBorderCount = Number(response.headers.get("X-Export-Table-Border-Count") || "0") || 0;
   const validationPath = decodeHeaderValue(response.headers.get("X-Export-Validation-Path"));
   const auditPath = decodeHeaderValue(response.headers.get("X-Export-Audit-Path"));
   const auditIssueCountHeader = response.headers.get("X-Export-Audit-Issue-Count") || "0";
@@ -116,11 +113,6 @@ export async function exportResponseToResult(
   const protectedHeadingCount = Number(response.headers.get("X-Export-Protected-Heading-Count") || "0") || 0;
   const editableHeadingCount = Number(response.headers.get("X-Export-Editable-Heading-Count") || "0") || 0;
   const modelInputMatchesEditableUnits = response.headers.get("X-Export-Model-Input-Scope-Match") === "1";
-  const preflightPath = decodeHeaderValue(response.headers.get("X-Export-Preflight-Path"));
-  const preflightIssueCountHeader = response.headers.get("X-Export-Preflight-Issue-Count") || "0";
-  const preflightIssueCount = Number(preflightIssueCountHeader) || 0;
-  const preflightWarningCountHeader = response.headers.get("X-Export-Preflight-Warning-Count") || "0";
-  const preflightWarningCount = Number(preflightWarningCountHeader) || 0;
   const guardPath = decodeHeaderValue(response.headers.get("X-Export-Guard-Path"));
   const guardIssueCountHeader = response.headers.get("X-Export-Guard-Issue-Count") || "0";
   const guardIssueCount = Number(guardIssueCountHeader) || 0;
@@ -129,7 +121,6 @@ export async function exportResponseToResult(
   const guardIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Guard-Issue-Samples"));
   const auditIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Audit-Issue-Samples"));
   const ooxmlAuditIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Ooxml-Audit-Issue-Samples"));
-  const preflightIssueSamples = parseExportIssueSamples(response.headers.get("X-Export-Preflight-Issue-Samples"));
   const blob = await response.blob();
   await assertExportArtifactMatchesEvidence(evidence, blob, targetFormat);
   downloadBlob(blob, filename);
@@ -151,9 +142,6 @@ export async function exportResponseToResult(
     paragraphSource,
     formatMode,
     formatScope,
-    contentLockedStyleCount,
-    tableStyleCount,
-    tableBorderCount,
     validationPath,
     auditPath,
     auditIssueCount,
@@ -170,15 +158,11 @@ export async function exportResponseToResult(
     protectedHeadingCount,
     editableHeadingCount,
     modelInputMatchesEditableUnits,
-    preflightPath,
-    preflightIssueCount,
-    preflightWarningCount,
     guardPath,
     guardIssueCount,
     guardWarningCount,
     guardIssueSamples,
     auditIssueSamples,
     ooxmlAuditIssueSamples,
-    preflightIssueSamples,
   };
 }

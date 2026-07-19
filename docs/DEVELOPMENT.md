@@ -28,19 +28,12 @@ python scripts/run_regressions.py --skip-frontend-build
 
 ```powershell
 python scripts/docx_export_regression.py --rebuild-sample
-python scripts/docx_export_regression.py --rebuild-sample --strict-preflight
 ```
 
 ### 任务状态机
 
 ```powershell
 python scripts/state_machine_regression.py
-```
-
-### 学校规范解析
-
-```powershell
-python scripts/format_rules_regression.py
 ```
 
 ### 并发与恢复

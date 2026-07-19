@@ -1,6 +1,6 @@
 import type { AppService } from "./appService";
 import { webServiceDocumentsApi } from "@/lib/webServiceDocuments";
-import { webServiceFormatApi } from "@/lib/webServiceFormat";
+import { webServiceExportApi } from "@/lib/webServiceExport";
 import { webServiceHealthApi } from "@/lib/webServiceHealth";
 import { webServiceHistoryApi } from "@/lib/webServiceHistoryApi";
 import { webServiceModelApi } from "@/lib/webServiceModel";
@@ -17,7 +17,7 @@ export const webService: AppService = {
   ...webServiceDocumentsApi,
   ...webServiceHistoryApi,
   ...webServiceRoundsApi,
-  ...webServiceFormatApi,
+  ...webServiceExportApi,
 };
 
 export { MAX_REWRITE_CONCURRENCY };

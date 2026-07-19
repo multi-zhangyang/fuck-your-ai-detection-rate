@@ -29,7 +29,7 @@ DEFAULT_STREAMING = True
 #       真相源，改写时只替换可编辑正文的 w:t 文字节点，其余格式与结构保持不变。
 #
 # ``FORMAT_MODE_SCHOOL_RULES`` 仅保留为旧配置/旧调用方的兼容标识。读取或保存时都会
-# 迁移为 ``preserve_original``；学校规范只用于导出前诊断，不再驱动格式写回。
+# 迁移为 ``preserve_original``；旧学校规则值只作为兼容输入，不再驱动任何解析或格式写回。
 FORMAT_MODE_PRESERVE_ORIGINAL = "preserve_original"
 FORMAT_MODE_SCHOOL_RULES = "school_rules"
 DEFAULT_FORMAT_MODE = FORMAT_MODE_PRESERVE_ORIGINAL

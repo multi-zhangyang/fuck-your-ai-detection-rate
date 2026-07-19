@@ -61,6 +61,22 @@ def _run_should_freeze_chunk(failures: list[str]) -> None:
         )
     checks.append("headings, keyword metadata, and bibliography entries are preserved byte-for-byte")
 
+    for text in (
+        "第二章为理论基础，主要介绍实验数据集、框架选择和评估指标。",
+        "第三章中给出系统设计，包含预处理模块、训练模块和测试模块。",
+    ):
+        _assert(
+            service.should_freeze_chunk(DEFAULT_PROMPT_PROFILE, text) is False,
+            "chapter-leading body prose must not be mistaken for a chapter heading",
+            failures,
+        )
+    _assert(
+        service.should_freeze_chunk(DEFAULT_PROMPT_PROFILE, "第二章 理论基础") is True,
+        "a real chapter heading must remain frozen",
+        failures,
+    )
+    checks.append("chapter-leading complete sentences remain rewritable while short chapter labels stay frozen")
+
     # The frozen chunk event reason string must stay stable: downstream code
     # and the dispatch path still reference it, so the marker cannot drift.
     _assert(

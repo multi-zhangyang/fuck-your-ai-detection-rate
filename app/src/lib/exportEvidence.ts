@@ -17,7 +17,6 @@ export type ExportEvidence = {
 
 const REQUIRED_ORIGINAL_DOCX_CHECKS = [
   "document_generation",
-  "format_preflight",
   "pre_export_guard",
   "content_contract",
   "text_integrity",

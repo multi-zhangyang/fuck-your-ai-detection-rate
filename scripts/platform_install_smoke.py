@@ -84,9 +84,6 @@ def _copy_runtime_source(runtime_root: Path) -> None:
 
     runtime_references = runtime_root / "references"
     runtime_references.mkdir(parents=True, exist_ok=True)
-    schema_path = REFERENCES_DIR / "format_rules.schema.json"
-    _assert(schema_path.is_file(), "The public format-rules schema is missing.")
-    shutil.copy2(schema_path, runtime_references / schema_path.name)
 
 
 def _reserve_loopback_port() -> int:

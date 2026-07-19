@@ -2,10 +2,8 @@ import { useEffect, useRef } from "react";
 
 import type { AppService } from "@/lib/appService";
 import { bootstrapAppConfig } from "@/lib/appBootstrapConfigHelpers";
-import { bootstrapAppFormatRules } from "@/lib/appBootstrapFormatHelpers";
 import { bootstrapAppHistories } from "@/lib/appBootstrapHistoryHelpers";
 import type {
-  FormatRules,
   HistoryArtifactQueryResponse,
   HistoryDocumentSummary,
   ModelConfig,
@@ -25,7 +23,6 @@ type UseAppBootstrapInput = {
   setHistoryItems: (items: HistoryDocumentSummary[]) => void;
   setHistoryArtifactQuery: (query: HistoryArtifactQueryResponse | null) => void;
   setHistoryListReady: (ready: boolean) => void;
-  setActiveFormatRules: (rules: FormatRules) => void;
 };
 
 export function useAppBootstrap(input: UseAppBootstrapInput) {
@@ -39,7 +36,6 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
     setHistoryItems,
     setHistoryArtifactQuery,
     setHistoryListReady,
-    setActiveFormatRules,
   } = input;
 
   const refreshModelCatalogRef = useRef(refreshModelCatalog);
@@ -76,15 +72,4 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
     };
   }, [service, setError, setHistoryItems, setHistoryArtifactQuery, setHistoryListReady]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void bootstrapAppFormatRules({
-      service,
-      cancelled: () => cancelled,
-      setActiveFormatRules,
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [service, setActiveFormatRules]);
 }

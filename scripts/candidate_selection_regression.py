@@ -431,35 +431,39 @@ def _assert_direct_selection_behaviour() -> None:
     )
     _assert_event_honesty(mixed_event)
 
-    # If every model candidate fails the hard contract, the baseline is noted
-    # as preserved but the round still fails; no silent success is possible.
+    # If every model candidate fails the hard contract, the chunk completes with
+    # an explicit source fallback. It is not published as a rewrite, and the
+    # validation evidence remains available for manual review.
     failed_prompts: list[str] = []
 
     def invalid_transform(_input_text: str, prompt: str, _round: int, _chunk_id: str) -> str:
         failed_prompts.append(prompt)
         return "错误输出"
 
-    try:
-        service._rewrite_round_chunk(
-            index=1,
-            chunk=_chunk(),
-            round_number=2,
-            normalized_prompt_profile="cn_custom",
-            prompt_text="只做保守改写。",
-            transform=invalid_transform,
-            global_style_profile=service.build_global_style_profile_from_texts([SOURCE]),
-            round_dimension=DIMENSION,
-        )
-    except ValueError as exc:
-        failure_events = getattr(exc, "validation_events", [])
-        decision = next(event for event in failure_events if event.get("event") == "candidate-selection")
-        _assert(decision.get("decision") == "hard_failure_preserved_baseline", "hard failure lost baseline decision evidence")
-        _assert(decision.get("publishedRewrite") is False, "hard failure was counted as a published rewrite")
-        _assert(decision.get("runFailed") is True, "hard failure decision did not mark the failed run")
-        _assert_event_honesty(decision)
-    else:
-        raise AssertionError("all hard-invalid candidates must fail instead of silently publishing the baseline")
-    _assert(len(failed_prompts) == service.MAX_VALIDATION_ATTEMPTS, "hard-failure path exceeded its attempt bound")
+    fallback = service._rewrite_round_chunk(
+        index=1,
+        chunk=_chunk(),
+        round_number=2,
+        normalized_prompt_profile="cn_custom",
+        prompt_text="只做保守改写。",
+        transform=invalid_transform,
+        global_style_profile=service.build_global_style_profile_from_texts([SOURCE]),
+        round_dimension=DIMENSION,
+    )
+    fallback_events = fallback.validation_events
+    decision = next(event for event in fallback_events if event.get("event") == "candidate-selection")
+    fallback_event = next(event for event in fallback_events if event.get("event") == "source-fallback")
+    _assert(fallback.output_text == SOURCE, "hard-validation exhaustion did not preserve exact source text")
+    _assert(decision.get("decision") == "preserved_baseline", "source fallback lost baseline decision evidence")
+    _assert(decision.get("publishedRewrite") is False, "source fallback was counted as a published rewrite")
+    _assert(decision.get("runFailed") is False, "source fallback incorrectly marked the completed chunk as failed")
+    _assert(
+        service.HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED in (decision.get("reasonCodes") or [])
+        and fallback_event.get("reasonCode") == service.HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
+        "source fallback reason code was not bound to the candidate decision",
+    )
+    _assert_event_honesty(decision)
+    _assert(len(failed_prompts) == service.MAX_TOTAL_MODEL_ATTEMPTS, "hard-failure path exceeded its attempt bound")
 
 
 def _assert_compare_and_checkpoint_contract(work_dir: Path) -> None:
@@ -481,61 +485,11 @@ def _assert_compare_and_checkpoint_contract(work_dir: Path) -> None:
         if first_for_chunk:
             first_attempt_barrier.wait(timeout=3)
         if chunk_id == "p0_c0":
-            # Force the failing chunk's first provider call to return first.
+            # Force the fallback chunk's first provider call to return first.
             # Checkpoint state must still be mutated only by run_round's owner
             # thread, never by these two workers.
             time.sleep(0.05)
         return CONVERGED if chunk_id == "p0_c0" else "错误输出"
-
-    try:
-        service.run_round(
-            doc_id="candidate-selection-checkpoint-regression",
-            round_number=2,
-            input_path=source_path,
-            output_path=output_path,
-            manifest_path=manifest_path,
-            transform=partial_transform,
-            prompt_profile="cn_custom",
-            prompt_sequence=["round1", "round2"],
-            chunk_limit=1000,
-            max_concurrency=2,
-        )
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("partial checkpoint fixture must fail on its second chunk")
-    _assert(first_calls.count("p0_c0") == 1, "converged concurrent chunk received an unconditional second call")
-    _assert(
-        first_calls.count("p1_c0") == service.MAX_VALIDATION_ATTEMPTS,
-        "hard-invalid concurrent chunk exceeded or missed its bounded attempts",
-    )
-
-    checkpoint_path = service.get_round_checkpoint_path(output_path)
-    _assert(checkpoint_path.exists(), "failed run did not preserve its checkpoint")
-    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    _assert(checkpoint.get("version") == service.ROUND_CHECKPOINT_VERSION, "checkpoint version was not bumped for candidate semantics")
-    saved_events = checkpoint.get("validation_events", [])
-    saved_first_decisions = [
-        event for event in saved_events
-        if event.get("event") == "candidate-selection" and event.get("chunkId") == "p0_c0"
-    ]
-    _assert(len(saved_first_decisions) == 1, "completed checkpoint chunk lost or duplicated its candidate decision")
-    saved_failed_decisions = [
-        event
-        for event in saved_events
-        if event.get("event") == "candidate-selection" and event.get("chunkId") == "p1_c0"
-    ]
-    _assert(len(saved_failed_decisions) == 1, "checkpoint lost or duplicated the failed chunk decision")
-    _assert(
-        saved_failed_decisions[0].get("runFailed") is True,
-        "checkpoint failed-chunk decision was not marked as failed diagnostic evidence",
-    )
-
-    resume_calls: list[str] = []
-
-    def resume_transform(_input_text: str, _prompt: str, _round: int, chunk_id: str) -> str:
-        resume_calls.append(chunk_id)
-        return CONVERGED if chunk_id == "p0_c0" else CONVERGED_TWO
 
     result = service.run_round(
         doc_id="candidate-selection-checkpoint-regression",
@@ -543,22 +497,32 @@ def _assert_compare_and_checkpoint_contract(work_dir: Path) -> None:
         input_path=source_path,
         output_path=output_path,
         manifest_path=manifest_path,
-        transform=resume_transform,
+        transform=partial_transform,
         prompt_profile="cn_custom",
         prompt_sequence=["round1", "round2"],
         chunk_limit=1000,
         max_concurrency=2,
     )
-    _assert(resume_calls == ["p1_c0"], f"resume re-ran an already selected chunk: {resume_calls}")
-    _assert(not checkpoint_path.exists(), "successful resume did not clear checkpoint")
+    _assert(first_calls.count("p0_c0") == 1, "converged concurrent chunk received an unconditional second call")
+    _assert(
+        first_calls.count("p1_c0") == service.MAX_TOTAL_MODEL_ATTEMPTS,
+        "hard-invalid concurrent chunk exceeded or missed its bounded attempts",
+    )
+
+    checkpoint_path = service.get_round_checkpoint_path(output_path)
+    _assert(not checkpoint_path.exists(), "completed source fallback left a stale checkpoint")
 
     compare_path = service.get_round_compare_path(output_path)
     compare = json.loads(compare_path.read_text(encoding="utf-8"))
     _assert(compare.get("version") == service.ROUND_COMPARE_VERSION, "compare version was not bumped for candidate evidence")
     decisions = [event for event in compare.get("validationEvents", []) if event.get("event") == "candidate-selection"]
-    _assert(len(decisions) == 2, f"resume duplicated or lost candidate events: {len(decisions)}")
+    _assert(len(decisions) == 2, f"completed run duplicated or lost candidate events: {len(decisions)}")
     _assert(len({event.get("chunkId") for event in decisions}) == 2, "candidate decisions are not one-per-completed-chunk")
-    _assert(not any(event.get("runFailed") for event in decisions), "resumed compare retained stale failed candidate evidence")
+    _assert(not any(event.get("runFailed") for event in decisions), "completed compare retained failed candidate evidence")
+    _assert(
+        sum(1 for event in compare.get("validationEvents", []) if event.get("event") == "source-fallback") == 1,
+        "completed compare lost the source-fallback event",
+    )
     summary = result.get("quality_summary", {})
     _assert(summary.get("boundedCandidateDecisionCount") == len(decisions), "quality aggregate disagrees with compare events")
     actual_attempts = sum(int(event.get("modelAttemptCount", 0) or 0) for event in decisions)
@@ -578,16 +542,32 @@ def _assert_compare_and_checkpoint_contract(work_dir: Path) -> None:
         summary.get("boundedCandidatePreservedBaselineCount") == actual_preserved,
         "preserved-baseline aggregate disagrees with evidence",
     )
-    _assert(actual_attempts <= 2 * service.MAX_VALIDATION_ATTEMPTS, "actual model attempts exceeded the per-chunk bound")
+    _assert(summary.get("sourceFallbackCount") == 1, "source-fallback aggregate disagrees with evidence")
+    _assert(actual_attempts <= 2 * service.MAX_TOTAL_MODEL_ATTEMPTS, "actual model attempts exceeded the per-chunk bound")
     _assert(summary.get("estimatedApiCalls") == 2, "compatible nominal call estimate changed")
-    _assert(summary.get("estimatedMaxApiCalls") == 2 * service.MAX_VALIDATION_ATTEMPTS, "maximum call estimate is wrong")
-    _assert(summary.get("maxApiCallsPerEditableChunk") == service.MAX_VALIDATION_ATTEMPTS, "per-chunk call bound is missing")
+    _assert(summary.get("estimatedMaxApiCalls") == 2 * service.MAX_TOTAL_MODEL_ATTEMPTS, "maximum call estimate is wrong")
+    _assert(summary.get("maxApiCallsPerEditableChunk") == service.MAX_TOTAL_MODEL_ATTEMPTS, "per-chunk call bound is missing")
 
     decisions_by_chunk = {str(event.get("chunkId")): event for event in decisions}
     for chunk_payload in compare.get("chunks", []):
         chunk_id = str(chunk_payload.get("chunkId"))
         _assert(chunk_payload.get("candidateSelection") == decisions_by_chunk.get(chunk_id), "compare chunk disagrees with authoritative event")
         _assert_event_honesty(chunk_payload["candidateSelection"])
+        if chunk_id == "p1_c0":
+            _assert(chunk_payload.get("fallbackMode") == "source", "fallback chunk lost its explicit mode")
+            _assert(chunk_payload.get("outputText") == SOURCE_TWO, "fallback chunk did not preserve its source")
+            _assert(
+                chunk_payload.get("fallbackReason") == service.HARD_VALIDATION_EXHAUSTED_SOURCE_PRESERVED,
+                "fallback chunk lost its stable reason code",
+            )
+            _assert(
+                len(chunk_payload.get("failedAttempts") or []) == service.MAX_TOTAL_MODEL_ATTEMPTS,
+                "fallback chunk lost text-free failed-attempt evidence",
+            )
+            _assert(
+                (chunk_payload.get("quality") or {}).get("needsReview") is True,
+                "fallback chunk was not marked for manual review",
+            )
 
     # Legacy/old compare material without a candidate event remains evidence-
     # free; the backend must not fabricate a selection decision retroactively.

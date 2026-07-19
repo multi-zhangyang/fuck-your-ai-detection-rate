@@ -59,6 +59,7 @@ SEMANTIC_RANGE_MARKER_ACTIONS = {
     "commentRangeStart": ("comment", "start"),
     "commentRangeEnd": ("comment", "end"),
 }
+SEMANTIC_BLOCK_LEVEL_BOOKMARK_PARENTS = frozenset({"body", "tc"})
 
 
 def _sha256_file(path: Path) -> str:
@@ -931,13 +932,21 @@ def _semantic_document_range_evidence(root: ET.Element) -> dict[str, Any]:
 
     def marker_position(paragraph_state: dict[str, int] | None) -> dict[str, int]:
         if paragraph_state is None:
-            return {"paragraphOrdinal": -1, "offset": -1}
+            # A block-level bookmark endpoint sits between paragraphs. Bind it
+            # to the last visited paragraph ordinal and use -1 for the
+            # non-paragraph offset so endpoint movement remains observable
+            # without serializing document prose.
+            return {"paragraphOrdinal": int(paragraph_ordinal), "offset": -1}
         return {
             "paragraphOrdinal": int(paragraph_state["ordinal"]),
             "offset": int(paragraph_state["offset"]),
         }
 
-    def visit(node: ET.Element, paragraph_state: dict[str, int] | None) -> None:
+    def visit(
+        node: ET.Element,
+        paragraph_state: dict[str, int] | None,
+        parent_local_name: str = "",
+    ) -> None:
         nonlocal paragraph_ordinal
 
         local_name = _local_name(node.tag)
@@ -950,7 +959,10 @@ def _semantic_document_range_evidence(root: ET.Element) -> dict[str, Any]:
         if marker is not None:
             kind, action = marker
             marker_id = str(node.attrib.get(f"{W}id", "") or "")
-            if current_state is None:
+            if current_state is None and not (
+                kind == "bookmark"
+                and parent_local_name in SEMANTIC_BLOCK_LEVEL_BOOKMARK_PARENTS
+            ):
                 issues.append("semantic_range_marker_outside_paragraph")
             if not marker_id:
                 issues.append("semantic_range_missing_id")
@@ -993,14 +1005,14 @@ def _semantic_document_range_evidence(root: ET.Element) -> dict[str, Any]:
             append_visible("\n", current_state)
         else:
             for child in list(node):
-                visit(child, current_state)
+                visit(child, current_state, local_name)
 
         if node.tag == f"{W}p":
             # A paragraph separator makes cross-paragraph range hashes sensitive
             # to content moving between paragraphs without exposing that content.
             append_visible("\u2029", None)
 
-    visit(body, None)
+    visit(body, None, "")
     if active:
         issues.extend("semantic_range_unmatched_start" for _key in active)
 
@@ -1147,9 +1159,8 @@ def _audit_document_xml(source_xml: bytes, export_xml: bytes, snapshot: Any) -> 
     # Direct body containers not represented by python-docx's
     # ``Document.paragraphs``/``tables`` collections (for example top-level
     # content controls, customXml, tracked-change containers, or altChunk) are
-    # protected wholesale.  ``sectPr`` is excluded here because school-rules
-    # mode intentionally changes page layout; preserve mode checks it through
-    # the stricter format-lock audit.
+    # protected wholesale. ``sectPr`` is excluded from this structural pass
+    # because the stricter format-lock audit verifies it byte-for-byte.
     for block_index, (source_block, export_block) in enumerate(zip(list(source_body), list(export_body))):
         if source_block.tag in {f"{W}p", f"{W}tbl", f"{W}sectPr"}:
             continue

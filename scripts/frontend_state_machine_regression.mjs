@@ -60,8 +60,6 @@ const USE_PROMPT_PREVIEW_DRAFT_STATE_PATH = resolve(ROOT_DIR, "app", "src", "hoo
 const USE_DIFF_PANEL_SCROLL_EFFECTS_PATH = resolve(ROOT_DIR, "app", "src", "hooks", "useDiffPanelScrollEffects.ts");
 const USE_DIFF_PANEL_FILTER_EFFECTS_PATH = resolve(ROOT_DIR, "app", "src", "hooks", "useDiffPanelFilterEffects.ts");
 const HISTORY_DOCUMENT_ROUND_HEADER_PATH = resolve(ROOT_DIR, "app", "src", "components", "HistoryDocumentRoundHeader.tsx");
-const SCHOOL_FORMAT_PARSER_TEXT_ACTIONS_PATH = resolve(ROOT_DIR, "app", "src", "components", "SchoolFormatParserTextActions.tsx");
-const SCHOOL_FORMAT_PARSER_CONTROLS_PATH = resolve(ROOT_DIR, "app", "src", "components", "SchoolFormatParserControls.tsx");
 const MODEL_PROVIDER_PARAM_FIELDS_PATH = resolve(ROOT_DIR, "app", "src", "components", "ModelProviderParamFields.tsx");
 const MODEL_PROVIDER_IDENTITY_FIELDS_PATH = resolve(ROOT_DIR, "app", "src", "components", "ModelProviderIdentityFields.tsx");
 const DOCUMENT_RESTORE_SESSION_FAILURE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "documentRestoreSessionFailureHelpers.ts");
@@ -128,8 +126,6 @@ const BATCH_RERUN_MATERIALIZE_HANDLERS_PATH = resolve(ROOT_DIR, "app", "src", "l
 const RESULT_CARD_SM_WRAPPERS_PATH = resolve(ROOT_DIR, "app", "src", "components", "ResultCardSmWrappers.tsx");
 const DIAGNOSTICS_SHARE_RUN_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "diagnosticsShareRunHelpers.ts");
 const DIAGNOSTICS_SHARE_CORE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "diagnosticsShareCoreHelpers.ts");
-const FORMAT_RULES_CONFIRM_HANDLERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "formatRulesConfirmHandlers.ts");
-const FORMAT_RULES_PARSE_HANDLERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "formatRulesParseHandlers.ts");
 const AUTO_RUN_ACTION_BUILD_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "autoRunActionBuildHelpers.ts");
 const AUTO_RUN_ACTION_FORMAT_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "autoRunActionFormatHelpers.ts");
 const RUN_SESSION_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "hooks", "runSessionHelpers.ts");
@@ -165,7 +161,6 @@ const RESULT_CARD_EXPORT_ACTIONS_PATH = resolve(ROOT_DIR, "app", "src", "compone
 const HISTORY_DOCUMENT_ROUND_CARD_PATH = resolve(ROOT_DIR, "app", "src", "components", "HistoryDocumentRoundCard.tsx");
 const HOME_RUN_APPEND_ISSUE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "homeRunAppendIssueHelpers.ts");
 const HISTORY_DOCUMENT_CLEANUP_ACTIONS_PATH = resolve(ROOT_DIR, "app", "src", "components", "HistoryDocumentCleanupActions.tsx");
-const APP_BOOTSTRAP_FORMAT_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appBootstrapFormatHelpers.ts");
 const APP_BOOTSTRAP_HISTORY_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appBootstrapHistoryHelpers.ts");
 const APP_BOOTSTRAP_CONFIG_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "appBootstrapConfigHelpers.ts");
 const MODEL_ROUTE_PROVIDER_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "modelRouteProviderHelpers.ts");
@@ -283,10 +278,6 @@ const LIB_EXPORT_HEALTH_VIEW_MODEL_PATH = resolve(ROOT_DIR, "app", "src", "lib",
 const LIB_EXPORT_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "exportHelpers.ts");
 const LIB_EXPORT_NOTICE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "exportNoticeHelpers.ts");
 const LIB_EXPORT_RERUN_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "exportRerunHelpers.ts");
-const LIB_FORMAT_RULES_ACTION_HANDLERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "formatRulesActionHandlers.ts");
-const LIB_FORMAT_RULES_HANDLERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "formatRulesHandlers.ts");
-const LIB_FORMAT_RULES_HANDLER_TYPES_PATH = resolve(ROOT_DIR, "app", "src", "lib", "formatRulesHandlerTypes.ts");
-const LIB_FORMAT_RULES_ROUTE_HANDLERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "formatRulesRouteHandlers.ts");
 const LIB_HISTORY_ARTIFACT_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "historyArtifactHelpers.ts");
 const LIB_HISTORY_CARD_FORMAT_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "historyCardFormatHelpers.ts");
 const LIB_HISTORY_CARD_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "historyCardHelpers.ts");
@@ -418,7 +409,6 @@ const LIB_WEB_SERVICE_EXPORT_RESULT_PATH = resolve(ROOT_DIR, "app", "src", "lib"
 const LIB_WEB_SERVICE_FILES_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceFiles.ts");
 const LIB_WEB_SERVICE_FILE_PICKER_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceFilePicker.ts");
 const LIB_WEB_SERVICE_FILE_SIZE_HELPERS_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceFileSizeHelpers.ts");
-const LIB_WEB_SERVICE_FORMAT_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceFormat.ts");
 const LIB_WEB_SERVICE_HEALTH_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceHealth.ts");
 const LIB_WEB_SERVICE_HISTORY_API_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceHistoryApi.ts");
 const LIB_WEB_SERVICE_HTTP_PATH = resolve(ROOT_DIR, "app", "src", "lib", "webServiceHttp.ts");
@@ -594,10 +584,6 @@ function runRegression() {
     LIB_EXPORT_HELPERS_PATH,
     LIB_EXPORT_NOTICE_HELPERS_PATH,
     LIB_EXPORT_RERUN_HELPERS_PATH,
-    LIB_FORMAT_RULES_ACTION_HANDLERS_PATH,
-    LIB_FORMAT_RULES_HANDLERS_PATH,
-    LIB_FORMAT_RULES_HANDLER_TYPES_PATH,
-    LIB_FORMAT_RULES_ROUTE_HANDLERS_PATH,
     LIB_HISTORY_ARTIFACT_HELPERS_PATH,
     LIB_HISTORY_CARD_FORMAT_HELPERS_PATH,
     LIB_HISTORY_CARD_HELPERS_PATH,
@@ -785,7 +771,6 @@ function runRegression() {
     MODEL_ROUTE_PROVIDER_HELPERS_PATH,
     APP_BOOTSTRAP_CONFIG_HELPERS_PATH,
     APP_BOOTSTRAP_HISTORY_HELPERS_PATH,
-    APP_BOOTSTRAP_FORMAT_HELPERS_PATH,
     HISTORY_DOCUMENT_CLEANUP_ACTIONS_PATH,
     HOME_RUN_APPEND_ISSUE_HELPERS_PATH,
     HISTORY_DOCUMENT_ROUND_CARD_PATH,
@@ -821,8 +806,6 @@ function runRegression() {
     RUN_SESSION_HELPERS_PATH,
     AUTO_RUN_ACTION_FORMAT_HELPERS_PATH,
     AUTO_RUN_ACTION_BUILD_HELPERS_PATH,
-    FORMAT_RULES_PARSE_HANDLERS_PATH,
-    FORMAT_RULES_CONFIRM_HANDLERS_PATH,
     DIAGNOSTICS_SHARE_CORE_HELPERS_PATH,
     DIAGNOSTICS_SHARE_RUN_HELPERS_PATH,
     RESULT_CARD_SM_WRAPPERS_PATH,
@@ -889,8 +872,6 @@ function runRegression() {
     DOCUMENT_RESTORE_SESSION_FAILURE_HELPERS_PATH,
     MODEL_PROVIDER_IDENTITY_FIELDS_PATH,
     MODEL_PROVIDER_PARAM_FIELDS_PATH,
-    SCHOOL_FORMAT_PARSER_CONTROLS_PATH,
-    SCHOOL_FORMAT_PARSER_TEXT_ACTIONS_PATH,
     HISTORY_DOCUMENT_ROUND_HEADER_PATH,
     USE_DIFF_PANEL_FILTER_EFFECTS_PATH,
     USE_DIFF_PANEL_SCROLL_EFFECTS_PATH,
@@ -978,7 +959,6 @@ function runRegression() {
     LIB_WEB_SERVICE_FILE_PICKER_PATH,
     LIB_WEB_SERVICE_FILE_SIZE_HELPERS_PATH,
     LIB_WEB_SERVICE_FILES_PATH,
-    LIB_WEB_SERVICE_FORMAT_PATH,
     LIB_WEB_SERVICE_HEALTH_PATH,
     LIB_WEB_SERVICE_HISTORY_API_PATH,
     LIB_WEB_SERVICE_HTTP_PATH,

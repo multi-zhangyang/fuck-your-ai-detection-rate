@@ -12,8 +12,6 @@ import type {
   BatchRerunResult,
   BatchRerunStatus,
   BatchRerunTarget,
-  FormatRules,
-  FormatRulesResult,
   HistoryDeleteImpact,
   HistoryArtifactQueryFilters,
   HistoryArtifactQueryResponse,
@@ -133,8 +131,4 @@ export interface AppService {
     targetFormat: "txt" | "docx",
     options?: ExportRoundOptions,
   ): Promise<ExportResult>;
-  loadFormatRules(): Promise<FormatRules>;
-  parseFormatRules(text: string, modelConfig: ModelConfig, signal?: AbortSignal): Promise<FormatRulesResult>;
-  activateFormatRules(rules: FormatRules): Promise<FormatRulesResult>;
-  resetFormatRules(): Promise<FormatRulesResult>;
 }

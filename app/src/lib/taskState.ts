@@ -7,8 +7,6 @@ export type TaskPhase =
   | "testing-config"
   | "loading-models"
   | "diagnosing"
-  | "parsing-format"
-  | "applying-format"
   | "picking-document"
   | "uploading-document"
   | "running-round"
@@ -33,8 +31,6 @@ const TASK_PHASE_LABELS: Record<TaskPhase, string> = {
   "testing-config": "准备模型",
   "loading-models": "准备模型",
   diagnosing: "系统自检",
-  "parsing-format": "处理规范",
-  "applying-format": "处理规范",
   "picking-document": "准备文档",
   "uploading-document": "准备文档",
   "running-round": "正在改写",

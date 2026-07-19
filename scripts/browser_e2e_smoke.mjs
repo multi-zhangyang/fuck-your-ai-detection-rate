@@ -468,9 +468,6 @@ async function runSmoke() {
     await waitForText(browserClient, "改写对照", 10_000);
     checks.push("home controls remain visible beside inline Diff workbench");
 
-    await clickByText(browserClient, "学校规范");
-    await waitForText(browserClient, "学校规范对照", 12_000);
-    await waitForText(browserClient, "不会自动判定 Word 是否合规", 12_000);
     await clickByText(browserClient, "历史记录");
     await waitForText(browserClient, "继续处理与导出", 12_000);
     await clickByText(browserClient, "启动诊断");

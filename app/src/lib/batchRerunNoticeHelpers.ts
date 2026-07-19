@@ -19,6 +19,7 @@ const PRESERVED_REASON_LABELS: Record<string, string> = {
   no_same_dimension_converged_candidate: "没有候选通过同维复评分",
   no_measurable_combined_style_gain: "没有可测的净收益",
   no_combined_style_gain: "没有可靠的综合风格收益",
+  hard_validation_exhausted_source_preserved: "硬门禁重试已耗尽，已显式保留原文并标记人工审阅",
 };
 
 function summarizePreservedCandidateSelection(

@@ -30,7 +30,7 @@
 
 ### Added
 - **双契约功能跃迁**：新增 `document_edit_contract.py`，把“降检策略”和“只改正文/原格式固定”合并成运行与导出的硬门。DOCX 在 `pre_run`、`post_round`、`pre_export`、`post_export` 四个阶段校验源文件身份、冻结范围、模型输入、body map 目标、标题泄漏与格式证据；`editableHeadingCount` 必须为 0。RateAudit v2 新增 `strategyPlan`（停止/定点重跑/下一维度/阻断）、`contentContract` 与统一 `readiness`；前端“降检报告”展示双契约状态、正文/保护区/标题计数和可定位目标。导出 API 补齐格式锁响应头并新增正文契约响应头，导出健康面板同时展示“格式锁”和“正文契约”。完整设计见 `docs/DUAL_CONTRACT_DESIGN.md`。
-- **格式策略收敛为唯一保真路径**：`school_rules` 只保留为旧配置兼容标识，读取、保存或显式导出请求都会迁移为 `preserve_original`；学校规范 UI 改为“学校规范对照”，只做诊断，不再写回字体、字号、段距、页边距或页面结构。新增复杂 DOCX 契约回归，覆盖任意 Title、英文/中文标题样式、自动编号、TOC、公式、表格、参考文献、页眉页脚和篡改 body map 的失败关闭。
+- **格式策略收敛为唯一保真路径**：`school_rules` 只保留为旧配置兼容标识，读取、保存或显式导出请求都会迁移为 `preserve_original`；移除学校说明解析、套版和对照 UI，不再写回字体、字号、段距、页边距或页面结构。新增复杂 DOCX 契约回归，覆盖任意 Title、英文/中文标题样式、自动编号、TOC、公式、表格、参考文献、页眉页脚和篡改 body map 的失败关闭。
 - **DOCX 快照身份升级到 v10**：快照新增原始文件 SHA-256 并在每次复用前校验。即使文件内容被替换后刻意恢复相同大小和修改时间，旧正文范围也会失效并重建，避免仅凭 stat 元数据误认源文档未变化。
 - **RateAudit 降检诊断闭环**：新增离线 `/api/rate-audit`，以原文为基线汇总同一路线的分轮结果，用统一规则计算风险点数轨迹、五维改善/退化、问题段落热区和定向处理建议；热区保留真实 `chunkId`，前端“降检报告”可直接跳回对应 Diff。风险点数明确是 high=3 / medium=2 / low=1 的可解释相对计数，`isAiDetector=false`，不输出第三方检测概率。新增单阶段 30 万字符分析上限与显式截断、指标快照复用、源文件/产物路径及文档归属边界、陈旧请求防覆盖、算法/API/前端三层回归及技术设计文档。
 - 后端与容器发布链加固：已保存 API Key 只能在原 Base URL 上补全，变更地址必须重新输入密钥；POSIX 配置目录/文件改为 `0700`/`0600` 并使用原子替换；Docker 修复 `/app/scripts` 模块导入与 Compose 提前降权冲突，启动前真实执行 task/history readiness，强制单 Gunicorn worker；生产静态根资源恢复正确 MIME/404，哈希资源保留一年 immutable 缓存。新增 `production_deployment_regression.py`，并扩充 Web 安全回归覆盖密钥外带、配置权限与生产静态行为；部署文档明确默认仅面向本机或可信网络。
@@ -498,20 +498,20 @@
 - SQLite 并发收敛：`fyadr_history_db` 全部连接经 `_connect_history_db`（`busy_timeout`+`foreign_keys`），统一 18 处 `sqlite3.connect`。
 - 提取 `path_utils.is_path_under`/`resolve_under`，统一 `web_app`/`app_service` 三处重复的 `_is_path_under`。
 - `should_freeze_chunk` 经评估确认为刻意休眠（含 `[LANGUAGE LOCK]` 守卫），新增 `freeze_chunk_regression` 锁定休眠语义与路径脱敏。
-- 新增 `docx_template_role_regression`：为 `docx_template.apply_school_format_rules` 补角色级单测覆盖。
+- 移除已退役的 `docx_template_role_regression` 与学校规则套版实现；结构角色和格式保真改由 DOCX 契约回归统一锁定。
 - 历史卡片去除 `HistoryCardSmWrappers` 间接层：消费者改从真实模块（`HistoryDeletePanels`、`HistoryGovernancePanels`、`historyDeleteActionKey`）直接导入，对应三处回归改为断言底层模块；`HistoryCard` 移除死代码 `void getMaintenanceStateLabel`。
 - 收敛 `TaskPhase`/`requestConfirm` 类型边界，消除 `App.tsx` 全部 15 处 `as never`：`runRoundInputTypes`/`batchRerunHandlerTypes`/`documentLoadHandlerTypes` 改为从 `taskState` 复用真实 `TaskPhase` 联合（删去局部 `TaskPhase = string` 重定义），各 handler deps 的 `beginTask` 由 `kind: string` 收窄为 `kind: TaskPhase`，`requestConfirm` 统一为 `ConfirmDialogOptions`；`runRoundSnapshotHandlers`/`runRoundInterfaceTypes` 的 `applySelectedRoundSnapshot`/`loadLatestRoundSnapshot` 返回由 `Promise<unknown>` 收窄为 `Promise<AutoSnapshotLoadedSnapshot | null>`，使自动快照恢复钩子获得精确返回类型而无需强制转换。
 
 ### Changed
 
 - 公网延迟优化（对标 /goal“公网访问延迟太高、项目太重”）：① `/api/health` 诊断对项目根目录与中间产物目录不再走全仓库文件遍历（`summarize_workspace_path(include_stats=False)`），改为 O(1) `stat` 校验可读写，省去整库 walk（实测省 12ms+，公网慢链首屏 health 更快）。② `get_document_status`（前端轮询状态热路径）从“每次 `list_records()` 整 JSON 加载”改为“SQLite 索引优先、索引不可用才回落 JSON”，与 `get_document_history`/`list_document_histories` 一致走索引快路径。③ `list_document_histories` 的每轮 artifact 统计 `_history_artifact_stats_from_index_items` 去掉 `_record_path_to_absolute` 的 `Path.resolve()`（逐组件 `lstat`），改为基于已归一化路径字符串的纯内存判定；针对索引里数百 artifact 路径逐字节比对与旧逻辑零差异，端到端从 120ms 降到 24ms（5×），文件系统 stat 调用清零。历史库 / 状态 / web health 相关回归全绿。
-- `export_round_output`/`_export_docx_round` 新增可选 `format_mode` 参数：`None` 时读取 `formatMode` 配置（默认保真），`"school_rules"` 显式回退到内置学校规范；`docx_export_regression`/`real_docx_smoke` 等断言学校字体（10.5/12pt、20 磅、7/9 磅段距）的回归显式传 `school_rules` 分流，避免被保真默认误伤。`apply_school_format_rules(preserve_original_format=True)` 对可编辑正文跳过 `_apply_paragraph_profile`（不再“填空”未设置属性，否则会为依赖样式继承的源文档注入 bold=False/cs 字体等额外 rPr 字节，破坏格式锁定不变量）。
+- `export_round_output`/`_export_docx_round` 保留可选 `format_mode` 参数用于旧调用方兼容；包括 `school_rules` 在内的旧值都会迁移到 `preserve_original`。DOCX 回归显式传入旧值，证明它不能重新开启字体、段距、页边距或页面结构写回。
 - 后端输入边界加固：`/api/read-output` 的 `maxChars` 用 `bounded_int_query_value` 钳制到 `[1, 2_000_000]`，越界/负数/非整数统一回落默认而非放大响应；历史库备份 `keep` 经 `coerce_backup_keep` 钳制到 `[1, 100]`，`keep<=0` 不再静默清空全部备份（含刚写入的那份），改为回落默认值，过大值钳制上限；`/api/round-progress` DELETE 的 `roundNumber`、`/api/cleanup-task-state-snapshots` 的 `mode`/`maxAgeHours` 改为安全整型校验，未知 `mode` 直接报错而非静默降级。
 - 历史库 `recover_history_database_governance` 恢复路径改用嵌套 `with _connect_history_db()` 上下文管理器，替代手写 `.close()`，与文件其余 17 处一致并消除连接泄漏窗口。
 - 提取 `WEB_HOST`/`WEB_PORT`/`FRONTEND_DEV_PORT` 模块常量：CORS 白名单与 `main()` 启动地址改用常量，删除 `main()` 启动日志中的脏话。
 - 统一 7 个 prompt 端点的错误状态：原先 `except Exception` 返回 500 与其余端点的 400 不一致，现统一为 400，并合并冗余的 `ValueError`/`Exception` 双 catch 块。
 - 前端 `formatBytes` 去重：`webServiceFileSizeHelpers` 改为从 `lib/formatters` 复用同一实现，删除本地副本。
-- 前端模块边界收敛：`App.tsx` 改为从真实模块直接导入 `DiffReviewCard`、`SchoolFormatCard`，删除 `ResultCard`/`ModelConfigCard` 上的误导性跨模块 re-export（format 视图不再从 model 卡片转出）。
+- 前端模块边界收敛：`App.tsx` 直接使用 `DiffReviewCard`，并移除 `SchoolFormatCard`、学校规范解析模块及 `format` 视图；模型配置页不再转出或承载格式规则 UI。
 - 可访问性：`ModelProviderParamFields` 与 `AppendRoundDialogFields` 的表单字段补 `htmlFor`/`id` 关联，屏幕阅读器可正确将标签绑定到控件，并以回归锁定该约定。
 - 可访问性（轮次运行进度）：`RoundRunStatusCard` 补 `role="status"` + `aria-live="polite"`，改写运行期间进度/状态变化由屏幕阅读器实时播报（断点按钮、分块流式预览、错误摘要可被无障碍感知），错误态仍由底层 `Alert` 的 `role="alert"` 兜底。
 

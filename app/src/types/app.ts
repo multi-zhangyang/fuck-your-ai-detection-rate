@@ -32,11 +32,6 @@ export type ModelProviderConfig = {
   updatedAt?: string;
 };
 
-export type FormatParserModelRoute = {
-  providerId: string;
-  model?: string;
-};
-
 export type PromptId = string;
 export type PromptProfile = string;
 
@@ -1913,9 +1908,6 @@ export type ExportResult = {
   paragraphSource?: string;
   formatMode?: string;
   formatScope?: string;
-  contentLockedStyleCount?: number;
-  tableStyleCount?: number;
-  tableBorderCount?: number;
   validationPath?: string;
   auditPath?: string;
   auditIssueCount?: number;
@@ -1945,16 +1937,12 @@ export type ExportResult = {
   bookmarkRangeInteriorUnitCount?: number;
   editableBookmarkRangeInteriorUnitCount?: number;
   modelInputMatchesEditableUnits?: boolean;
-  preflightPath?: string;
-  preflightIssueCount?: number;
-  preflightWarningCount?: number;
   guardPath?: string;
   guardIssueCount?: number;
   guardWarningCount?: number;
   guardIssueSamples?: ExportIssueSample[];
   auditIssueSamples?: ExportIssueSample[];
   ooxmlAuditIssueSamples?: ExportIssueSample[];
-  preflightIssueSamples?: ExportIssueSample[];
 };
 
 export type ExportRoundOptions = {
@@ -1963,37 +1951,6 @@ export type ExportRoundOptions = {
   expectedCompareRevision: string;
   expectedContentRevision: string;
   expectedArtifactSnapshotDigest: string;
-};
-
-export type FormatRules = {
-  version: number;
-  schoolName?: string;
-  sourceSummary?: string;
-  page?: Record<string, unknown>;
-  styles: Record<string, Record<string, unknown>>;
-  styleMeta?: Record<string, { sourceText?: string; confidence?: number; isInferred?: boolean }>;
-  quality?: {
-    deterministicHits?: number;
-    warningCount?: number;
-    warnings?: string[];
-    suggestions?: string[];
-    requiredRoles?: string[];
-    explicitRoles?: string[];
-    inheritedRoles?: string[];
-    defaultRoles?: string[];
-    inferredRoles?: string[];
-    missingSourceRoles?: string[];
-    lowConfidenceRoles?: string[];
-    explicitCoveragePercent?: number;
-    usableCoveragePercent?: number;
-  };
-  notes?: string[];
-};
-
-export type FormatRulesResult = {
-  ok: boolean;
-  path: string;
-  rules: FormatRules;
 };
 
 export type OutputPreview = {

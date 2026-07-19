@@ -50,8 +50,8 @@
 ## 待增强方向
 
 - 历史记录：继续细分“记录、源文档、中间产物、导出副本、报告文件”的影响范围。
-- 导出完整性：继续增强 DOCX 文本一致性、保护区结构、英文空格和格式预检回归。
-- 学校规范解析：增强自然语言到结构化规则的映射质量，并保留未匹配项说明。
+- 导出完整性：继续增强 DOCX 文本一致性、保护区结构、英文空格和格式锁回归。
+- 学校格式说明解析/套版不在当前产品路线内；外部规则不应成为源 DOCX 之外的第二个格式真相源。
 - UI 一致性：继续统一按钮颜色语义、通知中心和页面主次关系。
 - 性能渲染：`App.tsx` 仍是 1722 行单体组件，`progress` 流式 tick 会触发整树重渲染；待引入 `React.memo`/`useCallback` 与按视图拆分（`HomeView`/`HistoryView` 等），把流式进度隔离到独立徽标组件，避免每次 tick 重渲染主视图。
 - 开源体验：持续清理本地样例、个人路径、敏感配置和乱码文档。
@@ -72,14 +72,14 @@
 
 ## 待增强方向（第 2 轮调研产出，已有落地蓝图）
 
-- **格式保真锁定模式（已完成并继续收紧）**：`preserve_original` 已从“默认模式”升级为唯一产品模式；旧 `school_rules` 配置和显式参数会迁移，学校规则仅作诊断。正文与格式契约在每轮前后和导出前后验证标题泄漏、冻结目标、模型输入、保护区、OOXML 与段落格式签名，不再允许任何可选格式写回旁路。
+- **格式保真锁定模式（已完成并继续收紧）**：`preserve_original` 已从“默认模式”升级为唯一产品模式；旧 `school_rules` 配置和显式参数只做兼容迁移，不再驱动解析、诊断或格式写回。正文与格式契约在每轮前后和导出前后验证标题泄漏、冻结目标、模型输入、保护区、OOXML 与段落格式签名，不再允许任何可选格式写回旁路。
 - **AI 检测护城河深度**：补被动句比例、四字成语密度指标（当前零覆盖）；burstiness ratio（max/min 句长，仅方差漏检四句均匀长句）；短 chunk(<80 字符)风格校验下探；评估统计特征工程化闭环（改写→打分→定向重写）与本地困惑度代理。
 - **核心算法 prompt 对齐**：连接词/套话黑名单在 prompt 与代码 4 处重复维护易漂移，需统一。
 - **性能剩余项**：`list_records` 双读+sha256+可能写盘可加进程内缓存；SQLite 无 WAL/无连接复用；后端启动即全量 import docx 全家桶可改懒加载；生产构建 + nginx 反代 + gzip + 长缓存替代 dev 模式公网部署（详见 Docker 部署方案）。
 
 ## 本轮格式保真 / 核心算法 / 调研落地（2026-07 第 3 轮）
 
-- **A 格式保真锁定模式（已落地并升级为硬契约）**：`formatMode = preserve_original` 是唯一产品路径。机制：以原 DOCX 每个 run/段落的 OOXML `pPr`/`rPr` 为唯一真相源，只回填冻结正文的 `w:t`。`apply_school_format_rules(preserve_original_format=True)` 完全不碰现有 pPr/rPr；`_polish_rewritten_paragraph(preserve_format=True)` 不注入字体；导出后 `audit_docx_format_lock` 阻断任何格式漂移。`document_edit_contract.py` 进一步把源 SHA、范围摘要、格式摘要、标题计数、输入一致性和四类导出审计统一成 `pre_run/post_round/pre_export/post_export` 硬门；旧 `school_rules` 只迁移，不再显式回退。
+- **A 格式保真锁定模式（已落地并升级为硬契约）**：`formatMode = preserve_original` 是唯一产品路径。机制：以原 DOCX 每个 run/段落的 OOXML `pPr`/`rPr` 为唯一真相源，只回填冻结正文的 `w:t`；`_polish_rewritten_paragraph(preserve_format=True)` 不注入字体；导出后 `audit_docx_format_lock` 阻断任何格式漂移。`document_edit_contract.py` 进一步把源 SHA、范围摘要、格式摘要、标题计数、输入一致性和四类导出审计统一成 `pre_run/post_round/pre_export/post_export` 硬门；旧 `school_rules` 仅作为配置迁移别名，归一化为 `preserve_original`。
 - **C 核心算法 CNKI-4.0 维度（已落地，基于 Exa 重调研 2025-2026）**：调研结论——知网 4.0 已升级到“看底层结构而非单词”，纯 LLM prompt 改写（换词/模板）2026 多数情况 AI 率反升；有效且难被封堵的是结构 OOD 偏移 + 连续可控风格迁移 + 检测器在回路诊断闭环（见 memory `ai-detection-frontier-2026`）。本轮先落地可立即用的统计维度：`PASSIVE_VOICE_RE`（被/予以/加以/为…所/受到/得以）+ `CHENGYU_RE`（至关重要/不言而喻/举足轻重/相辅相成/显而易见/日益完善/蓬勃发展…）+ 句长突发比（max/min）；`_assess_machine_like_risks` 新增 `passive_voice_overuse`/`chengyu_density_high`/`low_burstiness_ratio` 顾问风险；`prewrite` 默认流程补 5 条 CNKI-4.0 指向指令（句长突发性、连接词分布不均、论证深度起伏、被动句克制、成语减密）。新增 `style_dimensions_regression.py` 锁定。
 - **调研归档**：两 Exa 子代理（护城河深度 + 通用策略）产出 2025-2026 全新证据，已入 memory `ai-detection-frontier-2026`（MASH/StyleShield/Adversarial Paraphrasing/Structural Shifts/StealthRL/知网4.0 五维/维普万方）。
 

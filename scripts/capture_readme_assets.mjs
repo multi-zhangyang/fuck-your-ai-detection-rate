@@ -46,17 +46,6 @@ function makePromptItem(id, label, description, fileName, content) {
   };
 }
 
-function makeStyle(cnFont, fontSizePt, alignment, lineSpacingMultiple = 1.5, extras = {}) {
-  return {
-    cnFont,
-    enFont: "Times New Roman",
-    fontSizePt,
-    alignment,
-    lineSpacingMultiple,
-    ...extras,
-  };
-}
-
 function makeStageMetrics(overrides = {}) {
   return {
     language: "zh",
@@ -455,7 +444,7 @@ function buildFixtures() {
       protectedUnits: 321,
       tableUnits: 94,
       topLevelParagraphUnits: 302,
-      structuralRolePolicyVersion: 5,
+      structuralRolePolicyVersion: 6,
       structuralInventoryVersion: 3,
       ambiguousUnits: 0,
       roleCounts: {
@@ -699,7 +688,7 @@ function buildFixtures() {
     editableSemanticRangeAnchorUnitCount: 0,
     bookmarkRangeAnchorUnitCount: 24,
     commentRangeAnchorUnitCount: 0,
-    structuralRolePolicyVersion: 5,
+    structuralRolePolicyVersion: 6,
     structuralInventoryVersion: 3,
     protectedStructuralUnitCount: 321,
     protectedTableParagraphCount: 94,
@@ -730,54 +719,6 @@ function buildFixtures() {
     issues: [],
     truncatedIssues: 0,
     units: scopeUnits,
-  };
-
-  const formatRoles = {
-    toc_heading: makeStyle("黑体", 16, "center", 1.5, { bold: true }),
-    cn_abstract_lead: makeStyle("黑体", 16, "center", 1.5, { bold: true }),
-    cn_abstract_body: makeStyle("宋体", 12, "justify"),
-    cn_keywords: makeStyle("宋体", 12, "left", 1.5, { boldLead: true }),
-    en_abstract_lead: makeStyle("Times New Roman", 16, "center", 1.5, { bold: true }),
-    en_abstract_body: makeStyle("Times New Roman", 12, "justify"),
-    en_keywords: makeStyle("Times New Roman", 12, "left", 1.5, { boldLead: true }),
-    body_text: makeStyle("宋体", 12, "justify", 1.5, { firstLineIndentChars: 2 }),
-    heading_1: makeStyle("黑体", 16, "left", 1.5, { bold: true }),
-    heading_2: makeStyle("黑体", 14, "left", 1.5, { bold: true }),
-    heading_3: makeStyle("黑体", 12, "left", 1.5, { bold: true }),
-    heading_4: makeStyle("宋体", 12, "left", 1.5, { bold: true }),
-    caption: makeStyle("宋体", 10.5, "center", 1.25),
-    note: makeStyle("宋体", 9, "left", 1.25),
-    table_text: makeStyle("宋体", 10.5, "center", 1.25),
-    references_heading: makeStyle("黑体", 16, "center", 1.5, { bold: true }),
-    references_body: makeStyle("宋体", 10.5, "justify", 1.25),
-    ack_heading: makeStyle("黑体", 16, "center", 1.5, { bold: true }),
-    ack_body: makeStyle("宋体", 12, "justify", 1.5),
-  };
-  const styleMeta = Object.fromEntries(
-    Object.keys(formatRoles).map((role, index) => [role, {
-      sourceText: "README synthetic fixture",
-      confidence: index % 5 === 0 ? 0.96 : 0.99,
-      isInferred: false,
-    }]),
-  );
-  const formatRules = {
-    version: 1,
-    schoolName: "示例大学",
-    sourceSummary: "Synthetic README fixture; no real university template is included.",
-    page: {
-      paperSize: "A4",
-      marginTopCm: 2.5,
-      marginBottomCm: 2.5,
-      marginLeftCm: 3.0,
-      marginRightCm: 2.5,
-    },
-    styles: formatRoles,
-    styleMeta,
-    quality: {
-      parsedRoleCount: Object.keys(formatRoles).length,
-      inferredRoleCount: 0,
-      confidence: 0.98,
-    },
   };
 
   const baselineRisks = [
@@ -907,7 +848,7 @@ function buildFixtures() {
     version: 3,
     label: "写作信号诊断",
     isAiDetector: false,
-    disclaimer: "本报告是离线、可解释的写作信号诊断，不是第三方 AI 检测器，也不承诺任何平台的通过率；最终仍需结合事实、引用、可读性和学校规范人工复核。",
+    disclaimer: "本报告是离线、可解释的写作信号诊断，不是第三方 AI 检测器，也不承诺任何平台的通过率；最终仍需结合事实、引用、可读性和用户所在机构要求人工复核。",
     createdAt: "2026-07-18T20:36:00.000000Z",
     sourcePath: DOCUMENT_PATH,
     currentOutputPath: ROUND_TWO_OUTPUT,
@@ -1128,7 +1069,6 @@ function buildFixtures() {
       hasMore: false,
       stats: artifactStats,
     },
-    formatRules,
     documentStatus: {
       docId: DOC_ID,
       promptProfile: "cn_custom",
@@ -1438,7 +1378,6 @@ function buildInitScript(fixtures) {
       localStorage.setItem('fyadr.activePromptSequence', JSON.stringify(['prewrite', 'round1', 'round2']));
       localStorage.setItem('fyadr.themeMode', 'dark');
       localStorage.setItem('fyadr.themeMode.defaultDarkMigrated', '1');
-      localStorage.setItem('fyadr.formatRuleDraft', '示例大学本科论文格式：正文宋体小四，1.5 倍行距；一级标题黑体三号；图表题名与参考文献按学校模板执行。');
     } catch (error) {
       throw new Error('Unable to seed isolated README fixture storage: ' + String(error));
     }
@@ -1456,7 +1395,6 @@ function buildInitScript(fixtures) {
         case '/api/prompts': return response(fixtures.prompts);
         case '/api/history-documents': return response(fixtures.historyList);
         case '/api/history-artifacts': return response(fixtures.historyArtifacts);
-        case '/api/format-rules': return response(fixtures.formatRules);
         case '/api/document-status': return response(fixtures.documentStatus);
         case '/api/document-history': return response(fixtures.documentHistory);
         case '/api/document-protection-map': return response(fixtures.protectionMap);
@@ -1633,7 +1571,7 @@ async function main() {
       fileName: "03-docx-protection.webp",
       width: 1600,
       height: 1100,
-      expectedText: ["文档边界地图", "结构角色 v5", "模板指导语 3", "模板撰写指导语已冻结", "Word 书签与批注范围已分类保护"],
+      expectedText: ["文档边界地图", "结构角色 v6", "模板指导语 3", "模板撰写指导语已冻结", "Word 书签与批注范围已分类保护"],
     }));
 
     await clickByText(client, "模型配置");
@@ -1643,16 +1581,6 @@ async function main() {
       width: 1600,
       height: 1000,
       expectedText: ["模型配置", "默认连接", "3 个模型", "流式接收", "思考字段不会进入论文/日志"],
-    }));
-
-    await clickByText(client, "学校规范");
-    await waitForText(client, "学校规范对照");
-    await waitForText(client, "解析结果");
-    assets.push(await captureAsset(client, {
-      fileName: "05-format-rules.webp",
-      width: 1600,
-      height: 1100,
-      expectedText: ["学校规范对照", "对照已保存", "不会自动判定 Word 是否合规", "解析结果", "解析 96%", "论文正文"],
     }));
 
     await clickByText(client, "历史记录");
@@ -1665,7 +1593,7 @@ async function main() {
     if (historyNeedsExpansion) await clickByText(client, "展开（1）");
     await waitForText(client, "第 2 轮");
     assets.push(await captureAsset(client, {
-      fileName: "06-history.webp",
+      fileName: "05-history.webp",
       width: 1600,
       height: 1000,
       expectedText: ["继续处理与导出", "智能制造系统优化研究（演示稿）.docx", "第 2 轮", "导出 可导出", "已整理"],

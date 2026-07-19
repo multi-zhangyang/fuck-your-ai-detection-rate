@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,8 +65,8 @@ async function testSafeStorage() {
     removeItem: (key) => values.delete(key),
   });
   try {
-    assert(writeStorageValue("draft", "学校规范"), "safe storage should report a successful write");
-    assert(readStorageValue("draft") === "学校规范", "safe storage should read the stored draft");
+    assert(writeStorageValue("draft", "本地草稿"), "safe storage should report a successful write");
+    assert(readStorageValue("draft") === "本地草稿", "safe storage should read the stored draft");
     assert(removeStorageValue("draft"), "safe storage should report a successful remove");
     assert(readStorageValue("draft") === null, "safe storage should remove the stored draft");
   } finally {
@@ -113,8 +113,6 @@ async function testCompatibilityClassification() {
 
 function testWiring() {
   const appSource = readAppSource("src/App.tsx");
-  const formatStorageSource = readAppSource("src/lib/formatStorage.ts");
-  const formatRouteSource = readAppSource("src/lib/formatRulesRouteHandlers.ts");
   const promptServiceSource = readAppSource("src/lib/webServicePromptCoreApi.ts");
   const promptPageSource = readAppSource("src/components/PromptPreviewPage.tsx");
   const promptCrudSource = readAppSource("src/lib/promptCrudHandlers.ts");
@@ -123,10 +121,14 @@ function testWiring() {
     .filter((path) => /\blocalStorage\b/.test(readFileSync(path, "utf-8")))
     .map((path) => relative(APP_DIR, path).replaceAll("\\", "/"));
 
-  assert(formatStorageSource.includes("readStorageValue") && formatStorageSource.includes("writeStorageValue"), "format storage must use the safe storage adapter");
-  assert(appSource.includes("loadStoredText(FORMAT_RULE_DRAFT_KEY)"), "format drafts must load through the safe text helper");
-  assert(formatRouteSource.includes("saveStoredText(FORMAT_RULE_DRAFT_KEY, nextText)"), "format draft edits must be persisted");
-  assert(formatRouteSource.includes("saveStoredFormatRules(FORMAT_RULE_PENDING_KEY, null)"), "editing format text must invalidate persisted pending rules");
+  const removedFormatModules = [
+    "src/lib/formatStorage.ts",
+    "src/lib/formatRulesRouteHandlers.ts",
+    "src/components/SchoolFormatCard.tsx",
+    "src/lib/webServiceFormat.ts",
+  ];
+  assert(removedFormatModules.every((path) => !existsSync(resolve(APP_DIR, path))), "removed school-format modules must stay absent");
+  assert(!appSource.includes("SchoolFormat") && !appSource.includes('activeView === "format"'), "the workbench must not restore the removed school-format route");
 
   assert(promptServiceSource.includes("isEndpointCompatibilityError(error)"), "prompt fallback must check endpoint compatibility");
   assert(promptServiceSource.includes("throw error;"), "prompt network and server failures must be rethrown");
@@ -148,7 +150,7 @@ console.log(JSON.stringify({
   ok: true,
   checks: [
     "safe storage tolerates unavailable browser storage",
-    "format drafts persist and invalidate stale pending rules",
+    "removed school-format modules and route stay absent",
     "prompt fallback is limited to HTTP 404/405 compatibility",
     "prompt dirty state covers existing and create drafts",
     "prompt transitions, workbench navigation, unload, and default restore are guarded",

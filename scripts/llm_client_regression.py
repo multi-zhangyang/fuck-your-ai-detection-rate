@@ -62,11 +62,11 @@ def run_regression(report_path: Path) -> dict[str, Any]:
             {
                 "output": [
                     {"type": "reasoning", "content": [{"type": "text", "text": "private reasoning"}]},
-                    {"type": "message", "content": [{"type": "output_text", "text": "{\"styles\": {}}"}]},
+                    {"type": "message", "content": [{"type": "output_text", "text": "{\"ok\": true}"}]},
                 ]
             },
             "responses",
-            "{\"styles\": {}}",
+            "{\"ok\": true}",
         ),
         (
             "responses_output_text_think",
@@ -84,25 +84,25 @@ def run_regression(report_path: Path) -> dict[str, Any]:
                         "message": {
                             "content": None,
                             "tool_calls": [
-                                {"type": "function", "function": {"name": "return_json", "arguments": "{\"styles\": {}}"}}
+                                {"type": "function", "function": {"name": "return_json", "arguments": "{\"ok\": true}"}}
                             ],
                         }
                     }
                 ]
             },
             "chat_completions",
-            "{\"styles\": {}}",
+            "{\"ok\": true}",
         ),
         (
             "responses_function_call_arguments",
             {
                 "output": [
                     {"type": "reasoning", "content": [{"type": "text", "text": "private reasoning"}]},
-                    {"type": "function_call", "name": "return_json", "arguments": "{\"styles\": {\"body_text\": {}}}"},
+                    {"type": "function_call", "name": "return_json", "arguments": "{\"ok\": true}"},
                 ]
             },
             "responses",
-            "{\"styles\": {\"body_text\": {}}}",
+            "{\"ok\": true}",
         ),
         (
             "responses_output_json_part",
@@ -110,12 +110,12 @@ def run_regression(report_path: Path) -> dict[str, Any]:
                 "output": [
                     {
                         "type": "message",
-                        "content": [{"type": "output_json", "json": {"styles": {"body_text": {"fontSizePt": 12}}}}],
+                        "content": [{"type": "output_json", "json": {"ok": True}}],
                     }
                 ]
             },
             "responses",
-            "{\"styles\": {\"body_text\": {\"fontSizePt\": 12}}}",
+            "{\"ok\": true}",
         ),
         (
             "responses_text_parts_preserve_english_spacing",
@@ -210,37 +210,31 @@ def run_regression(report_path: Path) -> dict[str, Any]:
     json_cases = [
         (
             "ai_json_markdown_wrapped",
-            "下面是结构化结果：\n```json\n{\"formatRules\":{\"styles\":{\"body_text\":{\"fontSizePt\":\"小四\"}}}}\n```",
-            12.0,
+            "下面是结构化结果：\n```json\n{\"result\":{\"items\":[{\"value\":\"小四\"}]}}\n```",
+            "小四",
         ),
         (
-            "ai_json_array_styles",
-            "[{\"role\":\"normal_text\",\"fontSize\":\"小四\"}]",
-            12.0,
+            "ai_json_array_items",
+            "[{\"value\":\"小四\"}]",
+            "小四",
         ),
         (
             "ai_json_tool_arguments_wrapper",
-            "{\"arguments\":\"{\\\"styles\\\":{\\\"body_text\\\":{\\\"fontSizePt\\\":\\\"小四\\\"}}}\"}",
-            12.0,
+            "{\"arguments\":\"{\\\"value\\\":\\\"小四\\\"}\"}",
+            "小四",
         ),
         (
             "ai_json_comment_trailing_comma",
-            "```json\n{\n// comment from model\n\"styles\":{\"body_text\":{\"fontSizePt\":\"小四\",},},\n}\n```",
-            12.0,
+            "```json\n{\n// comment from model\n\"value\":\"小四\",\n}\n```",
+            "小四",
         ),
     ]
     for name, raw_text, expected_font_size in json_cases:
         parsed = extract_json_object(raw_text)
-        styles = parsed.get("styles")
-        if isinstance(styles, list):
-            actual_font_size = styles[0].get("fontSize") if styles and isinstance(styles[0], dict) else None
-        elif isinstance(styles, dict):
-            body = styles.get("body_text")
-            actual_font_size = body.get("fontSizePt") if isinstance(body, dict) else None
-        else:
-            actual_font_size = None
-        checks.append({"name": name, "actual": actual_font_size, "expected": "小四"})
-        _assert_equal(name, str(actual_font_size), "小四", failures)
+        items = parsed.get("items")
+        actual_value = items[0].get("value") if isinstance(items, list) and items and isinstance(items[0], dict) else parsed.get("value")
+        checks.append({"name": name, "actual": actual_value, "expected": expected_font_size})
+        _assert_equal(name, str(actual_value), expected_font_size, failures)
 
     class FakeResponse:
         status = 200

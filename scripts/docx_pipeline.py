@@ -45,7 +45,11 @@ INTERMEDIATE_DIR = ROOT_DIR / "finish" / "intermediate"
 # ``body_prose`` allow decision merely because it contains sentence punctuation.
 DOCX_SNAPSHOT_VERSION = 22
 DOCX_SCOPE_DIAGNOSTICS_VERSION = 5
-DOCX_STRUCTURAL_ROLE_POLICY_VERSION = 5
+# v6 also accepts Word's legal block-level bookmark endpoints (for example a
+# ``w:bookmarkEnd`` directly under ``w:body``/``w:tc``). Existing v5 caches
+# must be re-derived because their fail-closed topology decision may have
+# frozen an otherwise editable document.
+DOCX_STRUCTURAL_ROLE_POLICY_VERSION = 6
 DOCX_STRUCTURAL_INVENTORY_VERSION = 3
 DOCX_EDITABLE_STRUCTURAL_ROLES = frozenset({"abstract_body", "body_prose", "body_list"})
 SCOPE_DIAGNOSTIC_TEXT_PREVIEW_CHARS = 180
@@ -276,6 +280,7 @@ SEMANTIC_RANGE_MARKER_ACTIONS = {
     qn("w:commentRangeStart"): ("comment", "start"),
     qn("w:commentRangeEnd"): ("comment", "end"),
 }
+SEMANTIC_BLOCK_LEVEL_BOOKMARK_PARENTS = frozenset({qn("w:body"), qn("w:tc")})
 
 
 @dataclass
@@ -1141,13 +1146,27 @@ def _scan_document_semantic_ranges(document: DocxDocument) -> dict[str, Any]:
     def add_issue(code: str) -> None:
         issues.append(code)
 
-    def marker_has_paragraph_ancestor(node: Any) -> bool:
+    def marker_location_is_supported(node: Any, kind: str) -> bool:
+        """Accept paragraph markers and legal block-level bookmark endpoints.
+
+        Word commonly emits a bookmark start/end between body paragraphs or
+        directly in a table cell. Those endpoints do not carry editable text
+        themselves; the range state still protects comment interiors and
+        keeps marker paragraphs frozen. Comment markers remain paragraph-bound
+        so malformed review ranges continue to fail closed.
+        """
+
         parent = node.getparent()
+        direct_parent = parent
         while parent is not None and parent is not body:
             if parent.tag == qn("w:p"):
                 return True
             parent = parent.getparent()
-        return False
+        return bool(
+            kind == "bookmark"
+            and direct_parent is not None
+            and direct_parent.tag in SEMANTIC_BLOCK_LEVEL_BOOKMARK_PARENTS
+        )
 
     for block in list(body):
         is_top_level_paragraph = block.tag == qn("w:p")
@@ -1159,7 +1178,7 @@ def _scan_document_semantic_ranges(document: DocxDocument) -> dict[str, Any]:
                 continue
             kind, action = marker
             marker_kinds.add(kind)
-            if not marker_has_paragraph_ancestor(node):
+            if not marker_location_is_supported(node, kind):
                 add_issue("semantic_range_marker_outside_paragraph")
 
             marker_id = str(node.get(qn("w:id")) or "")

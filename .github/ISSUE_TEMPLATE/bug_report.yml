@@ -50,7 +50,7 @@ body:
         - Detection report feedback
         - History / artifact cleanup
         - Word export / formatting
-        - School format parsing
+        - DOCX scope and format preservation
         - Other
     validations:
       required: true

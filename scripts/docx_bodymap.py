@@ -24,8 +24,8 @@ from docx_pipeline import (
 from prompt_library import DEFAULT_PROMPT_PROFILE, LEGACY_PROMPT_PROFILE
 
 
-# v9/v5 bind the v5 structural-role policy whose editable scope excludes
-# standalone university-template instructions and acknowledgements guidance.
+# v9 scope signatures bind the current structural-role policy. Policy v6 keeps
+# the v5 template-instruction exclusions and adds legal block-level bookmarks.
 DOCX_BODY_MAP_VERSION = 9
 DOCX_BODY_MAP_SCOPE_SIGNATURE_VERSION = 5
 

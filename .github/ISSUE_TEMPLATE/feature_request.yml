@@ -29,7 +29,7 @@ body:
         - Detection report feedback
         - History / artifacts
         - DOCX export / formatting
-        - School format parsing
+        - DOCX scope and format preservation
         - Developer experience
         - Documentation
     validations:

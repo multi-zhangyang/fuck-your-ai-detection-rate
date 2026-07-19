@@ -16,18 +16,12 @@ TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 LINE_COMMENT_RE = re.compile(r"(?m)^\s*//.*?$")
 BLOCK_COMMENT_RE = re.compile(r"(?s)/\*.*?\*/")
 UNWRAP_OBJECT_KEYS = (
-    "formatRules",
-    "format_rules",
-    "schoolFormatRules",
-    "school_format_rules",
-    "rules",
     "data",
     "result",
     "payload",
     "json",
     "arguments",
 )
-STYLE_ARRAY_KEYS = ("styles", "styleRules", "style_rules", "styleList", "style_list", "formatStyles")
 
 
 def extract_json_payload(text: str) -> Any:
@@ -48,12 +42,12 @@ def extract_json_payload(text: str) -> Any:
     raise ValueError(f"Could not parse AI JSON response: {detail}")
 
 
-def extract_json_object(text: str, *, allow_style_array: bool = True) -> dict[str, Any]:
+def extract_json_object(text: str, *, allow_array: bool = True) -> dict[str, Any]:
     payload = _unwrap_json_payload(extract_json_payload(text))
     if isinstance(payload, dict):
-        return _normalize_object_aliases(payload)
-    if allow_style_array and isinstance(payload, list):
-        return {"styles": payload}
+        return dict(payload)
+    if allow_array and isinstance(payload, list):
+        return {"items": payload}
     raise ValueError("AI JSON response did not contain a JSON object.")
 
 
@@ -213,19 +207,7 @@ def _unwrap_json_payload(payload: Any) -> Any:
 
 
 def _has_primary_object_fields(payload: dict[str, Any]) -> bool:
-    primary_keys = {"styles", "page", "pageSetup", "page_setting", "pageSettings", "schoolName", "sourceSummary", *STYLE_ARRAY_KEYS}
-    return any(key in payload for key in primary_keys)
-
-
-def _normalize_object_aliases(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(payload)
-    if "styles" not in normalized:
-        for key in STYLE_ARRAY_KEYS:
-            value = normalized.get(key)
-            if isinstance(value, (dict, list)):
-                normalized["styles"] = value
-                break
-    return normalized
+    return any(key not in UNWRAP_OBJECT_KEYS for key in payload)
 
 
 def _looks_like_json(value: str) -> bool:

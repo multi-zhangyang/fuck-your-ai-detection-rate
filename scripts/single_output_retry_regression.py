@@ -7,6 +7,7 @@ import app_service
 from chunking import build_manifest
 from fyadr_records import ROOT_DIR
 from fyadr_round_service import (
+    MAX_TOTAL_MODEL_ATTEMPTS,
     _build_candidate_selection_event,
     _build_chunk_quality,
     _evaluate_rewrite_candidate,
@@ -148,8 +149,8 @@ def main() -> int:
         raise AssertionError("unchanged valid candidate retry lost selector feedback")
     if quality_summary.get("estimatedApiCalls") != 1:
         raise AssertionError("quality summary nominal one-call estimate drifted")
-    if quality_summary.get("estimatedMaxApiCalls") != 2:
-        raise AssertionError("quality summary lost the bounded two-call maximum")
+    if quality_summary.get("estimatedMaxApiCalls") != MAX_TOTAL_MODEL_ATTEMPTS:
+        raise AssertionError("quality summary lost the bounded hard-recovery maximum")
     if quality_summary.get("boundedCandidateModelAttemptCount") != 2:
         raise AssertionError("quality summary did not expose both actual bounded attempts")
 

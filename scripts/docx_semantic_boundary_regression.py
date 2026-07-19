@@ -69,6 +69,12 @@ BOOKMARK_ONLY_PARAGRAPHS = (
 )
 BOOKMARK_ONLY_REWRITE = BOOKMARK_ONLY_PARAGRAPHS[1].replace("正文可以改写", "正文能够调整")
 BOOKMARK_ONLY_END = "跨段书签在该段结束导航范围，当前锚点段同样必须保持稳定。"
+BLOCK_BOOKMARK_PARAGRAPHS = (
+    "块级书签起点位于段落之外，该段不承载端点节点，因此仍可安全进入模型处理。",
+    "块级书签终点同样位于段落之外，正文允许改写而外部边界必须保持原位。",
+)
+BLOCK_BOOKMARK_REWRITE = BLOCK_BOOKMARK_PARAGRAPHS[1].replace("正文允许改写", "正文可以调整")
+BLOCK_TABLE_BOOKMARK_TEXT = "表格单元格内的块级书签端点属于受保护结构。"
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -97,6 +103,36 @@ def _add_bookmark_end(paragraph: Any, *, bookmark_id: int) -> None:
     end = OxmlElement("w:bookmarkEnd")
     end.set(qn("w:id"), str(bookmark_id))
     paragraph._p.append(end)
+
+
+def _add_block_level_bookmark(
+    document: Any,
+    start_paragraph: Any,
+    end_paragraph: Any,
+    *,
+    bookmark_id: int,
+    name: str,
+) -> None:
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(bookmark_id))
+    start.set(qn("w:name"), name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(bookmark_id))
+    body = document._element.body
+    body.insert(body.index(start_paragraph._p), start)
+    body.insert(body.index(end_paragraph._p) + 1, end)
+
+
+def _add_table_cell_block_bookmark(cell: Any, *, bookmark_id: int, name: str) -> None:
+    paragraph = cell.paragraphs[0]
+    paragraph.text = BLOCK_TABLE_BOOKMARK_TEXT
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(bookmark_id))
+    start.set(qn("w:name"), name)
+    paragraph._p.insert(0, start)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(bookmark_id))
+    cell._tc.append(end)
 
 
 def _move_comment_end(
@@ -192,6 +228,22 @@ def _create_fixture(path: Path) -> None:
     bookmark_only_end = document.add_paragraph(BOOKMARK_ONLY_END)
     _add_bookmark_end(bookmark_only_end, bookmark_id=85)
 
+    block_bookmark_start = document.add_paragraph(BLOCK_BOOKMARK_PARAGRAPHS[0])
+    block_bookmark_end = document.add_paragraph(BLOCK_BOOKMARK_PARAGRAPHS[1])
+    _add_block_level_bookmark(
+        document,
+        block_bookmark_start,
+        block_bookmark_end,
+        bookmark_id=86,
+        name="fyadr_block_level_bookmark",
+    )
+    block_table = document.add_table(rows=1, cols=1)
+    _add_table_cell_block_bookmark(
+        block_table.cell(0, 0),
+        bookmark_id=87,
+        name="fyadr_table_cell_block_bookmark",
+    )
+
     document.add_paragraph(ORDINARY_PARAGRAPH)
     document.add_paragraph("致 谢")
     document.add_paragraph("感谢参与边界回归验证的人员。")
@@ -272,6 +324,14 @@ def _create_invalid_range_fixture(path: Path, mode: str) -> None:
     elif mode == "reversed":
         append_marker("bookmarkEnd", 303)
         append_marker("bookmarkStart", 303)
+    elif mode == "outside_comment":
+        start = OxmlElement("w:commentRangeStart")
+        start.set(qn("w:id"), "304")
+        end = OxmlElement("w:commentRangeEnd")
+        end.set(qn("w:id"), "304")
+        body = document._element.body
+        body.insert(body.index(paragraph._p), start)
+        body.insert(body.index(paragraph._p) + 1, end)
     else:
         raise AssertionError(f"unsupported invalid range mode: {mode}")
     document.add_paragraph(ORDINARY_PARAGRAPH)
@@ -308,9 +368,10 @@ def main() -> int:
 
         def identity_transform(chunk_text: str, _prompt: str, _round: int, _chunk_id: str) -> str:
             model_inputs.append(str(chunk_text))
-            return str(chunk_text).replace(
-                BOOKMARK_ONLY_PARAGRAPHS[1],
-                BOOKMARK_ONLY_REWRITE,
+            return (
+                str(chunk_text)
+                .replace(BOOKMARK_ONLY_PARAGRAPHS[1], BOOKMARK_ONLY_REWRITE)
+                .replace(BLOCK_BOOKMARK_PARAGRAPHS[1], BLOCK_BOOKMARK_REWRITE)
             )
 
         original_update_round = round_service.update_round
@@ -334,7 +395,8 @@ def main() -> int:
         snapshot_path = get_docx_snapshot_path(source_path)
         snapshot = _load_docx_snapshot(snapshot_path)
         _assert(snapshot is not None, "semantic-boundary snapshot was not created")
-        _assert(snapshot.version == DOCX_SNAPSHOT_VERSION == 22, "semantic-boundary snapshot schema was not bumped")
+        _assert(snapshot.version == DOCX_SNAPSHOT_VERSION == 22, "semantic-boundary snapshot schema drifted")
+        _assert(snapshot.structural_role_policy_version == 6, "semantic-boundary snapshot omitted role policy v6")
         _assert(snapshot.semantic_range_topology_valid is True, "valid cross-paragraph ranges failed topology validation")
         _assert(snapshot.semantic_range_issue_count == 0, "valid cross-paragraph ranges emitted topology issues")
         _assert(snapshot.semantic_range_count >= 4, "snapshot omitted same-paragraph or cross-paragraph semantic ranges")
@@ -360,6 +422,10 @@ def main() -> int:
             next((unit for unit in snapshot.units if unit.text == paragraph), None)
             for paragraph in BOOKMARK_ONLY_PARAGRAPHS
         ]
+        block_bookmark_units = [
+            next((unit for unit in snapshot.units if unit.text == paragraph), None)
+            for paragraph in BLOCK_BOOKMARK_PARAGRAPHS
+        ]
         _assert(semantic_unit is not None, "semantic-boundary paragraph disappeared from scope diagnostics")
         _assert(point_unit is not None, "semantic point-reference paragraph disappeared from scope diagnostics")
         _assert(ordinary_unit is not None, "ordinary control paragraph disappeared from scope diagnostics")
@@ -372,6 +438,10 @@ def main() -> int:
         _assert(
             all(unit is not None for unit in bookmark_only_middle_units),
             "bookmark-only interior disappeared from scope diagnostics",
+        )
+        _assert(
+            all(unit is not None for unit in block_bookmark_units),
+            "block-level bookmark paragraphs disappeared from scope diagnostics",
         )
         _assert(semantic_unit.editable is False, "semantic-boundary paragraph entered model scope")
         _assert(
@@ -431,6 +501,15 @@ def main() -> int:
                 and bookmark_middle_unit.has_semantic_range_anchor is False,
                 "marker-free bookmark interior did not remain eligible prose",
             )
+        for block_bookmark_unit in block_bookmark_units:
+            _assert(block_bookmark_unit is not None, "block-level bookmark unit is missing")
+            _assert(
+                block_bookmark_unit.editable is True
+                and block_bookmark_unit.inside_bookmark_range is True
+                and block_bookmark_unit.inside_comment_range is False
+                and block_bookmark_unit.has_semantic_range_anchor is False,
+                "legal block-level bookmark boundary disabled marker-free prose",
+            )
         _assert(ordinary_unit.editable is True, "ordinary unmarked body text was globally disabled")
 
         joined_model_inputs = "\n\n".join(model_inputs)
@@ -447,6 +526,10 @@ def main() -> int:
         _assert(
             all(paragraph in joined_model_inputs for paragraph in BOOKMARK_ONLY_PARAGRAPHS),
             "a marker-free bookmark interior paragraph did not reach the model",
+        )
+        _assert(
+            all(paragraph in joined_model_inputs for paragraph in BLOCK_BOOKMARK_PARAGRAPHS),
+            "a block-level bookmark paragraph did not reach the model",
         )
         _assert(ORDINARY_PARAGRAPH in joined_model_inputs, "ordinary control text did not reach the model")
         body_map = load_docx_body_map(Path(str(round_result.get("body_map_path", ""))))
@@ -481,8 +564,18 @@ def main() -> int:
             ),
             "marker-free bookmark interior was omitted from the editable body map",
         )
+        _assert(
+            all(
+                any(unit.original_text == paragraph for unit in body_map.units)
+                for paragraph in BLOCK_BOOKMARK_PARAGRAPHS
+            ),
+            "block-level bookmark prose was omitted from the editable body map",
+        )
         bookmark_rewritten_texts = [
-            text.replace(BOOKMARK_ONLY_PARAGRAPHS[1], BOOKMARK_ONLY_REWRITE)
+            text.replace(BOOKMARK_ONLY_PARAGRAPHS[1], BOOKMARK_ONLY_REWRITE).replace(
+                BLOCK_BOOKMARK_PARAGRAPHS[1],
+                BLOCK_BOOKMARK_REWRITE,
+            )
             for text in body_map.current_texts()
         ]
         _assert(
@@ -527,7 +620,7 @@ def main() -> int:
             is True,
             "OOXML audit rejected a safe bookmark interior rewrite",
         )
-        checks.append("bookmark/comment anchors and comment interiors freeze while marker-free bookmark interiors remain editable")
+        checks.append("paragraph and block-level bookmarks preserve editable interiors while comment ranges remain frozen")
 
         legacy_snapshot_path = work_dir / "legacy-v18.snapshot.json"
         legacy_extracted_path = work_dir / "legacy-v18.extracted.txt"
@@ -669,6 +762,10 @@ def main() -> int:
             bookmark_export_document,
             BOOKMARK_ONLY_REWRITE,
         )
+        export_block_bookmark_rewrite = _find_paragraph(
+            bookmark_export_document,
+            BLOCK_BOOKMARK_REWRITE,
+        )
         _assert(
             source_semantic._p.xml == export_semantic._p.xml,
             "successful export changed bookmark/comment range OOXML",
@@ -691,11 +788,15 @@ def main() -> int:
             export_bookmark_rewrite.text == BOOKMARK_ONLY_REWRITE,
             "marker-free bookmark interior rewrite was not exported",
         )
+        _assert(
+            export_block_bookmark_rewrite.text == BLOCK_BOOKMARK_REWRITE,
+            "block-level bookmark interior rewrite was not exported",
+        )
         source_range_evidence = _document_range_evidence(source_path)
         export_range_evidence = _document_range_evidence(bookmark_rewrite_export_path)
         _assert(source_range_evidence.get("topologyValid") is True, "source global semantic range topology is invalid")
         _assert(export_range_evidence.get("topologyValid") is True, "export global semantic range topology is invalid")
-        _assert(source_range_evidence.get("rangeCount", 0) >= 4, "global semantic range evidence omitted cross ranges")
+        _assert(source_range_evidence.get("rangeCount", 0) >= 6, "global semantic range evidence omitted cross ranges")
         source_ranges = {
             (str(item.get("kind", "")), str(item.get("id", ""))): item
             for item in source_range_evidence.get("ranges", [])
@@ -724,6 +825,20 @@ def main() -> int:
             source_ranges[("bookmark", "85")].get("contentSha256")
             != export_ranges[("bookmark", "85")].get("contentSha256"),
             "bookmark-only interior rewrite did not change the expected bookmark content hash",
+        )
+        _assert(
+            source_ranges[("bookmark", "86")].get("contentSha256")
+            != export_ranges[("bookmark", "86")].get("contentSha256"),
+            "block-level bookmark rewrite did not change the expected content hash",
+        )
+        _assert(
+            source_ranges[("bookmark", "86")].get("start", {}).get("offset") == -1
+            and source_ranges[("bookmark", "86")].get("end", {}).get("offset") == -1,
+            "block-level bookmark endpoints were not represented as structural boundaries",
+        )
+        _assert(
+            ("bookmark", "87") in source_ranges,
+            "table-cell block bookmark was omitted from global range evidence",
         )
         source_signature = _semantic_marker_attachment_signature(source_semantic._p)
         export_signature = _semantic_marker_attachment_signature(export_semantic._p)
@@ -853,6 +968,7 @@ def main() -> int:
             "unmatched": "semantic_range_unmatched_start",
             "duplicate": "semantic_range_duplicate_start",
             "reversed": "semantic_range_reversed",
+            "outside_comment": "semantic_range_marker_outside_paragraph",
         }
         for mode, expected_code in invalid_cases.items():
             invalid_path = work_dir / f"invalid-{mode}.docx"
@@ -877,7 +993,7 @@ def main() -> int:
                 "semantic_range_topology_invalid" in invalid_contract_codes,
                 f"{mode} contract omitted semantic_range_topology_invalid",
             )
-        checks.append("unmatched, duplicate, and reversed semantic ranges fail closed before model input")
+        checks.append("malformed ranges and block-level comment markers fail closed before model input")
 
     report = {
         "ok": True,

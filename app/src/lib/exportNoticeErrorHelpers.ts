@@ -29,7 +29,7 @@ export function formatExportError(error: unknown): string {
     return `${message} 系统已经阻止下载，避免目录、表格、参考文献或其他保护区被误改。请查看生成的 audit.json 报告，或回滚后重新执行当前轮次。`;
   }
   if (message.includes("排版规则意外改变了文档文本内容")) {
-    return `${message} 系统已经阻止下载。建议恢复默认规范，或检查学校说明文档解析结果。`;
+    return `${message} 系统已经阻止下载。请回滚本轮并重新执行；如果问题持续，请查看生成的 audit.json 报告。`;
   }
   return message;
 }

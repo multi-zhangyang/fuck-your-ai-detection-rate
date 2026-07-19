@@ -21,7 +21,6 @@ export type RuntimeTaskCenterActions = {
   rejectPendingAutoAction: (actionId?: string) => void;
   handleCancelRunRound: () => void | Promise<void>;
   handleCancelBatchRerun: () => void | Promise<void>;
-  handleCancelFormatRulesParse: () => void;
   handleCancelModelCatalogRequest: () => void;
 };
 
@@ -36,7 +35,6 @@ export type RuntimeTaskCenterInput = {
   roundProgressStatus: RoundProgressStatus | null;
   taskPhase: TaskPhase;
   busy: boolean;
-  formatParseAbortActive: boolean;
   modelCatalogAbortActive: boolean;
   diagnostics: EnvironmentDiagnostics | null;
   activeCompareData: RoundCompareData | null;
