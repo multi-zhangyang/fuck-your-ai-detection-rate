@@ -5793,18 +5793,75 @@ def _resolve_docx_origin_bundle_for_export(
 _DOCX_SOURCE_ANCHOR_LOCK = threading.Lock()
 
 
-def _docx_source_generation_stat_from_result(stat: os.stat_result) -> dict[str, int]:
-    return {
+def _windows_file_change_time_ns(descriptor: int) -> int:
+    """Return the NTFS/ReFS change timestamp for one open Windows file.
+
+    Python 3.11 exposes Windows ``st_ctime`` as creation time, so it cannot
+    detect an A -> B -> A in-place replacement whose bytes and mtime are
+    restored.  ``FILE_BASIC_INFO.ChangeTime`` is the kernel-maintained
+    metadata-change clock and closes that generation-seal gap.
+    """
+
+    if os.name != "nt":
+        return 0
+    import ctypes
+    import msvcrt  # type: ignore[import-not-found]
+
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("creation_time", ctypes.c_longlong),
+            ("last_access_time", ctypes.c_longlong),
+            ("last_write_time", ctypes.c_longlong),
+            ("change_time", ctypes.c_longlong),
+            ("file_attributes", ctypes.c_ulong),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_file_information = kernel32.GetFileInformationByHandleEx
+    get_file_information.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
+    get_file_information.restype = ctypes.c_int
+    info = FileBasicInfo()
+    raw_handle = msvcrt.get_osfhandle(descriptor)
+    if raw_handle == -1:
+        raise OSError("Invalid Windows file handle while sealing a DOCX source generation.")
+    succeeded = get_file_information(
+        ctypes.c_void_p(raw_handle),
+        0,  # FILE_INFO_BY_HANDLE_CLASS.FileBasicInfo
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    )
+    if not succeeded:
+        raise ctypes.WinError(ctypes.get_last_error())
+    # Windows stores this value in 100 ns ticks since 1601.  Its epoch is not
+    # relevant; only exact equality within one export generation is compared.
+    return int(info.change_time) * 100
+
+
+def _docx_source_generation_stat_from_result(
+    stat: os.stat_result,
+    *,
+    descriptor: int | None = None,
+) -> dict[str, int]:
+    result = {
         "device": int(stat.st_dev),
         "inode": int(stat.st_ino),
         "size": int(stat.st_size),
         "mtimeNs": int(stat.st_mtime_ns),
         "ctimeNs": int(stat.st_ctime_ns),
     }
+    if os.name == "nt":
+        if descriptor is None:
+            raise OSError("Windows DOCX generation stats require an open file descriptor.")
+        result["changeTimeNs"] = _windows_file_change_time_ns(descriptor)
+    return result
 
 
 def _docx_source_generation_stat(path: Path) -> dict[str, int]:
-    return _docx_source_generation_stat_from_result(path.stat())
+    with path.open("rb") as handle:
+        return _docx_source_generation_stat_from_result(
+            os.fstat(handle.fileno()),
+            descriptor=handle.fileno(),
+        )
 
 
 def _raise_docx_source_generation_error(stage: str, message: str, *, codes: list[str]) -> None:
@@ -5879,7 +5936,8 @@ def _capture_docx_export_source_anchor(
         with normalized_source.open("rb") as source_handle, temporary_path.open("xb") as anchor_handle:
             source_stat_before = _docx_source_generation_stat(normalized_source)
             source_handle_stat_before = _docx_source_generation_stat_from_result(
-                os.fstat(source_handle.fileno())
+                os.fstat(source_handle.fileno()),
+                descriptor=source_handle.fileno(),
             )
             digest = hashlib.sha256()
             for block in iter(lambda: source_handle.read(1024 * 1024), b""):
@@ -5888,7 +5946,8 @@ def _capture_docx_export_source_anchor(
             anchor_handle.flush()
             captured_sha256 = digest.hexdigest()
             source_handle_stat_after = _docx_source_generation_stat_from_result(
-                os.fstat(source_handle.fileno())
+                os.fstat(source_handle.fileno()),
+                descriptor=source_handle.fileno(),
             )
             source_stat_after = _docx_source_generation_stat(normalized_source)
         if (
