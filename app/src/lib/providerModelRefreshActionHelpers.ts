@@ -47,6 +47,10 @@ export async function refreshOneProviderModelPatch(input: {
       failures: input.failures,
     };
   } catch (appError) {
+    // An abort must stop the enclosing batch before it persists any snapshot.
+    // Treating it as an ordinary provider failure would allow a canceled
+    // one-provider batch to continue and save stale state.
+    if (input.abortController.signal.aborted) throw appError;
     return {
       providerPatches: input.providerPatches,
       failures: recordProviderModelsRefreshError(

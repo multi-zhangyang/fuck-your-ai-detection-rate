@@ -3,12 +3,15 @@ import { normalizeActiveModelConfig } from "@/lib/modelRoute";
 import type { DocumentLoadHandlersDeps } from "@/lib/documentLoadHandlerTypes";
 
 export function createDocumentPickHandlers(deps: DocumentLoadHandlersDeps) {
-  async function applyPickedDocument(sourcePath: string) {
+  async function applyPickedDocument(sourcePath: string, shouldCommit: () => boolean = () => true) {
+    if (!shouldCommit()) return false;
     deps.clearAutoSnapshotSuppression();
     deps.clearPendingAutoActionForManualContextChange();
     deps.clearDocumentDerivedState();
-    const status = await deps.refreshDocumentState(sourcePath);
-    await deps.refreshHistoryList();
+    const status = await deps.refreshDocumentState(sourcePath, undefined, { shouldCommit });
+    if (!shouldCommit()) return false;
+    await deps.refreshHistoryList({ shouldCommit });
+    if (!shouldCommit()) return false;
     deps.setHistoryPanelOpen(true);
     deps.setRuntimeStep(formatDocumentLoadStep(
       "文档已载入",
@@ -23,14 +26,18 @@ export function createDocumentPickHandlers(deps: DocumentLoadHandlersDeps) {
       deps.getPromptOptions(),
       deps.getPromptWorkflows(),
     )}`);
+    return true;
   }
 
   async function loadPickedDocument(taskTicket: number, sourcePath: string) {
-    deps.transitionTask(taskTicket, "uploading-document", {
+    if (!deps.transitionTask(taskTicket, "uploading-document", {
       globalBusy: true,
       runtimeStep: "正在载入文档状态。",
-    });
-    await applyPickedDocument(sourcePath);
+    })) {
+      return false;
+    }
+    const shouldCommit = () => deps.transitionTask(taskTicket, "uploading-document", { globalBusy: true });
+    return applyPickedDocument(sourcePath, shouldCommit);
   }
 
   async function pickAndLoadDocument(taskTicket: number) {
@@ -45,12 +52,13 @@ export function createDocumentPickHandlers(deps: DocumentLoadHandlersDeps) {
 
   async function handlePickFile() {
     const taskTicket = deps.beginTask("picking-document", {
-      globalBusy: false,
+      globalBusy: true,
       runtimeStep: "正在选择文档。",
     });
     try {
       await pickAndLoadDocument(taskTicket);
     } catch (appError) {
+      if (!deps.transitionTask(taskTicket, "picking-document")) return;
       deps.applyErrorRuntimeStep(appError, "读取文档失败");
     } finally {
       deps.finishTask(taskTicket);

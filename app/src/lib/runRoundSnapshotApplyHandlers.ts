@@ -70,6 +70,7 @@ export function createRunRoundSnapshotApplyHandlers(deps: RunRoundHandlersDeps) 
   }
 
   async function applySelectedRoundSnapshot(selection: ApplySelectedRoundSnapshotInput) {
+    if (selection.shouldCommit && !selection.shouldCommit()) return null;
     if (!selection.outputPath) {
       deps.clearDocumentDerivedState();
       return null;
@@ -88,7 +89,7 @@ export function createRunRoundSnapshotApplyHandlers(deps: RunRoundHandlersDeps) 
       deps.roundArtifactSnapshotIntentRef.current,
       snapshot.artifactSnapshot,
     );
-    if (guarded.status === "stale") return null;
+    if (guarded.status === "stale" || (selection.shouldCommit && !selection.shouldCommit())) return null;
     applyLoadedRoundSnapshotUi(buildLoadedRoundSnapshotUiInput(selection, snapshot));
     return buildLoadedRoundSnapshotView({
       matchedItem: selection.matchedItem,

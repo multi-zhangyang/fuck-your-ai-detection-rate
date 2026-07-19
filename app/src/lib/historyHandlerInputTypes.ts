@@ -44,6 +44,10 @@ export type OptionalUiFeedback = {
   clearMessages?: boolean;
 };
 
+export type RefreshHistoryListOptions = {
+  shouldCommit?: () => boolean;
+};
+
 export type LoadLatestRoundSnapshotOptions = {
   historyItems?: import("@/types/app").HistoryDocumentSummary[];
   historyItem?: import("@/types/app").HistoryDocumentSummary | null;

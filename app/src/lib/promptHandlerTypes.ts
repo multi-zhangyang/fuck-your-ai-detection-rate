@@ -10,6 +10,7 @@ import type {
   PromptWorkflow,
 } from "@/types/app";
 import type { ConfirmDialogOptions } from "@/lib/uiTypes";
+import type { PromptRouteRequestRef } from "@/lib/promptRouteRequestGeneration";
 
 export type ApplyPromptRouteSwitchInput = {
   nextConfig: ModelConfig;
@@ -19,6 +20,7 @@ export type ApplyPromptRouteSwitchInput = {
 };
 
 export type PromptHandlersDeps = {
+  promptRouteRequestRef?: PromptRouteRequestRef;
   service: {
     getPromptPreviews: () => Promise<PromptPreviewResponse>;
     updatePromptMeta: (promptId: PromptId, payload: { label: string; description?: string }) => Promise<PromptSaveResult>;
@@ -51,12 +53,26 @@ export type PromptHandlersDeps = {
   applyErrorRuntimeStep: (error: unknown, fallback: string) => void;
   clearAutoSnapshotSuppression: () => void;
   clearPendingAutoActionForManualContextChange: () => void;
-  refreshDocumentState: (sourcePath: string, config?: ModelConfig) => Promise<DocumentStatus>;
-  refreshHistoryList: () => Promise<HistoryDocumentSummary[]>;
+  refreshDocumentState: (
+    sourcePath: string,
+    config?: ModelConfig,
+    options?: {
+      shouldCommit?: () => boolean;
+      promptOptions?: PromptOption[];
+      promptWorkflows?: PromptWorkflow[];
+    },
+  ) => Promise<DocumentStatus>;
+  refreshHistoryList: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryDocumentSummary[]>;
   loadLatestRoundSnapshot: (
     status: DocumentStatus,
     config: ModelConfig,
-    options: { historyItems?: HistoryDocumentSummary[]; allowProfileFallback?: boolean },
+    options: {
+      historyItems?: HistoryDocumentSummary[];
+      allowProfileFallback?: boolean;
+      shouldCommit?: () => boolean;
+      promptOptions?: PromptOption[];
+      promptWorkflows?: PromptWorkflow[];
+    },
   ) => Promise<unknown>;
 };
 
@@ -83,7 +99,10 @@ export type PromptRouteHandlers = {
     workflowId: PromptWorkflow["id"],
     payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit">,
   ) => Promise<void>;
-  reloadDocumentAfterPromptRouteSwitch: (nextConfig: ModelConfig) => Promise<boolean>;
+  reloadDocumentAfterPromptRouteSwitch: (
+    nextConfig: ModelConfig,
+    options?: { shouldCommit?: () => boolean },
+  ) => Promise<boolean>;
   applyPromptRouteSwitch: (input: ApplyPromptRouteSwitchInput) => Promise<void>;
   handlePromptProfileChange: (promptProfile: ModelConfig["promptProfile"]) => Promise<void>;
   handlePromptSequenceChange: (promptSequence: PromptId[]) => Promise<void>;

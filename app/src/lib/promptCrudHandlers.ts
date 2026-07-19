@@ -7,6 +7,16 @@ import {
   buildPromptPreviewsAfterDelete,
   mergePromptSaveResultIntoPreviews,
 } from "@/lib/promptRegistry";
+import {
+  getDefaultPromptProfile,
+  getPromptOptionsFromPreviews,
+  getPromptWorkflowsFromPreviews,
+  normalizePromptProfile,
+  normalizePromptSequence,
+} from "@/lib/promptRegistry";
+import {
+  createPromptRouteRequestCoordinator,
+} from "@/lib/promptRouteRequestGeneration";
 import { ACTIVE_PROMPT_PROFILE_KEY, ACTIVE_PROMPT_SEQUENCE_KEY } from "@/lib/storageKeys";
 import { writeStorageValue } from "@/lib/safeStorage";
 import type {
@@ -15,7 +25,10 @@ import type {
 } from "@/lib/promptHandlerTypes";
 import type { ModelConfig, PromptId, PromptPreviewResponse, PromptSaveResult } from "@/types/app";
 
-export function createPromptCrudHandlers(deps: PromptHandlersDeps): PromptCrudHandlers {
+export function createPromptCrudHandlers(
+  deps: PromptHandlersDeps,
+  requestCoordinator = createPromptRouteRequestCoordinator(deps.promptRouteRequestRef),
+): PromptCrudHandlers {
   function persistActivePromptRoute(config: ModelConfig) {
     writeStorageValue(ACTIVE_PROMPT_PROFILE_KEY, config.promptProfile);
     writeStorageValue(ACTIVE_PROMPT_SEQUENCE_KEY, JSON.stringify(config.promptSequence));
@@ -98,10 +111,55 @@ export function createPromptCrudHandlers(deps: PromptHandlersDeps): PromptCrudHa
       tone: "danger",
     })) return;
     const result = await deps.service.deletePrompt(promptId);
+    const nextPreviews = buildPromptPreviewsAfterDelete(deps.getPromptPreviews(), result);
+    const nextPromptOptions = getPromptOptionsFromPreviews(nextPreviews);
+    const nextPromptWorkflows = getPromptWorkflowsFromPreviews(nextPreviews, nextPromptOptions);
+    const currentConfig = deps.getModelConfig();
+    const nextProfile = normalizePromptProfile(currentConfig.promptProfile, nextPromptWorkflows)
+      ?? getDefaultPromptProfile(nextPromptWorkflows);
+    const nextConfig = {
+      ...currentConfig,
+      promptProfile: nextProfile,
+      promptSequence: normalizePromptSequence(
+        currentConfig.promptSequence,
+        nextPromptOptions,
+        nextProfile,
+        nextPromptWorkflows,
+      ),
+    };
+    const generation = requestCoordinator.begin();
+    const shouldCommit = requestCoordinator.guard(generation);
     deps.setPromptPreviewError("");
-    deps.setPromptPreviews((current) => buildPromptPreviewsAfterDelete(current, result));
+    deps.setPromptPreviews(nextPreviews);
     deps.setActivePromptPreviewId(result.items[0]?.id ?? "");
+    deps.setModelConfig(nextConfig);
+    persistActivePromptRoute(nextConfig);
+    deps.clearAutoSnapshotSuppression();
+    deps.clearPendingAutoActionForManualContextChange();
     deps.setNotice("提示词已删除。");
+    const documentStatus = deps.getDocumentStatus();
+    if (!documentStatus?.sourcePath) return;
+    try {
+      deps.setRuntimeStep("提示词已删除，正在同步当前文档路线…");
+      const status = await deps.refreshDocumentState(documentStatus.sourcePath, nextConfig, {
+        shouldCommit,
+        promptOptions: nextPromptOptions,
+        promptWorkflows: nextPromptWorkflows,
+      });
+      if (!shouldCommit()) return;
+      const nextHistoryItems = await deps.refreshHistoryList({ shouldCommit });
+      if (!shouldCommit()) return;
+      const loaded = await deps.loadLatestRoundSnapshot(status, nextConfig, {
+        historyItems: nextHistoryItems,
+        allowProfileFallback: false,
+        shouldCommit,
+        promptOptions: nextPromptOptions,
+        promptWorkflows: nextPromptWorkflows,
+      });
+      if (shouldCommit()) deps.setRuntimeStep(loaded ? "已同步删除后的提示词路线。" : "提示词已删除，当前文档暂无可载入 Diff。");
+    } catch (appError) {
+      if (shouldCommit()) deps.setError(`提示词已删除，但当前文档同步失败：${stringifyError(appError)}`);
+    }
   }
 
   return {

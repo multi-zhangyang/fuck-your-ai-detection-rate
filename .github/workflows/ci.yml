@@ -47,7 +47,7 @@ jobs:
       - name: Run regression suite
         env:
           PYTHONIOENCODING: utf-8
-        run: python scripts/run_regressions.py --fail-fast
+        run: python scripts/run_regressions.py --fail-fast --include-browser-e2e
 
   platform-smoke:
     name: Platform smoke (${{ matrix.os }})

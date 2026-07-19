@@ -11,6 +11,9 @@ import {
   normalizePromptProfile,
   normalizePromptSequence,
 } from "@/lib/promptRegistry";
+import {
+  createPromptRouteRequestCoordinator,
+} from "@/lib/promptRouteRequestGeneration";
 import { createPromptWorkflowRouteHandlers } from "@/lib/promptWorkflowRouteHandlers";
 import type {
   ApplyPromptRouteSwitchInput,
@@ -23,21 +26,28 @@ import type { ModelConfig, PromptId } from "@/types/app";
 export function createPromptRouteHandlers(
   deps: PromptHandlersDeps,
   crud: PromptCrudHandlers,
+  requestCoordinator = createPromptRouteRequestCoordinator(deps.promptRouteRequestRef),
 ): PromptRouteHandlers {
-  const workflow = createPromptWorkflowRouteHandlers(deps, crud);
-
-  async function reloadDocumentAfterPromptRouteSwitch(nextConfig: ModelConfig) {
+  async function reloadDocumentAfterPromptRouteSwitch(
+    nextConfig: ModelConfig,
+    options: { shouldCommit?: () => boolean } = {},
+  ) {
     const documentStatus = deps.getDocumentStatus();
     if (!documentStatus?.sourcePath) return false;
-    const status = await deps.refreshDocumentState(documentStatus.sourcePath, nextConfig);
-    const nextHistoryItems = await deps.refreshHistoryList();
+    const status = await deps.refreshDocumentState(documentStatus.sourcePath, nextConfig, options);
+    if (options.shouldCommit && !options.shouldCommit()) return false;
+    const nextHistoryItems = await deps.refreshHistoryList(options);
+    if (options.shouldCommit && !options.shouldCommit()) return false;
     return Boolean(await deps.loadLatestRoundSnapshot(status, nextConfig, {
       historyItems: nextHistoryItems,
       allowProfileFallback: false,
+      shouldCommit: options.shouldCommit,
     }));
   }
 
   async function applyPromptRouteSwitch(input: ApplyPromptRouteSwitchInput) {
+    const generation = requestCoordinator.begin();
+    const shouldCommit = requestCoordinator.guard(generation);
     deps.setModelConfig(input.nextConfig);
     deps.clearAutoSnapshotSuppression();
     deps.clearPendingAutoActionForManualContextChange();
@@ -47,9 +57,11 @@ export function createPromptRouteHandlers(
     try {
       deps.setError("");
       deps.setRuntimeStep(input.loadingRuntimeStep);
-      deps.setRuntimeStep(input.successRuntimeStep(await reloadDocumentAfterPromptRouteSwitch(input.nextConfig)));
+      const loaded = await reloadDocumentAfterPromptRouteSwitch(input.nextConfig, { shouldCommit });
+      if (!shouldCommit()) return;
+      deps.setRuntimeStep(input.successRuntimeStep(loaded));
     } catch (appError) {
-      deps.applyErrorRuntimeStep(appError, input.failureRuntimeStep);
+      if (shouldCommit()) deps.applyErrorRuntimeStep(appError, input.failureRuntimeStep);
     }
   }
 
@@ -94,6 +106,13 @@ export function createPromptRouteHandlers(
       failureRuntimeStep: buildPromptSequenceSwitchFailureRuntimeStep(),
     });
   }
+
+  const workflow = createPromptWorkflowRouteHandlers(
+    deps,
+    crud,
+    requestCoordinator,
+    reloadDocumentAfterPromptRouteSwitch,
+  );
 
   return {
     ...workflow,

@@ -66,6 +66,24 @@ export function HistoryArtifactGovernanceBody({
           <AlertTitle>索引读取失败</AlertTitle>
           <AlertDescription>{query.error || "SQLite 历史索引暂时不可用，请先刷新或运行历史库修复。"}</AlertDescription>
         </Alert>
+      ) : loading ? (
+        <Empty className="mt-3 min-h-[6rem] border bg-background">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Database />
+            </EmptyMedia>
+            <EmptyTitle>读取中</EmptyTitle>
+          </EmptyHeader>
+        </Empty>
+      ) : !query ? (
+        <Empty className="mt-3 min-h-[6rem] border bg-background">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Database />
+            </EmptyMedia>
+            <EmptyTitle>尚未读取资产</EmptyTitle>
+          </EmptyHeader>
+        </Empty>
       ) : previewItems.length ? (
         <div className="mt-3 overflow-hidden rounded-lg border bg-background">
           {previewItems.map((item) => <HistoryArtifactRow key={`${item.path}-${item.kind}`} item={item} />)}
@@ -77,7 +95,7 @@ export function HistoryArtifactGovernanceBody({
             <EmptyMedia variant="icon">
               <Database />
             </EmptyMedia>
-            <EmptyTitle>{loading ? "读取中" : "无资产"}</EmptyTitle>
+            <EmptyTitle>无资产</EmptyTitle>
           </EmptyHeader>
         </Empty>
       )}

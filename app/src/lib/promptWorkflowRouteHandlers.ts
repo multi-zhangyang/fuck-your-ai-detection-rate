@@ -8,11 +8,17 @@ import type {
   PromptCrudHandlers,
   PromptHandlersDeps,
 } from "@/lib/promptHandlerTypes";
+import type { PromptRouteRequestCoordinator } from "@/lib/promptRouteRequestGeneration";
 import type { ModelConfig, PromptPreviewResponse, PromptWorkflow } from "@/types/app";
 
 export function createPromptWorkflowRouteHandlers(
   deps: PromptHandlersDeps,
   crud: PromptCrudHandlers,
+  requestCoordinator: PromptRouteRequestCoordinator,
+  reloadDocumentAfterPromptRouteSwitch: (
+    nextConfig: ModelConfig,
+    options?: { shouldCommit?: () => boolean },
+  ) => Promise<boolean>,
 ) {
   async function applyUpdatedDefaultPromptWorkflow(
     workflowId: PromptWorkflow["id"],
@@ -26,13 +32,14 @@ export function createPromptWorkflowRouteHandlers(
       currentConfig: deps.getModelConfig(),
     });
     if (!planned.shouldApply || !planned.nextConfig) return;
+    const generation = requestCoordinator.begin();
+    const shouldCommit = requestCoordinator.guard(generation);
     const nextConfig = planned.nextConfig;
     deps.setModelConfig(nextConfig);
     crud.persistActivePromptRoute(nextConfig);
-    const documentStatus = deps.getDocumentStatus();
-    if (documentStatus?.sourcePath) {
-      await deps.refreshDocumentState(documentStatus.sourcePath, nextConfig);
-    }
+    deps.clearAutoSnapshotSuppression();
+    deps.clearPendingAutoActionForManualContextChange();
+    await reloadDocumentAfterPromptRouteSwitch(nextConfig, { shouldCommit });
   }
 
   async function handleUpdatePromptWorkflow(

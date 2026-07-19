@@ -1,4 +1,4 @@
-import { Activity, CheckCircle2, FileText, Loader2, RefreshCw } from "lucide-react";
+import { Activity, AlertCircle, CheckCircle2, FileText, Loader2, RefreshCw } from "lucide-react";
 
 import { DiagnosticSummaryTile } from "@/components/DiagnosticsPanels";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,7 @@ export function DiagnosticsPageHeader({
   recentTaskCount,
   taskStateStore,
   copied,
+  copyError,
   onCopy,
   onRefresh,
 }: {
@@ -38,6 +39,7 @@ export function DiagnosticsPageHeader({
   recentTaskCount: number;
   taskStateStore: EnvironmentDiagnostics["taskStateStore"] | null | undefined;
   copied: boolean;
+  copyError: boolean;
   onCopy: () => void;
   onRefresh: () => void;
 }) {
@@ -59,9 +61,19 @@ export function DiagnosticsPageHeader({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void onCopy()} disabled={!value}>
-              {copied ? <CheckCircle2 data-icon="inline-start" /> : <FileText data-icon="inline-start" />}
-              {copied ? "已复制" : "复制诊断"}
+            <Button
+              variant={copyError ? "outlineDanger" : "outline"}
+              size="sm"
+              onClick={() => void onCopy()}
+              disabled={!value}
+              aria-live="polite"
+            >
+              {copyError
+                ? <AlertCircle data-icon="inline-start" />
+                : copied
+                  ? <CheckCircle2 data-icon="inline-start" />
+                  : <FileText data-icon="inline-start" />}
+              {copyError ? "复制失败" : copied ? "已复制" : "复制诊断"}
             </Button>
             <Button size="sm" onClick={onRefresh} disabled={busy}>
               {busy ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}

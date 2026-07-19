@@ -32,6 +32,7 @@ export type ApplySelectedRoundSnapshotInput = {
   matchedItem?: import("@/types/app").HistoryDocumentSummary | null;
   latestRound?: HistoryRound | null;
   expectedIdentity?: RoundArtifactSnapshotIdentity | null;
+  shouldCommit?: () => boolean;
 };
 
 export function buildLoadedRoundSnapshotUiInput(

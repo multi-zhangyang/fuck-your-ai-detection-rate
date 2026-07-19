@@ -1,9 +1,10 @@
-import { Database, HardDriveDownload, RotateCcw, Search } from "lucide-react";
+import { Database, HardDriveDownload, Loader2, RotateCcw, Search } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { formatHistoryBytes as formatBytes } from "@/lib/historyCardFormatHelpers";
+import { LOADING_ICON_CLASS_NAME } from "@/lib/loadingIcon";
 import type {
   HistoryDatabaseBackupListResult,
   HistoryDatabaseMaintenanceSummary,
@@ -54,13 +55,13 @@ export function HistoryDatabaseMaintenancePanel({
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy}>
-            <Search data-icon="inline-start" />
-            概览
+          <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy || summaryLoading}>
+            {summaryLoading ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <Search data-icon="inline-start" />}
+            {summaryLoading ? "读取中" : "概览"}
           </Button>
-          <Button variant="outline" size="sm" onClick={onRefreshBackups} disabled={busy}>
-            <HardDriveDownload data-icon="inline-start" />
-            备份列表
+          <Button variant="outline" size="sm" onClick={onRefreshBackups} disabled={busy || backupsLoading}>
+            {backupsLoading ? <Loader2 className={LOADING_ICON_CLASS_NAME} data-icon="inline-start" /> : <HardDriveDownload data-icon="inline-start" />}
+            {backupsLoading ? "读取中" : "备份列表"}
           </Button>
           <Button variant="outline" size="sm" onClick={onBackup} disabled={busy}>
             <HardDriveDownload data-icon="inline-start" />
@@ -74,10 +75,10 @@ export function HistoryDatabaseMaintenancePanel({
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        <Badge variant={fileSize ? "secondary" : "outline"}>库大小 {formatBytes(fileSize)}</Badge>
-        <Badge variant={freeBytes ? "secondary" : "outline"}>空闲 {formatBytes(freeBytes)}</Badge>
-        <Badge variant={freeRatio ? "secondary" : "outline"}>碎片率 {(freeRatio * 100).toFixed(1)}%</Badge>
-        <Badge variant="outline">备份 {summary?.backupCount ?? 0}</Badge>
+        <Badge variant={fileSize ? "secondary" : "outline"}>库大小 {summary ? formatBytes(fileSize) : "未读取"}</Badge>
+        <Badge variant={freeBytes ? "secondary" : "outline"}>空闲 {summary ? formatBytes(freeBytes) : "未读取"}</Badge>
+        <Badge variant={freeRatio ? "secondary" : "outline"}>碎片率 {summary ? `${(freeRatio * 100).toFixed(1)}%` : "未读取"}</Badge>
+        <Badge variant="outline">备份 {summary ? summary.backupCount ?? 0 : "未读取"}</Badge>
       </div>
 
       {summary?.path ? (
@@ -88,9 +89,13 @@ export function HistoryDatabaseMaintenancePanel({
 
       {summaryLoading ? (
         <div className="mt-3 text-xs text-muted-foreground">正在加载维护概览…</div>
+      ) : !summary ? (
+        <div className="mt-3 text-xs text-muted-foreground">尚未读取维护概览。</div>
       ) : null}
 
-      {backupItems.length ? (
+      {backupsLoading ? (
+        <div className="mt-3 text-xs text-muted-foreground">正在加载备份列表…</div>
+      ) : backups && backupItems.length ? (
         <div className="mt-3 overflow-hidden rounded-lg border bg-background">
           {backupItems.map((entry) => (
             <div
@@ -118,15 +123,22 @@ export function HistoryDatabaseMaintenancePanel({
             </div>
           ))}
         </div>
-      ) : backupsLoading ? (
-        <div className="mt-3 text-xs text-muted-foreground">正在加载备份列表…</div>
-      ) : (
+      ) : backups ? (
         <Empty className="mt-3 min-h-[6rem] border bg-background">
           <EmptyHeader>
             <EmptyMedia variant="icon">
               <HardDriveDownload />
             </EmptyMedia>
             <EmptyTitle>暂无历史库备份</EmptyTitle>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <Empty className="mt-3 min-h-[6rem] border bg-background">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <HardDriveDownload />
+            </EmptyMedia>
+            <EmptyTitle>尚未读取备份列表</EmptyTitle>
           </EmptyHeader>
         </Empty>
       )}

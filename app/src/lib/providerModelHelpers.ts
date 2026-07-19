@@ -2,6 +2,7 @@ export {
   buildProviderModelsPatch,
   applyProviderModelPatches,
   mergeSavedModelConfig,
+  reconcileSavedModelConfig,
   formatProviderModelsRefreshNotice,
   formatProviderModelsBatchNotice,
   getEnabledProviders,

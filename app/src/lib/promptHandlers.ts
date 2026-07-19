@@ -1,6 +1,7 @@
 import type { PromptHandlersDeps } from "@/lib/promptHandlerTypes";
 import { createPromptCrudHandlers } from "@/lib/promptCrudHandlers";
 import { createPromptRouteHandlers } from "@/lib/promptRouteHandlers";
+import { createPromptRouteRequestCoordinator } from "@/lib/promptRouteRequestGeneration";
 
 export type {
   ApplyPromptRouteSwitchInput,
@@ -10,8 +11,9 @@ export type {
 } from "@/lib/promptHandlerTypes";
 
 export function createPromptHandlers(deps: PromptHandlersDeps) {
-  const crud = createPromptCrudHandlers(deps);
-  const route = createPromptRouteHandlers(deps, crud);
+  const requestCoordinator = createPromptRouteRequestCoordinator(deps.promptRouteRequestRef);
+  const crud = createPromptCrudHandlers(deps, requestCoordinator);
+  const route = createPromptRouteHandlers(deps, crud, requestCoordinator);
   return {
     ...crud,
     ...route,

@@ -41,6 +41,10 @@ export type DocumentLoadHandlersDeps = {
   clearAutoSnapshotSuppression: () => void;
   clearPendingAutoActionForManualContextChange: () => void;
   clearDocumentDerivedState: () => void;
-  refreshDocumentState: (sourcePath: string, config?: ModelConfig) => Promise<DocumentStatus>;
-  refreshHistoryList: () => Promise<HistoryDocumentSummary[]>;
+  refreshDocumentState: (
+    sourcePath: string,
+    config?: ModelConfig,
+    options?: { shouldCommit?: () => boolean },
+  ) => Promise<DocumentStatus>;
+  refreshHistoryList: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryDocumentSummary[]>;
 };

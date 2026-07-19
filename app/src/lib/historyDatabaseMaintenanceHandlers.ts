@@ -1,5 +1,9 @@
 import { stringifyError } from "@/lib/errorText";
 import { buildHistoryDatabaseRecoverySuccessMessage } from "@/lib/historyDatabaseRecoveryMessage";
+import {
+  beginHistoryRequest,
+  isCurrentHistoryRequest,
+} from "@/lib/historyRequestGeneration";
 import type { HistoryCoreHandlers, HistoryHandlersDeps } from "@/lib/historyHandlerTypes";
 import type {
   HistoryDatabaseBackupListResult,
@@ -16,34 +20,50 @@ export function createHistoryDatabaseMaintenanceHandlers(
   core: HistoryCoreHandlers,
 ) {
   async function refreshHistoryDatabaseMaintenance(): Promise<HistoryDatabaseMaintenanceSummary | null> {
+    const requestKey = deps.setHistoryDatabaseMaintenance as unknown as object;
+    const generation = beginHistoryRequest(requestKey, "maintenance");
     deps.setHistoryDatabaseMaintenance(null);
     deps.setHistoryDatabaseMaintenanceLoading(true);
     try {
       const summary = await deps.service.getHistoryDatabaseMaintenance();
-      deps.setHistoryDatabaseMaintenance(summary);
+      if (isCurrentHistoryRequest(requestKey, "maintenance", generation)) {
+        deps.setHistoryDatabaseMaintenance(summary);
+      }
       return summary;
     } catch (appError) {
-      deps.setError(stringifyError(appError));
+      if (isCurrentHistoryRequest(requestKey, "maintenance", generation)) {
+        deps.setError(stringifyError(appError));
+      }
       return null;
     } finally {
-      deps.setHistoryDatabaseMaintenanceLoading(false);
+      if (isCurrentHistoryRequest(requestKey, "maintenance", generation)) {
+        deps.setHistoryDatabaseMaintenanceLoading(false);
+      }
     }
   }
 
   async function refreshHistoryDatabaseBackups(
     validate = false,
   ): Promise<HistoryDatabaseBackupListResult | null> {
+    const requestKey = deps.setHistoryDatabaseBackups as unknown as object;
+    const generation = beginHistoryRequest(requestKey, "backups");
     deps.setHistoryDatabaseBackups(null);
     deps.setHistoryDatabaseBackupsLoading(true);
     try {
       const result = await deps.service.listHistoryDatabaseBackups(validate);
-      deps.setHistoryDatabaseBackups(result);
+      if (isCurrentHistoryRequest(requestKey, "backups", generation)) {
+        deps.setHistoryDatabaseBackups(result);
+      }
       return result;
     } catch (appError) {
-      deps.setError(stringifyError(appError));
+      if (isCurrentHistoryRequest(requestKey, "backups", generation)) {
+        deps.setError(stringifyError(appError));
+      }
       return null;
     } finally {
-      deps.setHistoryDatabaseBackupsLoading(false);
+      if (isCurrentHistoryRequest(requestKey, "backups", generation)) {
+        deps.setHistoryDatabaseBackupsLoading(false);
+      }
     }
   }
 
@@ -116,7 +136,7 @@ export function createHistoryDatabaseMaintenanceHandlers(
       if (result.ok) {
         await Promise.all([refreshHistoryDatabaseMaintenance(), refreshHistoryDatabaseBackups(false)]);
         await core.refreshHistoryList();
-        await core.refreshHistoryArtifactGovernance(deps.getHistoryArtifactMode());
+        await core.refreshHistoryArtifactGovernance();
       }
       applyMaintenanceFeedback(
         result.ok ? buildHistoryDatabaseRecoverySuccessMessage(result) : "历史索引恢复失败",

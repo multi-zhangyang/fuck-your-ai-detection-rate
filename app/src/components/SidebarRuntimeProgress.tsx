@@ -3,13 +3,13 @@ import { SidebarFooter } from "@/components/ui/sidebar";
 import { Progress } from "@/components/ui/progress";
 
 export function SidebarRuntimeProgress({ status, percent }: { status: string; percent: number }) {
-  const { state } = useSidebar();
+  const { isMobile, state } = useSidebar();
   const value = Math.max(0, Math.min(100, Math.round(percent)));
   const radius = 13;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (value / 100) * circumference;
 
-  if (state === "collapsed") {
+  if (!isMobile && state === "collapsed") {
     return (
       <SidebarFooter className="items-center px-2 pb-3 pt-2">
         <div

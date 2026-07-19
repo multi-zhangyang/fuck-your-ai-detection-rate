@@ -416,11 +416,69 @@ async function runSmoke() {
     await browserClient.send("Page.enable");
     await browserClient.send("Runtime.enable");
     await browserClient.send("Log.enable").catch(() => undefined);
-    await browserClient.send("Page.navigate", { url: frontendUrl });
     await waitForText(browserClient, "当前文件", DEFAULT_TIMEOUT_MS);
     await waitForText(browserClient, "文档入口", DEFAULT_TIMEOUT_MS);
     await waitForText(browserClient, "上传文档", DEFAULT_TIMEOUT_MS);
     checks.push("home page renders with global task dashboard and card controls");
+
+    const initialRoute = await evaluate(browserClient, "location.search", 3000);
+    if (initialRoute && !initialRoute.includes("view=home")) {
+      throw new Error(`Initial workbench route was not canonicalized: ${initialRoute}`);
+    }
+    await clickByText(browserClient, "模型配置");
+    await waitForText(browserClient, "默认连接", 12_000);
+    const modelRoute = await evaluate(browserClient, "location.search", 3000);
+    if (!modelRoute.includes("view=model")) throw new Error(`Model navigation did not update the URL: ${modelRoute}`);
+    await evaluate(browserClient, "history.back()", 3000);
+    await waitForExpression(browserClient, "!location.search.includes('view=model')", "browser Back URL transition", 12_000);
+    await waitForText(browserClient, "改写对照", 12_000);
+    const backRoute = await evaluate(browserClient, "location.search", 3000);
+    if (backRoute.includes("view=model")) throw new Error(`Back navigation did not restore the home route: ${backRoute}`);
+    await evaluate(browserClient, "history.forward()", 3000);
+    await waitForText(browserClient, "默认连接", 12_000);
+    const forwardRoute = await evaluate(browserClient, "location.search", 3000);
+    if (!forwardRoute.includes("view=model")) throw new Error(`Forward navigation did not restore the model route: ${forwardRoute}`);
+    await browserClient.send("Page.reload", { ignoreCache: true });
+    await wait(750);
+    await waitForText(browserClient, "默认连接", 12_000);
+    const reloadRoute = await evaluate(browserClient, "location.search", 3000);
+    if (!reloadRoute.includes("view=model")) throw new Error(`Reload lost the deep-linked view: ${reloadRoute}`);
+    const desktopSidebarSemantics = await evaluate(browserClient, `(() => {
+      const rail = document.querySelector('[data-sidebar="rail"]');
+      const railHost = rail?.closest('[data-side="left"]');
+      const trigger = document.querySelector('[data-sidebar="trigger"]');
+      const navigation = document.querySelector('[role="navigation"][aria-label="工作台主导航"]');
+      return {
+        rail: Boolean(rail),
+        railNested: Boolean(railHost),
+        trigger: Boolean(trigger),
+        controls: trigger?.getAttribute('aria-controls') || '',
+        expanded: trigger?.getAttribute('aria-expanded') || '',
+        navigation: Boolean(navigation),
+      };
+    })()`, 3000);
+    if (!desktopSidebarSemantics?.rail || !desktopSidebarSemantics.railNested || !desktopSidebarSemantics.controls || !desktopSidebarSemantics.expanded || !desktopSidebarSemantics.navigation) {
+      throw new Error(`Desktop sidebar rail or accessibility semantics are incomplete: ${JSON.stringify(desktopSidebarSemantics)}`);
+    }
+    await evaluate(browserClient, `document.querySelector('[data-sidebar="trigger"]')?.click()`, 3000);
+    await wait(250);
+    const collapsedSidebar = await evaluate(browserClient, `(() => {
+      const sidebar = document.querySelector('[data-side="left"]');
+      return { state: sidebar?.getAttribute('data-state'), cookie: document.cookie };
+    })()`, 3000);
+    if (collapsedSidebar?.state !== "collapsed" || !collapsedSidebar.cookie.includes("sidebar_state=false")) {
+      throw new Error(`Sidebar collapse did not persist: ${JSON.stringify(collapsedSidebar)}`);
+    }
+    await browserClient.send("Page.reload", { ignoreCache: true });
+    await wait(750);
+    await waitForText(browserClient, "默认连接", 12_000);
+    const restoredSidebarState = await evaluate(browserClient, "document.querySelector('[data-side=\"left\"]')?.getAttribute('data-state')", 3000);
+    if (restoredSidebarState !== "collapsed") throw new Error(`Sidebar cookie was not restored after reload: ${restoredSidebarState}`);
+    await evaluate(browserClient, "document.querySelector('[data-sidebar=\"trigger\"]')?.click()", 3000);
+    await wait(250);
+    await clickByText(browserClient, "工作台");
+    await waitForText(browserClient, "改写对照", 12_000);
+    checks.push("URL deep-link, Back/Forward, reload recovery, sidebar cookie, rail, and ARIA semantics work in a real browser");
 
     let fileChooserIntercepted = false;
     try {
@@ -571,6 +629,43 @@ async function runSmoke() {
       throw new Error("Prompt editor is not reachable in the 390x844 mobile viewport.");
     }
     checks.push("390px mobile product header, page width, and prompt editor remain reachable");
+
+    const mobilePromptDirty = await evaluate(browserClient, `(() => {
+      const textarea = document.querySelector('textarea');
+      if (!(textarea instanceof HTMLTextAreaElement)) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setter?.call(textarea, textarea.value + ' ');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`, 3000);
+    if (!mobilePromptDirty) throw new Error("Unable to create a dirty prompt draft for mobile guard testing.");
+    await wait(250);
+    await evaluate(browserClient, "document.querySelector('[data-sidebar=\"trigger\"]')?.click()", 3000);
+    await waitForText(browserClient, "工作台导航", 12_000);
+    const dirtyNavigationClicked = await evaluate(browserClient, `(() => {
+      const button = Array.from(document.querySelectorAll('button')).find((item) => item.textContent?.trim() === '工作台');
+      button?.click();
+      return Boolean(button);
+    })()`, 3000);
+    if (!dirtyNavigationClicked) throw new Error("Unable to request mobile navigation away from the dirty prompt.");
+    await waitForText(browserClient, "放弃未保存的提示词修改？", 12_000);
+    const dirtyCancelClicked = await evaluate(browserClient, `(() => {
+      const dialog = document.querySelector('[role="alertdialog"]');
+      const button = Array.from(dialog?.querySelectorAll('button') || []).find((item) => item.textContent?.trim() === '取消');
+      button?.click();
+      return Boolean(button);
+    })()`, 3000);
+    if (!dirtyCancelClicked) throw new Error("Dirty prompt confirmation is missing its cancel action.");
+    await waitForTextGone(browserClient, "放弃未保存的提示词修改？", 12_000);
+    const mobileDirtyCancelState = await evaluate(browserClient, `(() => {
+      const sheet = document.querySelector('[data-sidebar="sidebar"][data-mobile="true"]');
+      const rect = sheet?.getBoundingClientRect();
+      return { route: location.search, drawerVisible: Boolean(sheet && rect && rect.width > 0 && rect.height > 0) };
+    })()`, 3000);
+    if (!mobileDirtyCancelState.route.includes("view=prompts") || !mobileDirtyCancelState.drawerVisible) {
+      throw new Error(`Mobile dirty-cancel did not keep the route/drawer intact: ${JSON.stringify(mobileDirtyCancelState)}`);
+    }
+    checks.push("mobile dirty prompt cancellation keeps the drawer open and preserves the current route");
 
     return {
       ok: true,

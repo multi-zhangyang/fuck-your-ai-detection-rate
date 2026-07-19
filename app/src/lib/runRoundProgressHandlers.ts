@@ -20,8 +20,12 @@ export function createRunRoundProgressHandlers(deps: RunRoundHandlersDeps): RunR
     return requestId === deps.getRoundProgressRequestId();
   }
 
-  function commitRoundProgressStatus(requestId: number, nextStatus: RoundProgressStatus | null) {
-    if (isCurrentRoundProgressRequest(requestId)) {
+  function commitRoundProgressStatus(
+    requestId: number,
+    nextStatus: RoundProgressStatus | null,
+    shouldCommit?: () => boolean,
+  ) {
+    if (isCurrentRoundProgressRequest(requestId) && (!shouldCommit || shouldCommit())) {
       deps.setRoundProgressStatus(nextStatus);
     }
   }
@@ -29,10 +33,11 @@ export function createRunRoundProgressHandlers(deps: RunRoundHandlersDeps): RunR
   async function refreshRoundProgressStatus(
     status = deps.getDocumentStatus(),
     config = deps.getModelConfig(),
+    options: { shouldCommit?: () => boolean } = {},
   ) {
     const requestId = beginRoundProgressRequest();
     if (!status?.sourcePath || !status.hasNextRound || !status.nextRound) {
-      commitRoundProgressStatus(requestId, null);
+      commitRoundProgressStatus(requestId, null, options.shouldCommit);
       return null;
     }
     try {
@@ -48,10 +53,10 @@ export function createRunRoundProgressHandlers(deps: RunRoundHandlersDeps): RunR
         status.nextRound!,
         route.statusPromptSequence,
       );
-      commitRoundProgressStatus(requestId, nextStatus);
+      commitRoundProgressStatus(requestId, nextStatus, options.shouldCommit);
       return nextStatus;
     } catch {
-      commitRoundProgressStatus(requestId, null);
+      commitRoundProgressStatus(requestId, null, options.shouldCommit);
       return null;
     }
   }

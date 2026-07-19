@@ -4,7 +4,12 @@ import type { ModelConfigCardProps } from "@/components/ModelConfigCardProps";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useModelConfigProviderCatalog } from "@/hooks/useModelConfigProviderCatalog";
+import {
+  modelCatalogBelongsToConfig,
+  modelCatalogConnectionIdentity,
+} from "@/lib/modelCatalogOwnership";
 import { Settings2 } from "lucide-react";
+import { useRef } from "react";
 
 const LOADING_ICON_CLASS_NAME = "animate-spin text-success";
 const MAX_REWRITE_CONCURRENCY = 16;
@@ -21,6 +26,17 @@ export function ModelConfigCard({
   onRefreshModels,
   onListModelsForConfig,
 }: ModelConfigCardProps) {
+  const currentConnectionIdentity = modelCatalogConnectionIdentity(value);
+  const catalogErrorOwnerRef = useRef({ value: modelCatalogError, connectionIdentity: currentConnectionIdentity });
+  if (catalogErrorOwnerRef.current.value !== modelCatalogError) {
+    catalogErrorOwnerRef.current = { value: modelCatalogError, connectionIdentity: currentConnectionIdentity };
+  }
+  const currentModelCatalog = modelCatalogBelongsToConfig(modelCatalog, value)
+    ? modelCatalog
+    : null;
+  const currentModelCatalogError = catalogErrorOwnerRef.current.connectionIdentity === currentConnectionIdentity
+    ? modelCatalogError
+    : "";
   const {
     selectedProviderId,
     setSelectedProviderId,
@@ -75,9 +91,9 @@ export function ModelConfigCard({
             <ModelDefaultConnectionPanel
               value={value}
               busy={busy}
-              modelCatalog={modelCatalog}
+              modelCatalog={currentModelCatalog}
               modelCatalogBusy={modelCatalogBusy}
-              modelCatalogError={modelCatalogError}
+              modelCatalogError={currentModelCatalogError}
               loadingIconClassName={LOADING_ICON_CLASS_NAME}
               onChange={onChange}
               onSave={onSave}

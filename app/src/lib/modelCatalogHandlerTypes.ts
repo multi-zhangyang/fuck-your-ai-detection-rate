@@ -12,8 +12,13 @@ export type TaskTicket = number;
 
 export type CollectProviderModelPatchesInput = {
   enabledProviders: ModelProviderConfig[];
-  providers: ModelProviderConfig[];
   abortController: AbortController;
+};
+
+export type ProviderModelPatchCollection = {
+  providerPatches: Map<string, Partial<ModelProviderConfig>>;
+  failures: string[];
+  requestProviders: Map<string, ModelProviderConfig>;
 };
 
 export type OptionalUiFeedback = {
@@ -53,6 +58,8 @@ export type ModelCatalogHandlersDeps = {
 export type ModelCatalogListHandlers = {
   beginCancelableModelCatalogRequest: () => AbortController;
   clearCancelableModelCatalogRequest: (controller: AbortController) => void;
+  isModelCatalogRequestCurrent: (controller: AbortController) => boolean;
+  isModelCatalogRequestLatest: (controller: AbortController) => boolean;
   handleCancelModelCatalogRequest: () => void;
   fetchAndApplyModelCatalog: (config: ModelConfig, silent: boolean) => Promise<ModelCatalogResult | null>;
   refreshModelCatalog: (config?: ModelConfig, options?: { silent?: boolean }) => Promise<ModelCatalogResult | null>;
@@ -67,13 +74,12 @@ export type ModelCatalogProviderHandlers = {
     appError: unknown,
     mode: "batch" | "single",
   ) => void;
-  collectProviderModelPatches: (input: CollectProviderModelPatchesInput) => Promise<{
-    providerPatches: Map<string, Partial<ModelProviderConfig>>;
-    failures: string[];
-  }>;
+  collectProviderModelPatches: (input: CollectProviderModelPatchesInput) => Promise<ProviderModelPatchCollection>;
   saveModelConfigWithProviderPatches: (
     providerPatches: Map<string, Partial<ModelProviderConfig>>,
     providers?: ModelProviderConfig[],
+    requestProviders?: Map<string, ModelProviderConfig>,
+    shouldCommit?: () => boolean,
   ) => Promise<ModelConfig>;
   handleRefreshAllProviderModels: () => Promise<void>;
   refreshSingleProviderModels: (provider: ModelProviderConfig) => Promise<void>;
@@ -82,7 +88,7 @@ export type ModelCatalogProviderHandlers = {
 
 export type ModelCatalogConfigHandlers = {
   persistNormalizedModelConfig: (configToSave: ModelConfig, testConfig?: ModelConfig) => Promise<ModelConfig>;
-  applySavedModelConfig: (mergedSaved: ModelConfig) => Promise<void>;
+  applySavedModelConfig: (mergedSaved: ModelConfig, generation?: number) => Promise<void>;
   handleSaveModelConfig: (nextConfig?: ModelConfig, testConfig?: ModelConfig) => Promise<void>;
   handleTestConnection: () => Promise<void>;
 };

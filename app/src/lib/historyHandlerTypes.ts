@@ -6,6 +6,7 @@ export type {
   ExecuteHistoryDeleteInput,
   HistoryDocumentLoadFeedback,
   OptionalUiFeedback,
+  RefreshHistoryListOptions,
   LoadLatestRoundSnapshotOptions,
 } from "@/lib/historyHandlerInputTypes";
 

@@ -8,8 +8,15 @@ import {
 import type {
   HistoryHandlersDeps,
 } from "@/lib/historyHandlerTypes";
+import type { RefreshHistoryListOptions } from "@/lib/historyHandlerInputTypes";
 import { ACTIVE_PROMPT_PROFILE_KEY, ACTIVE_PROMPT_SEQUENCE_KEY } from "@/lib/storageKeys";
 import { writeStorageValue } from "@/lib/safeStorage";
+import {
+  beginHistoryRequest,
+  getCurrentHistoryArtifactMode,
+  isCurrentHistoryRequest,
+  setCurrentHistoryArtifactMode,
+} from "@/lib/historyRequestGeneration";
 import type {
   HistoryArtifactGovernanceMode,
   ModelConfig,
@@ -31,9 +38,11 @@ export function createHistoryListGovernanceHandlers(deps: HistoryHandlersDeps) {
     });
   }
 
-  async function refreshHistoryList() {
+  async function refreshHistoryList(options: RefreshHistoryListOptions = {}) {
     const result = await deps.service.listDocumentHistories();
-    deps.setHistoryItems(result.items);
+    if (!options.shouldCommit || options.shouldCommit()) {
+      deps.setHistoryItems(result.items);
+    }
     return result.items;
   }
 
@@ -43,29 +52,46 @@ export function createHistoryListGovernanceHandlers(deps: HistoryHandlersDeps) {
     return result;
   }
 
-  async function refreshHistoryArtifactGovernance(mode = deps.getHistoryArtifactMode()) {
+  async function refreshHistoryArtifactGovernance(mode?: HistoryArtifactGovernanceMode) {
+    const requestKey = deps.setHistoryArtifactQuery as unknown as object;
+    const requestedMode = mode
+      ?? getCurrentHistoryArtifactMode(requestKey, deps.getHistoryArtifactMode());
+    setCurrentHistoryArtifactMode(requestKey, requestedMode);
+    const generation = beginHistoryRequest(requestKey, "artifact");
     const filters = buildHistoryArtifactFilters({
-      mode,
+      mode: requestedMode,
       currentDocId: deps.getDocumentStatus()?.docId,
       fallbackDocId: deps.getHistoryItems()[0]?.docId,
     });
-    deps.setHistoryArtifactMode(mode);
+    deps.setHistoryArtifactMode(requestedMode);
+    // Do not leave a response for the previous mode visible while the new
+    // mode is loading. The mode and query must describe the same request.
+    deps.setHistoryArtifactQuery(null);
     if (!filters) {
-      deps.setHistoryArtifactQuery(createEmptyHistoryArtifactQuery("先选择一篇文档，再查看当前文档资产。"));
+      if (isCurrentHistoryRequest(requestKey, "artifact", generation)) {
+        deps.setHistoryArtifactQuery(createEmptyHistoryArtifactQuery("先选择一篇文档，再查看当前文档资产。"));
+        deps.setHistoryArtifactLoading(false);
+      }
       return null;
     }
     deps.setHistoryArtifactLoading(true);
     try {
       const result = await deps.service.queryHistoryArtifacts(filters);
-      deps.setHistoryArtifactQuery(result);
+      if (isCurrentHistoryRequest(requestKey, "artifact", generation)) {
+        deps.setHistoryArtifactQuery(result);
+      }
       return result;
     } catch (appError) {
       const message = stringifyError(appError);
-      deps.setHistoryArtifactQuery(createFailedHistoryArtifactQuery(filters, message));
-      deps.setError(message);
+      if (isCurrentHistoryRequest(requestKey, "artifact", generation)) {
+        deps.setHistoryArtifactQuery(createFailedHistoryArtifactQuery(filters, message));
+        deps.setError(message);
+      }
       return null;
     } finally {
-      deps.setHistoryArtifactLoading(false);
+      if (isCurrentHistoryRequest(requestKey, "artifact", generation)) {
+        deps.setHistoryArtifactLoading(false);
+      }
     }
   }
 

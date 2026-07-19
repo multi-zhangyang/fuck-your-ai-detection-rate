@@ -539,7 +539,7 @@ npm --prefix app run test:e2e:smoke
 python scripts/open_source_audit.py
 ```
 
-当前回归注册表覆盖 94 项基础命令；默认全量模式另追加前端 production build，共执行 95 项命令。覆盖范围包括：
+当前回归注册表覆盖 98 项基础命令；默认全量模式另追加前端 production build，共执行 99 项命令。CI 还会执行真实 Chrome / Edge 点击链路，共 100 项。覆盖范围包括：
 
 - 流式输出与思考内容隔离。
 - candidate-selection、事实门禁与 source-relative delta。
@@ -551,7 +551,7 @@ python scripts/open_source_audit.py
 
 GitHub Actions 包含两层检查：
 
-- `windows-latest` 执行 Python 3.11、Node.js 24 和完整 fail-fast 回归。
+- `windows-latest` 执行 Python 3.11、Node.js 24、完整 fail-fast 回归和真实浏览器点击链路。
 - `windows-latest / macos-latest / ubuntu-latest` 三平台矩阵执行干净安装、前端 production build 和本机服务 smoke。
 
 默认 CI 使用离线 fixture，不读取真实论文、不需要 API Key，也不会调用付费模型。

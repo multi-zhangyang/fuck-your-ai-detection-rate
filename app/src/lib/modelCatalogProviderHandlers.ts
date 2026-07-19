@@ -1,4 +1,5 @@
 import { buildModelConfigFromProvider } from "@/lib/modelRoute";
+import { sameCatalogConnection } from "@/lib/modelConfigProviderCatalogMergeHelpers";
 import {
   buildNoEnabledProvidersNotice,
   buildProviderMissingNotice,
@@ -34,16 +35,26 @@ export function createModelCatalogProviderHandlers(
     }
     const { taskTicket, abortController } = task.beginProviderModelsTask(buildProviderModelsBatchLoadingRuntimeStep());
     try {
-      const { providerPatches, failures } = await task.collectProviderModelPatches({
+      const { providerPatches, failures, requestProviders } = await task.collectProviderModelPatches({
         enabledProviders,
-        providers,
         abortController,
       });
-      await task.saveModelConfigWithProviderPatches(providerPatches, providers);
+      if (!catalog.isModelCatalogRequestCurrent(abortController)) return;
+      if (providerPatches.size) {
+        await task.saveModelConfigWithProviderPatches(
+          providerPatches,
+          undefined,
+          requestProviders,
+          () => catalog.isModelCatalogRequestCurrent(abortController),
+        );
+      }
+      if (!catalog.isModelCatalogRequestCurrent(abortController)) return;
       deps.setNotice(formatProviderModelsBatchNotice(providerPatches.size, failures));
       deps.setRuntimeStep(buildProviderModelsBatchSuccessRuntimeStep());
     } catch (appError) {
-      task.applyProviderModelsRequestFailure(abortController, appError, "batch");
+      if (catalog.isModelCatalogRequestLatest(abortController)) {
+        task.applyProviderModelsRequestFailure(abortController, appError, "batch");
+      }
     } finally {
       task.finishProviderModelsTask({ abortController, taskTicket });
     }
@@ -54,15 +65,36 @@ export function createModelCatalogProviderHandlers(
       buildProviderModelsSingleLoadingRuntimeStep(provider.name),
     );
     try {
+      const requestConfig = buildModelConfigFromProvider(provider, deps.getModelConfig());
       const modelIds = (await deps.service.listModels(
-        buildModelConfigFromProvider(provider, deps.getModelConfig()),
+        requestConfig,
         abortController.signal,
       )).models.map((item) => item.id);
-      await task.saveModelConfigWithProviderPatches(new Map([[provider.id, buildProviderModelsPatch(provider, modelIds)]]));
-      deps.setNotice(formatProviderModelsRefreshNotice(provider.name, modelIds.length));
+      if (!catalog.isModelCatalogRequestCurrent(abortController)) return;
+      const latestConfig = deps.getModelConfig();
+      const latestProvider = latestConfig.modelProviders?.find((item) => item.id === provider.id);
+      if (!latestProvider) return;
+      if (!sameCatalogConnection(
+        requestConfig,
+        buildModelConfigFromProvider(latestProvider, latestConfig),
+      )) {
+        deps.setNotice(`${latestProvider.name || latestProvider.id} 的连接配置已变化，旧模型列表未写入。`);
+        deps.setRuntimeStep("连接配置已变化，模型列表未更新");
+        return;
+      }
+      await task.saveModelConfigWithProviderPatches(
+        new Map([[provider.id, buildProviderModelsPatch(provider, modelIds)]]),
+        undefined,
+        new Map([[provider.id, provider]]),
+        () => catalog.isModelCatalogRequestCurrent(abortController),
+      );
+      if (!catalog.isModelCatalogRequestCurrent(abortController)) return;
+      deps.setNotice(formatProviderModelsRefreshNotice(latestProvider.name, modelIds.length));
       deps.setRuntimeStep(buildProviderModelsSingleSuccessRuntimeStep());
     } catch (appError) {
-      task.applyProviderModelsRequestFailure(abortController, appError, "single");
+      if (catalog.isModelCatalogRequestLatest(abortController)) {
+        task.applyProviderModelsRequestFailure(abortController, appError, "single");
+      }
     } finally {
       task.finishProviderModelsTask({ abortController, taskTicket });
     }

@@ -2,6 +2,7 @@ import type {
   ExecuteHistoryDeleteInput,
   HistoryDocumentLoadFeedback,
   HistoryRouteStatusResult,
+  RefreshHistoryListOptions,
   ResyncHistoryDocumentRouteInput,
 } from "@/lib/historyHandlerInputTypes";
 import type {
@@ -23,7 +24,7 @@ import type {
 export type HistoryCoreHandlers = {
   syncHistorySelectionConfigToUi: (nextConfig: ModelConfig) => void;
   getProtectedHistoryArtifactPaths: () => string[];
-  refreshHistoryList: () => Promise<HistoryDocumentSummary[]>;
+  refreshHistoryList: (options?: RefreshHistoryListOptions) => Promise<HistoryDocumentSummary[]>;
   refreshHistoryOrphanScan: () => Promise<HistoryOrphanScanResult>;
   refreshHistoryArtifactGovernance: (mode?: HistoryArtifactGovernanceMode) => Promise<HistoryArtifactQueryResponse | null>;
   resolveHistorySelectionConfig: (item: HistoryDocumentSummary, configOverride: ModelConfig) => ModelConfig;

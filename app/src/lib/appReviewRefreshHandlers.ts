@@ -68,7 +68,11 @@ export type AppReviewRefreshHandlersDeps = {
   setHistory: (history: DocumentHistory | null) => void;
   setProtectionMap: (value: DocumentProtectionMap | null) => void;
   setScopeDiagnostics: (value: DocumentScopeDiagnostics | null) => void;
-  getRefreshRoundProgressStatus: () => (status?: DocumentStatus | null, config?: ModelConfig) => Promise<RoundProgressStatus | null>;
+  getRefreshRoundProgressStatus: () => (
+    status?: DocumentStatus | null,
+    config?: ModelConfig,
+    options?: { shouldCommit?: () => boolean },
+  ) => Promise<RoundProgressStatus | null>;
   normalizeReviewDecisionsForSave: (decisions: Record<string, ReviewDecision>) => Record<string, ReviewDecision>;
   commitUi: (callback: () => void) => void;
 };
@@ -331,13 +335,22 @@ export function createAppReviewRefreshHandlers(deps: AppReviewRefreshHandlersDep
     });
   }
 
-  async function refreshDocumentState(sourcePath: string, config = deps.getModelConfig()) {
+  async function refreshDocumentState(
+    sourcePath: string,
+    config = deps.getModelConfig(),
+    options: {
+      shouldCommit?: () => boolean;
+      promptOptions?: PromptOption[];
+      promptWorkflows?: PromptWorkflow[];
+    } = {},
+  ) {
     const [status, nextHistory, nextProtectionMap, nextScopeDiagnostics] = await Promise.all([
       deps.service.getDocumentStatus(sourcePath, config),
       deps.service.getDocumentHistory(sourcePath),
       deps.service.getDocumentProtectionMap(sourcePath),
       deps.service.getDocumentScopeDiagnostics(sourcePath),
     ]);
+    if (options.shouldCommit && !options.shouldCommit()) return status;
     deps.setDocumentStatus(status);
     deps.setHistory(nextHistory);
     deps.setProtectionMap(nextProtectionMap);
@@ -346,10 +359,10 @@ export function createAppReviewRefreshHandlers(deps: AppReviewRefreshHandlersDep
       status.sourcePath,
       status.promptProfile,
       status.promptSequence ?? config.promptSequence,
-      deps.getPromptOptions(),
-      deps.getPromptWorkflows(),
+      options.promptOptions ?? deps.getPromptOptions(),
+      options.promptWorkflows ?? deps.getPromptWorkflows(),
     );
-    await deps.getRefreshRoundProgressStatus()(status, config);
+    await deps.getRefreshRoundProgressStatus()(status, config, options);
     return status;
   }
 

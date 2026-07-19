@@ -17,6 +17,7 @@ export {
 } from "@/lib/diagnosticsShareHelpers";
 
 export {
+  buildDiagnosticsFailureSnapshot,
   copyTextToClipboard,
   formatShortTaskId,
   planDiagnosticsSuccessFeedback,

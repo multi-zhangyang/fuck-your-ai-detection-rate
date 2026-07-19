@@ -22,10 +22,15 @@ import type {
 export type RunRoundProgressHandlers = {
   beginRoundProgressRequest: () => number;
   isCurrentRoundProgressRequest: (requestId: number) => boolean;
-  commitRoundProgressStatus: (requestId: number, nextStatus: RoundProgressStatus | null) => void;
+  commitRoundProgressStatus: (
+    requestId: number,
+    nextStatus: RoundProgressStatus | null,
+    shouldCommit?: () => boolean,
+  ) => void;
   refreshRoundProgressStatus: (
     status?: DocumentStatus | null,
     config?: ModelConfig,
+    options?: { shouldCommit?: () => boolean },
   ) => Promise<RoundProgressStatus | null>;
   attachRoundProgressListener: (input: AttachRoundProgressListenerInput) => Promise<void>;
   mergeActiveRunProgressSnapshot: (input: { runSession: RunSession | null; runToken: string }) => Promise<void>;

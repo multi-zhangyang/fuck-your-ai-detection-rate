@@ -67,7 +67,7 @@ python scripts/pre_release_check.py
 python scripts/pre_release_check.py --allow-dirty
 ```
 
-GitHub Actions 会在推送 `main`、创建 Pull Request 或手动触发时运行完整回归。CI 使用仓库内代码和空样例环境，不依赖本地论文、检测报告、真实截图或运行产物；README WebP 使用仓库内 synthetic fixture 生成。
+GitHub Actions 会在推送 `main`、创建 Pull Request 或手动触发时运行完整回归，并强制执行 Chrome / Edge 浏览器点击链路。CI 使用仓库内代码和空样例环境，不依赖本地论文、检测报告、真实截图或运行产物；README WebP 使用仓库内 synthetic fixture 生成。
 
 单项回归：
 

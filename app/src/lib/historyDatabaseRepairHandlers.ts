@@ -16,7 +16,7 @@ export function createHistoryDatabaseRepairHandlers(
   async function applyHistoryDatabaseRepairResult(result: HistoryDatabaseRepairResult) {
     await core.refreshHistoryList();
     deps.setHistoryOrphanScan(null);
-    await core.refreshHistoryArtifactGovernance(deps.getHistoryArtifactMode());
+    await core.refreshHistoryArtifactGovernance();
     const feedback = planHistoryDatabaseRepairFeedback({
       ok: result.ok,
       beforeIssueCount: result.before?.issueCount,

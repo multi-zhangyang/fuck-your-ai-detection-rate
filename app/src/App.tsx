@@ -4,6 +4,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -65,6 +66,13 @@ import {
   type TransitionTaskOptions,
 } from "@/lib/appTaskLifecycleHelpers";
 import { LOADING_ICON_CLASS_NAME } from "@/lib/loadingIcon";
+import {
+  buildWorkbenchViewUrl,
+  readWorkbenchHistoryMarker,
+  readWorkbenchViewFromSearch,
+  withWorkbenchHistoryMarker,
+  type WorkbenchHistoryMarker,
+} from "@/lib/workbenchRoute";
 import { WORKBENCH_NAV_ITEMS, type WorkbenchView } from "@/lib/workbenchNav";
 import type {
   AppNotification,
@@ -128,7 +136,6 @@ import {
 import {
   SidebarInset,
   SidebarProvider,
-  SidebarRail,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -424,7 +431,7 @@ export function App({ service }: Props) {
     isRunSessionCancelRequested} = useRunSession();
   const liveCompareRef = useRef<RoundCompareData | null>(null);
   const handlersBridgeRef = useRef<{
-    refreshHistoryList?: () => Promise<HistoryDocumentSummary[]>;
+    refreshHistoryList?: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryDocumentSummary[]>;
     loadCompletedRoundArtifacts?: (result: RoundResult) => Promise<void>;
     loadLatestRoundSnapshot?: (
       status: DocumentStatus,
@@ -433,19 +440,27 @@ export function App({ service }: Props) {
         historyItems?: HistoryDocumentSummary[];
         historyItem?: HistoryDocumentSummary | null;
         allowProfileFallback?: boolean;
+        shouldCommit?: () => boolean;
+        promptOptions?: PromptOption[];
+        promptWorkflows?: PromptWorkflow[];
       },
     ) => Promise<unknown>;
     handleRunRound?: (
       configOverride?: ModelConfig,
       autoNextApproval?: RateAuditAutoNextApproval,
     ) => Promise<void>;
-    refreshRoundProgressStatus?: (status?: DocumentStatus | null, config?: ModelConfig) => Promise<RoundProgressStatus | null>;
+    refreshRoundProgressStatus?: (
+      status?: DocumentStatus | null,
+      config?: ModelConfig,
+      options?: { shouldCommit?: () => boolean },
+    ) => Promise<RoundProgressStatus | null>;
   }>({});
 
   const visibleProgressRef = useRef<RoundProgress | null>(null);
   const reviewSaveQueueRef = useRef<ReviewDecisionSaveQueue<Record<string, ReviewDecision>> | null>(null);
   const reviewSaveRevisionRef = useRef<Map<string, ReviewSaveRevisionState>>(new Map());
   const roundArtifactSnapshotIntentRef = useRef<RoundArtifactSnapshotIntent | null>(null);
+  const promptRouteRequestRef = useRef(0);
   const restoredDocumentRef = useRef(false);
   const roundProgressRequestRef = useRef(0);
   const autoRetryCountsRef = useRef<Record<string, number>>({});
@@ -460,10 +475,20 @@ export function App({ service }: Props) {
   const modelCatalogAbortRef = useRef<AbortController | null>(null);
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const promptPreviewDirtyRef = useRef(false);
+  const initialWorkbenchView = typeof window === "undefined"
+    ? "home"
+    : readWorkbenchViewFromSearch(window.location.search);
+  const initialWorkbenchHistoryMarker: WorkbenchHistoryMarker | null = typeof window === "undefined"
+    ? null
+    : readWorkbenchHistoryMarker(window.history.state);
+  const activeViewRef = useRef<WorkbenchView>(initialWorkbenchView);
+  const workbenchHistoryIndexRef = useRef(initialWorkbenchHistoryMarker?.index ?? 0);
+  const workbenchPopRevisionRef = useRef(0);
+  const workbenchHistoryRestoringRef = useRef(false);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogResult | null>(null);
   const [modelCatalogBusy, setModelCatalogBusy] = useState(false);
   const [modelCatalogError, setModelCatalogError] = useState("");
-  const [activeView, setActiveView] = useState<WorkbenchView>("home");
+  const [activeView, setActiveViewState] = useState<WorkbenchView>(initialWorkbenchView);
   const [reviewDecisions, setReviewDecisions] = useState<Record<string, ReviewDecision>>({});
   const [reviewRevision, setReviewRevision] = useState("");
   const [roundProgressStatus, setRoundProgressStatus] = useState<RoundProgressStatus | null>(null);
@@ -607,11 +632,35 @@ export function App({ service }: Props) {
     notificationMessageKeyRef,
     setError,
     setNotifications});
+  function focusWorkbenchMain() {
+    if (typeof window === "undefined") return;
+    window.requestAnimationFrame(() => {
+      document.getElementById("fyadr-main-content")?.focus({ preventScroll: true });
+    });
+  }
+  function applyWorkbenchView(view: WorkbenchView, focusMain = true) {
+    activeViewRef.current = view;
+    setActiveViewState(view);
+    if (focusMain) focusWorkbenchMain();
+  }
+  function commitWorkbenchView(view: WorkbenchView) {
+    const changed = activeViewRef.current !== view;
+    if (typeof window !== "undefined" && changed) {
+      const nextIndex = workbenchHistoryIndexRef.current + 1;
+      workbenchHistoryIndexRef.current = nextIndex;
+      window.history.pushState(
+        withWorkbenchHistoryMarker(window.history.state, { index: nextIndex, view }),
+        "",
+        buildWorkbenchViewUrl(view, window.location.href),
+      );
+    }
+    applyWorkbenchView(view);
+  }
   const workbenchShells = createAppWorkbenchShellHandlers({
     setNotificationCenterOpen,
     setNotifications,
     saveNotificationHistory,
-    setActiveView,
+    setActiveView: commitWorkbenchView,
     setDiffFocusRequest,
     pendingAutoActionRef,
     setPendingAutoAction,
@@ -630,26 +679,97 @@ export function App({ service }: Props) {
       tone: "warning",
     });
   }
-  function runAfterPromptDraftGuard(view: WorkbenchView, action: () => void) {
+  async function runAfterPromptDraftGuard(view: WorkbenchView, action: () => void): Promise<boolean> {
     if (view === "prompts" || !promptPreviewDirtyRef.current) {
       action();
-      return;
+      return true;
     }
-    void (async () => {
-      if (!await requestPromptPreviewDiscardConfirmation()) return;
-      promptPreviewDirtyRef.current = false;
-      action();
-    })();
+    if (!await requestPromptPreviewDiscardConfirmation()) return false;
+    promptPreviewDirtyRef.current = false;
+    action();
+    return true;
   }
-  function navigateToWorkbenchView(view: WorkbenchView) {
-    runAfterPromptDraftGuard(view, () => setActiveView(view));
+  function navigateToWorkbenchView(view: WorkbenchView): Promise<boolean> {
+    return runAfterPromptDraftGuard(view, () => commitWorkbenchView(view));
   }
   function openTaskTargetView(view: WorkbenchView) {
-    runAfterPromptDraftGuard(view, () => workbenchShells.openTaskTargetView(view));
+    void runAfterPromptDraftGuard(view, () => workbenchShells.openTaskTargetView(view));
   }
   function openDiffTaskTarget(filterMode: DiffFilterMode, chunkId?: string) {
-    runAfterPromptDraftGuard("home", () => workbenchShells.openDiffTaskTarget(filterMode, chunkId));
+    void runAfterPromptDraftGuard("home", () => workbenchShells.openDiffTaskTarget(filterMode, chunkId));
   }
+  // Install the history listener before the first paint so a fast click on a
+  // freshly rendered sidebar cannot create a URL-only navigation state.
+  useLayoutEffect(() => {
+    const initialView = readWorkbenchViewFromSearch(window.location.search);
+    const initialMarker = readWorkbenchHistoryMarker(window.history.state);
+    const initialIndex = initialMarker?.index ?? workbenchHistoryIndexRef.current;
+    workbenchHistoryIndexRef.current = initialIndex;
+    activeViewRef.current = initialView;
+    setActiveViewState(initialView);
+    window.history.replaceState(
+      withWorkbenchHistoryMarker(window.history.state, { index: initialIndex, view: initialView }),
+      "",
+      buildWorkbenchViewUrl(initialView, window.location.href),
+    );
+
+    const handleWorkbenchPopState = (event: PopStateEvent) => {
+      if (workbenchHistoryRestoringRef.current) {
+        workbenchHistoryRestoringRef.current = false;
+        focusWorkbenchMain();
+        return;
+      }
+      const sourceView = activeViewRef.current;
+      const sourceIndex = workbenchHistoryIndexRef.current;
+      const targetView = readWorkbenchViewFromSearch(window.location.search);
+      const targetMarker = readWorkbenchHistoryMarker(event.state);
+      if (targetView === sourceView) {
+        if (targetMarker) workbenchHistoryIndexRef.current = targetMarker.index;
+        window.history.replaceState(
+          withWorkbenchHistoryMarker(window.history.state, {
+            index: targetMarker?.index ?? sourceIndex,
+            view: targetView,
+          }),
+          "",
+          buildWorkbenchViewUrl(targetView, window.location.href),
+        );
+        applyWorkbenchView(targetView);
+        return;
+      }
+      const revision = ++workbenchPopRevisionRef.current;
+      void (async () => {
+        const allowed = await runAfterPromptDraftGuard(targetView, () => undefined);
+        if (revision !== workbenchPopRevisionRef.current) return;
+        if (!allowed) {
+          if (targetMarker && targetMarker.index !== sourceIndex) {
+            workbenchHistoryRestoringRef.current = true;
+            window.history.go(sourceIndex - targetMarker.index);
+          } else {
+            window.history.pushState(
+              withWorkbenchHistoryMarker(window.history.state, { index: sourceIndex, view: sourceView }),
+              "",
+              buildWorkbenchViewUrl(sourceView, window.location.href),
+            );
+            focusWorkbenchMain();
+          }
+          return;
+        }
+        const targetIndex = targetMarker?.index ?? sourceIndex;
+        workbenchHistoryIndexRef.current = targetIndex;
+        window.history.replaceState(
+          withWorkbenchHistoryMarker(window.history.state, { index: targetIndex, view: targetView }),
+          "",
+          buildWorkbenchViewUrl(targetView, window.location.href),
+        );
+        applyWorkbenchView(targetView);
+      })();
+    };
+    window.addEventListener("popstate", handleWorkbenchPopState);
+    return () => {
+      workbenchPopRevisionRef.current += 1;
+      window.removeEventListener("popstate", handleWorkbenchPopState);
+    };
+  }, []);
   function rejectPendingAutoAction(actionId?: string) {
     workbenchShells.rejectPendingAutoAction(actionId);
   }
@@ -709,9 +829,17 @@ export function App({ service }: Props) {
       void releaseProgressListener();
     };
   }, []);
-  async function refreshDocumentState(sourcePath: string, config = modelConfig) {
-    const status = await reviewRefreshHandlers.refreshDocumentState(sourcePath, config);
-    latestDocumentStatusRef.current = status;
+  async function refreshDocumentState(
+    sourcePath: string,
+    config = latestModelConfigRef.current ?? modelConfig,
+    options: {
+      shouldCommit?: () => boolean;
+      promptOptions?: PromptOption[];
+      promptWorkflows?: PromptWorkflow[];
+    } = {},
+  ) {
+    const status = await reviewRefreshHandlers.refreshDocumentState(sourcePath, config, options);
+    if (!options.shouldCommit || options.shouldCommit()) latestDocumentStatusRef.current = status;
     return status;
   }
 
@@ -1113,13 +1241,14 @@ const {
     handlePromptProfileChange,
     handlePromptSequenceChange} = createPromptHandlers({
     service,
-    getModelConfig: () => modelConfig,
-    getDocumentStatus: () => documentStatus,
+    promptRouteRequestRef,
+    getModelConfig: () => latestModelConfigRef.current ?? modelConfig,
+    getDocumentStatus: () => latestDocumentStatusRef.current,
     getPromptOptions: () => promptOptions,
     getPromptWorkflows: () => promptWorkflows,
     getPromptPreviews: () => promptPreviews,
     getActivePromptPreviewId: () => activePromptPreviewId,
-    setModelConfig,
+    setModelConfig: applyModelConfigChange,
     setPromptPreviews,
     setPromptPreviewBusy,
     setPromptPreviewError,
@@ -1196,15 +1325,15 @@ const {
     persistNormalizedModelConfig,
     applySavedModelConfig,
     handleSaveModelConfig,
-    handleTestConnection} = createModelCatalogHandlers({
+  handleTestConnection} = createModelCatalogHandlers({
     service,
-    getModelConfig: () => modelConfig,
+    getModelConfig: () => latestModelConfigRef.current ?? modelConfig,
     getDocumentStatus: () => documentStatus,
     getPromptOptions: () => promptOptions,
     getPromptWorkflows: () => promptWorkflows,
     getModelCatalogAbortRef: () => modelCatalogAbortRef.current,
     setModelCatalogAbortRef: (controller) => { modelCatalogAbortRef.current = controller; },
-    setModelConfig,
+    setModelConfig: applyModelConfigChange,
     setModelCatalog,
     setModelCatalogBusy,
     setModelCatalogError,
@@ -1396,6 +1525,11 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
   const statusAutoAction = !error && pendingAutoAction ? pendingAutoAction : null;
   const hasActiveOperationFeedback = Boolean(activeRuntimeTaskCount || (uiBusy && !error));
 
+  function applyModelConfigChange(nextConfig: ModelConfig) {
+    latestModelConfigRef.current = nextConfig;
+    setModelConfig(nextConfig);
+  }
+
   const modelPanel = (
     <ModelConfigCard
       value={modelConfig}
@@ -1403,7 +1537,7 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
       modelCatalog={modelCatalog}
       modelCatalogBusy={modelCatalogBusy}
       modelCatalogError={modelCatalogError}
-      onChange={setModelConfig}
+      onChange={applyModelConfigChange}
       onSave={handleSaveModelConfig}
       onTestConnection={handleTestConnection}
       onRefreshModels={() => void refreshModelCatalog()}
@@ -1743,7 +1877,6 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
             )}
           </section>
         </SidebarInset>
-      <SidebarRail />
     </SidebarProvider>
   );
 

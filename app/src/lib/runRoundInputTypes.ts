@@ -78,6 +78,9 @@ export type LoadLatestRoundSnapshotOptions = {
   historyItems?: HistoryDocumentSummary[];
   historyItem?: HistoryDocumentSummary | null;
   allowProfileFallback?: boolean;
+  shouldCommit?: () => boolean;
+  promptOptions?: import("@/types/app").PromptOption[];
+  promptWorkflows?: import("@/types/app").PromptWorkflow[];
 };
 
 export type OptionalUiFeedback = {

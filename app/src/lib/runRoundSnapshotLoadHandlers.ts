@@ -27,15 +27,19 @@ export function createRunRoundSnapshotLoadHandlers(
     config: ModelConfig,
     options?: LoadLatestRoundSnapshotOptions,
   ) {
-    return apply.applySelectedRoundSnapshot(resolveLatestRoundSnapshotSelection({
+    const selection = resolveLatestRoundSnapshotSelection({
       status,
       config,
       historyItems: options?.historyItems ?? deps.getHistoryItems(),
       historyItem: options?.historyItem,
       allowProfileFallback: options?.allowProfileFallback,
-      promptOptions: deps.getPromptOptions(),
-      promptWorkflows: deps.getPromptWorkflows(),
-    }));
+      promptOptions: options?.promptOptions ?? deps.getPromptOptions(),
+      promptWorkflows: options?.promptWorkflows ?? deps.getPromptWorkflows(),
+    });
+    return apply.applySelectedRoundSnapshot({
+      ...selection,
+      shouldCommit: options?.shouldCommit,
+    });
   }
 
   async function loadRoundSnapshotByOutputPath(outputPath: string) {

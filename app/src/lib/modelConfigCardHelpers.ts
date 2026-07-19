@@ -8,10 +8,23 @@ export const API_OPTIONS: Array<{ value: ModelConfig["apiType"]; label: string }
   { value: "responses", label: "responses" },
 ];
 
-export function createModelProvider(value: ModelConfig): ModelProviderConfig {
+let providerIdSequence = 0;
+
+function createProviderId(existingProviders: ModelProviderConfig[]): string {
+  const existingIds = new Set(existingProviders.map((provider) => provider.id));
   const timestamp = Date.now().toString(36);
+  let candidate = "";
+  do {
+    providerIdSequence += 1;
+    candidate = `provider-${timestamp}-${providerIdSequence.toString(36)}`;
+  } while (existingIds.has(candidate));
+  return candidate;
+}
+
+export function createModelProvider(value: ModelConfig): ModelProviderConfig {
+  const existingProviders = value.modelProviders ?? [];
   return {
-    id: `provider-${timestamp}`,
+    id: createProviderId(existingProviders),
     name: `服务商 ${((value.modelProviders?.length ?? 0) + 1)}`,
     enabled: true,
     baseUrl: value.baseUrl,
@@ -26,6 +39,26 @@ export function createModelProvider(value: ModelConfig): ModelProviderConfig {
     models: value.model ? [value.model] : [],
     defaultModel: value.model,
     updatedAt: new Date().toISOString(),
+  };
+}
+
+export function removeModelProvider(value: ModelConfig, providerId: string): ModelConfig {
+  const provider = value.modelProviders?.find((item) => item.id === providerId);
+  if (!provider) return value;
+  const roundModels = value.roundModels
+    ? Object.fromEntries(Object.entries(value.roundModels).filter(([, route]) => !(
+      route.providerId === providerId
+      || (
+        !route.providerId
+        && route.providerName === provider.name
+        && route.baseUrl === provider.baseUrl
+      )
+    )))
+    : value.roundModels;
+  return {
+    ...value,
+    modelProviders: (value.modelProviders ?? []).filter((item) => item.id !== providerId),
+    roundModels,
   };
 }
 

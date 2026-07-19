@@ -1274,7 +1274,8 @@ function runRegression() {
     assertIncludes(modelConfigCardSource, "refreshAllProviderCatalogs", "Model provider repository must support batch model catalog refresh.", failures);
     assertIncludes(modelConfigSource, "获取全部", "Model provider repository must expose batch model catalog refresh in the UI.", failures);
     assertIncludes(modelConfigCardSource, "providerCatalogAbortRef", "Provider model catalog loading must be cancellable.", failures);
-    assertIncludes(modelConfigCardSource, "onListModelsForConfig(providerToModelConfig(value, provider), abortController.signal)", "Provider catalog refresh must pass an AbortSignal to the service layer.", failures);
+    assertIncludes(modelConfigSource, "onListModelsForConfig", "Provider catalog refresh must call the model-list service.", failures);
+    assertIncludes(modelConfigSource, "handle.abortController.signal", "Provider catalog refresh must pass the request AbortSignal to the service layer.", failures);
   }
 
   assertNoLegacyFyClassTokens(combinedSource, "Component sources must not reintroduce old fy-* UI class tokens.", failures);

@@ -3,18 +3,76 @@ import type { EnvironmentDiagnostics } from "@/types/app";
 
 export async function copyTextToClipboard(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Some browsers expose the async API but reject it outside a secure
+      // context. Fall through to the selection-based compatibility path.
+    }
   }
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.style.position = "fixed";
   textarea.style.opacity = "0";
   document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  document.execCommand("copy");
-  textarea.remove();
+  try {
+    textarea.focus();
+    textarea.select();
+    if (!document.execCommand("copy")) {
+      throw new Error("浏览器拒绝了剪贴板写入，请检查站点权限后重试。");
+    }
+  } finally {
+    textarea.remove();
+  }
+}
+
+export function buildDiagnosticsFailureSnapshot(
+  message: string,
+  current: EnvironmentDiagnostics | null,
+): EnvironmentDiagnostics {
+  const failureCheck = {
+    key: "health_request",
+    label: "启动诊断请求",
+    ok: false,
+    level: "error",
+    message: message || "无法读取启动诊断，请检查本地服务后重试。",
+  };
+  if (current) {
+    return {
+      ...current,
+      ok: false,
+      createdAt: new Date().toISOString(),
+      checks: [failureCheck, ...current.checks.filter((item) => item.key !== failureCheck.key)],
+    };
+  }
+  return {
+    ok: false,
+    createdAt: new Date().toISOString(),
+    workspace: "",
+    activeRunCount: 0,
+    checks: [failureCheck],
+    paths: [],
+    activeRuns: [],
+    config: {
+      path: "",
+      exists: false,
+      hasBaseUrl: false,
+      hasApiKey: false,
+      model: "",
+      apiType: "",
+      promptProfile: "",
+      promptSequence: [],
+      providerCount: 0,
+      enabledProviderCount: 0,
+      customRoundCount: 0,
+    },
+    runtime: {
+      pythonVersion: "",
+      pythonExecutable: "",
+      platform: "",
+    },
+  };
 }
 
 export function formatShortTaskId(runId: string | null | undefined): string | undefined {

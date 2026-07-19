@@ -12,6 +12,7 @@ export type {
   LoadLatestRoundSnapshotOptions,
   LoadedHistorySnapshotLike,
   OptionalUiFeedback,
+  RefreshHistoryListOptions,
   ResyncHistoryDocumentRouteInput,
   TaskTicket,
 } from "@/lib/historyHandlerTypes";

@@ -46,7 +46,14 @@ export function ModelProviderEditorPanel({
           <EmptyMedia variant="icon"><DatabaseZap /></EmptyMedia>
           <EmptyTitle>先添加服务商</EmptyTitle>
         </EmptyHeader>
-        <Button type="button" onClick={onAddProvider} disabled={busy}><Plus data-icon="inline-start" />添加服务商</Button>
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button type="button" onClick={onAddProvider} disabled={busy}><Plus data-icon="inline-start" />添加服务商</Button>
+          {providerCatalogRunning ? (
+            <Button type="button" variant="outlineDanger" onClick={onStopProviderCatalogRequest}>
+              <X data-icon="inline-start" />停止读取
+            </Button>
+          ) : null}
+        </div>
       </Empty>
     );
   }
@@ -72,7 +79,7 @@ export function ModelProviderEditorPanel({
                 <X data-icon="inline-start" />停止
               </Button>
             ) : null}
-            <Button type="button" size="sm" onClick={() => onSaveProviderConfig(selectedProvider)} disabled={busy}>
+            <Button type="button" size="sm" onClick={() => onSaveProviderConfig(selectedProvider)} disabled={busy || providerCatalogRunning}>
               <Save data-icon="inline-start" />保存
             </Button>
             <Button type="button" variant="outlineDanger" size="sm" onClick={() => onDeleteProvider(selectedProvider.id)} disabled={busy}>

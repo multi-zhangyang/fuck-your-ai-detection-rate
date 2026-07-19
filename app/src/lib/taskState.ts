@@ -17,7 +17,7 @@ export type TaskPhase =
   | "batch-rerunning"
   | "canceling-batch-rerun";
 
-const NON_BLOCKING_PHASES = new Set<TaskPhase>(["idle", "picking-document"]);
+const NON_BLOCKING_PHASES = new Set<TaskPhase>(["idle"]);
 const RUNNING_PHASES = new Set<TaskPhase>(["running-round", "canceling-run", "batch-rerunning", "canceling-batch-rerun"]);
 
 const TASK_PHASE_LABELS: Record<TaskPhase, string> = {

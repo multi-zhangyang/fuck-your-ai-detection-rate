@@ -1,4 +1,5 @@
 import {
+  buildDiagnosticsFailureSnapshot,
   planDiagnosticsFailureFeedback,
   planDiagnosticsSuccessFeedback,
   planTaskStateSnapshotCleanupSuccessFeedback,
@@ -7,18 +8,36 @@ import { stringifyError } from "@/lib/errorText";
 import type { DocumentLoadHandlersDeps } from "@/lib/documentLoadHandlerTypes";
 import type { EnvironmentDiagnostics } from "@/types/app";
 
+const requestGenerationBySetter = new WeakMap<object, number>();
+
+function beginDiagnosticsRequest(key: object): number {
+  const generation = (requestGenerationBySetter.get(key) ?? 0) + 1;
+  requestGenerationBySetter.set(key, generation);
+  return generation;
+}
+
+function isCurrentDiagnosticsRequest(key: object, generation: number): boolean {
+  return requestGenerationBySetter.get(key) === generation;
+}
+
 export function createDocumentDiagnosticsHandlers(deps: DocumentLoadHandlersDeps) {
   async function refreshDiagnostics(options: { silent?: boolean } = {}) {
     const silent = Boolean(options.silent);
+    const requestKey = deps.setDiagnostics as unknown as object;
+    const generation = beginDiagnosticsRequest(requestKey);
     const taskTicket = silent ? 0 : deps.beginTask("diagnosing", { runtimeStep: "正在执行启动诊断。" });
     try {
       const result = await deps.service.getHealth();
-      deps.setDiagnostics(result);
-      if (!silent) deps.applyOptionalUiFeedback(planDiagnosticsSuccessFeedback(result));
+      if (isCurrentDiagnosticsRequest(requestKey, generation)) {
+        deps.setDiagnostics(result);
+        if (!silent) deps.applyOptionalUiFeedback(planDiagnosticsSuccessFeedback(result));
+      }
       return result;
     } catch (appError) {
-      if (!silent) {
-        deps.setError(stringifyError(appError));
+      if (isCurrentDiagnosticsRequest(requestKey, generation)) {
+        const message = stringifyError(appError);
+        deps.setDiagnostics((current) => buildDiagnosticsFailureSnapshot(message, current));
+        deps.setError(message);
         deps.setRuntimeStep(planDiagnosticsFailureFeedback().runtimeStep);
       }
       return null;

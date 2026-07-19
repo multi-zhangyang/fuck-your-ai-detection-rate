@@ -56,7 +56,7 @@ python scripts/real_docx_smoke.py
 npm --prefix app run test:e2e:smoke
 ```
 
-也可以接进总闸：
+也可以接进本地总闸；GitHub Actions 已默认执行该浏览器门禁：
 
 ```powershell
 python scripts/run_regressions.py --skip-frontend-build --include-browser-e2e

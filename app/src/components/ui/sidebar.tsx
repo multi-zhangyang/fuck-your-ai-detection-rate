@@ -4,6 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { PanelLeft } from "lucide-react";
 
 import { useIsMobile } from "@/hooks/use-mobile";
+import { createSidebarCookie, readSidebarOpenCookie } from "@/lib/sidebarState";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -13,8 +14,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
-const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 
 type SidebarContextValue = {
   state: "expanded" | "collapsed";
@@ -23,6 +22,7 @@ type SidebarContextValue = {
   openMobile: boolean;
   setOpenMobile: (open: boolean) => void;
   isMobile: boolean;
+  sidebarId: string;
   toggleSidebar: () => void;
 };
 
@@ -45,8 +45,12 @@ const SidebarProvider = React.forwardRef<
   }
 >(({ defaultOpen = true, open: openProp, onOpenChange, className, style, children, ...props }, ref) => {
   const isMobile = useIsMobile();
+  const generatedId = React.useId();
+  const sidebarId = `fyadr-sidebar-${generatedId.replace(/:/g, "")}`;
   const [openMobile, setOpenMobile] = React.useState(false);
-  const [_open, _setOpen] = React.useState(defaultOpen);
+  const [_open, _setOpen] = React.useState(() => (
+    typeof document === "undefined" ? defaultOpen : readSidebarOpenCookie(document.cookie, defaultOpen)
+  ));
   const open = openProp ?? _open;
 
   const setOpen = React.useCallback(
@@ -57,7 +61,7 @@ const SidebarProvider = React.forwardRef<
       } else {
         _setOpen(nextOpen);
       }
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${nextOpen}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+      document.cookie = createSidebarCookie(nextOpen);
     },
     [onOpenChange, open],
   );
@@ -71,6 +75,10 @@ const SidebarProvider = React.forwardRef<
   }, [isMobile, setOpen]);
 
   React.useEffect(() => {
+    if (!isMobile) setOpenMobile(false);
+  }, [isMobile]);
+
+  React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "b" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
@@ -81,10 +89,10 @@ const SidebarProvider = React.forwardRef<
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [toggleSidebar]);
 
-  const state: SidebarContextValue["state"] = open ? "expanded" : "collapsed";
+  const state: SidebarContextValue["state"] = isMobile || open ? "expanded" : "collapsed";
   const value = React.useMemo(
-    () => ({ state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar }),
-    [state, open, setOpen, isMobile, openMobile, toggleSidebar],
+    () => ({ state, open, setOpen, isMobile, openMobile, setOpenMobile, sidebarId, toggleSidebar }),
+    [state, open, setOpen, isMobile, openMobile, sidebarId, toggleSidebar],
   );
 
   return (
@@ -118,11 +126,11 @@ const Sidebar = React.forwardRef<
     collapsible?: "offcanvas" | "icon" | "none";
   }
 >(({ side = "left", variant = "sidebar", collapsible = "offcanvas", className, children, ...props }, ref) => {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
+  const { isMobile, state, openMobile, setOpenMobile, sidebarId } = useSidebar();
 
   if (collapsible === "none") {
     return (
-      <div ref={ref} className={cn("flex h-full w-[--sidebar-width] flex-col bg-sidebar text-sidebar-foreground", className)} {...props}>
+      <div id={sidebarId} ref={ref} role="navigation" aria-label="工作台主导航" className={cn("flex h-full w-[--sidebar-width] flex-col bg-sidebar text-sidebar-foreground", className)} {...props}>
         {children}
       </div>
     );
@@ -142,7 +150,7 @@ const Sidebar = React.forwardRef<
             <SheetTitle>工作台导航</SheetTitle>
             <SheetDescription>切换工作台页面。</SheetDescription>
           </SheetHeader>
-          <div className="flex h-full w-full flex-col">{children}</div>
+          <div id={sidebarId} role="navigation" aria-label="工作台主导航" className="flex h-full w-full flex-col">{children}</div>
         </SheetContent>
       </Sheet>
     );
@@ -151,7 +159,7 @@ const Sidebar = React.forwardRef<
   return (
     <div
       ref={ref}
-      className="group peer hidden text-sidebar-foreground md:block"
+      className="group peer relative hidden text-sidebar-foreground md:block"
       data-state={state}
       data-collapsible={state === "collapsed" ? collapsible : ""}
       data-variant={variant}
@@ -178,6 +186,9 @@ const Sidebar = React.forwardRef<
         {...props}
       >
         <div
+          id={sidebarId}
+          role="navigation"
+          aria-label="工作台主导航"
           data-sidebar="sidebar"
           className="flex h-full w-full flex-col bg-sidebar group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow"
         >
@@ -191,17 +202,20 @@ Sidebar.displayName = "Sidebar";
 
 const SidebarTrigger = React.forwardRef<React.ElementRef<typeof Button>, React.ComponentProps<typeof Button>>(
   ({ className, onClick, ...props }, ref) => {
-    const { toggleSidebar } = useSidebar();
+    const { isMobile, open, openMobile, sidebarId, toggleSidebar } = useSidebar();
     return (
       <Button
         ref={ref}
+        type="button"
         data-sidebar="trigger"
+        aria-controls={sidebarId}
+        aria-expanded={isMobile ? openMobile : open}
         variant="ghost"
         size="icon"
         className={cn("size-10 md:size-8", className)}
         onClick={(event) => {
           onClick?.(event);
-          toggleSidebar();
+          if (!event.defaultPrevented) toggleSidebar();
         }}
         {...props}
       >

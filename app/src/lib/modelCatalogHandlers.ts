@@ -10,6 +10,7 @@ export type {
   ModelCatalogListHandlers,
   ModelCatalogProviderHandlers,
   OptionalUiFeedback,
+  ProviderModelPatchCollection,
   TaskTicket,
 } from "@/lib/modelCatalogHandlerTypes";
 
