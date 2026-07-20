@@ -18,6 +18,15 @@ export {
 const WEB_API_GLOBALS = globalThis as { __FYADR_WEB_API__?: string };
 export const WEB_API_BASE = WEB_API_GLOBALS.__FYADR_WEB_API__ ?? import.meta.env.VITE_FYADR_API_BASE ?? "";
 
+function buildRequestHeaders(body: BodyInit | null | undefined, input?: HeadersInit): Headers {
+  const headers = new Headers(input);
+  const isMultipart = typeof FormData !== "undefined" && body instanceof FormData;
+  if (!isMultipart && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  return headers;
+}
+
 export async function fetchWithFriendlyError(input: string, init?: RequestInit): Promise<Response> {
   try {
     const response = await fetch(`${WEB_API_BASE}${input}`, withAuthRequestInit(init));
@@ -51,10 +60,7 @@ export async function requestJson<T>(input: string, init?: RequestJsonInit): Pro
     const response = await fetchWithFriendlyError(input, {
       ...requestInit,
       signal: controller?.signal,
-      headers: {
-        "Content-Type": "application/json",
-        ...(requestInit.headers ?? {}),
-      },
+      headers: buildRequestHeaders(requestInit.body, requestInit.headers),
     });
     const responseText = await response.text();
     if (!response.ok) {

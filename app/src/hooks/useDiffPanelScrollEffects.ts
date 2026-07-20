@@ -8,6 +8,7 @@ import type { RoundCompareData } from "@/types/app";
 export function useDiffPanelScrollEffects(input: {
   scrollRef: MutableRefObject<HTMLDivElement | null>;
   chunkRefs: MutableRefObject<Record<string, HTMLDivElement | null>>;
+  virtualScrollToChunkRef: MutableRefObject<((chunkId: string) => boolean) | null>;
   restoredKeyRef: MutableRefObject<string>;
   previousChunkCountRef: MutableRefObject<number>;
   handledDiffFocusNonceRef: MutableRefObject<number | null>;
@@ -33,6 +34,7 @@ export function useDiffPanelScrollEffects(input: {
   useDiffPanelFocusScrollEffects({
     scrollRef: input.scrollRef,
     chunkRefs: input.chunkRefs,
+    virtualScrollToChunkRef: input.virtualScrollToChunkRef,
     handledDiffFocusNonceRef: input.handledDiffFocusNonceRef,
     setFocusedReviewIndex: input.setFocusedReviewIndex,
     scrollKey: input.scrollKey,

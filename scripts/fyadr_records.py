@@ -68,6 +68,7 @@ from prompt_library import (
     prompt_sequence_match_rank,
 )
 from path_utils import build_document_artifact_stem
+from private_fs import ensure_private_directory, harden_private_file
 
 # Paths are computed relative to this file: scripts/ -> workspace root.
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -145,7 +146,7 @@ class RoundRecord:
 
 
 def _ensure_finish_dir() -> None:
-    FINISH_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(FINISH_DIR)
 
 
 def _write_records_json_atomic(
@@ -191,6 +192,7 @@ def _write_records_json_atomic(
             os.replace(temporary_path, RECORDS_PATH)
         if os.name != "nt":
             os.chmod(RECORDS_PATH, 0o600)
+        harden_private_file(RECORDS_PATH)
         return True
     finally:
         if file_descriptor >= 0:
@@ -1357,6 +1359,7 @@ def _export_related_paths_for_output(output_path: Path) -> set[Path]:
 def _derived_paths_for_output(output_path: Path) -> set[Path]:
     return {
         output_path.with_name(f"{output_path.stem}_checkpoint.json").resolve(),
+        output_path.with_name(f"{output_path.stem}_checkpoint_journal.jsonl").resolve(),
         output_path.with_name(f"{output_path.stem}_compare.json").resolve(),
         output_path.with_name(f"{output_path.stem}_quality.json").resolve(),
         output_path.with_name(f"{output_path.stem}_bodymap.json").resolve(),
@@ -2100,7 +2103,7 @@ def delete_rounds(
 ) -> Dict[str, Any]:
     normalized_mode = _normalize_delete_mode(mode)
     normalized_doc_id = normalize_doc_id(doc_id)
-    impact = preview_delete_document(
+    preview_delete_document(
         normalized_doc_id,
         from_round,
         prompt_profile=prompt_profile,
@@ -2264,7 +2267,7 @@ def delete_rounds(
 def delete_document(doc_id: str, mode: str | None = None) -> Dict[str, Any]:
     normalized_mode = _normalize_delete_mode(mode)
     normalized_doc_id = normalize_doc_id(doc_id)
-    impact = preview_delete_document(normalized_doc_id, mode=normalized_mode)
+    preview_delete_document(normalized_doc_id, mode=normalized_mode)
     maintenance_reason = _history_delete_backup_reason("pre_delete_document", normalized_doc_id)
     maintenance_backup = _prepare_history_delete_backup(maintenance_reason, normalized_mode)
     records = load_records_normalized()

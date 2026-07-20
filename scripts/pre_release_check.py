@@ -13,6 +13,7 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT_PATH = ROOT_DIR / "finish" / "regression" / "pre_release_check_report.json"
+REGRESSION_TIMEOUT_SECONDS = 3600
 
 TRACKED_ARTIFACT_PATTERNS = (
     "finish/*",
@@ -150,7 +151,11 @@ def _run_regressions(*, skip_frontend_build: bool, include_browser_e2e: bool) ->
         command.append("--skip-frontend-build")
     if include_browser_e2e:
         command.append("--include-browser-e2e")
-    result = _run_command("regression suite", command, timeout=1200)
+    # The release suite intentionally exercises real DOCX workflows and an
+    # optional browser.  A healthy full run can exceed twenty minutes on a
+    # development host, so leave enough headroom for slower CI-grade disks
+    # without allowing the subprocess to run forever.
+    result = _run_command("regression suite", command, timeout=REGRESSION_TIMEOUT_SECONDS)
     report = _parse_json_output(result) or {}
     return {
         "ok": bool(result["ok"]) and bool(report.get("ok", False)),

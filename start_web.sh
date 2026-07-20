@@ -6,6 +6,7 @@
 
 set -u
 set -o pipefail
+umask 077
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$SCRIPT_DIR
@@ -138,7 +139,7 @@ if ! "$NODE_BIN" -e 'const [major, minor] = process.versions.node.split(".").map
   fail "Node.js 版本不受支持；需要 20.19+，或 22.12+。"
 fi
 
-[ -f "$REPO_ROOT/requirements.txt" ] || fail "缺少 requirements.txt；请从项目根目录运行。"
+[ -f "$REPO_ROOT/requirements.lock" ] || fail "缺少 requirements.lock；请从项目根目录运行。"
 [ -f "$REPO_ROOT/app/package.json" ] || fail "缺少 app/package.json；请确认仓库完整。"
 [ -f "$REPO_ROOT/app/package-lock.json" ] || fail "缺少 app/package-lock.json；无法安装锁定依赖。"
 
@@ -155,7 +156,7 @@ if [ "$INSTALL_DEPENDENCIES" -eq 1 ]; then
   [ -x "$PYTHON_BIN" ] || fail "虚拟环境未生成可执行 Python。"
   printf '%s\n' "[FYADR] 正在安装 Python 依赖……"
   "$PYTHON_BIN" -m pip install --upgrade pip || fail "虚拟环境 pip 初始化失败。"
-  "$PYTHON_BIN" -m pip install -r "$REPO_ROOT/requirements.txt" || fail "Python 依赖安装失败。"
+  "$PYTHON_BIN" -m pip install --require-hashes -r "$REPO_ROOT/requirements.lock" || fail "Python 依赖安装失败。"
   printf '%s\n' "[FYADR] 正在安装前端锁定依赖……"
   "$NPM_BIN" --prefix "$REPO_ROOT/app" ci || fail "前端依赖安装失败。"
 fi
@@ -164,7 +165,7 @@ if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,
   fail "当前 Python 环境版本过低；需要 Python 3.10 或更高版本。"
 fi
 
-if ! "$PYTHON_BIN" -c 'import flask, flask_compress, docx, pypdf' >/dev/null 2>&1; then
+if ! "$PYTHON_BIN" -c 'import flask, flask_compress, docx' >/dev/null 2>&1; then
   fail "Python 依赖不完整。请运行 ./start_web.sh --install。"
 fi
 

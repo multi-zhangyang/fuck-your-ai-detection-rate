@@ -41,6 +41,35 @@ def run_regression() -> dict[str, object]:
     )
     checks.append("native POSIX CI jobs own Docker entrypoint bash syntax validation")
 
+    _assert("container-smoke:" in ci_workflow, "CI must include a real production-container job")
+    _assert("name: Container smoke" in ci_workflow, "container smoke must expose a stable required-check name")
+    _assert("docker build --pull --tag" in ci_workflow, "container smoke must build the repository Dockerfile")
+    _assert("/api/auth/status" in ci_workflow, "container smoke must probe the authentication contract")
+    regression_job = re.search(
+        r"(?ms)^  regression:\n.*?^    timeout-minutes:\s*(\d+)\s*$",
+        ci_workflow,
+    )
+    _assert(
+        regression_job is not None and int(regression_job.group(1)) >= 60,
+        "the full Windows regression job must retain enough time for real DOCX and browser checks",
+    )
+    asset_pattern_match = re.search(r"assets = re\.findall\(r'([^']+)', html\)", ci_workflow)
+    _assert(asset_pattern_match is not None, "container smoke must extract production asset URLs")
+    _assert(
+        re.findall(asset_pattern_match.group(1), '<script type="module" src="/assets/index-smoke.js"></script>')
+        == ["/assets/index-smoke.js"],
+        "container smoke must recognize root-relative Vite asset URLs",
+    )
+    _assert(
+        'docker top "$CI_CONTAINER" -eo pid,user,comm' in ci_workflow
+        and '$3 == "gunicorn"' in ci_workflow
+        and '$2 == "root"' in ci_workflow
+        and 'docker exec --user 10001:10001' in ci_workflow,
+        "container smoke must verify non-root serving with a Docker-compatible PID column and writable runtime paths",
+    )
+    _assert("if: always()" in ci_workflow, "container smoke must always clean its isolated resources")
+    checks.append("CI builds and probes an isolated production container before release")
+
     if os.name == "nt":
         # Docker runs this script in a Linux container. Hosted Windows images
         # expose several incompatible `bash` shims, so native POSIX matrix jobs

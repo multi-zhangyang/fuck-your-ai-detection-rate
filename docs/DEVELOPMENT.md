@@ -8,7 +8,7 @@ Windows PowerShell：
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock
 npm --prefix app ci
 ```
 
@@ -16,16 +16,24 @@ macOS / Linux：
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install --require-hashes -r requirements-dev.lock
 npm --prefix app ci
 ```
 
 下面的检查通过 `scripts/run_python.mjs` 自动选择项目虚拟环境中的 Python，在 Windows、macOS 和 Linux 上使用相同命令。
 
+Python 的直接依赖以根目录 `pyproject.toml` 为准，`requirements.lock` 与 `requirements-dev.lock` 分别锁定运行环境和开发检查环境。修改依赖后，使用同一版 `uv` 重新生成两份带哈希锁文件并一并提交：
+
+```bash
+uv pip compile pyproject.toml --universal --generate-hashes --output-file requirements.lock
+uv pip compile pyproject.toml --extra dev --universal --generate-hashes --output-file requirements-dev.lock
+```
+
 ## 快速检查
 
 ```bash
 npm --prefix app run check:text
+node scripts/run_python.mjs -m ruff check .
 node scripts/run_python.mjs scripts/open_source_audit.py
 ```
 
@@ -63,6 +71,15 @@ node scripts/run_python.mjs scripts/state_machine_regression.py
 node scripts/run_python.mjs scripts/parallel_round_regression.py
 node scripts/run_python.mjs scripts/checkpoint_resume_regression.py
 node scripts/run_python.mjs scripts/single_output_retry_regression.py
+```
+
+### 长文档、上传与私密存储
+
+```bash
+node scripts/frontend_diff_virtualization_regression.mjs
+node scripts/run_python.mjs scripts/upload_transport_security_regression.py
+node scripts/run_python.mjs scripts/private_filesystem_regression.py
+node scripts/run_python.mjs scripts/history_backup_compression_regression.py
 ```
 
 ### 真实 DOCX 冒烟

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 import json
 import shutil
 import sys
@@ -48,6 +49,14 @@ def _create_docx(path: Path, marker: str) -> None:
     document.add_paragraph(f"{marker} 正文内容必须与另一份同名文档隔离。")
     document.add_paragraph("致谢")
     document.save(str(path))
+
+
+def _create_docx_bytes(marker: str) -> bytes:
+    document = Document()
+    document.add_paragraph(f"{marker} binary upload")
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
 
 
 def _remove_path(path: Path) -> None:
@@ -199,8 +208,8 @@ def _exercise_upload_isolation(cleanup_uploads: set[Path], checks: list[str]) ->
     checks.append("same-name text uploads are content-addressed, immutable, and deduplicated")
 
     binary_name = "p0-upload-same-name.docx"
-    first_binary = b"PK\x03\x04first-binary-document"
-    second_binary = b"PK\x03\x04second-binary-document"
+    first_binary = _create_docx_bytes("first")
+    second_binary = _create_docx_bytes("second")
     with ThreadPoolExecutor(max_workers=2) as executor:
         first_future = executor.submit(
             web_app.write_uploaded_binary_file,

@@ -63,7 +63,6 @@ def run_regression() -> dict[str, object]:
 
     # --- varied sentences → high burstiness, no low_burstiness risk ---
     varied = "短。这是一个明显更长的中等长度句子用于拉开长度。短。又是另一个相当长的句子来制造句长差异。短。"
-    vm = f._style_risk_metrics(varied)
     if "low_burstiness_ratio" in _risk_codes(varied):
         failures.append("low_burstiness_ratio should NOT be raised on varied sentences")
 

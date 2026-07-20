@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   AlertCircle,
   Bell,
@@ -559,7 +560,41 @@ export function App({ service }: Props) {
     setRuntimeStep,
     setNotice,
     setBusy,
-    setError} = useAppState();
+    setError,
+  } = useAppState(useShallow((state) => ({
+    modelConfig: state.modelConfig,
+    documentStatus: state.documentStatus,
+    history: state.history,
+    protectionMap: state.protectionMap,
+    scopeDiagnostics: state.scopeDiagnostics,
+    historyItems: state.historyItems,
+    historyPanelOpen: state.historyPanelOpen,
+    roundResult: state.roundResult,
+    progress: state.progress,
+    preview: state.preview,
+    compareData: state.compareData,
+    lastExportResult: state.lastExportResult,
+    runtimeStep: state.runtimeStep,
+    notice: state.notice,
+    busy: state.busy,
+    error: state.error,
+    setModelConfig: state.setModelConfig,
+    setDocumentStatus: state.setDocumentStatus,
+    setHistory: state.setHistory,
+    setProtectionMap: state.setProtectionMap,
+    setScopeDiagnostics: state.setScopeDiagnostics,
+    setHistoryItems: state.setHistoryItems,
+    setHistoryPanelOpen: state.setHistoryPanelOpen,
+    setRoundResult: state.setRoundResult,
+    setProgress: state.setProgress,
+    setPreview: state.setPreview,
+    setCompareData: state.setCompareData,
+    setLastExportResult: state.setLastExportResult,
+    setRuntimeStep: state.setRuntimeStep,
+    setNotice: state.setNotice,
+    setBusy: state.setBusy,
+    setError: state.setError,
+  })));
   const applyModelConfigChange = useCallback((nextConfig: ModelConfig) => {
     modelConfigRevisionRef.current += 1;
     latestModelConfigRef.current = nextConfig;

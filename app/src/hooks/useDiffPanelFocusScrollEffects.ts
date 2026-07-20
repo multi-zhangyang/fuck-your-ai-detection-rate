@@ -11,6 +11,7 @@ import type { RoundCompareData } from "@/types/app";
 export function useDiffPanelFocusScrollEffects(input: {
   scrollRef: MutableRefObject<HTMLDivElement | null>;
   chunkRefs: MutableRefObject<Record<string, HTMLDivElement | null>>;
+  virtualScrollToChunkRef: MutableRefObject<((chunkId: string) => boolean) | null>;
   handledDiffFocusNonceRef: MutableRefObject<number | null>;
   setFocusedReviewIndex: Dispatch<SetStateAction<number>>;
   scrollKey: string;
@@ -49,7 +50,12 @@ export function useDiffPanelFocusScrollEffects(input: {
       });
       if (action.kind === "chunk" && action.targetId) {
         const targetNode = input.chunkRefs.current[action.targetId];
-        targetNode?.scrollIntoView({ behavior: "smooth", block: "start" });
+        if (targetNode) {
+          targetNode.scrollIntoView({ behavior: "smooth", block: "start" });
+        } else if (!input.virtualScrollToChunkRef.current?.(action.targetId)) {
+          node.scrollTo({ top: 0, behavior: "smooth" });
+          setDiffScrollTop(input.scrollKey, 0);
+        }
         input.setFocusedReviewIndex(action.reviewIndex ?? -1);
         return;
       }
@@ -71,6 +77,7 @@ export function useDiffPanelFocusScrollEffects(input: {
     input.scrollKey,
     input.scrollRef,
     input.chunkRefs,
+    input.virtualScrollToChunkRef,
     input.handledDiffFocusNonceRef,
     input.setFocusedReviewIndex,
   ]);

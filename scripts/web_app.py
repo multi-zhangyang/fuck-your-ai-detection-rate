@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import copy
 from hashlib import sha256
+from io import BytesIO
 import json
 import math
 import os
@@ -15,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import quote
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
@@ -29,8 +31,15 @@ try:
 except ImportError:  # pragma: no cover - local dev without flask-compress
     Compress = None  # type: ignore[assignment]
 
-from app_config import get_app_config_path, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
+from app_config import get_app_config_dir, get_app_config_path, hydrate_app_config_secrets, load_app_config, redact_app_config, save_app_config
 from path_utils import is_path_under, truncate_utf8_filename_component
+from docx_security import validate_docx_package
+from private_fs import (
+    configure_private_umask,
+    ensure_private_directory,
+    harden_private_file,
+    harden_private_trees,
+)
 from app_service import (
     DocumentReleaseGateError,
     ExportRoundError,
@@ -91,6 +100,7 @@ from fyadr_round_service import (
 from fyadr_history_db import DEFAULT_BACKUP_KEEP, coerce_backup_keep
 from prompt_library import (
     DEFAULT_PROMPT_PROFILE,
+    PROMPT_DIR,
     create_prompt,
     delete_prompt,
     list_prompt_backups,
@@ -112,6 +122,24 @@ EXPORT_DIR = ROOT_DIR / "finish" / "web_exports"
 TASK_STATE_DIR = ROOT_DIR / "finish" / "intermediate" / "task_states"
 RUN_STATE_TTL_SECONDS = 1800
 SSE_KEEPALIVE_INTERVAL_SECONDS = 15
+MAX_RUN_PROGRESS_EVENTS = 512
+MAX_BATCH_PROGRESS_EVENTS = 512
+RUN_STATE_PERSIST_INTERVAL_SECONDS = 2.0
+SSE_STREAM_NOTIFY_INTERVAL_SECONDS = 0.25
+RUN_STATE_FORCE_PERSIST_PHASES = frozenset({
+    "cancel-requested",
+    "chunk-complete",
+    "chunk-failed",
+    "chunk-frozen",
+    "chunk-source-fallback",
+    "chunking-ready",
+    "provider-retry-wait",
+    "resuming-from-checkpoint",
+    "restoring-output",
+    "round-complete",
+    "run-failed",
+    "run-interrupted",
+})
 TASK_STATE_RETENTION_HOURS = 168
 TASK_STATE_TEMP_RETENTION_HOURS = 1
 TASK_STATE_SELF_HEAL_INTERVAL_SECONDS = 60
@@ -148,11 +176,16 @@ class ProgressState:
     completed: bool = False
     error: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
+    event_ids: list[int] = field(default_factory=list, repr=False)
+    next_event_id: int = 1
     result: dict[str, Any] | None = None
     cancel_requested: bool = False
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    last_persisted_at: float = field(default=0.0, repr=False)
+    last_stream_notify_at: float = field(default=0.0, repr=False)
     condition: threading.Condition = field(default_factory=threading.Condition)
+    persist_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
 @dataclass
@@ -163,6 +196,7 @@ class BatchRerunState:
     completed: bool = False
     error: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
+    event_count: int = 0
     result: dict[str, Any] | None = None
     cancel_requested: bool = False
     completed_count: int = 0
@@ -277,6 +311,7 @@ def create_app() -> Flask:
     way. The module-level ``app`` is itself the product of this factory, so the
     ``@app.route`` decorators below still bind to the same instance.
     """
+    configure_private_umask()
     app.config["MAX_CONTENT_LENGTH"] = _read_byte_limit_env("FYADR_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES)
     # gzip for both /api JSON and served static assets (low-latency public access).
     # Only the production Docker image installs flask-compress; in local dev it
@@ -295,9 +330,9 @@ app = create_app()
 
 
 def ensure_workspace_dirs() -> None:
-    ORIGIN_DIR.mkdir(parents=True, exist_ok=True)
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    TASK_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(ORIGIN_DIR)
+    ensure_private_directory(EXPORT_DIR)
+    ensure_private_directory(TASK_STATE_DIR)
 
 
 _SENSITIVE_MESSAGE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -365,6 +400,13 @@ def sanitize_filename(filename: str) -> str:
     return candidate
 
 
+def _assert_supported_upload_filename(filename: str) -> str:
+    safe_name = sanitize_filename(filename)
+    if Path(safe_name).suffix.lower() not in {".txt", ".docx"}:
+        raise ValueError("Only .txt and .docx documents are supported.")
+    return safe_name
+
+
 def _max_upload_bytes() -> int:
     return _read_byte_limit_env("FYADR_MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)
 
@@ -387,54 +429,109 @@ def _decode_upload_base64(content_base64: str, *, label: str) -> bytes:
     return data
 
 
-def _verify_existing_content_addressed_upload(target_path: Path, data: bytes, digest: str) -> None:
+def _sha256_file(path: Path) -> tuple[str, int]:
+    digest = sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            size += len(block)
+            digest.update(block)
+    return digest.hexdigest(), size
+
+
+def _verify_existing_content_addressed_upload(target_path: Path, size: int, digest: str) -> None:
     if target_path.is_symlink() or not target_path.is_file():
         raise ValueError("Upload target already exists but is not a regular file.")
     try:
-        if target_path.stat().st_size != len(data) or sha256(target_path.read_bytes()).hexdigest() != digest:
+        existing_digest, existing_size = _sha256_file(target_path)
+        if existing_size != size or existing_digest != digest:
             raise ValueError("Upload target content does not match its content identity.")
     except OSError as exc:
         raise ValueError("Upload target could not be verified safely.") from exc
 
 
-def _write_content_addressed_upload(safe_name: str, data: bytes) -> Path:
+def _validate_utf8_text_upload(path: Path) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8-sig")("strict")
+    try:
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                decoder.decode(block, final=False)
+            decoder.decode(b"", final=True)
+    except UnicodeError as exc:
+        raise ValueError("Text upload must be valid UTF-8.") from exc
+
+
+def _validate_uploaded_document(path: Path, safe_name: str) -> None:
+    if Path(safe_name).suffix.lower() == ".docx":
+        validate_docx_package(path)
+    else:
+        _validate_utf8_text_upload(path)
+
+
+def _write_content_addressed_upload_stream(safe_name: str, stream: BinaryIO) -> Path:
     """Store an upload without ever overwriting a same-named source document.
 
+    Bytes are counted, hashed, and persisted in one bounded streaming pass.
     The content hash is a directory rather than a basename suffix so existing
-    UI/history code can continue to display ``Path(source).name`` unchanged.
-    A fully written temporary file is hard-linked into place, making the final
-    path appear atomically and preventing concurrent workers from replacing an
-    earlier upload. Repeated identical uploads safely reuse the same file.
+    UI/history code can keep displaying ``Path(source).name`` unchanged. A
+    fully written temporary file is hard-linked into place, preventing
+    concurrent workers from replacing an earlier upload. Repeated identical
+    uploads safely reuse the same file.
     """
 
-    digest = sha256(data).hexdigest()
-    content_dir = ORIGIN_DIR / digest
-    content_dir.mkdir(parents=True, exist_ok=True)
-    if content_dir.is_symlink() or not is_path_under(content_dir, ORIGIN_DIR):
-        raise ValueError("Upload target directory is not safe.")
-    target_path = content_dir / safe_name
-    if target_path.exists() or target_path.is_symlink():
-        _verify_existing_content_addressed_upload(target_path, data, digest)
-        return target_path
-
-    temp_path = content_dir / f".upload-{uuid.uuid4().hex}.tmp"
+    ensure_private_directory(ORIGIN_DIR)
+    temp_path = ORIGIN_DIR / f".upload-{uuid.uuid4().hex}.tmp"
+    descriptor = -1
     try:
-        with temp_path.open("xb") as handle:
-            handle.write(data)
+        descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        digest_builder = sha256()
+        size = 0
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            while True:
+                block = stream.read(1024 * 1024)
+                if not block:
+                    break
+                if not isinstance(block, bytes):
+                    raise ValueError("Document upload stream did not return bytes.")
+                size += len(block)
+                _assert_upload_size(size, label="Document upload")
+                digest_builder.update(block)
+                handle.write(block)
             handle.flush()
             os.fsync(handle.fileno())
+        harden_private_file(temp_path)
+        _validate_uploaded_document(temp_path, safe_name)
+
+        digest = digest_builder.hexdigest()
+        content_dir = ORIGIN_DIR / digest
+        ensure_private_directory(content_dir)
+        if content_dir.is_symlink() or not is_path_under(content_dir, ORIGIN_DIR):
+            raise ValueError("Upload target directory is not safe.")
+        target_path = content_dir / safe_name
+        if target_path.exists() or target_path.is_symlink():
+            _verify_existing_content_addressed_upload(target_path, size, digest)
+            harden_private_file(target_path)
+            return target_path
         try:
             os.link(temp_path, target_path)
         except FileExistsError:
-            _verify_existing_content_addressed_upload(target_path, data, digest)
+            _verify_existing_content_addressed_upload(target_path, size, digest)
+        harden_private_file(target_path)
+        return target_path
     finally:
+        if descriptor >= 0:
+            os.close(descriptor)
         temp_path.unlink(missing_ok=True)
-    return target_path
+
+
+def _write_content_addressed_upload(safe_name: str, data: bytes) -> Path:
+    return _write_content_addressed_upload_stream(safe_name, BytesIO(data))
 
 
 def write_uploaded_file(filename: str, content: str) -> Path:
     ensure_workspace_dirs()
-    safe_name = sanitize_filename(filename)
+    safe_name = _assert_supported_upload_filename(filename)
     data = content.encode("utf-8")
     _assert_upload_size(len(data), label="Text upload")
     return _write_content_addressed_upload(safe_name, data)
@@ -442,9 +539,15 @@ def write_uploaded_file(filename: str, content: str) -> Path:
 
 def write_uploaded_binary_file(filename: str, content_base64: str) -> Path:
     ensure_workspace_dirs()
-    safe_name = sanitize_filename(filename)
+    safe_name = _assert_supported_upload_filename(filename)
     data = _decode_upload_base64(content_base64, label="Document upload")
     return _write_content_addressed_upload(safe_name, data)
+
+
+def write_uploaded_stream(filename: str, stream: BinaryIO) -> Path:
+    ensure_workspace_dirs()
+    safe_name = _assert_supported_upload_filename(filename)
+    return _write_content_addressed_upload_stream(safe_name, stream)
 
 
 def _resolve_api_file_path(value: str, *, allowed_roots: tuple[Path, ...], label: str) -> Path:
@@ -892,7 +995,7 @@ def ensure_task_state_store_ready(
 
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(path.parent)
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     last_error: OSError | None = None
     for attempt in range(8):
@@ -902,6 +1005,7 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         try:
             tmp_path.write_text(text, encoding="utf-8")
             tmp_path.replace(path)
+            harden_private_file(path)
             return
         except OSError as exc:
             last_error = exc
@@ -925,15 +1029,15 @@ def normalize_run_parent_input_binding(
     else:
         raise ValueError("expected parent input binding must be an object.")
     normalized: dict[str, str] = {}
-    for field, _mismatch_code in PARENT_INPUT_BINDING_FIELDS:
-        raw_value = raw_binding.get(field)
+    for field_name, _mismatch_code in PARENT_INPUT_BINDING_FIELDS:
+        raw_value = raw_binding.get(field_name)
         if raw_value is None:
             continue
         if not isinstance(raw_value, str):
-            raise ValueError(f"expected parent input binding field {field} must be a string.")
+            raise ValueError(f"expected parent input binding field {field_name} must be a string.")
         value = raw_value.strip()
         if value:
-            normalized[field] = value
+            normalized[field_name] = value
     legacy_compare_revision = str(expected_previous_compare_revision or "").strip()
     if (
         legacy_compare_revision
@@ -1181,7 +1285,19 @@ def build_run_automation_hint(state: ProgressState) -> dict[str, Any] | None:
     return None
 
 
+def _run_event_count(state: ProgressState) -> int:
+    return max(0, state.next_event_id - 1, len(state.events))
+
+
+def _run_event_window(state: ProgressState) -> tuple[int, int]:
+    if state.event_ids:
+        return state.event_ids[0], state.event_ids[-1]
+    count = _run_event_count(state)
+    return (count, count) if count else (0, 0)
+
+
 def serialize_run_state(run_id: str, state: ProgressState) -> dict[str, Any]:
+    oldest_event_id, latest_event_id = _run_event_window(state)
     return normalize_run_summary_result({
         "ok": True,
         "runId": run_id,
@@ -1191,7 +1307,10 @@ def serialize_run_state(run_id: str, state: ProgressState) -> dict[str, Any]:
         "status": state.status,
         "completed": state.completed,
         "cancelRequested": state.cancel_requested,
-        "eventCount": len(state.events),
+        "eventCount": _run_event_count(state),
+        "retainedEventCount": len(state.events),
+        "oldestEventId": oldest_event_id,
+        "latestEventId": latest_event_id,
         "lastEvent": state.events[-1] if state.events else None,
         "result": state.result,
         "error": state.error,
@@ -1262,25 +1381,32 @@ def serialize_run_state_for_task_snapshot(run_id: str, state: ProgressState) -> 
     return snapshot
 
 
-def persist_run_state(run_id: str) -> None:
+def persist_run_state(run_id: str, *, force: bool = True) -> bool:
     state = RUN_STATES.get(run_id)
     if not state:
-        return
-    with state.condition:
-        snapshot = serialize_run_state_for_task_snapshot(run_id, state)
-    try:
-        write_json_atomic(
-            run_round_state_path(run_id),
-            {
-                "kind": "runRound",
-                "version": 1,
-                "persistedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "state": snapshot,
-            },
-        )
-    except OSError:
-        # Persistence is only a recovery hint; a disk snapshot failure must not break the round.
-        return
+        return False
+    with state.persist_lock:
+        with state.condition:
+            now = time.monotonic()
+            if not force and now - state.last_persisted_at < RUN_STATE_PERSIST_INTERVAL_SECONDS:
+                return False
+            snapshot = serialize_run_state_for_task_snapshot(run_id, state)
+        try:
+            write_json_atomic(
+                run_round_state_path(run_id),
+                {
+                    "kind": "runRound",
+                    "version": 2,
+                    "persistedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "state": snapshot,
+                },
+            )
+        except OSError:
+            # Persistence is only a recovery hint; a disk snapshot failure must not break the round.
+            return False
+        with state.condition:
+            state.last_persisted_at = time.monotonic()
+        return True
 
 
 def _project_persisted_run_source_path(value: object) -> str:
@@ -1483,16 +1609,76 @@ def project_provider_progress_event(event: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
+def _same_provider_stream(event: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    return (
+        candidate.get("phase") == "provider-stream"
+        and candidate.get("streamDone") is not True
+        and str(candidate.get("chunkId", "")) == str(event.get("chunkId", ""))
+        and int(candidate.get("round", 0) or 0) == int(event.get("round", 0) or 0)
+    )
+
+
+def _append_bounded_run_event_locked(state: ProgressState, event: dict[str, Any]) -> int:
+    """Append one public event with an absolute id while coalescing stream noise."""
+
+    if len(state.event_ids) != len(state.events):
+        # Compatibility for callers/tests that constructed ProgressState with
+        # a pre-populated plain event list before absolute ids existed.
+        latest_existing_id = max(state.next_event_id - 1, len(state.events))
+        first_existing_id = max(1, latest_existing_id - len(state.events) + 1)
+        state.event_ids = list(range(first_existing_id, latest_existing_id + 1))
+        state.next_event_id = latest_existing_id + 1
+
+    if event.get("phase") == "provider-stream":
+        for index in range(len(state.events) - 1, -1, -1):
+            candidate = state.events[index]
+            if str(candidate.get("chunkId", "")) != str(event.get("chunkId", "")):
+                continue
+            if _same_provider_stream(event, candidate):
+                del state.events[index]
+                del state.event_ids[index]
+            break
+
+    event_id = state.next_event_id
+    state.next_event_id += 1
+    state.events.append(event)
+    state.event_ids.append(event_id)
+    overflow = len(state.events) - MAX_RUN_PROGRESS_EVENTS
+    if overflow > 0:
+        del state.events[:overflow]
+        del state.event_ids[:overflow]
+    return event_id
+
+
+def _append_bounded_batch_event_locked(state: BatchRerunState, event: dict[str, Any]) -> None:
+    state.events.append(event)
+    state.event_count += 1
+    overflow = len(state.events) - MAX_BATCH_PROGRESS_EVENTS
+    if overflow > 0:
+        del state.events[:overflow]
+
+
+def _run_event_requires_forced_persistence(event: dict[str, Any]) -> bool:
+    return str(event.get("phase", "")) in RUN_STATE_FORCE_PERSIST_PHASES
+
+
 def append_progress_event(run_id: str, event: dict[str, Any]) -> None:
     state = RUN_STATES.get(run_id)
     if not state:
         return
     safe_event = project_provider_progress_event(event)
     with state.condition:
-        state.events.append(safe_event)
+        _append_bounded_run_event_locked(state, safe_event)
         state.updated_at = time.time()
-        state.condition.notify_all()
-    persist_run_state(run_id)
+        should_notify = True
+        if safe_event.get("phase") == "provider-stream" and safe_event.get("streamDone") is not True:
+            now = time.monotonic()
+            should_notify = now - state.last_stream_notify_at >= SSE_STREAM_NOTIFY_INTERVAL_SECONDS
+            if should_notify:
+                state.last_stream_notify_at = now
+        if should_notify:
+            state.condition.notify_all()
+    persist_run_state(run_id, force=_run_event_requires_forced_persistence(safe_event))
 
 
 def finalize_progress(run_id: str, *, result: dict[str, Any] | None = None, error: str | None = None) -> None:
@@ -1505,7 +1691,7 @@ def finalize_progress(run_id: str, *, result: dict[str, Any] | None = None, erro
     with state.condition:
         terminal_event = build_terminal_run_event(state, result=result, error=error)
         if terminal_event:
-            state.events.append(terminal_event)
+            _append_bounded_run_event_locked(state, terminal_event)
         state.result = result
         state.error = error
         if error:
@@ -1515,7 +1701,7 @@ def finalize_progress(run_id: str, *, result: dict[str, Any] | None = None, erro
         state.completed = True
         state.updated_at = time.time()
         state.condition.notify_all()
-    persist_run_state(run_id)
+    persist_run_state(run_id, force=True)
     release_active_run(run_id)
 
 
@@ -1594,7 +1780,8 @@ def serialize_batch_rerun_state(run_id: str, state: BatchRerunState) -> dict[str
         "successChunkIds": state.success_chunk_ids,
         "preservedAttempts": state.preserved_attempts,
         "failures": state.failures,
-        "eventCount": len(state.events),
+        "eventCount": max(state.event_count, len(state.events)),
+        "retainedEventCount": len(state.events),
         "lastEvent": state.events[-1] if state.events else None,
         "result": state.result,
         "error": state.error,
@@ -2160,7 +2347,7 @@ def append_batch_rerun_event(run_id: str, event: dict[str, Any]) -> None:
         return
     safe_event = project_batch_rerun_event(event)
     with state.condition:
-        state.events.append(safe_event)
+        _append_bounded_batch_event_locked(state, safe_event)
         state.updated_at = time.time()
         state.condition.notify_all()
     persist_batch_rerun_state(run_id)
@@ -2846,7 +3033,14 @@ def add_cors_headers(response: Response) -> Response:
     # by shared caches.  Static responses set their own policy in the frontend
     # serving helpers below; do not overwrite immutable hashed-asset caching.
     if request.path == "/api" or request.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store"
+        if response.mimetype == "text/event-stream":
+            # SSE must not be cached or transformed.  In particular, retain
+            # ``no-transform`` here instead of overwriting the policy set by
+            # the route: some proxies otherwise buffer/compress the stream
+            # and delay progress events until a large chunk has accumulated.
+            response.headers["Cache-Control"] = "no-store, no-cache, no-transform"
+        else:
+            response.headers["Cache-Control"] = "no-store"
     elif "Cache-Control" not in response.headers:
         response.headers["Cache-Control"] = "no-cache"
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -2997,15 +3191,27 @@ def post_list_models() -> tuple[Response, int] | Response:
 @app.route("/api/upload-document", methods=["POST"])
 def post_upload_document() -> tuple[Response, int] | Response:
     try:
-        payload = request.get_json(silent=True) or {}
-        filename = str(payload.get("filename", "")).strip()
-        encoding = str(payload.get("encoding", "text")).strip().lower()
-        if encoding == "base64":
-            content_base64 = str(payload.get("contentBase64", ""))
-            target_path = write_uploaded_binary_file(filename, content_base64)
+        if request.mimetype == "multipart/form-data":
+            uploads = request.files.getlist("file")
+            upload_count = sum(len(request.files.getlist(key)) for key in request.files)
+            if len(uploads) != 1 or upload_count != 1:
+                raise ValueError("Multipart upload must contain exactly one file field named 'file'.")
+            upload = uploads[0]
+            target_path = write_uploaded_stream(str(upload.filename or ""), upload.stream)
+        elif request.is_json:
+            # Compatibility path for older clients. New browsers use multipart
+            # so DOCX bytes are no longer copied through a Base64 JSON string.
+            payload = request.get_json(silent=True) or {}
+            filename = str(payload.get("filename", "")).strip()
+            encoding = str(payload.get("encoding", "text")).strip().lower()
+            if encoding == "base64":
+                content_base64 = str(payload.get("contentBase64", ""))
+                target_path = write_uploaded_binary_file(filename, content_base64)
+            else:
+                content = str(payload.get("content", ""))
+                target_path = write_uploaded_file(filename, content)
         else:
-            content = str(payload.get("content", ""))
-            target_path = write_uploaded_file(filename, content)
+            return error_response("Upload content type must be multipart/form-data or application/json.", 415)
         return jsonify({"sourcePath": str(target_path), "filename": target_path.name}), 201
     except Exception as exc:
         return error_response(str(exc))
@@ -3862,6 +4068,50 @@ def post_export_round() -> tuple[Response, int] | Response:
         return error_response(str(exc))
 
 
+def parse_sse_last_event_id(value: object) -> int | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        event_id = int(value.strip())
+    except ValueError:
+        return None
+    return event_id if 0 <= event_id <= (2**63 - 1) else None
+
+
+def collect_run_events_after_locked(
+    state: ProgressState,
+    last_event_id: int | None,
+) -> tuple[list[tuple[int, dict[str, Any]]], int | None, bool]:
+    """Collect retained events after an absolute SSE cursor.
+
+    If a reconnect cursor fell behind the bounded buffer, return only the
+    latest event as a state snapshot. Replaying the retained tail as if it were
+    complete would expose a misleading partial lifecycle.
+    """
+
+    if not state.events or not state.event_ids:
+        # A stale/corrupt client can present a future cursor before the first
+        # event exists. Clamp it to the current absolute count so event 1 is
+        # still delivered when it arrives instead of being skipped forever.
+        current_event_id = max(0, state.next_event_id - 1)
+        cursor = None if last_event_id is None else min(last_event_id, current_event_id)
+        return [], cursor, False
+    oldest_event_id = state.event_ids[0]
+    latest_event_id = state.event_ids[-1]
+    if last_event_id is None:
+        cursor = oldest_event_id - 1
+    else:
+        cursor = min(last_event_id, latest_event_id)
+    if cursor < oldest_event_id - 1:
+        return [(latest_event_id, state.events[-1])], latest_event_id, True
+    events = [
+        (event_id, event)
+        for event_id, event in zip(state.event_ids, state.events)
+        if event_id > cursor
+    ]
+    return events, (events[-1][0] if events else cursor), False
+
+
 @app.route("/api/run-round-events/<run_id>", methods=["GET"])
 def get_run_round_events(run_id: str) -> tuple[Response, int] | Response:
     state = RUN_STATES.get(run_id)
@@ -3874,29 +4124,31 @@ def get_run_round_events(run_id: str) -> tuple[Response, int] | Response:
             else:
                 payload = json.dumps(persisted.get("result") or {}, ensure_ascii=False)
                 event_name = "result"
-            response = Response(f"event: {event_name}\ndata: {payload}\n\n", mimetype="text/event-stream")
-            response.headers["Cache-Control"] = "no-cache"
+            event_id = positive_task_int(persisted.get("latestEventId") or persisted.get("eventCount"))
+            id_line = f"id: {event_id}\n" if event_id is not None else ""
+            response = Response(f"{id_line}event: {event_name}\ndata: {payload}\n\n", mimetype="text/event-stream")
+            response.headers["Cache-Control"] = "no-cache, no-transform"
             response.headers["X-Accel-Buffering"] = "no"
             return response
         return error_response("Unknown run id.", 404)
 
+    requested_last_event_id = parse_sse_last_event_id(request.headers.get("Last-Event-ID"))
+
     def generate() -> Any:
-        cursor = 0
+        cursor = requested_last_event_id
         try:
             while True:
-                events_to_send: list[dict[str, Any]] = []
+                events_to_send: list[tuple[int, dict[str, Any]]] = []
                 completed_payload: tuple[str, str] | None = None
                 should_send_keepalive = False
                 with state.condition:
                     touch_run_state(run_id)
-                    if cursor >= len(state.events) and not state.completed:
+                    events_to_send, cursor, _history_truncated = collect_run_events_after_locked(state, cursor)
+                    if not events_to_send and not state.completed:
                         state.condition.wait(timeout=SSE_KEEPALIVE_INTERVAL_SECONDS)
-                        if cursor >= len(state.events) and not state.completed:
+                        events_to_send, cursor, _history_truncated = collect_run_events_after_locked(state, cursor)
+                        if not events_to_send and not state.completed:
                             should_send_keepalive = True
-
-                    while cursor < len(state.events):
-                        events_to_send.append(state.events[cursor])
-                        cursor += 1
 
                     if state.completed:
                         if state.error:
@@ -3904,9 +4156,9 @@ def get_run_round_events(run_id: str) -> tuple[Response, int] | Response:
                         else:
                             completed_payload = ("result", json.dumps(state.result or {}, ensure_ascii=False))
 
-                for event in events_to_send:
+                for event_id, event in events_to_send:
                     payload = json.dumps(event, ensure_ascii=False)
-                    yield f"event: progress\ndata: {payload}\n\n"
+                    yield f"id: {event_id}\nevent: progress\ndata: {payload}\n\n"
 
                 if should_send_keepalive:
                     yield ": keepalive\n\n"
@@ -3919,7 +4171,7 @@ def get_run_round_events(run_id: str) -> tuple[Response, int] | Response:
             touch_run_state(run_id)
 
     response = Response(stream_with_context(generate()), mimetype="text/event-stream")
-    response.headers["Cache-Control"] = "no-cache"
+    response.headers["Cache-Control"] = "no-cache, no-transform"
     response.headers["X-Accel-Buffering"] = "no"
     return response
 
@@ -3999,6 +4251,12 @@ def initialize_runtime(*, reason: str = "startup") -> dict[str, Any]:
     """Run one-time writable-store checks before serving production traffic."""
 
     ensure_workspace_dirs()
+    permission_readiness = harden_private_trees((
+        ORIGIN_DIR,
+        ROOT_DIR / "finish",
+        get_app_config_dir(),
+        PROMPT_DIR,
+    ))
     task_state_readiness = ensure_task_state_store_ready(reason=reason, max_age_seconds=0)
     if task_state_readiness.get("action") not in {"", "none"}:
         print(
@@ -4012,7 +4270,12 @@ def initialize_runtime(*, reason: str = "startup") -> dict[str, Any]:
             f"(ok={bool(history_readiness.get('ok'))})"
         )
     return {
-        "ok": bool(task_state_readiness.get("ok", True)) and bool(history_readiness.get("ok", True)),
+        "ok": (
+            bool(permission_readiness.get("ok", True))
+            and bool(task_state_readiness.get("ok", True))
+            and bool(history_readiness.get("ok", True))
+        ),
+        "permissions": permission_readiness,
         "taskState": task_state_readiness,
         "history": history_readiness,
     }

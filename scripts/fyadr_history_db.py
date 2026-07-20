@@ -7,9 +7,13 @@ queries and safer cleanup decisions.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import gzip
 import json
+import os
 import shutil
 import sqlite3
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
@@ -17,6 +21,7 @@ from typing import Any, Iterable
 
 from prompt_library import LEGACY_PROMPT_PROFILE, is_prompt_sequence_customizable
 from path_utils import is_path_under
+from private_fs import ensure_private_directory, harden_private_file
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FINISH_DIR = ROOT_DIR / "finish"
@@ -24,6 +29,8 @@ DB_PATH = FINISH_DIR / "fyadr_history.sqlite3"
 BACKUP_DIR = FINISH_DIR / "history_db_backups"
 DEFAULT_BACKUP_KEEP = 12
 MAX_BACKUP_KEEP = 100
+HISTORY_BACKUP_COMPRESSION_LEVEL = 6
+MAX_HISTORY_BACKUP_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def coerce_backup_keep(value: Any, *, default: int = DEFAULT_BACKUP_KEEP) -> int:
@@ -70,7 +77,9 @@ def _connect_history_db(db_path: Path) -> sqlite3.Connection:
     manager to commit/rollback.
     """
 
+    ensure_private_directory(db_path.parent)
     connection = sqlite3.connect(str(db_path), timeout=HISTORY_DB_BUSY_TIMEOUT_SECONDS)
+    harden_private_file(db_path)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute(f"PRAGMA busy_timeout = {int(HISTORY_DB_BUSY_TIMEOUT_SECONDS * 1000)}")
     return connection
@@ -210,7 +219,7 @@ def list_history_index_backups(
     for path in _iter_history_backup_files(normalized_backup_dir):
         item = _backup_file_entry(path)
         if validate:
-            item["validation"] = check_history_index(db_path=path)
+            item["validation"] = _check_history_backup(path)
             item["ok"] = bool(item["validation"].get("ok"))
         backups.append(item)
     return {
@@ -240,14 +249,28 @@ def backup_history_index(
             "sourcePath": str(normalized_db_path),
         }
 
-    normalized_backup_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = _next_history_backup_path(normalized_backup_dir, reason)
+    ensure_private_directory(normalized_backup_dir)
+    backup_path = _next_history_backup_path(normalized_backup_dir, reason, compressed=True)
     before_status = get_history_index_status(db_path=normalized_db_path)
+    raw_backup_path: Path | None = None
     try:
+        descriptor, raw_name = tempfile.mkstemp(
+            prefix=f".{backup_path.name}.",
+            suffix=".sqlite3.tmp",
+            dir=str(normalized_backup_dir),
+        )
+        os.close(descriptor)
+        raw_backup_path = Path(raw_name)
+        harden_private_file(raw_backup_path)
         with _connect_history_db(normalized_db_path) as source:
             _checkpoint_connection(source)
-            with _connect_history_db(backup_path) as target:
+            with _connect_history_db(raw_backup_path) as target:
                 source.backup(target)
+                target.commit()
+        _gzip_sqlite_file(raw_backup_path, backup_path)
+        validation = _check_history_backup(backup_path)
+        if not bool(validation.get("ok")):
+            raise RuntimeError("Compressed SQLite history backup did not pass integrity checks.")
     except Exception as exc:
         if backup_path.exists():
             backup_path.unlink(missing_ok=True)
@@ -259,9 +282,14 @@ def backup_history_index(
             "sourcePath": str(normalized_db_path),
             "sourceStatus": before_status,
         }
+    finally:
+        if raw_backup_path is not None:
+            _delete_sqlite_journal_files(raw_backup_path)
+            raw_backup_path.unlink(missing_ok=True)
 
-    validation = check_history_index(db_path=backup_path)
     pruned = _prune_history_db_backups(normalized_backup_dir, keep)
+    source_size = _file_size(normalized_db_path)
+    compressed_size = _file_size(backup_path)
     return {
         "ok": bool(validation.get("ok")),
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -269,7 +297,12 @@ def backup_history_index(
         "path": str(backup_path),
         "backupDir": str(normalized_backup_dir),
         "sourcePath": str(normalized_db_path),
-        "sizeBytes": _file_size(backup_path),
+        "sizeBytes": compressed_size,
+        "sourceSizeBytes": source_size,
+        "savedBytes": max(0, source_size - compressed_size),
+        "compressionRatio": round(compressed_size / source_size, 6) if source_size else 0.0,
+        "compressed": True,
+        "format": "sqlite3-gzip",
         "sourceStatus": before_status,
         "validation": validation,
         "prunedBackups": pruned,
@@ -482,34 +515,46 @@ def recover_history_index(
             "backupDir": str(normalized_backup_dir),
         }
 
-    source_validation = check_history_index(db_path=resolved_backup)
-    if not bool(source_validation.get("ok")):
+    try:
+        with _materialize_history_backup(resolved_backup) as materialized_backup:
+            source_validation = _check_materialized_history_backup(
+                materialized_backup,
+                display_path=resolved_backup,
+            )
+            if not bool(source_validation.get("ok")):
+                return {
+                    "ok": False,
+                    "error": "Selected SQLite history backup did not pass integrity checks.",
+                    "path": str(normalized_db_path),
+                    "backupPath": str(resolved_backup),
+                    "sourceValidation": source_validation,
+                }
+
+            pre_recovery_backup = None
+            raw_current_backup = None
+            if normalized_db_path.exists():
+                pre_recovery_backup = backup_history_index(
+                    reason="pre_recover",
+                    keep=keep,
+                    backup_dir=normalized_backup_dir,
+                    db_path=normalized_db_path,
+                )
+                if not bool(pre_recovery_backup.get("ok")):
+                    raw_current_backup = _copy_current_db_file(normalized_db_path, normalized_backup_dir, "pre_recover_raw")
+
+            ensure_private_directory(normalized_db_path.parent)
+            with _connect_history_db(materialized_backup) as source_connection:
+                with _connect_history_db(normalized_db_path) as target_connection:
+                    source_connection.backup(target_connection)
+                    target_connection.commit()
+                    _checkpoint_connection(target_connection)
+    except Exception as exc:
         return {
             "ok": False,
-            "error": "Selected SQLite history backup did not pass integrity checks.",
+            "error": f"Selected SQLite history backup could not be materialized safely: {exc}",
             "path": str(normalized_db_path),
             "backupPath": str(resolved_backup),
-            "sourceValidation": source_validation,
         }
-
-    pre_recovery_backup = None
-    raw_current_backup = None
-    if normalized_db_path.exists():
-        pre_recovery_backup = backup_history_index(
-            reason="pre_recover",
-            keep=keep,
-            backup_dir=normalized_backup_dir,
-            db_path=normalized_db_path,
-        )
-        if not bool(pre_recovery_backup.get("ok")):
-            raw_current_backup = _copy_current_db_file(normalized_db_path, normalized_backup_dir, "pre_recover_raw")
-
-    normalized_db_path.parent.mkdir(parents=True, exist_ok=True)
-    with _connect_history_db(resolved_backup) as source_connection:
-        with _connect_history_db(normalized_db_path) as target_connection:
-            source_connection.backup(target_connection)
-            target_connection.commit()
-            _checkpoint_connection(target_connection)
     _delete_sqlite_journal_files(normalized_db_path)
 
     after_validation = check_history_index(db_path=normalized_db_path)
@@ -1690,14 +1735,136 @@ def _safe_backup_label(value: str) -> str:
     return (candidate or "manual")[:48]
 
 
-def _next_history_backup_path(backup_dir: Path, reason: str) -> Path:
+def _next_history_backup_path(
+    backup_dir: Path,
+    reason: str,
+    *,
+    compressed: bool = True,
+) -> Path:
     stem = f"fyadr_history_{_timestamp_for_filename()}_{_safe_backup_label(reason)}"
-    candidate = backup_dir / f"{stem}.sqlite3"
+    extension = ".sqlite3.gz" if compressed else ".sqlite3"
+    candidate = backup_dir / f"{stem}{extension}"
     suffix = 1
     while candidate.exists():
-        candidate = backup_dir / f"{stem}_{suffix}.sqlite3"
+        candidate = backup_dir / f"{stem}_{suffix}{extension}"
         suffix += 1
     return candidate
+
+
+def _is_compressed_history_backup(path: Path) -> bool:
+    return path.name.lower().endswith(".sqlite3.gz")
+
+
+def _gzip_sqlite_file(source_path: Path, target_path: Path) -> None:
+    """Publish a deterministic gzip stream atomically with private modes."""
+
+    ensure_private_directory(target_path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target_path.name}.",
+        suffix=".tmp",
+        dir=str(target_path.parent),
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        if os.name != "nt" and hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as raw_target:
+            descriptor = -1
+            with source_path.open("rb") as source, gzip.GzipFile(
+                filename="",
+                mode="wb",
+                compresslevel=HISTORY_BACKUP_COMPRESSION_LEVEL,
+                fileobj=raw_target,
+                mtime=0,
+            ) as compressed_target:
+                shutil.copyfileobj(source, compressed_target, length=1024 * 1024)
+            raw_target.flush()
+            os.fsync(raw_target.fileno())
+        os.replace(temporary_path, target_path)
+        harden_private_file(target_path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+
+
+@contextmanager
+def _materialize_history_backup(path: Path) -> Iterable[Path]:
+    """Yield a SQLite file for either legacy raw or gzip backup formats."""
+
+    normalized = path.resolve()
+    if not _is_compressed_history_backup(normalized):
+        yield normalized
+        return
+
+    ensure_private_directory(normalized.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{normalized.stem}.",
+        suffix=".restore.sqlite3",
+        dir=str(normalized.parent),
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        if os.name != "nt" and hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        total = 0
+        with gzip.open(normalized, "rb") as source, os.fdopen(descriptor, "wb") as target:
+            descriptor = -1
+            while True:
+                block = source.read(1024 * 1024)
+                if not block:
+                    break
+                total += len(block)
+                if total > MAX_HISTORY_BACKUP_UNCOMPRESSED_BYTES:
+                    raise ValueError("Compressed history backup exceeds the safe expansion limit.")
+                target.write(block)
+            target.flush()
+            os.fsync(target.fileno())
+        harden_private_file(temporary_path)
+        yield temporary_path
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        _delete_sqlite_journal_files(temporary_path)
+        temporary_path.unlink(missing_ok=True)
+
+
+def _check_materialized_history_backup(
+    materialized_path: Path,
+    *,
+    display_path: Path,
+) -> dict[str, Any]:
+    validation = check_history_index(db_path=materialized_path)
+    validation["path"] = str(display_path.resolve())
+    validation["compressed"] = _is_compressed_history_backup(display_path)
+    status = validation.get("status")
+    if isinstance(status, dict):
+        status["path"] = str(display_path.resolve())
+    return validation
+
+
+def _check_history_backup(path: Path) -> dict[str, Any]:
+    try:
+        with _materialize_history_backup(path) as materialized_path:
+            return _check_materialized_history_backup(materialized_path, display_path=path)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "path": str(path.resolve()),
+            "compressed": _is_compressed_history_backup(path),
+            "issues": [
+                {
+                    "code": "history_backup_unreadable",
+                    "severity": "error",
+                    "message": "SQLite history backup could not be decompressed or inspected.",
+                    "repairable": False,
+                    "details": {"message": str(exc)},
+                }
+            ],
+            "issueCount": 1,
+            "errorCount": 1,
+            "warningCount": 0,
+        }
 
 
 def _file_size(path: Path) -> int:
@@ -1870,8 +2037,18 @@ def _iter_history_backup_files(backup_dir: Path = BACKUP_DIR) -> list[Path]:
     normalized_backup_dir = backup_dir.resolve()
     if not normalized_backup_dir.exists():
         return []
+    candidates = {
+        *normalized_backup_dir.glob("fyadr_history_*.sqlite3"),
+        *normalized_backup_dir.glob("fyadr_history_*.sqlite3.gz"),
+    }
     return sorted(
-        (path for path in normalized_backup_dir.glob("fyadr_history_*.sqlite3") if path.is_file()),
+        (
+            path
+            for path in candidates
+            if not path.is_symlink()
+            and path.is_file()
+            and is_path_under(path.resolve(), normalized_backup_dir)
+        ),
         key=lambda item: (item.stat().st_mtime if item.exists() else 0, item.name),
         reverse=True,
     )
@@ -1889,6 +2066,8 @@ def _backup_file_entry(path: Path) -> dict[str, Any]:
         "name": normalized_path.name,
         "sizeBytes": _file_size(normalized_path),
         "modifiedAt": modified_at,
+        "compressed": _is_compressed_history_backup(normalized_path),
+        "format": "sqlite3-gzip" if _is_compressed_history_backup(normalized_path) else "sqlite3",
     }
 
 
@@ -1919,7 +2098,7 @@ def _resolve_history_backup_path(backup_path: str | Path | None, backup_dir: Pat
             key=lambda item: item.stat().st_mtime if item.exists() else 0,
             reverse=True,
         ):
-            validation = check_history_index(db_path=candidate)
+            validation = _check_history_backup(candidate)
             if bool(validation.get("ok")):
                 return candidate.resolve()
         return None
@@ -1936,9 +2115,9 @@ def _resolve_history_backup_path(backup_path: str | Path | None, backup_dir: Pat
 
 
 def _copy_current_db_file(db_path: Path, backup_dir: Path, reason: str) -> Path:
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    target = _next_history_backup_path(backup_dir, reason)
-    shutil.copy2(db_path, target)
+    ensure_private_directory(backup_dir)
+    target = _next_history_backup_path(backup_dir, reason, compressed=True)
+    _gzip_sqlite_file(db_path, target)
     return target
 
 

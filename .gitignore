@@ -6,6 +6,8 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+# FYADR publishes pip-compatible hashed locks; avoid a second uv project lock.
+/uv.lock
 
 # Node / Vite
 app/node_modules/

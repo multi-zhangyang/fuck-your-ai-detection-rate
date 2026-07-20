@@ -103,6 +103,10 @@ def run_regression() -> dict[str, Any]:
         "PowerShell launcher must not discover and terminate arbitrary listeners",
     )
     _assert(
+        "requirements.lock" in ps_text and '"--require-hashes"' in ps_text and "pypdf" not in ps_text,
+        "PowerShell launcher must install the reviewed runtime lock without unused dependencies",
+    )
+    _assert(
         "$Label:" not in ps_text,
         "PowerShell interpolations followed by a colon must use an explicit braced variable",
     )
@@ -119,6 +123,10 @@ def run_regression() -> dict[str, Any]:
         and "STARTED_BACKEND" in posix_text
         and "STARTED_FRONTEND" in posix_text,
         "POSIX launcher lost launcher-owned PID cleanup",
+    )
+    _assert(
+        "requirements.lock" in posix_text and "--require-hashes" in posix_text and "pypdf" not in posix_text,
+        "POSIX launcher must install the reviewed runtime lock without unused dependencies",
     )
     checks.append("macOS/Linux launcher keeps install, browser, loopback, and owned-PID contracts")
     return {"ok": True, "checks": checks}

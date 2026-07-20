@@ -12,7 +12,6 @@ from typing import Any
 
 try:
     from docx import Document  # type: ignore[import]
-    from docx.enum.section import WD_SECTION  # type: ignore[import]
     from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore[import]
     from docx.shared import Cm, Pt  # type: ignore[import]
 except ImportError as exc:  # pragma: no cover

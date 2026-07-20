@@ -132,6 +132,34 @@ def run_regression() -> dict[str, Any]:
     checks.append("strict local artifact mode escalates warnings")
     checks.append("open-source audit next actions are surfaced")
 
+    captured: dict[str, Any] = {}
+    original_runner = pre_release_check._run_command
+
+    def regression_stub(name: str, command: list[str], *, timeout: int = 900) -> dict[str, Any]:
+        captured.update({"name": name, "command": command, "timeout": timeout})
+        return _result(
+            json.dumps(
+                {
+                    "ok": True,
+                    "failures": [],
+                    "reportPath": "finish/regression/run_regressions_report.json",
+                }
+            )
+        )
+
+    pre_release_check._run_command = regression_stub
+    try:
+        regression_gate = pre_release_check._run_regressions(skip_frontend_build=False, include_browser_e2e=True)
+    finally:
+        pre_release_check._run_command = original_runner
+    _assert(regression_gate["ok"], "successful full regression report should pass the release gate")
+    _assert("--include-browser-e2e" in captured.get("command", []), "browser E2E flag was not forwarded")
+    _assert(
+        captured.get("timeout") == pre_release_check.REGRESSION_TIMEOUT_SECONDS >= 3600,
+        "release regression timeout is too short for the measured full suite",
+    )
+    checks.append("full regression gate keeps browser coverage and a one-hour execution budget")
+
     return {"ok": True, "checks": checks}
 
 

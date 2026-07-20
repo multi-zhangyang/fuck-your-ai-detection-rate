@@ -33,9 +33,9 @@ from factual_guards import (
 from prompt_library import (
     DEFAULT_PROMPT_PROFILE,
     get_chunk_metric,
-    get_max_rounds,
+    get_max_rounds as get_max_rounds,
     get_prompt_mapping,
-    get_prompt_sequence_key,
+    get_prompt_sequence_key as get_prompt_sequence_key,
     get_round_dimension,
     normalize_prompt_profile,
     normalize_prompt_sequence,
@@ -77,7 +77,9 @@ from style_blacklist_registry import (
 Transform = Callable[[str, str, int, str], str]
 ProgressCallback = Callable[[dict[str, object]], None]
 CancelCheck = Callable[[], bool]
-ROUND_CHECKPOINT_VERSION = 6
+ROUND_CHECKPOINT_VERSION = 7
+ROUND_CHECKPOINT_JOURNAL_VERSION = 1
+MAX_CHECKPOINT_JOURNAL_RECORDS = 10000
 ROUND_COMPARE_VERSION = 3
 MAX_VALIDATION_ATTEMPTS = 2
 MAX_HARD_VALIDATION_RECOVERY_ATTEMPTS = 1
@@ -3053,6 +3055,10 @@ def get_round_checkpoint_path(output_path: Path) -> Path:
     return output_path.with_name(f"{output_path.stem}_checkpoint.json")
 
 
+def get_round_checkpoint_journal_path(checkpoint_path: Path) -> Path:
+    return checkpoint_path.with_name(f"{checkpoint_path.stem}_journal.jsonl")
+
+
 def get_round_compare_path(output_path: Path) -> Path:
     return output_path.with_name(f"{output_path.stem}_compare.json")
 
@@ -3178,6 +3184,121 @@ def _load_checkpoint_payload(path: Path) -> dict[str, object] | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+def _append_round_checkpoint_journal(
+    checkpoint_path: Path,
+    *,
+    signature: dict[str, object],
+    chunk_id: str,
+    output_text: str,
+    validation_events: list[dict[str, object]],
+) -> None:
+    """Durably append one completed chunk without rewriting all prior text."""
+
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    journal_path = get_round_checkpoint_journal_path(checkpoint_path)
+    record: dict[str, object] = {
+        "version": ROUND_CHECKPOINT_JOURNAL_VERSION,
+        "checkpoint_signature_sha256": _sha256_json(signature),
+        "chunk_id": chunk_id,
+        "output_text": output_text,
+        "output_sha256": _sha256_text(output_text),
+        "validation_events": _public_validation_events(validation_events),
+        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    serialized = (json.dumps(record, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+    last_error: OSError | None = None
+    for attempt in range(5):
+        try:
+            with journal_path.open("ab+") as stream:
+                stream.seek(0, os.SEEK_END)
+                if stream.tell() > 0:
+                    stream.seek(-1, os.SEEK_END)
+                    if stream.read(1) != b"\n":
+                        stream.seek(0, os.SEEK_END)
+                        stream.write(b"\n")
+                stream.write(serialized)
+                stream.flush()
+                os.fsync(stream.fileno())
+            return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.05 * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+
+
+def _load_round_checkpoint_journal(checkpoint_path: Path) -> list[dict[str, object]]:
+    journal_path = get_round_checkpoint_journal_path(checkpoint_path)
+    if not journal_path.exists():
+        return []
+    records: list[dict[str, object]] = []
+    try:
+        with journal_path.open("r", encoding="utf-8") as stream:
+            for line in stream:
+                if len(records) >= MAX_CHECKPOINT_JOURNAL_RECORDS:
+                    break
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    # A process can stop between append and fsync. Earlier
+                    # complete records remain recoverable; ignore the tail.
+                    continue
+                if not isinstance(record, dict) or record.get("version") != ROUND_CHECKPOINT_JOURNAL_VERSION:
+                    continue
+                output_text = record.get("output_text")
+                if (
+                    not isinstance(record.get("chunk_id"), str)
+                    or not isinstance(output_text, str)
+                    or record.get("output_sha256") != _sha256_text(output_text)
+                ):
+                    continue
+                records.append(record)
+    except (OSError, UnicodeError):
+        return []
+    return records
+
+
+def _merge_round_checkpoint_journal(
+    payload: dict[str, object],
+    records: list[dict[str, object]],
+    *,
+    signature: dict[str, object],
+) -> dict[str, object]:
+    expected_signature_sha256 = _sha256_json(signature)
+    merged = dict(payload)
+    raw_inline_outputs = payload.get("chunk_outputs")
+    outputs = dict(raw_inline_outputs) if isinstance(raw_inline_outputs, dict) else {}
+    raw_inline_events = payload.get("validation_events")
+    events = list(raw_inline_events) if isinstance(raw_inline_events, list) else []
+    latest_records: dict[str, dict[str, object]] = {}
+    for record in records:
+        if record.get("checkpoint_signature_sha256") != expected_signature_sha256:
+            continue
+        chunk_id = str(record.get("chunk_id", "") or "")
+        if chunk_id:
+            latest_records[chunk_id] = record
+    latest_update = str(payload.get("updated_at", "") or "")
+    for chunk_id, record in latest_records.items():
+        # A compacted inline output is authoritative. This also makes a crash
+        # between snapshot replacement and journal deletion idempotent.
+        if chunk_id in outputs:
+            continue
+        outputs[chunk_id] = str(record.get("output_text", ""))
+        raw_events = record.get("validation_events")
+        if isinstance(raw_events, list):
+            events.extend(raw_events)
+        latest_update = max(latest_update, str(record.get("updated_at", "") or ""))
+    merged["chunk_outputs"] = outputs
+    merged["completed_chunk_count"] = len(outputs)
+    if events:
+        merged["validation_events"] = events
+    if latest_update:
+        merged["updated_at"] = latest_update
+    return merged
 
 
 def _is_checkpoint_compatible(payload: dict[str, object], signature: dict[str, object]) -> bool:
@@ -3444,22 +3565,45 @@ def _load_resumable_checkpoint_state(
     manifest_chunks_by_id: dict[str, object],
 ) -> tuple[dict[str, str], list[dict[str, object]]]:
     payload = _load_checkpoint_payload(checkpoint_path)
+    journal_records = _load_round_checkpoint_journal(checkpoint_path)
+    expected_signature_sha256 = _sha256_json(signature)
+    matching_journal_records = [
+        record
+        for record in journal_records
+        if record.get("checkpoint_signature_sha256") == expected_signature_sha256
+    ]
     if payload is None:
-        return {}, []
+        if not matching_journal_records:
+            return {}, []
+        # The compact metadata snapshot is written before journal records, but
+        # recover from an independently damaged snapshot when the journal is
+        # cryptographically bound to this exact round signature.
+        payload = {
+            **signature,
+            "completed_chunk_count": 0,
+            "chunk_outputs": {},
+        }
     if payload.get("completed") is True:
         return {}, []
     mismatch_keys = _checkpoint_mismatch_keys(payload, signature)
     if mismatch_keys:
-        if _checkpoint_has_saved_outputs(payload):
+        if _checkpoint_has_saved_outputs(payload) or bool(journal_records):
             raise RuntimeError(
                 "Existing checkpoint does not match the current document state "
                 f"({', '.join(mismatch_keys)}). Reset this round before starting a fresh run."
             )
         try:
             checkpoint_path.unlink(missing_ok=True)
+            get_round_checkpoint_journal_path(checkpoint_path).unlink(missing_ok=True)
         except OSError:
             pass
         return {}, []
+
+    payload = _merge_round_checkpoint_journal(
+        payload,
+        matching_journal_records,
+        signature=signature,
+    )
 
     cleaned_outputs = _normalize_checkpoint_outputs(
         payload.get("chunk_outputs"),
@@ -3596,9 +3740,19 @@ def _save_round_checkpoint(
     if safe_last_error_details:
         payload["last_error_details"] = safe_last_error_details
     _write_json_atomically(checkpoint_path, payload)
+    try:
+        get_round_checkpoint_journal_path(checkpoint_path).unlink(missing_ok=True)
+    except OSError:
+        # The compact snapshot already contains every journaled output. A
+        # leftover journal is idempotently ignored for inline chunk ids.
+        pass
 
 
 def _delete_round_checkpoint(checkpoint_path: Path) -> None:
+    try:
+        get_round_checkpoint_journal_path(checkpoint_path).unlink(missing_ok=True)
+    except OSError:
+        pass
     try:
         checkpoint_path.unlink(missing_ok=True)
     except OSError:
@@ -4328,7 +4482,6 @@ def _assess_machine_like_risks(
 
     metrics = metrics if isinstance(metrics, dict) else _style_risk_metrics(text)
     closing_count = int(metrics.get("closingCount", 0) or 0)
-    sentence_stats = metrics.get("sentenceStats") if isinstance(metrics.get("sentenceStats"), dict) else _sentence_length_stats(text)
     sentence_count = int(metrics.get("sentenceCount", 0) or 0)
     connector_density = float(metrics.get("connectorDensity", 0) or 0)
     template_density = float(metrics.get("templateDensity", 0) or 0)
@@ -6176,6 +6329,13 @@ def run_round(
         signature=checkpoint_signature,
         manifest_chunks_by_id=manifest_chunks_by_id,
     )
+    if _load_checkpoint_payload(checkpoint_path) is None:
+        _save_round_checkpoint(
+            checkpoint_path,
+            signature=checkpoint_signature,
+            chunk_outputs=chunk_outputs,
+            validation_events=validation_events,
+        )
     save_manifest(manifest, normalized_manifest_path)
     pending_chunk_count = max(0, manifest.chunk_count - len(chunk_outputs))
     effective_concurrency = max(1, min(configured_concurrency, pending_chunk_count or 1))
@@ -6401,18 +6561,36 @@ def run_round(
 
                 chunk_outputs[result.chunk_id] = result.output_text
                 validation_events.extend(result.validation_events)
-                _save_round_checkpoint(
-                    checkpoint_path,
-                    signature=checkpoint_signature,
-                    chunk_outputs=chunk_outputs,
-                    validation_events=validation_events,
-                    last_error=(
-                        f"Chunk {first_error[1]} failed: {safe_public_error_message(first_error[2])}"
-                        if first_error is not None
-                        else None
-                    ),
-                    last_error_details=first_error_details,
-                )
+                if first_error is not None:
+                    # A sibling has already failed, so this is the last chance
+                    # to compact any in-flight successes with the stable error
+                    # metadata before the round exits.
+                    _save_round_checkpoint(
+                        checkpoint_path,
+                        signature=checkpoint_signature,
+                        chunk_outputs=chunk_outputs,
+                        validation_events=validation_events,
+                        last_error=f"Chunk {first_error[1]} failed: {safe_public_error_message(first_error[2])}",
+                        last_error_details=first_error_details,
+                    )
+                else:
+                    try:
+                        _append_round_checkpoint_journal(
+                            checkpoint_path,
+                            signature=checkpoint_signature,
+                            chunk_id=result.chunk_id,
+                            output_text=result.output_text,
+                            validation_events=result.validation_events,
+                        )
+                    except OSError:
+                        # A journal failure falls back to the compatible compact
+                        # snapshot so recovery never depends on the optimization.
+                        _save_round_checkpoint(
+                            checkpoint_path,
+                            signature=checkpoint_signature,
+                            chunk_outputs=chunk_outputs,
+                            validation_events=validation_events,
+                        )
                 for progress_event in result.progress_events:
                     if progress_callback is not None:
                         progress_callback(

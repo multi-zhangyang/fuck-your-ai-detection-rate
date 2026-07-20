@@ -5,6 +5,7 @@
 # and the production frontend build from WEB_STATIC_DIR.
 
 set -euo pipefail
+umask 077
 
 # Ensure stateful directories exist and are owned by the runtime user.  The
 # non-root branch keeps the image usable with an explicit `docker run --user`

@@ -35,10 +35,11 @@ RUN groupadd --system --gid 10001 fyadr \
 
 WORKDIR /app
 
-# 1) Python deps first (best layer caching).
-COPY requirements.txt ./
+# 1) Python deps first (best layer caching). The reviewed lock makes container
+# builds reproducible instead of resolving new transitive versions over time.
+COPY requirements.lock ./
 COPY LICENSE ./LICENSE
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # 2) Backend source. scripts/ is flat (sibling imports), so it lives at
 #    /app/scripts and ROOT_DIR resolves to /app (repo root equivalent).

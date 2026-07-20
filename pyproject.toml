@@ -1,0 +1,29 @@
+[project]
+name = "fyadr"
+version = "0.1.0"
+description = "Self-hosted document rewriting and review workbench"
+requires-python = ">=3.10"
+dependencies = [
+  "Flask>=3.0,<4",
+  "flask-compress>=1.14,<2",
+  "python-docx>=0.8.11,<2",
+  "gunicorn>=21.2,<26; platform_system != 'Windows'",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff==0.15.22",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = [
+  "app",
+  "data",
+  "finish",
+  "origin",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

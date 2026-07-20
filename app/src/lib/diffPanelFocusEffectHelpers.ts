@@ -38,7 +38,10 @@ export function planDiffFocusScrollAction(input: {
     allChunks: input.allChunks,
   });
   const targetNode = targetId ? input.chunkRefs[targetId] : null;
-  if (targetNode) {
+  const targetIsShown = Boolean(targetId) && input.shownChunks.some(
+    (chunk) => chunk.chunkId === targetId,
+  );
+  if (targetNode || targetIsShown) {
     return {
       kind: "chunk",
       targetId,

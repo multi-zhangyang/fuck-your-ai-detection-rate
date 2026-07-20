@@ -11,8 +11,6 @@ import type {
 import {
   assertFileSize,
   pickSingleFile,
-  readFileAsBase64,
-  readFileWithFallback,
 } from "@/lib/webServiceFiles";
 import {
   buildUnavailableScopeDiagnostics,
@@ -27,21 +25,11 @@ export const webServiceDocumentsApi = {
       return null;
     }
     assertFileSize(file, "Document");
-    const lowerName = file.name.toLowerCase();
-    const requestBody = lowerName.endsWith(".docx")
-      ? {
-          filename: file.name,
-          encoding: "base64",
-          contentBase64: await readFileAsBase64(file),
-        }
-      : {
-          filename: file.name,
-          encoding: "text",
-          content: await readFileWithFallback(file),
-        };
+    const requestBody = new FormData();
+    requestBody.append("file", file, file.name);
     return requestJson<PickedDocument>("/api/upload-document", {
       method: "POST",
-      body: JSON.stringify(requestBody),
+      body: requestBody,
     });
   },
 

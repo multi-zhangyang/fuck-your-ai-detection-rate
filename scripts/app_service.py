@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import re
-import sys
 import shutil
 import threading
 import time
@@ -80,8 +79,9 @@ from fyadr_round_service import (
     _build_validation_repair_steps,
     _candidate_requires_conditional_retry,
     _evaluate_rewrite_candidate,
-    _extract_required_terms,
     _is_checkpoint_compatible,
+    _load_round_checkpoint_journal,
+    _merge_round_checkpoint_journal,
     _select_rewrite_candidate,
     _score_rewrite_output,
     _classify_failed_attempt_diagnostic,
@@ -102,6 +102,7 @@ from prompt_library import (
     prompt_sequence_match_rank,
     resolve_prompt_path,
 )
+from private_fs import PRIVATE_READ_ONLY_FILE_MODE, ensure_private_directory
 from docx_bodymap import (
     docx_body_map_from_payload,
     get_body_map_unit_model_format_anchors,
@@ -180,7 +181,7 @@ DIMENSION_RERUN_CONVERGE_ATTEMPTS = 2
 # Provider rate-limit / cooldown state now lives in provider_guard. Keep module
 # references here so existing callers (and provider_guard_regression.py via
 # app_service.<symbol>) keep working against the shared singleton.
-from provider_guard import (  # noqa: E402
+from provider_guard import (  # noqa: E402, F401 -- compatibility aliases; see comment above
     _RATE_LIMIT_STATE,
     _RATE_LIMIT_LOCK,
     _PROVIDER_GUARD_STATE,
@@ -748,6 +749,7 @@ def _canonical_fyadr_sidecar_paths(output_path: Path) -> tuple[Path, ...]:
         normalized_output_path.with_name(f"{stem}_manifest.json"),
         normalized_output_path.with_name(f"{stem}_quality.json"),
         normalized_output_path.with_name(f"{stem}_checkpoint.json"),
+        normalized_output_path.with_name(f"{stem}_checkpoint_journal.jsonl"),
         normalized_output_path.with_name(f"{stem}_body_map.json"),
         normalized_output_path.with_name(f"{stem}_bodymap.json"),
         normalized_output_path.with_name(f"{stem}_validation.json"),
@@ -4370,6 +4372,7 @@ def reset_round_progress(
         output_path,
         intermediate_dir / f"{artifact_stem}_round{target_round}_input.txt",
         output_path.with_name(f"{output_path.stem}_checkpoint.json"),
+        output_path.with_name(f"{output_path.stem}_checkpoint_journal.jsonl"),
         output_path.with_name(f"{output_path.stem}_compare.json"),
         output_path.with_name(f"{output_path.stem}_quality.json"),
         output_path.with_name(f"{output_path.stem}_bodymap.json"),
@@ -4655,6 +4658,11 @@ def get_round_progress_status(
             "resumeExplanation": "该断点与当前正文、Prompt 或分块清单不一致，继续会重新生成；请确认历史文档和自定义流程一致。",
             "message": "断点与当前正文不匹配，已阻止假续跑提示。",
         }
+    payload = _merge_round_checkpoint_journal(
+        payload,
+        _load_round_checkpoint_journal(checkpoint_path),
+        signature=checkpoint_signature,
+    )
     chunk_outputs = payload.get("chunk_outputs")
     chunk_ids = payload.get("chunk_ids")
     validation_events = payload.get("validation_events")
@@ -5915,8 +5923,7 @@ def _capture_docx_export_source_anchor(
         )
     expected_sha256 = body_map_sha256
 
-    anchor_root = ROOT_DIR / "finish" / "intermediate" / "docx_source_anchors"
-    anchor_root.mkdir(parents=True, exist_ok=True)
+    anchor_root = ensure_private_directory(ROOT_DIR / "finish" / "intermediate" / "docx_source_anchors")
     temporary_path = anchor_root / (
         f".{expected_sha256}.{threading.get_ident()}.{time.monotonic_ns()}.tmp.docx"
     )
@@ -5970,7 +5977,7 @@ def _capture_docx_export_source_anchor(
                     )
             else:
                 temporary_path.replace(anchor_path)
-                anchor_path.chmod(0o444)
+                anchor_path.chmod(PRIVATE_READ_ONLY_FILE_MODE)
             anchor_extracted_path = anchor_root / f"{expected_sha256}.extracted.txt"
             anchor_snapshot_path = anchor_root / f"{expected_sha256}.snapshot.json"
             anchor_scope_path = anchor_root / f"{expected_sha256}.scope.json"
@@ -8803,14 +8810,6 @@ def _rerun_compare_chunk_unlocked(output_path: str, chunk_id: str, model_config:
     # guards, same-dimension direction and net style gain are evaluated by the
     # shared provider-independent selector.
     round_dimension = resolve_round_dimension(prompt_profile, round_number, prompt_sequence)
-    chunk_quality_flags = (
-        target_chunk.get("quality", {}).get("advisoryFlags")
-        if isinstance(target_chunk.get("quality"), dict) else None
-    )
-    dimension_closure_enabled = bool(
-        round_dimension
-        and "dimension_direction_not_effective" in (chunk_quality_flags or [])
-    )
     last_candidate_output = {"text": ""}
 
     def generate_candidate(_attempt: int, retry_note: str | None) -> str:
@@ -9323,7 +9322,7 @@ def _rerun_rate_audit_strategy_chunk_unlocked(
     # This first check deliberately precedes transform construction. A missing
     # or tampered DOCX body-map therefore produces zero model constructors and
     # zero model calls.
-    prompt_text = _assert_rate_audit_strategy_model_contract(
+    _assert_rate_audit_strategy_model_contract(
         source_path=source_path,
         output_path=output_path,
         compare_payload=compare_payload,
@@ -10068,7 +10067,7 @@ def execute_rate_audit_strategy(
                 post_audit_error = ""
                 try:
                     post_audit = get_document_rate_audit(str(source_path), str(output_path))
-                except Exception as exc:
+                except Exception:
                     post_audit = None
                     post_audit_error = "rate_audit_refresh_failed"
             else:
@@ -10161,7 +10160,7 @@ def cli_main() -> None:
     history_parser = subparsers.add_parser("document-history")
     history_parser.add_argument("source_path")
 
-    list_history_parser = subparsers.add_parser("document-history-list")
+    subparsers.add_parser("document-history-list")
 
     delete_history_parser = subparsers.add_parser("delete-document-history")
     delete_history_parser.add_argument("doc_id")

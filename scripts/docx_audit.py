@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator, Mapping
 import hashlib
 import json
 import posixpath
@@ -13,6 +14,11 @@ import zipfile
 from docx import Document  # type: ignore[import]
 
 from docx_pipeline import _load_docx_snapshot, _resolve_target_paragraph
+from docx_security import (
+    MAX_DOCX_ENTRY_UNCOMPRESSED_BYTES,
+    MAX_DOCX_XML_PART_BYTES,
+    validate_docx_package,
+)
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -456,22 +462,21 @@ def audit_docx_ooxml_integrity(
     if snapshot is None:
         raise ValueError(f"DOCX snapshot not found: {snapshot_path}")
 
-    source_parts = _read_docx_parts(source_path)
-    export_parts = _read_docx_parts(export_path)
+    with _read_docx_parts(source_path) as source_parts, _read_docx_parts(export_path) as export_parts:
+        if "word/document.xml" not in source_parts or "word/document.xml" not in export_parts:
+            issues.append({"type": "document_xml_missing"})
+        else:
+            issues.extend(_audit_document_xml(source_parts["word/document.xml"], export_parts["word/document.xml"], snapshot))
 
-    if "word/document.xml" not in source_parts or "word/document.xml" not in export_parts:
-        issues.append({"type": "document_xml_missing"})
-    else:
-        issues.extend(_audit_document_xml(source_parts["word/document.xml"], export_parts["word/document.xml"], snapshot))
-
-    issues.extend(_audit_part_inventory(source_parts, export_parts))
-    issues.extend(_audit_exact_parts(source_parts, export_parts))
-    issues.extend(_audit_header_footer_parts(source_parts, export_parts))
-    issues.extend(_audit_styles_part(source_parts, export_parts))
-    issues.extend(_audit_numbering_part(source_parts, export_parts))
-    issues.extend(_audit_settings_part(source_parts, export_parts))
-    issues.extend(_audit_relationship_parts(source_parts, export_parts))
-    issues.extend(_audit_relationship_target_integrity(source_parts, export_parts))
+        issues.extend(_audit_part_inventory(source_parts, export_parts))
+        issues.extend(_audit_exact_parts(source_parts, export_parts))
+        issues.extend(_audit_header_footer_parts(source_parts, export_parts))
+        issues.extend(_audit_styles_part(source_parts, export_parts))
+        issues.extend(_audit_numbering_part(source_parts, export_parts))
+        issues.extend(_audit_settings_part(source_parts, export_parts))
+        issues.extend(_audit_relationship_parts(source_parts, export_parts))
+        issues.extend(_audit_relationship_target_integrity(source_parts, export_parts))
+        checked_parts = len(source_parts)
 
     source_sha256_after = _sha256_file(source_path)
     _append_source_generation_issues(
@@ -497,7 +502,7 @@ def audit_docx_ooxml_integrity(
         "issueCount": len(issues),
         "issues": issues[:50],
         "truncatedIssues": max(0, len(issues) - 50),
-        "checkedParts": len(source_parts),
+        "checkedParts": checked_parts,
     }
     if report_path is not None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -565,16 +570,75 @@ def _audit_table_structure(source_document: Any, export_document: Any) -> list[d
     return issues
 
 
-def _read_docx_parts(path: Path) -> dict[str, bytes]:
-    with zipfile.ZipFile(str(path.resolve()), "r") as archive:
-        return {
-            item.filename: archive.read(item.filename)
-            for item in archive.infolist()
+class _BoundedDocxParts(Mapping[str, bytes]):
+    """Lazy package mapping: XML is read on demand; binary hashes stream."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path.resolve()
+        validate_docx_package(self.path)
+        self.archive = zipfile.ZipFile(self.path, "r")
+        self.infos = {
+            item.filename: item
+            for item in self.archive.infolist()
             if not item.is_dir()
         }
 
+    def __len__(self) -> int:
+        return len(self.infos)
 
-def _audit_part_inventory(source_parts: dict[str, bytes], export_parts: dict[str, bytes]) -> list[dict[str, Any]]:
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.infos)
+
+    def __getitem__(self, name: str) -> bytes:
+        info = self.infos[name]
+        limit = (
+            MAX_DOCX_XML_PART_BYTES
+            if name == "[Content_Types].xml" or name.endswith((".xml", ".rels"))
+            else MAX_DOCX_ENTRY_UNCOMPRESSED_BYTES
+        )
+        if info.file_size > limit:
+            raise ValueError(f"DOCX audit part exceeds its read bound: {name}")
+        with self.archive.open(info, "r") as handle:
+            payload = handle.read(limit + 1)
+        if len(payload) > limit or len(payload) != info.file_size:
+            raise ValueError(f"DOCX audit part size is inconsistent: {name}")
+        return payload
+
+    def sha256(self, name: str) -> str:
+        info = self.infos[name]
+        digest = hashlib.sha256()
+        size = 0
+        with self.archive.open(info, "r") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                size += len(block)
+                if size > MAX_DOCX_ENTRY_UNCOMPRESSED_BYTES:
+                    raise ValueError(f"DOCX audit part exceeds its hash bound: {name}")
+                digest.update(block)
+        if size != info.file_size:
+            raise ValueError(f"DOCX audit part size is inconsistent: {name}")
+        return digest.hexdigest()
+
+    def close(self) -> None:
+        self.archive.close()
+
+    def __enter__(self) -> "_BoundedDocxParts":
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
+        self.close()
+
+
+def _read_docx_parts(path: Path) -> _BoundedDocxParts:
+    return _BoundedDocxParts(path)
+
+
+def _docx_part_sha256(parts: Mapping[str, bytes], name: str) -> str:
+    if isinstance(parts, _BoundedDocxParts):
+        return parts.sha256(name)
+    return hashlib.sha256(parts[name]).hexdigest()
+
+
+def _audit_part_inventory(source_parts: Mapping[str, bytes], export_parts: Mapping[str, bytes]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     source_names = set(source_parts)
     export_names = set(export_parts)
@@ -585,7 +649,7 @@ def _audit_part_inventory(source_parts: dict[str, bytes], export_parts: dict[str
     return issues
 
 
-def _audit_exact_parts(source_parts: dict[str, bytes], export_parts: dict[str, bytes]) -> list[dict[str, Any]]:
+def _audit_exact_parts(source_parts: Mapping[str, bytes], export_parts: Mapping[str, bytes]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     source_critical = {name for name in source_parts if _is_exact_part(name)}
     export_critical = {name for name in export_parts if _is_exact_part(name)}
@@ -594,8 +658,8 @@ def _audit_exact_parts(source_parts: dict[str, bytes], export_parts: dict[str, b
     for name in sorted(export_critical - source_critical):
         issues.append({"type": "ooxml_part_added", "part": name})
     for name in sorted(source_critical & export_critical):
-        source_hash = hashlib.sha256(source_parts[name]).hexdigest()
-        export_hash = hashlib.sha256(export_parts[name]).hexdigest()
+        source_hash = _docx_part_sha256(source_parts, name)
+        export_hash = _docx_part_sha256(export_parts, name)
         if source_hash != export_hash:
             issues.append(
                 {

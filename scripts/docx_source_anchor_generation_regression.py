@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -159,6 +160,11 @@ def main() -> int:
         _assert(manifest_path.exists(), "stable control export did not publish evidence")
         _assert(anchor_path.exists(), "stable control export did not retain its source anchor")
         _assert(_sha256(anchor_path) == source_a_sha256, "stable control anchor does not contain generation A")
+        if os.name != "nt":
+            _assert(
+                stat.S_IMODE(anchor_path.stat().st_mode) == 0o400,
+                "stable control anchor must be readable only by its owner",
+            )
         _assert(control.get("sourceSha256") == source_a_sha256, "control result is not bound to generation A")
         _assert("source_generation_anchor" in (control.get("checksPerformed") or []), "control omitted its generation-anchor check")
 

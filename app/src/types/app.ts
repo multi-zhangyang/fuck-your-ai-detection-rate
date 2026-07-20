@@ -1080,6 +1080,9 @@ export type RunRoundStatus = {
   completed: boolean;
   cancelRequested: boolean;
   eventCount: number;
+  retainedEventCount?: number;
+  oldestEventId?: number;
+  latestEventId?: number;
   lastEvent?: RoundProgress | null;
   result?: RoundResult | null;
   error?: string | null;
@@ -1272,6 +1275,7 @@ export type BatchRerunStatus = {
   preservedAttempts?: BatchRerunResult["preservedAttempts"];
   failures?: BatchRerunFailure[];
   eventCount: number;
+  retainedEventCount?: number;
   lastEvent?: Record<string, unknown> | null;
   result?: BatchRerunResult | null;
   error?: string | null;
@@ -1768,6 +1772,8 @@ export type HistoryDatabaseBackupEntry = {
   name: string;
   sizeBytes: number;
   modifiedAt: string;
+  compressed?: boolean;
+  format?: "sqlite3" | "sqlite3-gzip";
   validation?: HistoryDatabaseCheckResult;
   ok?: boolean;
 };
@@ -1801,6 +1807,11 @@ export type HistoryDatabaseBackupResult = {
   backupDir?: string;
   sourcePath?: string;
   sizeBytes?: number;
+  sourceSizeBytes?: number;
+  savedBytes?: number;
+  compressionRatio?: number;
+  compressed?: boolean;
+  format?: "sqlite3" | "sqlite3-gzip";
   sourceStatus?: Record<string, unknown>;
   validation?: HistoryDatabaseCheckResult;
   prunedBackups?: string[];

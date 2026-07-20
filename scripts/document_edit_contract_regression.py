@@ -30,7 +30,6 @@ from docx_pipeline import (  # noqa: E402
     _load_docx_snapshot,
     ensure_docx_processing_assets,
     get_docx_extracted_text_path,
-    get_docx_snapshot_path,
 )
 from round_helper import run_document_round  # noqa: E402
 

@@ -187,7 +187,6 @@ def _paragraph_format_sig(paragraph_element: Any) -> tuple[str, list[str]]:
 
 
 def _collect_editable_signatures(doc_path: Path, snapshot_path: Path) -> list[dict[str, Any]]:
-    snapshot_data = app_service._load_docx_snapshot(snapshot_path) if hasattr(app_service, "_load_docx_snapshot") else None
     from docx_pipeline import _load_docx_snapshot
     snapshot = _load_docx_snapshot(snapshot_path)
     document = Document(str(doc_path))

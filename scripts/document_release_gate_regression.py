@@ -15,10 +15,7 @@ if str(ROOT_DIR / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / "scripts"))
 
 import app_service  # noqa: E402
-from academic_readability import assess_academic_readability_delta  # noqa: E402
 from fyadr_round_service import (  # noqa: E402
-    CANDIDATE_SELECTION_SCHEMA,
-    CANDIDATE_SELECTION_VERSION,
     get_round_compare_path,
 )
 

@@ -24,7 +24,7 @@ from hashlib import sha256
 import json
 import math
 import re
-from typing import Any, Iterable
+from typing import Iterable
 
 
 SOURCE_RELATIVE_STYLE_DELTA_SCHEMA = "fyadr.source-relative-style-delta"

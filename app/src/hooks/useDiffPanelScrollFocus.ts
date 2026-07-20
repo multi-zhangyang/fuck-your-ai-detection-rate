@@ -43,6 +43,7 @@ export function useDiffPanelScrollFocus({
 }: Input) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chunkRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const virtualScrollToChunkRef = useRef<((chunkId: string) => boolean) | null>(null);
   const restoredKeyRef = useRef("");
   const previousChunkCountRef = useRef(0);
   const previousFailedCountRef = useRef(0);
@@ -68,6 +69,7 @@ export function useDiffPanelScrollFocus({
   useDiffPanelScrollEffects({
     scrollRef,
     chunkRefs,
+    virtualScrollToChunkRef,
     restoredKeyRef,
     previousChunkCountRef,
     handledDiffFocusNonceRef,
@@ -90,6 +92,7 @@ export function useDiffPanelScrollFocus({
   return {
     scrollRef,
     chunkRefs,
+    virtualScrollToChunkRef,
     focusedReviewIndex,
     setFocusedReviewIndex,
     focusedChunkId,

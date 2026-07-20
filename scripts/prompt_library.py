@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from private_fs import ensure_private_directory, harden_private_file
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
 PROMPT_DIR = ROOT_DIR / "prompts"
 PROMPT_DEFAULT_DIR = PROMPT_DIR / "defaults"
@@ -394,8 +396,7 @@ def _sha256_bytes(content: bytes) -> str:
 def _atomic_write_bytes(path: Path, content: bytes) -> bool:
     if path.exists() and path.read_bytes() == content:
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+    ensure_private_directory(path.parent)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     temporary_path = Path(temporary_name)
     try:
@@ -403,8 +404,10 @@ def _atomic_write_bytes(path: Path, content: bytes) -> bool:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary_path, mode)
+        if os.name != "nt":
+            os.chmod(temporary_path, 0o600)
         os.replace(temporary_path, path)
+        harden_private_file(path)
     finally:
         temporary_path.unlink(missing_ok=True)
     return True
@@ -416,7 +419,7 @@ def _atomic_write_json(path: Path, payload: object) -> bool:
 
 
 def _atomic_create_bytes(path: Path, content: bytes) -> bool:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(path.parent)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     temporary_path = Path(temporary_name)
     try:
@@ -424,7 +427,8 @@ def _atomic_create_bytes(path: Path, content: bytes) -> bool:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary_path, 0o644)
+        if os.name != "nt":
+            os.chmod(temporary_path, 0o600)
         try:
             os.link(temporary_path, path)
         except FileExistsError:
@@ -1081,10 +1085,10 @@ def _validate_prompt_content(content: object) -> str:
 def backup_prompt_file(prompt_id: str, prompt_path: Path) -> str | None:
     if not prompt_path.exists():
         return None
-    PROMPT_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(PROMPT_BACKUP_DIR)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     backup_path = PROMPT_BACKUP_DIR / f"{prompt_id}-{stamp}.md"
-    backup_path.write_text(prompt_path.read_text(encoding="utf-8"), encoding="utf-8")
+    _atomic_write_bytes(backup_path, prompt_path.read_bytes())
     return _relative_prompt_path(backup_path)
 
 
@@ -1112,9 +1116,9 @@ def save_prompt_content(prompt_id: object, content: object) -> dict[str, Any]:
         raise ValueError("This prompt is not editable.")
     normalized = _validate_prompt_content(content)
     prompt_path = _prompt_path_from_relative(str(item["relativePath"]))
-    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(prompt_path.parent)
     backup_path = backup_prompt_file(str(item["id"]), prompt_path)
-    prompt_path.write_text(normalized, encoding="utf-8")
+    _atomic_write_bytes(prompt_path, normalized.encode("utf-8"))
     preview = build_prompt_preview_item(item)
     preview["backupPath"] = backup_path
     return preview
@@ -1136,7 +1140,7 @@ def restore_default_prompt(prompt_id: object) -> dict[str, Any]:
             raise ValueError("Default prompt content is unavailable.")
         prompt_path = _prompt_path_from_relative(str(item["relativePath"]))
         backup_path = backup_prompt_file(normalized_id, prompt_path)
-        prompt_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+        _atomic_write_bytes(prompt_path, source_path.read_bytes())
         default_meta = DEFAULT_PROMPT_BY_ID.get(normalized_id, {})
         item["label"] = str(default_meta.get("label", item["label"]))
         item["description"] = str(default_meta.get("description", item.get("description", "")))
@@ -1196,7 +1200,7 @@ def restore_prompt_backup(prompt_id: object, backup_relative_path: object) -> di
         raise ValueError("Prompt backup is unavailable.")
     prompt_path = _prompt_path_from_relative(str(item["relativePath"]))
     current_backup_path = backup_prompt_file(normalized_id, prompt_path)
-    prompt_path.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
+    _atomic_write_bytes(prompt_path, backup_path.read_bytes())
     preview = build_prompt_preview_item(item)
     preview["backupPath"] = current_backup_path
     return preview
@@ -1222,8 +1226,8 @@ def create_prompt(label: object, content: object, description: object = "") -> d
         suffix += 1
     relative_path = f"prompts/custom/{prompt_id}.md"
     prompt_path = _prompt_path_from_relative(relative_path)
-    prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(normalized_content, encoding="utf-8")
+    ensure_private_directory(prompt_path.parent)
+    _atomic_write_bytes(prompt_path, normalized_content.encode("utf-8"))
     item = {
         "id": prompt_id,
         "label": normalized_label,

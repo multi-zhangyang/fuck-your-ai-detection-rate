@@ -20,7 +20,7 @@ jobs:
   regression:
     name: Regression checks
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -30,6 +30,8 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -39,7 +41,10 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       - name: Install Python dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Run Python static checks
+        run: python -m ruff check .
 
       - name: Install frontend dependencies
         run: npm --prefix app ci
@@ -69,6 +74,8 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements.lock
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -78,7 +85,7 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       - name: Install Python dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+        run: python -m pip install --require-hashes -r requirements.lock
 
       - name: Install frontend dependencies
         run: npm --prefix app ci
@@ -106,3 +113,99 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         run: python scripts/platform_install_smoke.py
+
+  container-smoke:
+    name: Container smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI_IMAGE: fyadr-ci:${{ github.sha }}
+      CI_CONTAINER: fyadr-ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build production image
+        run: docker build --pull --tag "$CI_IMAGE" .
+
+      - name: Start isolated production container
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suffix in origin finish config prompts; do
+            docker volume create "${CI_CONTAINER}-${suffix}"
+          done
+          docker run --detach \
+            --name "$CI_CONTAINER" \
+            --publish 127.0.0.1:18765:8765 \
+            --volume "${CI_CONTAINER}-origin:/app/origin" \
+            --volume "${CI_CONTAINER}-finish:/app/finish" \
+            --volume "${CI_CONTAINER}-config:/app/config" \
+            --volume "${CI_CONTAINER}-prompts:/app/prompts" \
+            "$CI_IMAGE"
+
+      - name: Probe API, frontend, runtime user, and writable state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import re
+          import time
+          from urllib.parse import urljoin
+          from urllib.request import ProxyHandler, Request, build_opener
+
+          base_url = "http://127.0.0.1:18765/"
+          opener = build_opener(ProxyHandler({}))
+          deadline = time.monotonic() + 90
+          last_error = None
+          while time.monotonic() < deadline:
+              try:
+                  with opener.open(Request(urljoin(base_url, "/api/ping")), timeout=2) as response:
+                      ping = json.loads(response.read(65536).decode("utf-8"))
+                  if response.status == 200 and ping.get("ok") is True and ping.get("service") == "fyadr-web":
+                      break
+              except Exception as exc:
+                  last_error = exc
+              time.sleep(1)
+          else:
+              raise SystemExit(f"container did not become ready: {last_error}")
+
+          with opener.open(Request(urljoin(base_url, "/api/auth/status")), timeout=5) as response:
+              auth = json.loads(response.read(65536).decode("utf-8"))
+              assert response.status == 200 and isinstance(auth, dict)
+          with opener.open(Request(base_url), timeout=5) as response:
+              html = response.read(524288).decode("utf-8", errors="replace")
+              assert response.status == 200 and 'id="root"' in html
+          assets = re.findall(r'(?:src|href)="(/assets/[^"]+)"', html)
+          assert assets, "production HTML did not reference a built static asset"
+          with opener.open(Request(urljoin(base_url, assets[0])), timeout=5) as response:
+              assert response.status == 200 and len(response.read(1024)) > 0
+          PY
+          docker top "$CI_CONTAINER" -eo pid,user,comm | awk '
+            $3 == "gunicorn" { found = 1; if ($2 == "root") bad = 1 }
+            END { exit !(found && !bad) }
+          '
+          docker exec --user 10001:10001 "$CI_CONTAINER" sh -c '
+            set -eu
+            for path in /app/origin /app/finish /app/config /app/prompts; do
+              test -w "$path"
+            done
+            touch /app/finish/.fyadr-ci-write-probe
+            rm /app/finish/.fyadr-ci-write-probe
+          '
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs "$CI_CONTAINER"
+
+      - name: Clean isolated container resources
+        if: always()
+        shell: bash
+        run: |
+          docker rm --force "$CI_CONTAINER" 2>/dev/null || true
+          for suffix in origin finish config prompts; do
+            docker volume rm "${CI_CONTAINER}-${suffix}" 2>/dev/null || true
+          done
+          docker image rm "$CI_IMAGE" 2>/dev/null || true

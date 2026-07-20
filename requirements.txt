@@ -1,7 +1,3 @@
-python-docx>=0.8.11
-Flask>=3.0.0
-pypdf>=4.0.0
-# Production hardening for the Docker image:
-gunicorn>=21.2.0          # WSGI server (replaces Flask dev server in containers)
-flask-compress>=1.14     # gzip for /api + static assets (low-latency public access)
-# Script API mode uses Python stdlib urllib and does not add extra dependencies.
+# Compatibility install entrypoint. Direct dependencies live in pyproject.toml;
+# requirements.lock is the reviewed, reproducible runtime resolution.
+-r requirements.lock

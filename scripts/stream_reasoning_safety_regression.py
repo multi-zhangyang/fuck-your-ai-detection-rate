@@ -9,7 +9,6 @@ never loads the persisted application configuration.
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 import tempfile
 import uuid
@@ -268,6 +267,7 @@ def _test_web_progress_sink_boundary(work_root: Path) -> dict[str, object]:
         _assert(pending_projected.get("streamEventCount") == 9, "stream event count metadata was lost")
         _assert(pending_projected.get("reasoningSuppressed") is True, "stream sink did not enforce reasoning suppression")
         _assert(pending_projected.get("providerContentStored") is False, "stream sink claimed provider content storage")
+        web_app.persist_run_state(stream_run_id, force=True)
         pending_disk = json.loads(web_app.run_round_state_path(stream_run_id).read_text(encoding="utf-8"))
         _assert(pending_disk["state"]["lastEvent"] == pending_projected, "pending stream snapshot drifted from safe projection")
         _assert_no_provider_sink_content(pending_disk, marker, "pending run snapshot")
@@ -284,6 +284,7 @@ def _test_web_progress_sink_boundary(work_root: Path) -> dict[str, object]:
         done_projected = stream_state.events[-1]
         _assert(set(done_projected) == stream_keys | {"finalTextChars"}, "terminal stream sink schema drifted")
         _assert(done_projected.get("finalTextChars") == 321, "terminal final character count metadata was lost")
+        web_app.persist_run_state(stream_run_id, force=True)
         stream_disk = json.loads(web_app.run_round_state_path(stream_run_id).read_text(encoding="utf-8"))
         _assert(stream_disk["state"]["lastEvent"] == done_projected, "terminal stream snapshot drifted from safe projection")
         _assert_no_provider_sink_content(stream_disk, marker, "terminal run snapshot")
@@ -299,7 +300,7 @@ def _test_web_progress_sink_boundary(work_root: Path) -> dict[str, object]:
         _assert(stream_response.status_code == 200, "stream SSE fixture did not return HTTP 200")
         _assert_no_provider_sink_content(stream_sse, marker, "run stream SSE")
         stream_sse_events = _sse_progress_payloads(stream_sse)
-        _assert(stream_sse_events == [pending_projected, done_projected], "SSE did not emit the projected stream events")
+        _assert(stream_sse_events == [done_projected], "SSE did not emit the coalesced terminal stream snapshot")
 
         retry_source_path = work_root / "retry-source.txt"
         retry_source_path.write_text("offline retry source", encoding="utf-8")

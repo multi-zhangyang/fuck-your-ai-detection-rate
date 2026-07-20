@@ -12,6 +12,7 @@ import {
   REWRITE_DIFF_PANEL_COPY as T,
 } from "@/lib/rewriteDiffPanelViewModel";
 import { useRewriteDiffPanelModel } from "@/hooks/useRewriteDiffPanelModel";
+import { useCallback, useRef } from "react";
 
 function getDiffFilterEmptyState(mode: DiffFilterMode): { title: string } {
   // keep local name for sm needles; body delegates to view model via filterState.emptyState
@@ -36,6 +37,22 @@ export function RewriteDiffPanel({
     reviewDecisions,
     diffFocusRequest,
   });
+  const reviewDecisionChangeRef = useRef(onReviewDecisionChange);
+  const rerunChunkRef = useRef(onRerunChunk);
+  reviewDecisionChangeRef.current = onReviewDecisionChange;
+  rerunChunkRef.current = onRerunChunk;
+  const handleReviewDecisionChange = useCallback(
+    (chunkId: string, decision: Parameters<typeof onReviewDecisionChange>[1]) => {
+      reviewDecisionChangeRef.current(chunkId, decision);
+    },
+    [],
+  );
+  const handleRerunChunk = useCallback(
+    (chunkId: string, userFeedback?: string) => {
+      rerunChunkRef.current(chunkId, userFeedback);
+    },
+    [],
+  );
 
   if (!m.allChunks.length) {
     return <RewriteDiffPanelNoChunksEmpty />;
@@ -83,8 +100,10 @@ export function RewriteDiffPanel({
           streamChunkId={streamChunkId}
           focusedChunkId={m.focusedChunkId}
           chunkRefs={m.chunkRefs}
-          onReviewDecisionChange={onReviewDecisionChange}
-          onRerunChunk={onRerunChunk}
+          scrollRef={m.scrollRef}
+          virtualScrollToChunkRef={m.virtualScrollToChunkRef}
+          onReviewDecisionChange={handleReviewDecisionChange}
+          onRerunChunk={handleRerunChunk}
           onShowAll={() => m.setFilterMode("all")}
         />
       </div>

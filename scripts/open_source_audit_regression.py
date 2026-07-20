@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 from open_source_audit import (
     ROOT_DIR,

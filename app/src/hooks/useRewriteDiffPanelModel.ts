@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useDiffPanelScrollFocus } from "@/hooks/useDiffPanelScrollFocus";
 import type { DiffFilterMode } from "@/lib/diffFilterModel";
@@ -15,12 +15,15 @@ export function useRewriteDiffPanelModel({
   "data" | "rerunFailures" | "reviewDecisions" | "diffFocusRequest"
 >) {
   const [filterMode, setFilterMode] = useState<DiffFilterMode>("all");
-  const filterState = deriveRewriteDiffPanelFilterState({
-    data,
-    rerunFailures,
-    reviewDecisions,
-    filterMode,
-  });
+  const filterState = useMemo(
+    () => deriveRewriteDiffPanelFilterState({
+      data,
+      rerunFailures,
+      reviewDecisions,
+      filterMode,
+    }),
+    [data, rerunFailures, reviewDecisions, filterMode],
+  );
   const scroll = useDiffPanelScrollFocus({
     baseScrollKey: filterState.baseScrollKey,
     filterMode,

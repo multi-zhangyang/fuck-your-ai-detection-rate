@@ -1,4 +1,4 @@
-import type { MutableRefObject } from "react";
+import { memo, type MutableRefObject } from "react";
 import { ChunkQualityBar, TextPane } from "@/components/ChunkQualityBar";
 import { RewriteDiffChunkAlerts } from "@/components/RewriteDiffChunkAlerts";
 import { RewriteDiffDecisionEvidence } from "@/components/RewriteDiffDecisionEvidence";
@@ -10,22 +10,7 @@ import {
 import type { RerunFailure } from "@/lib/diffFilterModel";
 import type { ReviewDecision, RoundCompareData } from "@/types/app";
 
-export function RewriteDiffChunkCard({
-  chunk,
-  busy,
-  reviewDecisions,
-  reviewChunkIdSet,
-  changedChunkIdSet,
-  numberRiskChunkIdSet,
-  citationRiskChunkIdSet,
-  highRiskChunkIdSet,
-  rerunFailureByChunk,
-  streamChunkId,
-  focusedChunkId,
-  chunkRefs,
-  onReviewDecisionChange,
-  onRerunChunk,
-}: {
+type RewriteDiffChunkCardProps = {
   chunk: RoundCompareData["chunks"][number];
   busy: boolean;
   reviewDecisions: Record<string, ReviewDecision>;
@@ -40,7 +25,24 @@ export function RewriteDiffChunkCard({
   chunkRefs: MutableRefObject<Record<string, HTMLDivElement | null>>;
   onReviewDecisionChange: (chunkId: string, decision: ReviewDecision) => void;
   onRerunChunk: (chunkId: string, userFeedback?: string) => void;
-}) {
+};
+
+function RewriteDiffChunkCardComponent({
+  chunk,
+  busy,
+  reviewDecisions,
+  reviewChunkIdSet,
+  changedChunkIdSet,
+  numberRiskChunkIdSet,
+  citationRiskChunkIdSet,
+  highRiskChunkIdSet,
+  rerunFailureByChunk,
+  streamChunkId,
+  focusedChunkId,
+  chunkRefs,
+  onReviewDecisionChange,
+  onRerunChunk,
+}: RewriteDiffChunkCardProps) {
   const {
     rerunFailure,
     needsReview,
@@ -111,3 +113,29 @@ export function RewriteDiffChunkCard({
     </div>
   );
 }
+
+function areRewriteDiffChunkCardPropsEqual(
+  previous: RewriteDiffChunkCardProps,
+  next: RewriteDiffChunkCardProps,
+): boolean {
+  const chunkId = previous.chunk.chunkId;
+  return previous.chunk === next.chunk
+    && previous.busy === next.busy
+    && previous.reviewDecisions[chunkId] === next.reviewDecisions[chunkId]
+    && previous.reviewChunkIdSet.has(chunkId) === next.reviewChunkIdSet.has(chunkId)
+    && previous.changedChunkIdSet.has(chunkId) === next.changedChunkIdSet.has(chunkId)
+    && previous.numberRiskChunkIdSet.has(chunkId) === next.numberRiskChunkIdSet.has(chunkId)
+    && previous.citationRiskChunkIdSet.has(chunkId) === next.citationRiskChunkIdSet.has(chunkId)
+    && previous.highRiskChunkIdSet.has(chunkId) === next.highRiskChunkIdSet.has(chunkId)
+    && previous.rerunFailureByChunk.get(chunkId) === next.rerunFailureByChunk.get(chunkId)
+    && previous.streamChunkId === next.streamChunkId
+    && previous.focusedChunkId === next.focusedChunkId
+    && previous.chunkRefs === next.chunkRefs
+    && previous.onReviewDecisionChange === next.onReviewDecisionChange
+    && previous.onRerunChunk === next.onRerunChunk;
+}
+
+export const RewriteDiffChunkCard = memo(
+  RewriteDiffChunkCardComponent,
+  areRewriteDiffChunkCardPropsEqual,
+);
