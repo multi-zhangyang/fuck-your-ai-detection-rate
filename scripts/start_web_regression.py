@@ -103,7 +103,7 @@ def run_regression() -> dict[str, Any]:
         "PowerShell launcher must not discover and terminate arbitrary listeners",
     )
     _assert(
-        "requirements.lock" in ps_text and '"--require-hashes"' in ps_text and "pypdf" not in ps_text,
+        "requirements.txt" in ps_text and '"--require-hashes"' in ps_text and "pypdf" not in ps_text,
         "PowerShell launcher must install the reviewed runtime lock without unused dependencies",
     )
     _assert(
@@ -125,7 +125,7 @@ def run_regression() -> dict[str, Any]:
         "POSIX launcher lost launcher-owned PID cleanup",
     )
     _assert(
-        "requirements.lock" in posix_text and "--require-hashes" in posix_text and "pypdf" not in posix_text,
+        "requirements.txt" in posix_text and "--require-hashes" in posix_text and "pypdf" not in posix_text,
         "POSIX launcher must install the reviewed runtime lock without unused dependencies",
     )
     checks.append("macOS/Linux launcher keeps install, browser, loopback, and owned-PID contracts")

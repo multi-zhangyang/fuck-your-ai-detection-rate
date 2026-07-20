@@ -17,7 +17,7 @@ Windows PowerShell：
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.txt
 npm --prefix app ci
 .\start_web.ps1
 ```
@@ -26,7 +26,7 @@ macOS / Linux：
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install --require-hashes -r requirements-dev.lock
+.venv/bin/python -m pip install --require-hashes -r requirements-dev.txt
 npm --prefix app ci
 ./start_web.sh
 ```
