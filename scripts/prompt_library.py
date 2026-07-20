@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
+import os
 import re
+import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +16,8 @@ PROMPT_DIR = ROOT_DIR / "prompts"
 PROMPT_DEFAULT_DIR = PROMPT_DIR / "defaults"
 PROMPT_REGISTRY_PATH = PROMPT_DIR / "prompt-registry.json"
 PROMPT_WORKFLOW_REGISTRY_PATH = PROMPT_DIR / "prompt-workflows.json"
+PROMPT_FACTORY_STATE_FILENAME = ".factory-state.json"
+PROMPT_FACTORY_STATE_VERSION = 1
 PROMPT_BACKUP_DIR = ROOT_DIR / "finish" / "prompt_backups"
 MAX_PROMPT_CONTENT_BYTES = 512 * 1024
 DEFAULT_PROMPT_PROFILE = "cn_custom"
@@ -237,6 +244,10 @@ DEFAULT_PROMPT_WORKFLOWS: list[dict[str, Any]] = [
         "visible": True,
     },
 ]
+# Frozen ownership boundary for volumes created before factory-state tracking.
+# Do not derive this from the current seed: future factory workflow IDs must
+# not silently claim a same-named custom workflow during first adoption.
+PRE_FACTORY_STATE_WORKFLOW_IDS = frozenset({"cn", "cn_prewrite", "cn_custom"})
 DEFAULT_PROMPT_SEQUENCES = {str(item["id"]): list(item["defaultSequence"]) for item in DEFAULT_PROMPT_WORKFLOWS}
 SUPPORTED_PROMPT_PROFILES = set(DEFAULT_PROMPT_SEQUENCES)
 PROMPT_PROFILE_CHUNK_METRICS = {str(item["id"]): str(item["chunkMetric"]) for item in DEFAULT_PROMPT_WORKFLOWS}
@@ -294,6 +305,576 @@ DEFAULT_PROMPT_REGISTRY: list[dict[str, Any]] = [
 DEFAULT_PROMPT_BY_ID = {str(item["id"]): item for item in DEFAULT_PROMPT_REGISTRY}
 
 
+def _read_json_list(path: Path, *, required: bool) -> list[Any]:
+    if not path.exists():
+        if required:
+            raise ValueError(f"Required prompt seed file is missing: {path.name}")
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Prompt metadata is not valid JSON: {path.name}") from exc
+    if not isinstance(payload, list):
+        raise ValueError(f"Prompt metadata must contain a list: {path.name}")
+    return payload
+
+
+def _factory_item_id(raw: object, *, source: str) -> str:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{source} entries must be objects.")
+    prompt_id = str(raw.get("id", "") or "").strip().lower()
+    if not PROMPT_ID_RE.fullmatch(prompt_id):
+        raise ValueError(f"{source} contains an invalid id: {prompt_id or '<empty>'}")
+    return prompt_id
+
+
+def _index_factory_items(items: list[Any], *, source: str) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for raw in items:
+        item_id = _factory_item_id(raw, source=source)
+        if item_id in indexed:
+            raise ValueError(f"{source} contains a duplicate id: {item_id}")
+        indexed[item_id] = raw
+    return indexed
+
+
+def _index_existing_items(items: list[Any]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        item_id = str(raw.get("id", "") or "").strip().lower()
+        if PROMPT_ID_RE.fullmatch(item_id) and item_id not in indexed:
+            indexed[item_id] = raw
+    return indexed
+
+
+def _assert_unique_existing_ids(items: list[Any], *, source: str) -> None:
+    seen: set[str] = set()
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        item_id = str(raw.get("id", "") or "").strip().lower()
+        if not PROMPT_ID_RE.fullmatch(item_id):
+            continue
+        if item_id in seen:
+            raise ValueError(f"{source} contains a duplicate id: {item_id}")
+        seen.add(item_id)
+
+
+def _prompt_relative_path(value: object) -> Path:
+    normalized = str(value or "").strip().replace("\\", "/")
+    candidate = Path(normalized)
+    if candidate.is_absolute() or ".." in candidate.parts or len(candidate.parts) < 2 or candidate.parts[0] != "prompts":
+        raise ValueError("Factory prompt paths must be relative to prompts/.")
+    relative = Path(*candidate.parts[1:])
+    if relative.suffix.lower() != ".md":
+        raise ValueError("Factory prompt paths must point to markdown files.")
+    return relative
+
+
+def _path_inside(base_dir: Path, relative_path: Path) -> Path:
+    base = base_dir.resolve()
+    target = (base / relative_path).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError as exc:
+        raise ValueError("Factory prompt path escapes its prompt directory.") from exc
+    return target
+
+
+def _prompt_data_path(base_dir: Path, value: object) -> Path:
+    return _path_inside(base_dir, _prompt_relative_path(value))
+
+
+def _sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> bool:
+    if path.exists() and path.read_bytes() == content:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return True
+
+
+def _atomic_write_json(path: Path, payload: object) -> bool:
+    content = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    return _atomic_write_bytes(path, content)
+
+
+def _atomic_create_bytes(path: Path, content: bytes) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, 0o644)
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError:
+            return False
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return True
+
+
+def _load_factory_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Prompt factory state is not valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Prompt factory state must be an object.")
+    try:
+        version = int(payload.get("version", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Prompt factory state has an invalid version.") from exc
+    if version > PROMPT_FACTORY_STATE_VERSION:
+        raise ValueError("The prompt volume was initialized by a newer factory-state format.")
+    if version != PROMPT_FACTORY_STATE_VERSION:
+        raise ValueError("Prompt factory state uses an unsupported version.")
+    return payload
+
+
+def _merge_factory_metadata(
+    factory: dict[str, Any],
+    current: dict[str, Any] | None,
+    previous_factory: dict[str, Any] | None,
+    *,
+    user_editable_fields: tuple[str, ...],
+) -> dict[str, Any]:
+    merged = copy.deepcopy(factory)
+    if current is None:
+        return merged
+    for field in user_editable_fields:
+        if field not in current:
+            continue
+        # With no prior factory snapshot, preserving editable fields is the
+        # only lossless choice. Once a snapshot exists, unchanged values can
+        # safely follow the new image while actual user overrides remain.
+        if previous_factory is None or field not in previous_factory or current.get(field) != previous_factory.get(field):
+            merged[field] = copy.deepcopy(current[field])
+    return merged
+
+
+def _merge_factory_collection(
+    factory_items: list[Any],
+    current_items: list[Any],
+    previous_items: list[Any],
+    *,
+    source: str,
+    editable_fields: tuple[str, ...],
+    authoritative_fields: tuple[str, ...],
+    editable_only_when_customizable: bool = False,
+) -> list[Any]:
+    factory_by_id = _index_factory_items(factory_items, source=source)
+    current_by_id = _index_existing_items(current_items)
+    previous_by_id = _index_existing_items(previous_items)
+    merged: list[Any] = []
+    for item_id, factory in factory_by_id.items():
+        current = current_by_id.get(item_id)
+        fields = set(editable_fields)
+        if current is not None:
+            fields.update(
+                field
+                for field in current
+                if field not in authoritative_fields and field != "order"
+            )
+        previous_factory = previous_by_id.get(item_id)
+        was_customizable = any(
+            bool(item.get("customizable", False))
+            for item in (factory, current, previous_factory)
+            if isinstance(item, dict)
+        )
+        if editable_only_when_customizable and not was_customizable:
+            fields.clear()
+        merged.append(
+            _merge_factory_metadata(
+                factory,
+                current,
+                previous_factory,
+                user_editable_fields=tuple(sorted(fields)),
+            )
+        )
+    factory_ids = set(factory_by_id)
+    seen_extras: set[str] = set()
+    for raw in current_items:
+        if isinstance(raw, dict):
+            item_id = str(raw.get("id", "") or "").strip().lower()
+            if item_id in factory_ids or item_id in seen_extras:
+                continue
+            if PROMPT_ID_RE.fullmatch(item_id):
+                seen_extras.add(item_id)
+        merged.append(copy.deepcopy(raw))
+    return merged
+
+
+def _read_regular_file(path: Path) -> bytes | None:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size <= 0 or file_stat.st_size > MAX_PROMPT_CONTENT_BYTES:
+            return None
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            content = handle.read(MAX_PROMPT_CONTENT_BYTES + 1)
+        if len(content) > MAX_PROMPT_CONTENT_BYTES:
+            return None
+        try:
+            decoded = content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        return content if decoded.strip() else None
+    finally:
+        os.close(descriptor)
+
+
+def _import_legacy_custom_prompts(
+    legacy_custom_dir: str | Path | None,
+    prompt_dir: Path,
+    *,
+    factory_ids: set[str],
+    current_registry: list[Any],
+    previous_mappings: dict[str, str],
+) -> tuple[list[str], dict[str, str]]:
+    if legacy_custom_dir is None:
+        return [], {}
+    source_dir = Path(legacy_custom_dir)
+    if not source_dir.is_dir():
+        return [], {}
+    target_dir = _path_inside(prompt_dir, Path("custom"))
+    target_dir.mkdir(parents=True, exist_ok=True)
+    current_by_id = _index_existing_items(current_registry)
+    reserved_ids = factory_ids | set(current_by_id) | set(previous_mappings.values())
+    targets_claimed_by_other_sources = {
+        target_id
+        for source_id, target_id in previous_mappings.items()
+        if source_id != target_id
+    }
+    plans: list[tuple[str, str, Path, bytes, bool]] = []
+    new_mappings: dict[str, str] = {}
+    for source_path in sorted(source_dir.iterdir(), key=lambda item: item.name):
+        source_id = source_path.stem
+        if source_path.is_symlink() or source_path.suffix != ".md":
+            continue
+        if not PROMPT_ID_RE.fullmatch(source_id) or source_id in previous_mappings:
+            continue
+        content = _read_regular_file(source_path)
+        if content is None:
+            continue
+        same_id_path = target_dir / f"{source_id}.md"
+        same_id_exists = os.path.lexists(same_id_path)
+        current_meta = current_by_id.get(source_id)
+        same_id_is_custom = (
+            (current_meta is None or current_meta.get("builtIn", False) is False)
+            and source_id not in targets_claimed_by_other_sources
+        )
+        same_path_is_safe = not same_id_exists or (same_id_path.is_file() and not same_id_path.is_symlink())
+        if source_id not in factory_ids and same_id_is_custom and same_path_is_safe:
+            target_id = source_id
+            target_path = same_id_path
+            should_create = not same_id_exists
+        else:
+            suffix_number = 1
+            while True:
+                suffix = "-legacy" if suffix_number == 1 else f"-legacy-{suffix_number}"
+                prefix = source_id[: 64 - len(suffix)].rstrip("-_") or "prompt"
+                target_id = f"{prefix}{suffix}"
+                target_path = target_dir / f"{target_id}.md"
+                if target_id not in reserved_ids and not os.path.lexists(target_path):
+                    break
+                suffix_number += 1
+            should_create = True
+        reserved_ids.add(target_id)
+        new_mappings[source_id] = target_id
+        plans.append((source_id, target_id, target_path, content, should_create))
+
+    imported_ids: list[str] = []
+    for _source_id, target_id, target_path, content, should_create in plans:
+        if not should_create:
+            continue
+        if not _atomic_create_bytes(target_path, content):
+            raise ValueError(f"Legacy prompt target appeared during migration: {target_id}")
+        imported_ids.append(target_id)
+    return imported_ids, new_mappings
+
+
+def _register_legacy_custom_prompts(
+    prompt_dir: Path,
+    current_registry: list[Any],
+    mappings: dict[str, str],
+) -> list[Any]:
+    merged_registry = copy.deepcopy(current_registry)
+    known_ids = set(_index_existing_items(current_registry))
+    custom_dir = _path_inside(prompt_dir, Path("custom"))
+    for source_id, target_id in sorted(mappings.items()):
+        if target_id in known_ids:
+            continue
+        target_path = custom_dir / f"{target_id}.md"
+        if target_path.is_symlink() or not target_path.is_file():
+            continue
+        merged_registry.append({
+            "id": target_id,
+            "label": f"{source_id}（旧版导入）",
+            "description": "",
+            "relativePath": f"prompts/custom/{target_id}.md",
+            "builtIn": False,
+            "editable": True,
+        })
+        known_ids.add(target_id)
+    return merged_registry
+
+
+def _register_orphan_custom_prompts(
+    prompt_dir: Path,
+    current_registry: list[Any],
+    *,
+    factory_ids: set[str],
+    ignored_ids: set[str] | None = None,
+) -> tuple[list[Any], list[str]]:
+    merged_registry = copy.deepcopy(current_registry)
+    known_ids = set(_index_existing_items(current_registry)) | factory_ids | (ignored_ids or set())
+    discovered_ids: list[str] = []
+    custom_dir = _path_inside(prompt_dir, Path("custom"))
+    if not custom_dir.is_dir():
+        return merged_registry, discovered_ids
+    for path in sorted(custom_dir.iterdir(), key=lambda item: item.name):
+        prompt_id = path.stem
+        if path.is_symlink() or not path.is_file() or path.suffix != ".md":
+            continue
+        if not PROMPT_ID_RE.fullmatch(prompt_id) or prompt_id in known_ids:
+            continue
+        merged_registry.append({
+            "id": prompt_id,
+            "label": prompt_id,
+            "description": "",
+            "relativePath": f"prompts/custom/{path.name}",
+            "builtIn": False,
+            "editable": True,
+        })
+        known_ids.add(prompt_id)
+        discovered_ids.append(prompt_id)
+    return merged_registry, discovered_ids
+
+
+def sync_prompt_seed(
+    seed_dir: str | Path,
+    *,
+    prompt_dir: str | Path = PROMPT_DIR,
+    legacy_custom_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Merge an immutable image seed into a writable prompt volume.
+
+    Active built-in content follows a new factory version only when it still
+    matches the previous factory baseline. User edits, custom registry items,
+    and custom workflows are preserved. Factory default files are always
+    refreshed so "restore default" targets the currently running image.
+    """
+
+    seed_root = Path(seed_dir).resolve()
+    target_root = Path(prompt_dir).resolve()
+    seed_registry = _read_json_list(seed_root / "prompt-registry.json", required=True)
+    seed_workflows = _read_json_list(seed_root / "prompt-workflows.json", required=True)
+    seed_registry_by_id = _index_factory_items(seed_registry, source="prompt-registry.json")
+    _index_factory_items(seed_workflows, source="prompt-workflows.json")
+
+    target_root.mkdir(parents=True, exist_ok=True)
+    registry_path = target_root / "prompt-registry.json"
+    workflows_path = target_root / "prompt-workflows.json"
+    state_path = target_root / PROMPT_FACTORY_STATE_FILENAME
+    current_registry = _read_json_list(registry_path, required=False)
+    current_workflows = _read_json_list(workflows_path, required=False)
+    _assert_unique_existing_ids(current_registry, source="Current prompt registry")
+    _assert_unique_existing_ids(current_workflows, source="Current prompt workflow registry")
+    current_registry_by_id = _index_existing_items(current_registry)
+    current_workflows_by_id = _index_existing_items(current_workflows)
+    previous_state = _load_factory_state(state_path)
+    previous_registry = previous_state.get("registry", [])
+    previous_workflows = previous_state.get("workflows", [])
+    previous_prompts = previous_state.get("prompts", {})
+    previous_legacy_mappings = previous_state.get("legacyCustomPromptMappings", {})
+    if not isinstance(previous_registry, list):
+        raise ValueError("Prompt factory state registry must be a list.")
+    if not isinstance(previous_workflows, list):
+        raise ValueError("Prompt factory state workflows must be a list.")
+    if not isinstance(previous_prompts, dict):
+        raise ValueError("Prompt factory state prompt hashes must be an object.")
+    if not isinstance(previous_legacy_mappings, dict) or not all(
+        isinstance(source_id, str)
+        and PROMPT_ID_RE.fullmatch(source_id)
+        and isinstance(target_id, str)
+        and PROMPT_ID_RE.fullmatch(target_id)
+        for source_id, target_id in previous_legacy_mappings.items()
+    ):
+        raise ValueError("Prompt factory state legacy custom mappings must be a valid object.")
+    if len(set(previous_legacy_mappings.values())) != len(previous_legacy_mappings):
+        raise ValueError("Prompt factory state legacy custom targets must be unique.")
+
+    previous_workflow_ids = set(_index_existing_items(previous_workflows))
+    for workflow_id in _index_factory_items(seed_workflows, source="prompt-workflows.json"):
+        if workflow_id in current_workflows_by_id and workflow_id not in previous_workflow_ids:
+            if previous_state or workflow_id not in PRE_FACTORY_STATE_WORKFLOW_IDS:
+                raise ValueError(f"Factory workflow id conflicts with a custom workflow: {workflow_id}")
+
+    seed_payloads: dict[str, dict[str, Any]] = {}
+    for prompt_id, factory_meta in seed_registry_by_id.items():
+        current_meta = current_registry_by_id.get(prompt_id)
+        if current_meta is not None and current_meta.get("builtIn", True) is False:
+            raise ValueError(f"Factory prompt id conflicts with a custom prompt: {prompt_id}")
+        active_path = _prompt_data_path(seed_root, factory_meta.get("relativePath"))
+        if not active_path.is_file():
+            raise ValueError(f"Factory prompt content is missing: {prompt_id}")
+        default_value = str(factory_meta.get("defaultPath", "") or "").strip()
+        default_path = _prompt_data_path(seed_root, default_value) if default_value else None
+        if default_path is not None and not default_path.is_file():
+            raise ValueError(f"Factory default prompt content is missing: {prompt_id}")
+        seed_payloads[prompt_id] = {
+            "active": active_path.read_bytes(),
+            "default": default_path.read_bytes() if default_path is not None else None,
+        }
+
+    imported_custom_ids, new_legacy_mappings = _import_legacy_custom_prompts(
+        legacy_custom_dir,
+        target_root,
+        factory_ids=set(seed_registry_by_id),
+        current_registry=current_registry,
+        previous_mappings=previous_legacy_mappings,
+    )
+    current_registry = _register_legacy_custom_prompts(
+        target_root,
+        current_registry,
+        new_legacy_mappings,
+    )
+    current_registry, discovered_custom_ids = _register_orphan_custom_prompts(
+        target_root,
+        current_registry,
+        factory_ids=set(seed_registry_by_id),
+        ignored_ids=set(previous_legacy_mappings.values()),
+    )
+
+    merged_registry = _merge_factory_collection(
+        seed_registry,
+        current_registry,
+        previous_registry,
+        source="prompt-registry.json",
+        editable_fields=("label", "description"),
+        authoritative_fields=("id", "relativePath", "defaultPath", "builtIn", "editable"),
+    )
+    merged_workflows = _merge_factory_collection(
+        seed_workflows,
+        current_workflows,
+        previous_workflows,
+        source="prompt-workflows.json",
+        editable_fields=("label", "description", "defaultSequence", "sequenceLimit", "roundLimit", "visible"),
+        authoritative_fields=("id", "customizable", "chunkMetric", "legacy"),
+        editable_only_when_customizable=True,
+    )
+
+    report: dict[str, Any] = {
+        "ok": True,
+        "stateVersion": PROMPT_FACTORY_STATE_VERSION,
+        "factoryPromptCount": len(seed_registry),
+        "legacyCustomPromptsImported": len(imported_custom_ids),
+        "legacyCustomPromptsConsidered": len(new_legacy_mappings),
+        "customPromptsDiscovered": len(discovered_custom_ids),
+        "contentCreated": 0,
+        "contentUpdated": 0,
+        "contentPreserved": 0,
+        "defaultsUpdated": 0,
+    }
+    next_prompt_state: dict[str, dict[str, Any]] = {}
+    for prompt_id, factory_meta in seed_registry_by_id.items():
+        payload = seed_payloads[prompt_id]
+        factory_content = payload["active"]
+        factory_default = payload["default"]
+        target_active_path = _prompt_data_path(target_root, factory_meta.get("relativePath"))
+        current_meta = current_registry_by_id.get(prompt_id)
+        current_active_path = target_active_path
+        if current_meta is not None:
+            try:
+                current_active_path = _prompt_data_path(target_root, current_meta.get("relativePath"))
+            except ValueError:
+                current_active_path = target_active_path
+        current_content = current_active_path.read_bytes() if current_active_path.is_file() else None
+
+        old_default_content: bytes | None = None
+        if current_meta is not None and current_meta.get("defaultPath"):
+            try:
+                old_default_path = _prompt_data_path(target_root, current_meta.get("defaultPath"))
+                if old_default_path.is_file():
+                    old_default_content = old_default_path.read_bytes()
+            except ValueError:
+                old_default_content = None
+        previous_prompt = previous_prompts.get(prompt_id, {})
+        previous_hash = str(previous_prompt.get("contentSha256", "") or "") if isinstance(previous_prompt, dict) else ""
+        follows_factory = current_content is None
+        if current_content is not None and previous_hash:
+            follows_factory = _sha256_bytes(current_content) == previous_hash
+        elif current_content is not None and old_default_content is not None:
+            follows_factory = current_content == old_default_content
+
+        if current_content is None:
+            chosen_content = factory_content
+            report["contentCreated"] += 1
+        elif follows_factory:
+            chosen_content = factory_content
+            if current_content != factory_content or current_active_path != target_active_path:
+                report["contentUpdated"] += 1
+        else:
+            chosen_content = current_content
+            report["contentPreserved"] += 1
+        _atomic_write_bytes(target_active_path, chosen_content)
+
+        default_value = str(factory_meta.get("defaultPath", "") or "").strip()
+        if default_value and factory_default is not None:
+            target_default_path = _prompt_data_path(target_root, default_value)
+            if _atomic_write_bytes(target_default_path, factory_default):
+                report["defaultsUpdated"] += 1
+        next_prompt_state[prompt_id] = {
+            "relativePath": str(factory_meta.get("relativePath", "")),
+            "defaultPath": default_value,
+            "contentSha256": _sha256_bytes(factory_content),
+            "defaultSha256": _sha256_bytes(factory_default) if factory_default is not None else "",
+        }
+
+    report["registryUpdated"] = _atomic_write_json(registry_path, merged_registry)
+    report["workflowsUpdated"] = _atomic_write_json(workflows_path, merged_workflows)
+    next_state = {
+        "version": PROMPT_FACTORY_STATE_VERSION,
+        "registry": seed_registry,
+        "workflows": seed_workflows,
+        "prompts": next_prompt_state,
+        "legacyCustomPromptMappings": {
+            **previous_legacy_mappings,
+            **new_legacy_mappings,
+        },
+    }
+    report["stateUpdated"] = _atomic_write_json(state_path, next_state)
+    _clear_prompt_library_cache()
+    return report
+
+
 def normalize_prompt_id(value: object) -> str:
     prompt_id = str(value or "").strip().lower()
     if not PROMPT_ID_RE.fullmatch(prompt_id):
@@ -339,13 +920,7 @@ def _prompt_file_cache_key(path: Path) -> tuple[int, int]:
 
 
 def _clone_prompt_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    cloned: list[dict[str, Any]] = []
-    for item in items:
-        next_item = dict(item)
-        if isinstance(next_item.get("defaultSequence"), list):
-            next_item["defaultSequence"] = list(next_item["defaultSequence"])
-        cloned.append(next_item)
-    return cloned
+    return copy.deepcopy(items)
 
 
 def _clear_prompt_library_cache() -> None:
@@ -378,7 +953,8 @@ def _sanitize_prompt_meta(raw: dict[str, Any], *, fallback_order: int) -> dict[s
             normalized_default_path = _relative_prompt_path(_default_path_from_relative(default_path))
         except ValueError:
             normalized_default_path = ""
-    return {
+    sanitized = copy.deepcopy(raw)
+    sanitized.update({
         "id": prompt_id,
         "label": label,
         "description": description,
@@ -387,7 +963,8 @@ def _sanitize_prompt_meta(raw: dict[str, Any], *, fallback_order: int) -> dict[s
         "builtIn": bool(raw.get("builtIn", False)),
         "editable": bool(raw.get("editable", True)),
         "order": int(raw.get("order", fallback_order) or fallback_order),
-    }
+    })
+    return sanitized
 
 
 def load_prompt_registry() -> list[dict[str, Any]]:
@@ -433,8 +1010,10 @@ def save_prompt_registry(items: list[dict[str, Any]]) -> None:
         if not sanitized:
             continue
         normalized.append(sanitized)
-    payload = [
-        {
+    payload: list[dict[str, Any]] = []
+    for item in normalized:
+        serialized = {key: copy.deepcopy(value) for key, value in item.items() if key != "order"}
+        serialized.update({
             "id": item["id"],
             "label": item["label"],
             "description": item["description"],
@@ -442,9 +1021,8 @@ def save_prompt_registry(items: list[dict[str, Any]]) -> None:
             "defaultPath": item.get("defaultPath", ""),
             "builtIn": bool(item.get("builtIn", False)),
             "editable": bool(item.get("editable", True)),
-        }
-        for item in normalized
-    ]
+        })
+        payload.append(serialized)
     PROMPT_REGISTRY_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _clear_prompt_library_cache()
 
@@ -744,7 +1322,8 @@ def _sanitize_prompt_workflow(raw: dict[str, Any], *, fallback_order: int) -> di
     chunk_metric = str(raw.get("chunkMetric", default_meta.get("chunkMetric", "char")) or "char").strip().lower()
     if chunk_metric not in {"char", "word"}:
         chunk_metric = "char"
-    return {
+    sanitized = copy.deepcopy(raw)
+    sanitized.update({
         "id": workflow_id,
         "label": str(raw.get("label", default_meta.get("label", workflow_id)) or workflow_id).strip() or workflow_id,
         "description": str(raw.get("description", default_meta.get("description", "")) or "").strip(),
@@ -756,13 +1335,16 @@ def _sanitize_prompt_workflow(raw: dict[str, Any], *, fallback_order: int) -> di
         "legacy": bool(raw.get("legacy", default_meta.get("legacy", False))),
         "visible": bool(raw.get("visible", default_meta.get("visible", True))),
         "order": int(raw.get("order", fallback_order) or fallback_order),
-    }
+    })
+    return sanitized
 
 
 def save_prompt_workflows(items: list[dict[str, Any]]) -> None:
     PROMPT_DIR.mkdir(parents=True, exist_ok=True)
-    payload = [
-        {
+    payload: list[dict[str, Any]] = []
+    for item in items:
+        serialized = {key: copy.deepcopy(value) for key, value in item.items() if key != "order"}
+        serialized.update({
             "id": item["id"],
             "label": item["label"],
             "description": item.get("description", ""),
@@ -773,9 +1355,8 @@ def save_prompt_workflows(items: list[dict[str, Any]]) -> None:
             "chunkMetric": item.get("chunkMetric", "char"),
             "legacy": bool(item.get("legacy", False)),
             "visible": bool(item.get("visible", True)),
-        }
-        for item in items
-    ]
+        })
+        payload.append(serialized)
     PROMPT_WORKFLOW_REGISTRY_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _clear_prompt_library_cache()
 
@@ -791,6 +1372,8 @@ def update_prompt_workflow(workflow_id: object, payload: dict[str, Any]) -> list
     target = dict(items[target_index])
     if bool(target.get("legacy", False)):
         raise ValueError("Legacy workflows are read-only.")
+    if not bool(target.get("customizable", False)):
+        raise ValueError("Workflow is read-only.")
 
     label = str(payload.get("label", target.get("label", normalized_id)) or normalized_id).strip() or normalized_id
     description = str(payload.get("description", target.get("description", "")) or "").strip()
@@ -823,7 +1406,14 @@ def update_prompt_workflow(workflow_id: object, payload: dict[str, Any]) -> list
         maximum=12,
     )
     if len(default_sequence) > sequence_limit:
-        raise ValueError("Workflow sequence exceeds its round limit.")
+        raise ValueError("Workflow sequence exceeds its default sequence limit.")
+    if "roundLimit" in payload:
+        try:
+            requested_round_limit = int(payload.get("roundLimit"))
+        except (TypeError, ValueError):
+            raise ValueError("Workflow round limit must be an integer.") from None
+        if requested_round_limit < sequence_limit:
+            raise ValueError("Workflow round limit cannot be lower than its default sequence limit.")
     round_limit = _clamp_int(
         payload.get("roundLimit", target.get("roundLimit", sequence_limit)),
         default=int(target.get("roundLimit", sequence_limit) or sequence_limit),

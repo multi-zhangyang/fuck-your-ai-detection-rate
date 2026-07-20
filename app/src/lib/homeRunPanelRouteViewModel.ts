@@ -1,5 +1,4 @@
 import {
-  DEFAULT_PROMPT_SEQUENCE,
   formatPromptSequence,
   getDefaultPromptProfile,
   getPromptProfileLabel,
@@ -45,7 +44,7 @@ export function deriveHomeRunPanelRouteState(input: {
     }
     return [...options, { id: promptId, label: promptId }];
   }, promptOptions);
-  const sequenceLengthLimit = Math.max(1, Math.min(getPromptSequenceLimit(promptProfile, promptWorkflows), DEFAULT_PROMPT_SEQUENCE.length));
+  const sequenceLengthLimit = Math.max(1, getPromptSequenceLimit(promptProfile, promptWorkflows));
   const appendRoundLimit = Math.max(sequenceLengthLimit, getPromptRoundLimit(promptProfile, promptWorkflows));
   const sequenceLengthOptions = Array.from({ length: sequenceLengthLimit }, (_, index) => index + 1);
   const providers = modelConfig.modelProviders ?? [];

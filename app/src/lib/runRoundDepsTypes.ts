@@ -1,4 +1,5 @@
 import type { AppService } from "@/lib/appService";
+import type { HistoryListRefreshResult } from "@/lib/historyHandlerInputTypes";
 import type { ProgressUnlisten, RunSession } from "@/hooks/useRunSession";
 import type {
   ClassifiedRunFailure,
@@ -102,7 +103,7 @@ export type RunRoundHandlersDeps = {
   clearDocumentDerivedState: () => void;
   flushReviewDecisionSaves: (outputPath?: string) => Promise<boolean>;
   refreshDocumentState: (sourcePath: string, config?: ModelConfig) => Promise<DocumentStatus>;
-  refreshHistoryList: () => Promise<HistoryDocumentSummary[]>;
+  refreshHistoryList: () => Promise<HistoryListRefreshResult>;
   loadCompletedRoundArtifacts: (result: RoundResult) => Promise<void>;
   requestConfirm: (options: ConfirmDialogOptions) => Promise<boolean>;
   commitUi: (callback: () => void) => void;

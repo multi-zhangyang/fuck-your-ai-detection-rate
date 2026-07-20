@@ -8,11 +8,16 @@ import {
 import type {
   HistoryHandlersDeps,
 } from "@/lib/historyHandlerTypes";
-import type { RefreshHistoryListOptions } from "@/lib/historyHandlerInputTypes";
+import type {
+  HistoryListRefreshResult,
+  HistoryOrphanScanRefreshResult,
+  RefreshHistoryListOptions,
+} from "@/lib/historyHandlerInputTypes";
 import { ACTIVE_PROMPT_PROFILE_KEY, ACTIVE_PROMPT_SEQUENCE_KEY } from "@/lib/storageKeys";
 import { writeStorageValue } from "@/lib/safeStorage";
 import {
   beginHistoryRequest,
+  finishHistoryRequest,
   getCurrentHistoryArtifactMode,
   isCurrentHistoryRequest,
   setCurrentHistoryArtifactMode,
@@ -38,18 +43,51 @@ export function createHistoryListGovernanceHandlers(deps: HistoryHandlersDeps) {
     });
   }
 
-  async function refreshHistoryList(options: RefreshHistoryListOptions = {}) {
-    const result = await deps.service.listDocumentHistories();
-    if (!options.shouldCommit || options.shouldCommit()) {
+  async function refreshHistoryList(
+    options: RefreshHistoryListOptions = {},
+  ): Promise<HistoryListRefreshResult> {
+    const requestKey = deps.setHistoryItems as unknown as object;
+    const generation = beginHistoryRequest(requestKey, "list");
+    const isCurrent = () => (
+      isCurrentHistoryRequest(requestKey, "list", generation)
+      && (!options.shouldCommit || options.shouldCommit())
+    );
+    try {
+      const result = await deps.service.listDocumentHistories();
+      if (!isCurrent()) {
+        return { status: "stale" };
+      }
       deps.setHistoryItems(result.items);
+      return { status: "current", items: result.items, isCurrent };
+    } catch (appError) {
+      if (!isCurrent()) {
+        return { status: "stale" };
+      }
+      throw appError;
+    } finally {
+      finishHistoryRequest(requestKey, "list", generation);
     }
-    return result.items;
   }
 
-  async function refreshHistoryOrphanScan() {
-    const result = await deps.service.scanHistoryOrphans(getProtectedHistoryArtifactPaths());
-    deps.setHistoryOrphanScan(result);
-    return result;
+  async function refreshHistoryOrphanScan(): Promise<HistoryOrphanScanRefreshResult> {
+    const requestKey = deps.setHistoryOrphanScan as unknown as object;
+    const generation = beginHistoryRequest(requestKey, "orphan");
+    const isCurrent = () => isCurrentHistoryRequest(requestKey, "orphan", generation);
+    try {
+      const scan = await deps.service.scanHistoryOrphans(getProtectedHistoryArtifactPaths());
+      if (!isCurrent()) {
+        return { status: "stale" };
+      }
+      deps.setHistoryOrphanScan(scan);
+      return { status: "current", scan, isCurrent };
+    } catch (appError) {
+      if (!isCurrent()) {
+        return { status: "stale" };
+      }
+      throw appError;
+    } finally {
+      finishHistoryRequest(requestKey, "orphan", generation);
+    }
   }
 
   async function refreshHistoryArtifactGovernance(mode?: HistoryArtifactGovernanceMode) {
@@ -72,6 +110,7 @@ export function createHistoryListGovernanceHandlers(deps: HistoryHandlersDeps) {
         deps.setHistoryArtifactQuery(createEmptyHistoryArtifactQuery("先选择一篇文档，再查看当前文档资产。"));
         deps.setHistoryArtifactLoading(false);
       }
+      finishHistoryRequest(requestKey, "artifact", generation);
       return null;
     }
     deps.setHistoryArtifactLoading(true);
@@ -92,6 +131,7 @@ export function createHistoryListGovernanceHandlers(deps: HistoryHandlersDeps) {
       if (isCurrentHistoryRequest(requestKey, "artifact", generation)) {
         deps.setHistoryArtifactLoading(false);
       }
+      finishHistoryRequest(requestKey, "artifact", generation);
     }
   }
 

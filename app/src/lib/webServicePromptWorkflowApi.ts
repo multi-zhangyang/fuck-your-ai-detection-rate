@@ -6,7 +6,7 @@ import type {
 import { requestJson } from "@/lib/webServiceHttp";
 
 export const webServicePromptWorkflowApi = {
-  async updatePromptWorkflow(workflowId: string, payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit">): Promise<PromptWorkflowSaveResult> {
+  async updatePromptWorkflow(workflowId: string, payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit" | "roundLimit">): Promise<PromptWorkflowSaveResult> {
     return requestJson<PromptWorkflowSaveResult>(`/api/prompt-workflows/${encodeURIComponent(workflowId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

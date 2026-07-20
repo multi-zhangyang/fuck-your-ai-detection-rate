@@ -10,6 +10,7 @@ import type {
 export function buildBootstrapModelConfigState(input: {
   loadedConfig: ModelConfig;
   loadedPrompts: PromptPreviewResponse | null;
+  normalizePromptRegistry?: boolean;
   normalizeActiveModelConfig: (
     config: ModelConfig,
     promptOptions: ReturnType<typeof getPromptOptionsFromPreviews>,
@@ -20,6 +21,13 @@ export function buildBootstrapModelConfigState(input: {
   loadedPrompts: PromptPreviewResponse | null;
   shouldRefreshCatalog: boolean;
 } {
+  if (input.normalizePromptRegistry === false) {
+    return {
+      config: input.loadedConfig,
+      loadedPrompts: null,
+      shouldRefreshCatalog: Boolean(input.loadedConfig.baseUrl && input.loadedConfig.apiKey),
+    };
+  }
   const loadedPromptOptions = getPromptOptionsFromPreviews(input.loadedPrompts);
   const loadedPromptWorkflows = getPromptWorkflowsFromPreviews(input.loadedPrompts, loadedPromptOptions);
   const config = input.normalizeActiveModelConfig(

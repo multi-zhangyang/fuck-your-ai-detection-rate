@@ -1,7 +1,4 @@
-# ---- FYADR trusted-host Docker Compose (Flask serves API + static) ----
-# Visit latency stays low because the frontend is a *production build* (no vite
-# dev server, no HMR, gzipped, immutable hashed assets) served straight from
-# the same process/port as the API. No proxy hops, no cold HMR recompile.
+# FYADR single-container deployment. Flask serves the production frontend and API.
 
 services:
   fyadr:
@@ -11,16 +8,13 @@ services:
     image: fyadr:latest
     container_name: fyadr
     restart: unless-stopped
-    # Keep a long rewrite/export job from starving SSH or unrelated VPS services.
-    # These are runtime limits as well as build-time limits; the application
-    # already keeps real-model rewriting at one concurrent call.
+    # Tune these limits together with the configured rewrite concurrency and
+    # the model provider's rate limits.
     cpus: "1.0"
     mem_limit: "2g"
     memswap_limit: "2g"
     pids_limit: 256
-    # Bound stdout/stderr retention so routine access logs cannot eventually
-    # consume the VPS disk. This does not discard application artifacts, which
-    # remain on the dedicated finish bind mount below.
+    # Bound stdout/stderr retention without affecting application artifacts.
     logging:
       driver: "json-file"
       options:
@@ -55,14 +49,17 @@ services:
       # --- PERSISTENT STATE (must survive container recreation) ---
       - ./data/origin:/app/origin                 # uploaded source docs
       - ./data/finish:/app/finish                 # exports, task state, history DB
-      - ./data/config:/app/config                 # app_config.json (provider keys)
-      - ./data/prompts-custom:/app/prompts/custom # user custom prompts
+      - ./data/config:/app/config                 # config.json (provider keys)
+      - ./data/prompts:/app/prompts               # prompt edits, workflows, custom prompts
+      # Migration source for Compose releases that stored only custom prompts
+      # in data/prompts-custom. The entrypoint imports eligible files once.
+      - ./data/prompts-custom:/app/legacy-prompts-custom:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/ping').status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
-    read_only: false   # finish/origin/config need writes; use volume mounts
+    read_only: false   # mounted application state must remain writable
     # Entrypoint starts as root only to chown bind mounts, then execs Gunicorn as
     # non-root UID 10001. Setting `user:` here would prevent that initialization.

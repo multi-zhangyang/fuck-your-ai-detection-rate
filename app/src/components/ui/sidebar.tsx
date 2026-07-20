@@ -21,6 +21,8 @@ type SidebarContextValue = {
   setOpen: (open: boolean | ((open: boolean) => boolean)) => void;
   openMobile: boolean;
   setOpenMobile: (open: boolean) => void;
+  closeMobileForNavigation: () => void;
+  handleMobileCloseAutoFocus: (event: Event) => void;
   isMobile: boolean;
   sidebarId: string;
   toggleSidebar: () => void;
@@ -48,6 +50,7 @@ const SidebarProvider = React.forwardRef<
   const generatedId = React.useId();
   const sidebarId = `fyadr-sidebar-${generatedId.replace(/:/g, "")}`;
   const [openMobile, setOpenMobile] = React.useState(false);
+  const mobileNavigationCloseRef = React.useRef(false);
   const [_open, _setOpen] = React.useState(() => (
     typeof document === "undefined" ? defaultOpen : readSidebarOpenCookie(document.cookie, defaultOpen)
   ));
@@ -68,14 +71,36 @@ const SidebarProvider = React.forwardRef<
 
   const toggleSidebar = React.useCallback(() => {
     if (isMobile) {
+      mobileNavigationCloseRef.current = false;
       setOpenMobile((value) => !value);
       return;
     }
     setOpen((value) => !value);
   }, [isMobile, setOpen]);
 
+  const closeMobileForNavigation = React.useCallback(() => {
+    mobileNavigationCloseRef.current = true;
+    setOpenMobile(false);
+  }, []);
+
+  const handleMobileCloseAutoFocus = React.useCallback((event: Event) => {
+    event.preventDefault();
+    const focusMain = mobileNavigationCloseRef.current;
+    mobileNavigationCloseRef.current = false;
+    window.requestAnimationFrame(() => {
+      const target = focusMain
+        ? document.getElementById("fyadr-main-content")
+        : Array.from(document.querySelectorAll<HTMLElement>('[data-sidebar="trigger"]'))
+          .find((item) => item.getAttribute("aria-controls") === sidebarId);
+      target?.focus({ preventScroll: true });
+    });
+  }, [sidebarId]);
+
   React.useEffect(() => {
-    if (!isMobile) setOpenMobile(false);
+    if (!isMobile) {
+      mobileNavigationCloseRef.current = false;
+      setOpenMobile(false);
+    }
   }, [isMobile]);
 
   React.useEffect(() => {
@@ -91,8 +116,29 @@ const SidebarProvider = React.forwardRef<
 
   const state: SidebarContextValue["state"] = isMobile || open ? "expanded" : "collapsed";
   const value = React.useMemo(
-    () => ({ state, open, setOpen, isMobile, openMobile, setOpenMobile, sidebarId, toggleSidebar }),
-    [state, open, setOpen, isMobile, openMobile, sidebarId, toggleSidebar],
+    () => ({
+      state,
+      open,
+      setOpen,
+      isMobile,
+      openMobile,
+      setOpenMobile,
+      closeMobileForNavigation,
+      handleMobileCloseAutoFocus,
+      sidebarId,
+      toggleSidebar,
+    }),
+    [
+      state,
+      open,
+      setOpen,
+      isMobile,
+      openMobile,
+      closeMobileForNavigation,
+      handleMobileCloseAutoFocus,
+      sidebarId,
+      toggleSidebar,
+    ],
   );
 
   return (
@@ -126,7 +172,14 @@ const Sidebar = React.forwardRef<
     collapsible?: "offcanvas" | "icon" | "none";
   }
 >(({ side = "left", variant = "sidebar", collapsible = "offcanvas", className, children, ...props }, ref) => {
-  const { isMobile, state, openMobile, setOpenMobile, sidebarId } = useSidebar();
+  const {
+    isMobile,
+    state,
+    openMobile,
+    setOpenMobile,
+    handleMobileCloseAutoFocus,
+    sidebarId,
+  } = useSidebar();
 
   if (collapsible === "none") {
     return (
@@ -143,6 +196,7 @@ const Sidebar = React.forwardRef<
           data-sidebar="sidebar"
           data-mobile="true"
           side={side}
+          onCloseAutoFocus={handleMobileCloseAutoFocus}
           style={{ "--sidebar-width": SIDEBAR_WIDTH_MOBILE } as React.CSSProperties}
           className="w-[--sidebar-width] bg-sidebar p-0 text-sidebar-foreground"
         >
@@ -352,7 +406,7 @@ const SidebarRail = React.forwardRef<HTMLButtonElement, React.ComponentProps<"bu
       tabIndex={-1}
       onClick={toggleSidebar}
       title="切换侧边栏"
-      className={cn("absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] hover:after:bg-sidebar-border group-data-[side=left]:-right-4 sm:flex", className)}
+      className={cn("absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] hover:after:bg-sidebar-border group-data-[side=left]:-right-4 md:flex", className)}
       {...props}
     />
   );

@@ -11,6 +11,7 @@ import {
 } from "@/lib/historyHelpers";
 import type {
   HistoryDocumentLoadFeedback,
+  HistoryDocumentLoadOptions,
   HistoryHandlersDeps,
   HistoryRouteStatusResult,
   LoadedHistorySnapshotLike,
@@ -29,14 +30,18 @@ export function createHistoryDocumentRouteHandlers(
   deps: HistoryHandlersDeps,
   list: HistoryListGovernanceHandlers,
 ) {
-  function resolveHistorySelectionConfig(item: HistoryDocumentSummary, configOverride: ModelConfig) {
+  function resolveHistorySelectionConfig(
+    item: HistoryDocumentSummary,
+    configOverride: ModelConfig,
+    options: HistoryDocumentLoadOptions = {},
+  ) {
     const selectedConfig = buildConfigForHistorySelection(
       item,
       configOverride,
       deps.getPromptOptions(),
       deps.getPromptWorkflows(),
     );
-    if (shouldSyncHistorySelectionConfig(
+    if ((!options.shouldCommit || options.shouldCommit()) && shouldSyncHistorySelectionConfig(
       selectedConfig,
       deps.getModelConfig(),
       deps.getPromptOptions(),
@@ -54,32 +59,59 @@ export function createHistoryDocumentRouteHandlers(
       promptOptions: deps.getPromptOptions(),
       promptWorkflows: deps.getPromptWorkflows(),
     });
-    if (!loadedRoute.shouldResync) {
+    if (!loadedRoute.shouldResync || (input.shouldCommit && !input.shouldCommit())) {
       return buildHistoryRouteStatusResult(input.status, input.selectedConfig);
     }
     list.syncHistorySelectionConfigToUi(loadedRoute.statusConfig);
     return buildHistoryRouteStatusResult(
-      await deps.refreshDocumentState(input.status.sourcePath, loadedRoute.statusConfig),
+      await deps.refreshDocumentState(input.status.sourcePath, loadedRoute.statusConfig, {
+        shouldCommit: input.shouldCommit,
+      }),
       loadedRoute.statusConfig,
     );
   }
 
-  async function loadAndResyncHistoryDocument(item: HistoryDocumentSummary, selectedConfig: ModelConfig) {
-    const status = await deps.refreshDocumentState(item.sourcePath, selectedConfig);
+  async function loadAndResyncHistoryDocument(
+    item: HistoryDocumentSummary,
+    selectedConfig: ModelConfig,
+    options: HistoryDocumentLoadOptions = {},
+  ) {
+    const status = await deps.refreshDocumentState(item.sourcePath, selectedConfig, {
+      shouldCommit: options.shouldCommit,
+    });
+    if (options.shouldCommit && !options.shouldCommit()) {
+      return {
+        resynced: buildHistoryRouteStatusResult(status, selectedConfig),
+        loadedSnapshot: null,
+      };
+    }
     const loadedSnapshot = await deps.loadLatestRoundSnapshot(status, selectedConfig, {
       historyItem: item,
       allowProfileFallback: true,
+      shouldCommit: options.shouldCommit,
     });
-    const resynced = await resyncHistoryDocumentRoute({ selectedConfig, loadedSnapshot, status });
+    if (options.shouldCommit && !options.shouldCommit()) {
+      return {
+        resynced: buildHistoryRouteStatusResult(status, selectedConfig),
+        loadedSnapshot: null,
+      };
+    }
+    const resynced = await resyncHistoryDocumentRoute({
+      selectedConfig,
+      loadedSnapshot,
+      status,
+      shouldCommit: options.shouldCommit,
+    });
     return { resynced, loadedSnapshot };
   }
 
   async function loadSelectedHistoryDocument(
     item: HistoryDocumentSummary,
     configOverride: ModelConfig,
+    options: HistoryDocumentLoadOptions = {},
   ): Promise<HistoryDocumentLoadFeedback> {
-    const selectedConfig = resolveHistorySelectionConfig(item, configOverride);
-    const { resynced, loadedSnapshot } = await loadAndResyncHistoryDocument(item, selectedConfig);
+    const selectedConfig = resolveHistorySelectionConfig(item, configOverride, options);
+    const { resynced, loadedSnapshot } = await loadAndResyncHistoryDocument(item, selectedConfig, options);
     return planHistoryDocumentLoadFeedback({
       status: resynced.status,
       statusConfig: resynced.statusConfig,

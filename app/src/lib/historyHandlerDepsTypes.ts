@@ -73,7 +73,15 @@ export type HistoryHandlersDeps = {
   clearDocumentDerivedState: () => void;
   clearAutoSnapshotSuppression: () => void;
   clearPendingAutoActionForManualContextChange: () => void;
-  refreshDocumentState: (sourcePath: string, config?: ModelConfig) => Promise<DocumentStatus>;
+  refreshDocumentState: (
+    sourcePath: string,
+    config?: ModelConfig,
+    options?: {
+      shouldCommit?: () => boolean;
+      promptOptions?: PromptOption[];
+      promptWorkflows?: PromptWorkflow[];
+    },
+  ) => Promise<DocumentStatus>;
   loadLatestRoundSnapshot: (
     status: DocumentStatus,
     config: ModelConfig,

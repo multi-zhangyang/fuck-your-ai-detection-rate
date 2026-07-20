@@ -67,7 +67,7 @@ export interface AppService {
   restorePromptBackup(promptId: string, relativePath: string): Promise<PromptSaveResult>;
   createPrompt(payload: { label: string; description?: string; content: string }): Promise<PromptSaveResult>;
   deletePrompt(promptId: string): Promise<PromptDeleteResult>;
-  updatePromptWorkflow(workflowId: string, payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit">): Promise<PromptWorkflowSaveResult>;
+  updatePromptWorkflow(workflowId: string, payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit" | "roundLimit">): Promise<PromptWorkflowSaveResult>;
   cleanupTaskStateSnapshots(mode?: "expired" | "completed" | "all", maxAgeHours?: number): Promise<TaskStateCleanupResult>;
   loadModelConfig(): Promise<ModelConfig>;
   saveModelConfig(config: ModelConfig): Promise<ModelConfig>;

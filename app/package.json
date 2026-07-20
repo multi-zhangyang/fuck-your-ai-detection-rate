@@ -15,16 +15,18 @@
     "typecheck": "tsc --noEmit",
     "check": "npm run check:text && npm run typecheck && npm run test:frontend",
     "check:text": "node ../scripts/run_python.mjs ../scripts/check_frontend_text.py",
-    "test:frontend": "npm run test:frontend:state-consistency && npm run test:frontend:review-save && npm run test:frontend:round-snapshot && npm run test:frontend:evidence && npm run test:frontend:model-streaming && npm run test:frontend:catalog-concurrency && npm run test:frontend:sidebar-navigation && npm run test:frontend:prompt-route-concurrency",
+    "test:frontend": "npm run test:frontend:state-consistency && npm run test:frontend:review-save && npm run test:frontend:round-snapshot && npm run test:frontend:evidence && npm run test:frontend:model-streaming && npm run test:frontend:catalog-concurrency && npm run test:frontend:sidebar-navigation && npm run test:frontend:prompt-route-concurrency && npm run test:frontend:history-diagnostics",
     "test:frontend:state-consistency": "node ../scripts/frontend_state_consistency_regression.mjs",
     "test:frontend:review-save": "node ../scripts/frontend_review_save_queue_regression.mjs",
     "test:frontend:round-snapshot": "node ../scripts/frontend_round_snapshot_regression.mjs",
     "test:frontend:evidence": "node ../scripts/frontend_evidence_chain_regression.mjs",
     "test:frontend:model-streaming": "node ../scripts/frontend_model_streaming_regression.mjs",
-    "test:frontend:catalog-concurrency": "node --experimental-strip-types ../scripts/model_catalog_concurrency_regression.mjs",
+    "test:frontend:catalog-concurrency": "tsx ../scripts/model_catalog_concurrency_regression.mjs",
     "test:frontend:sidebar-navigation": "node ../scripts/frontend_sidebar_navigation_regression.mjs",
     "test:frontend:prompt-route-concurrency": "node ../scripts/frontend_prompt_route_concurrency_regression.mjs",
-    "test:e2e:smoke": "node ../scripts/browser_e2e_smoke.mjs"
+    "test:frontend:history-diagnostics": "node ../scripts/frontend_history_diagnostics_integrity_regression.mjs",
+    "test:e2e:smoke": "node --experimental-websocket ../scripts/browser_e2e_smoke.mjs",
+    "capture:readme": "node --experimental-websocket ../scripts/capture_readme_assets.mjs"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
@@ -60,6 +62,7 @@
     "postcss": "^8.5.10",
     "tailwindcss": "^3.4.17",
     "tailwindcss-animate": "^1.0.7",
+    "tsx": "^4.23.1",
     "typescript": "^5.5.4",
     "vite": "^8.1.5"
   }

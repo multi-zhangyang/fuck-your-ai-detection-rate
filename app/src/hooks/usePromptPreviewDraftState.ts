@@ -45,6 +45,19 @@ export function usePromptPreviewDraftState(input: {
     await actions.deletePrompt();
   }
 
+  function discardChanges() {
+    form.setCreateMode(false);
+    form.setNewLabel("");
+    form.setNewDescription("");
+    form.setNewContent("");
+    if (form.activeItem) {
+      form.setDraftContent(form.activeItem.content);
+      form.setDraftLabel(form.activeItem.label);
+      form.setDraftDescription(form.activeItem.description);
+    }
+    form.setLocalError("");
+  }
+
   return {
     items: form.items,
     activeItem: form.activeItem,
@@ -73,5 +86,6 @@ export function usePromptPreviewDraftState(input: {
     restoreDefaultPrompt,
     createPrompt,
     deletePrompt,
+    discardChanges,
   };
 }

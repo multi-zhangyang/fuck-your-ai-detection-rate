@@ -68,7 +68,7 @@ export function runDocumentRestoreEffect(input: {
     taskTicket,
     taskTicketRef: input.taskTicketRef,
     refreshDocumentState: (...args) => input.refreshDocumentStateRef.current(...args),
-    refreshHistoryList: () => input.refreshHistoryListRef.current(),
+    refreshHistoryList: (...args) => input.refreshHistoryListRef.current(...args),
     clearLoadedRoundSnapshot: () => input.clearLoadedRoundSnapshotRef.current(),
     loadLatestRoundSnapshot: (...args) => input.loadLatestRoundSnapshotRef.current(...args),
     setModelConfig: input.setModelConfig,

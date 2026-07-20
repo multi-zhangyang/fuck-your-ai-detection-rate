@@ -3,6 +3,7 @@ import {
   planHistoryDatabaseRepairFeedback,
   planHistoryDatabaseRepairLoadingRuntimeStep,
 } from "@/lib/historyArtifactHelpers";
+import { invalidateHistoryRequest } from "@/lib/historyRequestGeneration";
 import type {
   HistoryCoreHandlers,
   HistoryHandlersDeps,
@@ -15,6 +16,7 @@ export function createHistoryDatabaseRepairHandlers(
 ) {
   async function applyHistoryDatabaseRepairResult(result: HistoryDatabaseRepairResult) {
     await core.refreshHistoryList();
+    invalidateHistoryRequest(deps.setHistoryOrphanScan as unknown as object, "orphan");
     deps.setHistoryOrphanScan(null);
     await core.refreshHistoryArtifactGovernance();
     const feedback = planHistoryDatabaseRepairFeedback({

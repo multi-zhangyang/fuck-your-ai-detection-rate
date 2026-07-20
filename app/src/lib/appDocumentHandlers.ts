@@ -35,11 +35,16 @@ export type AppDocumentHandlersDeps = {
   setReviewDecisions: (value: Record<string, ReviewDecision>) => void;
   liveCompareRef: MutableRefObject<RoundCompareData | null>;
   beginTask: (phase: TaskPhase, options?: { globalBusy?: boolean; clearMessages?: boolean; runtimeStep?: string }) => number;
+  isTaskCurrent: (ticket: number) => boolean;
   finishTask: (ticket: number) => void;
   clearAutoSnapshotSuppression: () => void;
   invalidateRoundArtifactSnapshotRequests: () => void;
   clearPendingAutoActionForManualContextChange: () => void;
-  loadSelectedHistoryDocument: (item: HistoryDocumentSummary, configOverride: ModelConfig) => Promise<{ notice: string; runtimeStep: string }>;
+  loadSelectedHistoryDocument: (
+    item: HistoryDocumentSummary,
+    configOverride: ModelConfig,
+    options?: { shouldCommit?: () => boolean },
+  ) => Promise<{ notice: string; runtimeStep: string }>;
 };
 
 export function createAppDocumentHandlers(deps: AppDocumentHandlersDeps) {
@@ -70,12 +75,15 @@ export function createAppDocumentHandlers(deps: AppDocumentHandlersDeps) {
 
   async function handleSelectHistory(item: HistoryDocumentSummary, configOverride = deps.getModelConfig()) {
     const taskTicket = deps.beginTask("loading-history");
+    const shouldCommit = () => deps.isTaskCurrent(taskTicket);
     try {
       beginHistoryDocumentSelection();
-      const feedback = await deps.loadSelectedHistoryDocument(item, configOverride);
+      const feedback = await deps.loadSelectedHistoryDocument(item, configOverride, { shouldCommit });
+      if (!shouldCommit()) return;
       deps.setNotice(feedback.notice);
       deps.setRuntimeStep(feedback.runtimeStep);
     } catch (appError) {
+      if (!shouldCommit()) return;
       applyErrorRuntimeStep(appError, buildHistoryDocumentLoadFailureRuntimeStep());
     } finally {
       deps.finishTask(taskTicket);

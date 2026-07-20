@@ -1343,7 +1343,11 @@ async function clickByText(client, text, timeoutMs = 12_000) {
       || candidates.find((element) => label(element).includes(needle));
     if (!target) return false;
     target.scrollIntoView({ block: 'center', inline: 'center' });
-    target.click();
+    if (target.getAttribute('role') === 'tab') {
+      target.focus();
+    } else {
+      target.click();
+    }
     return true;
   })()`;
   const started = Date.now();
@@ -1355,6 +1359,39 @@ async function clickByText(client, text, timeoutMs = 12_000) {
     await wait(200);
   }
   throw new Error(`Unable to click visible control containing: ${text}`);
+}
+
+async function activateTabByText(client, text, timeoutMs = 12_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const state = await evaluate(client, `(() => {
+      const target = Array.from(document.querySelectorAll('[role="tab"]'))
+        .find((element) => element.textContent?.trim() === ${JSON.stringify(text)});
+      if (!(target instanceof HTMLElement) || target.hasAttribute('disabled')) return { found: false, selected: false };
+      target.focus();
+      return { found: true, selected: target.getAttribute('aria-selected') === 'true' };
+    })()`, 4000);
+    if (state?.selected) return;
+    if (state?.found) {
+      await client.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+        nativeVirtualKeyCode: 13,
+        text: "\r",
+      });
+      await client.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+        nativeVirtualKeyCode: 13,
+      });
+    }
+    await wait(200);
+  }
+  throw new Error(`Unable to activate visible tab: ${text}`);
 }
 
 function buildInitScript(fixtures) {
@@ -1597,6 +1634,17 @@ async function main() {
       width: 1600,
       height: 1000,
       expectedText: ["继续处理与导出", "智能制造系统优化研究（演示稿）.docx", "第 2 轮", "导出 可导出", "已整理"],
+    }));
+
+    await clickByText(client, "提示词");
+    await waitForText(client, "提示词库");
+    await activateTabByText(client, "流程模板");
+    await waitForText(client, "默认轮次编排");
+    assets.push(await captureAsset(client, {
+      fileName: "06-prompt-workflows.webp",
+      width: 1600,
+      height: 1100,
+      expectedText: ["流程模板", "自定义组合", "可编辑", "流程名称", "默认编排上限", "运行轮次上限", "默认轮次编排", "润色改写", "规范改写", "专家改写", "保存流程"],
     }));
 
     const mockState = await evaluate(client, `({

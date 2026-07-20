@@ -35,14 +35,29 @@ export function createPromptRouteHandlers(
     const documentStatus = deps.getDocumentStatus();
     if (!documentStatus?.sourcePath) return false;
     const status = await deps.refreshDocumentState(documentStatus.sourcePath, nextConfig, options);
-    if (options.shouldCommit && !options.shouldCommit()) return false;
-    const nextHistoryItems = await deps.refreshHistoryList(options);
-    if (options.shouldCommit && !options.shouldCommit()) return false;
-    return Boolean(await deps.loadLatestRoundSnapshot(status, nextConfig, {
-      historyItems: nextHistoryItems,
-      allowProfileFallback: false,
-      shouldCommit: options.shouldCommit,
-    }));
+    if (options.shouldCommit && !options.shouldCommit()) return null;
+    const refreshedHistory = await deps.refreshHistoryList(options);
+    if (
+      refreshedHistory.status !== "current"
+      || !refreshedHistory.isCurrent()
+      || (options.shouldCommit && !options.shouldCommit())
+    ) return null;
+    const historyShouldCommit = () => (
+      refreshedHistory.isCurrent()
+      && (!options.shouldCommit || options.shouldCommit())
+    );
+    const nextHistoryItems = refreshedHistory.items;
+    try {
+      const loaded = await deps.loadLatestRoundSnapshot(status, nextConfig, {
+        historyItems: nextHistoryItems,
+        allowProfileFallback: false,
+        shouldCommit: historyShouldCommit,
+      });
+      return historyShouldCommit() ? Boolean(loaded) : null;
+    } catch (appError) {
+      if (!historyShouldCommit()) return null;
+      throw appError;
+    }
   }
 
   async function applyPromptRouteSwitch(input: ApplyPromptRouteSwitchInput) {
@@ -58,7 +73,7 @@ export function createPromptRouteHandlers(
       deps.setError("");
       deps.setRuntimeStep(input.loadingRuntimeStep);
       const loaded = await reloadDocumentAfterPromptRouteSwitch(input.nextConfig, { shouldCommit });
-      if (!shouldCommit()) return;
+      if (loaded === null || !shouldCommit()) return;
       deps.setRuntimeStep(input.successRuntimeStep(loaded));
     } catch (appError) {
       if (shouldCommit()) deps.applyErrorRuntimeStep(appError, input.failureRuntimeStep);

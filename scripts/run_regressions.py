@@ -78,7 +78,7 @@ def build_commands(
         {"name": "frontend home layout regression", "command": ["node", "scripts/frontend_home_layout_regression.mjs"]},
         {"name": "frontend UI consistency regression", "command": ["node", "scripts/frontend_ui_consistency_regression.mjs"]},
         {"name": "frontend model-streaming regression", "command": ["node", "scripts/frontend_model_streaming_regression.mjs"]},
-        {"name": "model catalog concurrency regression", "command": ["node", "--experimental-strip-types", "scripts/model_catalog_concurrency_regression.mjs"]},
+        {"name": "model catalog concurrency regression", "command": ["npm", "--prefix", "app", "run", "test:frontend:catalog-concurrency"]},
         {"name": "frontend rate-audit regression", "command": ["node", "scripts/frontend_rate_audit_regression.mjs"]},
         {"name": "frontend evidence-chain regression", "command": ["node", "scripts/frontend_evidence_chain_regression.mjs"]},
         {"name": "frontend source-relative style delta regression", "command": ["node", "scripts/frontend_source_relative_style_delta_regression.mjs"]},
@@ -101,6 +101,7 @@ def build_commands(
         {"name": "export revision-binding regression", "command": [sys.executable, "scripts/export_revision_binding_regression.py"]},
         {"name": "plain export provenance regression", "command": [sys.executable, "scripts/plain_export_provenance_regression.py"]},
         {"name": "prompt preview regression", "command": [sys.executable, "scripts/prompt_preview_regression.py"]},
+        {"name": "prompt seed upgrade regression", "command": [sys.executable, "scripts/prompt_seed_upgrade_regression.py"]},
         {"name": "model route regression", "command": [sys.executable, "scripts/model_route_regression.py"]},
         {"name": "provider guard regression", "command": [sys.executable, "scripts/provider_guard_regression.py"]},
         {"name": "chunking regression", "command": [sys.executable, "scripts/chunking_regression.py"]},
@@ -176,7 +177,7 @@ def build_commands(
     if include_web_health:
         commands.append({"name": "web health check", "command": [sys.executable, "scripts/web_health_check.py", "--timeout", "8", "--default-report"]})
     if include_browser_e2e:
-        commands.append({"name": "browser E2E smoke", "command": ["node", "scripts/browser_e2e_smoke.mjs"], "timeout": 240})
+        commands.append({"name": "browser E2E smoke", "command": ["node", "--experimental-websocket", "scripts/browser_e2e_smoke.mjs"], "timeout": 240})
     # Real-LLM end-to-end rewrite test: costs real API calls, gated by env var so
     # default CI runs skip it. Set FYADR_RUN_REAL_LLM=1 to exercise it. Skips
     # (green, not fail) when no provider is configured or the LLM is unreachable.

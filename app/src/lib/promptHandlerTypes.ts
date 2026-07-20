@@ -8,9 +8,12 @@ import type {
   PromptDeleteResult,
   PromptSaveResult,
   PromptWorkflow,
+  PromptWorkflowSaveResult,
 } from "@/types/app";
 import type { ConfirmDialogOptions } from "@/lib/uiTypes";
 import type { PromptRouteRequestRef } from "@/lib/promptRouteRequestGeneration";
+import type { PromptPreviewRequestRegistry } from "@/lib/promptPreviewRequestGeneration";
+import type { HistoryListRefreshResult } from "@/lib/historyHandlerInputTypes";
 
 export type ApplyPromptRouteSwitchInput = {
   nextConfig: ModelConfig;
@@ -21,6 +24,7 @@ export type ApplyPromptRouteSwitchInput = {
 
 export type PromptHandlersDeps = {
   promptRouteRequestRef?: PromptRouteRequestRef;
+  promptPreviewRequestRegistry?: PromptPreviewRequestRegistry;
   service: {
     getPromptPreviews: () => Promise<PromptPreviewResponse>;
     updatePromptMeta: (promptId: PromptId, payload: { label: string; description?: string }) => Promise<PromptSaveResult>;
@@ -30,8 +34,8 @@ export type PromptHandlersDeps = {
     deletePrompt: (promptId: PromptId) => Promise<PromptDeleteResult>;
     updatePromptWorkflow: (
       workflowId: PromptWorkflow["id"],
-      payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit">,
-    ) => Promise<{ promptDir: string; workflows: PromptWorkflow[] }>;
+      payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit" | "roundLimit">,
+    ) => Promise<PromptWorkflowSaveResult>;
   };
   getModelConfig: () => ModelConfig;
   getDocumentStatus: () => DocumentStatus | null;
@@ -62,7 +66,7 @@ export type PromptHandlersDeps = {
       promptWorkflows?: PromptWorkflow[];
     },
   ) => Promise<DocumentStatus>;
-  refreshHistoryList: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryDocumentSummary[]>;
+  refreshHistoryList: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryListRefreshResult>;
   loadLatestRoundSnapshot: (
     status: DocumentStatus,
     config: ModelConfig,
@@ -77,6 +81,7 @@ export type PromptHandlersDeps = {
 };
 
 export type PromptCrudHandlers = {
+  runPromptPreviewMutation: <T>(operation: () => Promise<T>) => Promise<T | null>;
   persistActivePromptRoute: (config: ModelConfig) => void;
   refreshPromptPreviews: (options?: { silent?: boolean }) => Promise<PromptPreviewResponse | null>;
   applyPromptSaveResult: (result: PromptSaveResult) => void;
@@ -97,12 +102,12 @@ export type PromptRouteHandlers = {
   ) => Promise<void>;
   handleUpdatePromptWorkflow: (
     workflowId: PromptWorkflow["id"],
-    payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit">,
-  ) => Promise<void>;
+    payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit" | "roundLimit">,
+  ) => Promise<PromptWorkflowSaveResult | null>;
   reloadDocumentAfterPromptRouteSwitch: (
     nextConfig: ModelConfig,
     options?: { shouldCommit?: () => boolean },
-  ) => Promise<boolean>;
+  ) => Promise<boolean | null>;
   applyPromptRouteSwitch: (input: ApplyPromptRouteSwitchInput) => Promise<void>;
   handlePromptProfileChange: (promptProfile: ModelConfig["promptProfile"]) => Promise<void>;
   handlePromptSequenceChange: (promptSequence: PromptId[]) => Promise<void>;

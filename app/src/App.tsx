@@ -61,6 +61,7 @@ import {
 import { normalizeRateAuditReport } from "@/lib/rateAuditCompat";
 import type { RateAuditAutoNextApproval } from "@/lib/rateAuditAutoNextGate";
 import type { OptionalUiFeedbackInput } from "@/lib/appOptionalUiFeedbackHelpers";
+import type { HistoryListRefreshResult } from "@/lib/historyHandlerInputTypes";
 import {
   type BeginTaskOptions,
   type TransitionTaskOptions,
@@ -167,6 +168,10 @@ import {
   isTaskRunningPhase,
   type TaskPhase,
 } from "@/lib/taskState";
+import {
+  createPromptPreviewRequestRegistry,
+  type PromptPreviewRequestRegistry,
+} from "@/lib/promptPreviewRequestGeneration";
 import { cn } from "@/lib/utils";
 import { normalizeRewriteConcurrency } from "@/lib/modelRoute";
 import {
@@ -431,7 +436,7 @@ export function App({ service }: Props) {
     isRunSessionCancelRequested} = useRunSession();
   const liveCompareRef = useRef<RoundCompareData | null>(null);
   const handlersBridgeRef = useRef<{
-    refreshHistoryList?: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryDocumentSummary[]>;
+    refreshHistoryList?: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryListRefreshResult>;
     loadCompletedRoundArtifacts?: (result: RoundResult) => Promise<void>;
     loadLatestRoundSnapshot?: (
       status: DocumentStatus,
@@ -461,6 +466,10 @@ export function App({ service }: Props) {
   const reviewSaveRevisionRef = useRef<Map<string, ReviewSaveRevisionState>>(new Map());
   const roundArtifactSnapshotIntentRef = useRef<RoundArtifactSnapshotIntent | null>(null);
   const promptRouteRequestRef = useRef(0);
+  const promptPreviewRequestRegistryRef = useRef<PromptPreviewRequestRegistry>(
+    createPromptPreviewRequestRegistry(),
+  );
+  const modelConfigRevisionRef = useRef(0);
   const restoredDocumentRef = useRef(false);
   const roundProgressRequestRef = useRef(0);
   const autoRetryCountsRef = useRef<Record<string, number>>({});
@@ -483,7 +492,10 @@ export function App({ service }: Props) {
     : readWorkbenchHistoryMarker(window.history.state);
   const activeViewRef = useRef<WorkbenchView>(initialWorkbenchView);
   const workbenchHistoryIndexRef = useRef(initialWorkbenchHistoryMarker?.index ?? 0);
-  const workbenchPopRevisionRef = useRef(0);
+  // Every guarded navigation gets a monotonically increasing token. A browser
+  // history event can arrive while the discard dialog is open, so an older
+  // confirmation must never clear a newer draft or commit an obsolete route.
+  const workbenchNavigationRevisionRef = useRef(0);
   const workbenchHistoryRestoringRef = useRef(false);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogResult | null>(null);
   const [modelCatalogBusy, setModelCatalogBusy] = useState(false);
@@ -498,7 +510,7 @@ export function App({ service }: Props) {
   const [diagnostics, setDiagnostics] = useState<EnvironmentDiagnostics | null>(null);
   const [lastExportFailure, setLastExportFailure] = useState<ExportFailureDetails | null>(null);
   const [promptPreviews, setPromptPreviews] = useState<PromptPreviewResponse | null>(null);
-  const [promptPreviewBusy, setPromptPreviewBusy] = useState(false);
+  const [promptPreviewBusy, setPromptPreviewBusy] = useState(true);
   const [promptPreviewError, setPromptPreviewError] = useState("");
   const [activePromptPreviewId, setActivePromptPreviewId] = useState<PromptId>("prewrite");
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
@@ -552,6 +564,11 @@ export function App({ service }: Props) {
     setNotice,
     setBusy,
     setError} = useAppState();
+  const applyModelConfigChange = useCallback((nextConfig: ModelConfig) => {
+    modelConfigRevisionRef.current += 1;
+    latestModelConfigRef.current = nextConfig;
+    setModelConfig(nextConfig);
+  }, [setModelConfig]);
   const promptOptions = useMemo(() => getPromptOptionsFromPreviews(promptPreviews), [promptPreviews]);
   const promptWorkflows = useMemo(() => getPromptWorkflowsFromPreviews(promptPreviews, promptOptions), [promptPreviews, promptOptions]);
   const taskLifecycle = createAppTaskLifecycleHandlers({
@@ -618,6 +635,10 @@ export function App({ service }: Props) {
     latestModelConfigRef.current = modelConfig;
   }, [modelConfig]);
   useEffect(() => {
+    const viewLabel = WORKBENCH_NAV_ITEMS.find((item) => item.view === activeView)?.label ?? "工作台";
+    document.title = `${viewLabel} | FYADR`;
+  }, [activeView]);
+  useEffect(() => {
     runningRef.current = running;
   }, [running]);
   useEffect(() => {
@@ -673,30 +694,40 @@ export function App({ service }: Props) {
   }
   function requestPromptPreviewDiscardConfirmation(): Promise<boolean> {
     return requestConfirm({
-      title: "放弃未保存的提示词修改？",
-      description: "当前提示词还有未保存的修改。继续后，这些修改将无法恢复。",
+      title: "放弃未保存的修改？",
+      description: "当前提示词或流程模板还有未保存的修改。继续后，这些修改将无法恢复。",
       confirmLabel: "放弃修改",
       tone: "warning",
     });
   }
-  async function runAfterPromptDraftGuard(view: WorkbenchView, action: () => void): Promise<boolean> {
+  async function runAfterPromptDraftGuard(
+    view: WorkbenchView,
+    action: () => void,
+    shouldCommit: () => boolean = () => true,
+  ): Promise<boolean> {
     if (view === "prompts" || !promptPreviewDirtyRef.current) {
+      if (!shouldCommit()) return false;
       action();
       return true;
     }
     if (!await requestPromptPreviewDiscardConfirmation()) return false;
+    if (!shouldCommit()) return false;
     promptPreviewDirtyRef.current = false;
     action();
     return true;
   }
+  function runGuardedWorkbenchAction(view: WorkbenchView, action: () => void): Promise<boolean> {
+    const revision = ++workbenchNavigationRevisionRef.current;
+    return runAfterPromptDraftGuard(view, action, () => revision === workbenchNavigationRevisionRef.current);
+  }
   function navigateToWorkbenchView(view: WorkbenchView): Promise<boolean> {
-    return runAfterPromptDraftGuard(view, () => commitWorkbenchView(view));
+    return runGuardedWorkbenchAction(view, () => commitWorkbenchView(view));
   }
   function openTaskTargetView(view: WorkbenchView) {
-    void runAfterPromptDraftGuard(view, () => workbenchShells.openTaskTargetView(view));
+    void runGuardedWorkbenchAction(view, () => workbenchShells.openTaskTargetView(view));
   }
   function openDiffTaskTarget(filterMode: DiffFilterMode, chunkId?: string) {
-    void runAfterPromptDraftGuard("home", () => workbenchShells.openDiffTaskTarget(filterMode, chunkId));
+    void runGuardedWorkbenchAction("home", () => workbenchShells.openDiffTaskTarget(filterMode, chunkId));
   }
   // Install the history listener before the first paint so a fast click on a
   // freshly rendered sidebar cannot create a URL-only navigation state.
@@ -714,6 +745,10 @@ export function App({ service }: Props) {
     );
 
     const handleWorkbenchPopState = (event: PopStateEvent) => {
+      const revision = ++workbenchNavigationRevisionRef.current;
+      if (confirmResolverRef.current) {
+        workbenchShells.settleConfirmDialog(false);
+      }
       if (workbenchHistoryRestoringRef.current) {
         workbenchHistoryRestoringRef.current = false;
         focusWorkbenchMain();
@@ -736,10 +771,13 @@ export function App({ service }: Props) {
         applyWorkbenchView(targetView);
         return;
       }
-      const revision = ++workbenchPopRevisionRef.current;
       void (async () => {
-        const allowed = await runAfterPromptDraftGuard(targetView, () => undefined);
-        if (revision !== workbenchPopRevisionRef.current) return;
+        const allowed = await runAfterPromptDraftGuard(
+          targetView,
+          () => undefined,
+          () => revision === workbenchNavigationRevisionRef.current,
+        );
+        if (revision !== workbenchNavigationRevisionRef.current) return;
         if (!allowed) {
           if (targetMarker && targetMarker.index !== sourceIndex) {
             workbenchHistoryRestoringRef.current = true;
@@ -766,7 +804,7 @@ export function App({ service }: Props) {
     };
     window.addEventListener("popstate", handleWorkbenchPopState);
     return () => {
-      workbenchPopRevisionRef.current += 1;
+      workbenchNavigationRevisionRef.current += 1;
       window.removeEventListener("popstate", handleWorkbenchPopState);
     };
   }, []);
@@ -965,7 +1003,7 @@ const {
     setVisibleProgress: (progress) => { visibleProgressRef.current = progress; },
     setLiveCompare: (compare) => { liveCompareRef.current = compare; },
     setRoundProgressRequestId: (id) => { roundProgressRequestRef.current = id; },
-    setModelConfig,
+    setModelConfig: applyModelConfigChange,
     setProgress,
     setRoundResult,
     setPreview,
@@ -1042,7 +1080,7 @@ const {
     getRoundResult: () => roundResult,
     getActiveCompareData: () => activeCompareData,
     getLastExportResult: () => activeExportResult,
-    setModelConfig,
+    setModelConfig: applyModelConfigChange,
     setDocumentStatus,
     setHistory,
     setProtectionMap,
@@ -1092,6 +1130,7 @@ const {
     setReviewDecisions,
     liveCompareRef,
     beginTask,
+    isTaskCurrent: (ticket) => taskTicketRef.current === ticket,
     finishTask,
     clearAutoSnapshotSuppression,
     invalidateRoundArtifactSnapshotRequests: () => {
@@ -1242,6 +1281,7 @@ const {
     handlePromptSequenceChange} = createPromptHandlers({
     service,
     promptRouteRequestRef,
+    promptPreviewRequestRegistry: promptPreviewRequestRegistryRef.current,
     getModelConfig: () => latestModelConfigRef.current ?? modelConfig,
     getDocumentStatus: () => latestDocumentStatusRef.current,
     getPromptOptions: () => promptOptions,
@@ -1280,7 +1320,7 @@ const {
     promptOptions,
     promptWorkflows,
     taskTicketRef,
-    setModelConfig,
+    setModelConfig: applyModelConfigChange,
     setError,
     setNotice,
     setRuntimeStep,
@@ -1302,7 +1342,7 @@ const {
     historyItems,
     promptOptions,
     promptWorkflows,
-    setModelConfig,
+    setModelConfig: applyModelConfigChange,
     setNotice,
     setRuntimeStep,
     refreshDocumentState,
@@ -1349,7 +1389,10 @@ const {
     setError,
     setModelConfig,
     setModelConfigReady,
+    modelConfigRevisionRef,
     setPromptPreviews,
+    setPromptPreviewBusy,
+    promptPreviewRequestRegistry: promptPreviewRequestRegistryRef.current,
     refreshModelCatalog,
     setHistoryItems,
     setHistoryArtifactQuery,
@@ -1525,11 +1568,6 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
   const statusAutoAction = !error && pendingAutoAction ? pendingAutoAction : null;
   const hasActiveOperationFeedback = Boolean(activeRuntimeTaskCount || (uiBusy && !error));
 
-  function applyModelConfigChange(nextConfig: ModelConfig) {
-    latestModelConfigRef.current = nextConfig;
-    setModelConfig(nextConfig);
-  }
-
   const modelPanel = (
     <ModelConfigCard
       value={modelConfig}
@@ -1580,7 +1618,7 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
         runtimeStatus={runtimeStatus}
         progressPercent={progressPercent}
       />
-      <SidebarInset id="fyadr-main-content" tabIndex={-1} className="h-svh overflow-hidden outline-none md:h-[calc(100svh-1rem)]">
+      <SidebarInset id="fyadr-main-content" tabIndex={-1} aria-labelledby="fyadr-active-view-title" className="h-svh overflow-hidden outline-none md:h-[calc(100svh-1rem)]">
           <NotificationCenter
             open={notificationCenterOpen}
             items={notifications}
@@ -1602,7 +1640,7 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
                 <ActiveViewIcon className="size-4" />
               </span>
               <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-                <h1 className="sr-only">{activeViewMeta.label}</h1>
+                <h1 id="fyadr-active-view-title" className="sr-only">{activeViewMeta.label}</h1>
                 <Breadcrumb>
                   <BreadcrumbList className="text-xs">
                     <BreadcrumbItem>
@@ -1758,8 +1796,7 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
                         onPromptProfileChange={(promptProfile) => void handlePromptProfileChange(promptProfile)}
                         onPromptSequenceChange={(promptSequence) => void handlePromptSequenceChange(promptSequence)}
                         onModelConfigChange={(nextConfig) => {
-                          latestModelConfigRef.current = nextConfig;
-                          setModelConfig(nextConfig);
+                          applyModelConfigChange(nextConfig);
                         }}
                         onSaveModelConfig={(nextConfig) => void handleSaveModelConfig(nextConfig)}
                         onRefreshAllProviderModels={() => void handleRefreshAllProviderModels()}
@@ -1813,6 +1850,7 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
                     onRestoreDefaultPrompt={(promptId) => handleRestoreDefaultPrompt(promptId)}
                     onCreatePrompt={(payload) => handleCreatePrompt(payload)}
                     onDeletePrompt={(promptId) => handleDeletePrompt(promptId)}
+                    onUpdatePromptWorkflow={(workflowId, payload) => handleUpdatePromptWorkflow(workflowId, payload)}
                     onDirtyStateChange={handlePromptPreviewDirtyStateChange}
                     onConfirmDiscardChanges={requestPromptPreviewDiscardConfirmation}
                   />
@@ -1821,7 +1859,13 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
             ) : activeView === "protection" ? (
               <div className="h-full min-h-0 overflow-auto">
                 <Suspense fallback={<WorkbenchViewSkeleton label="保护区地图" />}>
-                  <ProtectionMapCard value={protectionMap} diagnostics={scopeDiagnostics} />
+                  <ProtectionMapCard
+                    value={protectionMap}
+                    diagnostics={scopeDiagnostics}
+                    onChooseFile={() => void handlePickFile()}
+                    onGoHome={() => void navigateToWorkbenchView("home")}
+                    chooseFileDisabled={uiBusy || running}
+                  />
                 </Suspense>
               </div>
             ) : activeView === "diagnostics" ? (

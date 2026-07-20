@@ -57,7 +57,7 @@ export function ModelDefaultConnectionForm({
                 <KeyRound className="size-4 text-muted-foreground" />
                 <h3 id={`${fieldPrefix}-credentials-heading`} className="text-sm font-semibold">连接凭据</h3>
               </div>
-              <span className="text-[11px] text-muted-foreground">密钥仅保存在本机</span>
+              <span className="text-[11px] text-muted-foreground">密钥保存在当前部署的服务端配置</span>
             </div>
             <FieldGroup className="grid gap-4 md:grid-cols-2">
               <Field className="md:col-span-2">

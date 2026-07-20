@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import type { AppService } from "@/lib/appService";
 import { bootstrapAppConfig } from "@/lib/appBootstrapConfigHelpers";
 import { bootstrapAppHistories } from "@/lib/appBootstrapHistoryHelpers";
+import type { PromptPreviewRequestRegistry } from "@/lib/promptPreviewRequestGeneration";
 import type {
   HistoryArtifactQueryResponse,
   HistoryDocumentSummary,
@@ -15,7 +16,10 @@ type UseAppBootstrapInput = {
   setError: (message: string) => void;
   setModelConfig: (config: ModelConfig) => void;
   setModelConfigReady: (ready: boolean) => void;
+  modelConfigRevisionRef: { current: number };
   setPromptPreviews: (previews: PromptPreviewResponse) => void;
+  setPromptPreviewBusy: (busy: boolean) => void;
+  promptPreviewRequestRegistry: PromptPreviewRequestRegistry;
   refreshModelCatalog: (
     config?: ModelConfig,
     options?: { silent?: boolean },
@@ -31,7 +35,10 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
     setError,
     setModelConfig,
     setModelConfigReady,
+    modelConfigRevisionRef,
     setPromptPreviews,
+    setPromptPreviewBusy,
+    promptPreviewRequestRegistry,
     refreshModelCatalog,
     setHistoryItems,
     setHistoryArtifactQuery,
@@ -50,12 +57,24 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
       setModelConfig,
       setModelConfigReady,
       setPromptPreviews,
+      setPromptPreviewBusy,
+      promptPreviewRequestRegistry,
+      shouldCommitModelConfig: () => modelConfigRevisionRef.current === 0,
       refreshModelCatalog: (...args) => refreshModelCatalogRef.current(...args),
     });
     return () => {
       cancelled = true;
     };
-  }, [service, setError, setModelConfig, setModelConfigReady, setPromptPreviews]);
+  }, [
+    service,
+    setError,
+    setModelConfig,
+    setModelConfigReady,
+    modelConfigRevisionRef,
+    setPromptPreviews,
+    setPromptPreviewBusy,
+    promptPreviewRequestRegistry,
+  ]);
 
   useEffect(() => {
     let cancelled = false;

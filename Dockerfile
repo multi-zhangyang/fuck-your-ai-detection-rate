@@ -1,25 +1,7 @@
-# ============================================================================
-# FYADR — trusted-host deployment Dockerfile (multi-stage, single-container)
-#
-# Stage A: build the React/Vite frontend -> app/dist
-# Stage B: slim Python runtime that serves BOTH the API (Flask/gunicorn)
-#          AND the production frontend build (Flask static serving).
-#
-# Why single-container (Flask serves dist) over nginx+dev-server:
-#   * No vite dev server on the runtime network path (the root cause of the high
-#     latency — see DEPLOY.md "Public latency" section).
-#   * One process, one image, one port. `docker compose up` and it runs.
-#   * Flask is more than enough for this app's traffic: it only serves a few
-#     hundred KB of hashed, immutable, gzipped static assets per visit, plus
-#     JSON /api calls. Heavy compute (LLM rewrites) is done by the upstream
-#     provider, not by Flask.
-#   * A two-container nginx+Flask compose variant is documented in DEPLOY.md
-#     if you later want to scale static delivery independently.
-# ============================================================================
+# FYADR production image: build the React frontend, then serve it with the
+# Flask API from a slim Python runtime.
 
-# ---------------------------------------------------------------------------
-# Stage A — frontend build
-# ---------------------------------------------------------------------------
+# Frontend build
 FROM node:20-bookworm-slim AS frontend-build
 WORKDIR /frontend
 
@@ -31,10 +13,11 @@ RUN npm ci
 COPY app/ ./
 RUN npm run build
 
-# ---------------------------------------------------------------------------
-# Stage B — backend runtime (final image)
-# ---------------------------------------------------------------------------
+# Backend runtime
 FROM python:3.11-slim-bookworm AS runtime
+
+LABEL org.opencontainers.image.source="https://github.com/multi-zhangyang/fuck-your-ai-detection-rate" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -54,14 +37,16 @@ WORKDIR /app
 
 # 1) Python deps first (best layer caching).
 COPY requirements.txt ./
+COPY LICENSE ./LICENSE
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 2) Backend source. scripts/ is flat (sibling imports), so it lives at
 #    /app/scripts and ROOT_DIR resolves to /app (repo root equivalent).
 COPY scripts/ ./scripts/
 
-# 3) Prompt library (code, not state — baked into the image).
-COPY prompts/ ./prompts/
+# 3) Immutable prompt seed. The entrypoint merges factory updates and safely
+#    migrates legacy custom prompts into the writable /app/prompts volume.
+COPY prompts/ ./prompt-seed/
 
 # 4) Production frontend build from stage A.
 COPY --from=frontend-build /frontend/dist ./static
@@ -70,15 +55,13 @@ COPY --from=frontend-build /frontend/dist ./static
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh
 
-# ---------------------------------------------------------------------------
 # Stateful paths (mount volumes / named volumes here):
 #   /app/origin   - uploaded source documents (ORIGIN_DIR)
 #   /app/finish   - exports, task state, history DB, prompt backups (EXPORT_DIR,
 #                   TASK_STATE_DIR, fyadr_history.sqlite3, history_db_backups)
-#   /app/config   - app_config.json (AI provider keys) — FYADR_APP_CONFIG_DIR
-#   /app/prompts/custom - user-created custom prompts (optional, persistent)
-# ---------------------------------------------------------------------------
-VOLUME ["/app/origin", "/app/finish", "/app/config", "/app/prompts/custom"]
+#   /app/config   - config.json (AI provider keys) — FYADR_APP_CONFIG_DIR
+#   /app/prompts  - prompt content, registries, workflows, and custom prompts
+VOLUME ["/app/origin", "/app/finish", "/app/config", "/app/prompts"]
 
 # Config + runtime tuning (overridable via docker-compose / .env).
 ENV WEB_HOST=0.0.0.0 \

@@ -29,7 +29,7 @@ export function ReasonGrid({ reasons, protectedUnits }: { reasons: ProtectionRea
               <span className="truncate text-sm font-black text-foreground">{item.label}</span>
               <Badge variant="outline">{item.count}</Badge>
             </div>
-            <Progress value={percent} className="mt-3 h-2" />
+            <Progress value={percent} className="mt-3 h-2" aria-label={`${item.label}占保护区比例`} />
             <Badge variant="outline" className="mt-2">{percent}%</Badge>
           </div>
         );

@@ -1015,8 +1015,9 @@ function runRegression() {
     assertIncludes(appSource, "function rejectPendingAutoAction(", "Users must be able to reject pending automatic actions.", failures);
     assertIncludes(appSource, "export function AutoRunSignal(", "Home run panel must render a visible countdown signal.", failures);
     assertIncludes(appSource, "const canAppendRound = Boolean(", "Completed custom workflows must expose an explicit append action.", failures);
-    assertIncludes(appSource, "const appendRoundLimit = Math.max(sequenceLengthLimit, getPromptRoundLimit", "Append capacity must be separate from the 1/2/3 main workflow selector.", failures);
-    assertIncludes(appSource, "Math.min(getPromptSequenceLimit(promptProfile, promptWorkflows), DEFAULT_PROMPT_SEQUENCE.length)", "Main workflow selector must stay on the simple 1/2/3 choices.", failures);
+    assertIncludes(appSource, "const appendRoundLimit = Math.max(sequenceLengthLimit, getPromptRoundLimit", "Append capacity must stay separate from the default workflow sequence limit.", failures);
+    assertIncludes(appSource, "const sequenceLengthLimit = Math.max(1, getPromptSequenceLimit(promptProfile, promptWorkflows));", "The main workflow selector must honor the configured workflow sequence limit.", failures);
+    assertNotIncludes(appSource, "DEFAULT_PROMPT_SEQUENCE.length", "The main workflow selector must not retain the legacy three-round cap.", failures);
     assertIncludes(appSource, "const [appendDraft, setAppendDraft] = useState<AppendRoundDraft | null>(null);", "Append rounds must use a dedicated single-round draft instead of mutating the main workflow picker.", failures);
     assertIncludes(appSource, "openAppendRoundDialog();", "Append action must open the single-round config dialog before starting.", failures);
     assertIncludes(appSource, "<Dialog open={open}", "Append round configuration must use a centered Dialog.", failures);

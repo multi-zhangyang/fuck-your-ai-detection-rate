@@ -9,6 +9,11 @@ import {
   buildHistoryOrphanScanRuntimeStep,
   buildHistoryOrphanWorkingRuntimeStep,
 } from "@/lib/historyDeleteCopy";
+import {
+  beginHistoryRequest,
+  finishHistoryRequest,
+  isCurrentHistoryRequest,
+} from "@/lib/historyRequestGeneration";
 import type {
   HistoryCoreHandlers,
   HistoryHandlersDeps,
@@ -23,9 +28,10 @@ export function createHistoryOrphanScanHandlers(
     try {
       deps.setRuntimeStep("正在扫描未归属生成文件。");
       const result = await core.refreshHistoryOrphanScan();
+      if (result.status !== "current" || !result.isCurrent()) return;
       deps.setNotice(
-        result.totalOrphanFiles
-          ? `发现 ${result.totalOrphanFiles} 个未归属生成文件，可按需清理。`
+        result.scan.totalOrphanFiles
+          ? `发现 ${result.scan.totalOrphanFiles} 个未归属生成文件，可按需清理。`
           : "没有发现未归属生成文件。",
       );
       deps.setRuntimeStep("未归属文件扫描完成");
@@ -42,7 +48,9 @@ export function createHistoryOrphanScanHandlers(
       const scanTicket = deps.beginTask("loading-history");
       try {
         deps.setRuntimeStep(buildHistoryOrphanScanRuntimeStep());
-        currentScan = await core.refreshHistoryOrphanScan();
+        const result = await core.refreshHistoryOrphanScan();
+        if (result.status !== "current" || !result.isCurrent()) return;
+        currentScan = result.scan;
       } catch (appError) {
         deps.applyErrorRuntimeStep(appError, buildHistoryOrphanScanFailureRuntimeStep());
         return;
@@ -62,15 +70,22 @@ export function createHistoryOrphanScanHandlers(
     const taskTicket = deps.beginTask("deleting-history", {
       runtimeStep: buildHistoryOrphanWorkingRuntimeStep(),
     });
+    const requestKey = deps.setHistoryOrphanScan as unknown as object;
+    const generation = beginHistoryRequest(requestKey, "orphan");
+    const isCurrent = () => isCurrentHistoryRequest(requestKey, "orphan", generation);
     try {
       const result = await deps.service.deleteHistoryOrphans(core.getProtectedHistoryArtifactPaths());
+      if (!isCurrent()) return;
       deps.setHistoryOrphanScan(result.after);
       void core.refreshHistoryArtifactGovernance();
       deps.setNotice(buildHistoryOrphanCleanupNotice(result));
       deps.setRuntimeStep(buildHistoryOrphanDoneRuntimeStep());
     } catch (appError) {
-      deps.applyErrorRuntimeStep(appError, buildHistoryOrphanFailureRuntimeStep());
+      if (isCurrent()) {
+        deps.applyErrorRuntimeStep(appError, buildHistoryOrphanFailureRuntimeStep());
+      }
     } finally {
+      finishHistoryRequest(requestKey, "orphan", generation);
       deps.finishTask(taskTicket);
     }
   }

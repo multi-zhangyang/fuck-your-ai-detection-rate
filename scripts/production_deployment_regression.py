@@ -85,6 +85,16 @@ def run_regression() -> dict[str, object]:
     )
     _assert(not re.search(r"^\s+user\s*:", compose, flags=re.MULTILINE), "Compose must not pre-drop privileges before volume initialization")
     _assert("run_as_fyadr" in entrypoint, "entrypoint must support root initialization followed by non-root execution")
+    _assert("sync_prompt_seed('/app/prompt-seed'" in entrypoint, "entrypoint must merge the image prompt seed into the writable volume")
+    _assert("cp -a -n /app/prompt-seed" not in entrypoint, "prompt seed upgrades must not rely on copy-if-missing semantics")
+    _assert('VOLUME ["/app/origin", "/app/finish", "/app/config", "/app/prompts"]' in dockerfile, "the complete mutable prompt library must be persistent")
+    _assert("./data/prompts:/app/prompts" in compose, "Compose must persist prompt edits, workflow settings, and custom prompts together")
+    _assert(
+        "./data/prompts-custom:/app/legacy-prompts-custom:ro" in compose,
+        "Compose must expose the legacy custom-prompt directory as a read-only migration source",
+    )
+    _assert("legacy_custom_dir='/app/legacy-prompts-custom'" in entrypoint, "entrypoint must migrate legacy custom prompts through the guarded seed merge")
+    _assert("cp -a -n /app/legacy-prompts-custom" not in entrypoint, "legacy prompt migration must not copy symlinks or arbitrary files as root")
     _assert("--forwarded-allow-ips='*'" not in entrypoint, "entrypoint must not blindly trust forwarded headers from every peer")
     checks.append("container loopback publishing, resource and log ceilings, initialization, privilege drop, and single-worker contract are guarded")
 

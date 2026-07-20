@@ -12,6 +12,10 @@ import type {
   PromptOption,
   PromptWorkflow,
 } from "@/types/app";
+import type {
+  HistoryListRefreshResult,
+  RefreshHistoryListOptions,
+} from "@/lib/historyHandlerInputTypes";
 
 export type DocumentRestoreSuccessDeps = {
   sourcePath: string;
@@ -20,8 +24,12 @@ export type DocumentRestoreSuccessDeps = {
   promptWorkflows: PromptWorkflow[];
   taskTicket: number;
   taskTicketRef: { current: number };
-  refreshDocumentState: (sourcePath: string, config?: ModelConfig) => Promise<DocumentStatus>;
-  refreshHistoryList: () => Promise<HistoryDocumentSummary[]>;
+  refreshDocumentState: (
+    sourcePath: string,
+    config?: ModelConfig,
+    options?: { shouldCommit?: () => boolean },
+  ) => Promise<DocumentStatus>;
+  refreshHistoryList: (options?: RefreshHistoryListOptions) => Promise<HistoryListRefreshResult>;
   clearLoadedRoundSnapshot: () => void;
   loadLatestRoundSnapshot: (
     status: DocumentStatus,
@@ -29,6 +37,7 @@ export type DocumentRestoreSuccessDeps = {
     options?: {
       historyItems?: HistoryDocumentSummary[];
       allowProfileFallback?: boolean;
+      shouldCommit?: () => boolean;
     },
   ) => Promise<unknown>;
   setModelConfig: (config: ModelConfig) => void;
@@ -50,14 +59,20 @@ export async function runDocumentRestoreSuccessPath(deps: DocumentRestoreSuccess
     setModelConfig,
     setRuntimeStep,
   } = deps;
-  const status = await refreshDocumentState(sourcePath, nextConfig);
-  if (taskTicket !== taskTicketRef.current) {
+  const taskIsCurrent = () => taskTicket === taskTicketRef.current;
+  const status = await refreshDocumentState(sourcePath, nextConfig, { shouldCommit: taskIsCurrent });
+  if (!taskIsCurrent()) {
     return;
   }
-  const nextHistoryItems = await refreshHistoryList();
-  if (taskTicket !== taskTicketRef.current) {
+  const refreshedHistory = await refreshHistoryList({ shouldCommit: taskIsCurrent });
+  if (!taskIsCurrent()) {
     return;
   }
+  if (refreshedHistory.status !== "current" || !refreshedHistory.isCurrent()) {
+    return;
+  }
+  const historyIsCurrent = () => taskIsCurrent() && refreshedHistory.isCurrent();
+  const nextHistoryItems = refreshedHistory.items;
   if (shouldSuppressAutoSnapshotRestore(status, nextConfig, promptOptions, promptWorkflows)) {
     clearLoadedRoundSnapshot();
     setRuntimeStep(buildRestoredSuppressedSnapshotRuntimeStep());
@@ -66,8 +81,9 @@ export async function runDocumentRestoreSuccessPath(deps: DocumentRestoreSuccess
   const loadedSnapshot = await loadLatestRoundSnapshot(status, nextConfig, {
     historyItems: nextHistoryItems,
     allowProfileFallback: true,
+    shouldCommit: historyIsCurrent,
   });
-  if (taskTicket !== taskTicketRef.current) {
+  if (!historyIsCurrent()) {
     return;
   }
   const loadedRoute = resolveLoadedSnapshotPromptRoute({
@@ -80,15 +96,19 @@ export async function runDocumentRestoreSuccessPath(deps: DocumentRestoreSuccess
     promptWorkflows,
   });
   if (loadedRoute.shouldSync) {
+    if (!historyIsCurrent()) return;
     setModelConfig(loadedRoute.syncedConfig);
     persistRestoredPromptRoute(
       loadedRoute.syncedConfig.promptProfile,
       loadedRoute.syncedConfig.promptSequence,
     );
-    await refreshDocumentState(status.sourcePath, loadedRoute.syncedConfig);
-    if (taskTicket !== taskTicketRef.current) {
+    await refreshDocumentState(status.sourcePath, loadedRoute.syncedConfig, {
+      shouldCommit: historyIsCurrent,
+    });
+    if (!historyIsCurrent()) {
       return;
     }
   }
+  if (!historyIsCurrent()) return;
   setRuntimeStep(buildRestoredSnapshotRuntimeStep(loadedSnapshot));
 }

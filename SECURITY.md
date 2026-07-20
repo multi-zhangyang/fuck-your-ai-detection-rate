@@ -4,15 +4,15 @@ Please do not post private documents, detector reports, API keys, provider URLs,
 
 ## Data flow
 
-- The Web UI stores model provider settings in the local user config file.
-- Uploaded documents are copied into local runtime folders such as `origin/` and `finish/`.
+- The Web UI stores model provider settings in a server-side configuration file on the deployment host. Native installations use the current user's FYADR config directory; Docker uses `/app/config/config.json`.
+- Uploaded documents are copied into runtime directories on the deployment host, including `origin/` and `finish/` (or their Docker volume equivalents).
 - Rewrite requests send editable paragraph text to the model provider configured by the user.
 - Protected areas such as table of contents, figures, tables, formulas, and references are not sent to the rewrite pipeline.
-- External detector reports are used only as feedback/location material; the project does not provide its own external AI detector.
+- FYADR does not upload or parse external detector reports. Manually entered feedback is treated only as review context.
 
 ## Network boundary
 
-FYADR is a single-user local/trusted-network application. The backend currently
+FYADR is a single-user, self-hosted application intended for a local machine or trusted network. The backend currently
 has no built-in login, tenant isolation, or per-route authorization. Its API can
 upload and read workspace documents, use saved provider credentials, trigger
 paid model calls, change prompts/configuration, and perform destructive history
@@ -36,16 +36,18 @@ reports, images, backups, or shared volumes without equivalent protection.
 
 ## Reporting
 
-If you need to report a bug, open 启动诊断 in the Web UI and click 复制诊断信息, then review and redact the copied payload before pasting it into an issue.
+For an ordinary bug, open 启动诊断 in the Web UI and click 复制诊断信息, then review and redact the copied payload before pasting it into a public issue.
 
-If a report contains sensitive content, replace the document text with a minimal synthetic sample that reproduces the issue.
+Do not disclose vulnerability details, credentials, private documents, or provider responses in a public issue. This repository does not currently publish a private reporting address. To request private contact, open a minimal issue titled `Security contact request` without technical details or sensitive material; the maintainer can then arrange a private channel. If private contact cannot be established, do not publish the sensitive report.
+
+For non-sensitive document-dependent bugs, replace the document text with a minimal anonymized example that reproduces the issue.
 
 ## Release hygiene
 
 Before publishing a repository snapshot, run:
 
-```powershell
-python scripts/open_source_audit.py
+```bash
+node scripts/run_python.mjs scripts/open_source_audit.py
 ```
 
 The audit blocks likely API keys, private model provider URLs, personal absolute paths, old project names, and mojibake text. Warnings about local PDFs, DOCX files, screenshots, `finish/`, `origin/`, `logs/`, `app/dist/`, and `app/node_modules/` must be checked before committing.

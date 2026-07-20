@@ -12,6 +12,9 @@ const REPORT_PATH = resolve(ROOT_DIR, "finish", "regression", "frontend_history_
 const paths = {
   generation: resolve(APP_DIR, "src", "lib", "historyRequestGeneration.ts"),
   history: resolve(APP_DIR, "src", "lib", "historyListGovernanceHandlers.ts"),
+  restoreSuccess: resolve(APP_DIR, "src", "lib", "documentRestoreSessionSuccessHelpers.ts"),
+  restoreRunner: resolve(APP_DIR, "src", "lib", "documentRestoreEffectRunner.ts"),
+  bootstrapHistory: resolve(APP_DIR, "src", "lib", "appBootstrapHistoryHelpers.ts"),
   maintenance: resolve(APP_DIR, "src", "lib", "historyDatabaseMaintenanceHandlers.ts"),
   diagnostics: resolve(APP_DIR, "src", "lib", "documentDiagnosticsHandlers.ts"),
   feedback: resolve(APP_DIR, "src", "lib", "diagnosticsFeedbackHelpers.ts"),
@@ -19,6 +22,8 @@ const paths = {
   diagnosticsPage: resolve(APP_DIR, "src", "components", "DiagnosticsPage.tsx"),
   maintenancePanel: resolve(APP_DIR, "src", "components", "HistoryDatabaseMaintenancePanel.tsx"),
   artifactBody: resolve(APP_DIR, "src", "components", "HistoryArtifactGovernanceBody.tsx"),
+  appDocument: resolve(APP_DIR, "src", "lib", "appDocumentHandlers.ts"),
+  historyRoute: resolve(APP_DIR, "src", "lib", "historyDocumentRouteHandlers.ts"),
 };
 
 function assert(condition, message) {
@@ -72,6 +77,21 @@ async function run() {
   assert(generation.isCurrentHistoryRequest(generationKey, "artifact", newArtifactGeneration), "new artifact generation must be current");
   const maintenanceGeneration = generation.beginHistoryRequest(generationKey, "maintenance");
   assert(generation.isCurrentHistoryRequest(generationKey, "maintenance", maintenanceGeneration), "channels must advance independently");
+  const waitingListGeneration = generation.beginHistoryRequest(generationKey, "list");
+  let latestListWaitSettled = false;
+  const latestListWait = generation.waitForLatestHistoryRequest(generationKey, "list").then((value) => {
+    latestListWaitSettled = true;
+    return value;
+  });
+  const replacementListGeneration = generation.beginHistoryRequest(generationKey, "list");
+  generation.finishHistoryRequest(generationKey, "list", waitingListGeneration);
+  await Promise.resolve();
+  assert(!latestListWaitSettled, "a waiter must follow the replacement list request instead of settling with its superseded owner");
+  generation.finishHistoryRequest(generationKey, "list", replacementListGeneration);
+  assert(await latestListWait === replacementListGeneration, "a list waiter must settle with the latest completed generation");
+  const obsoleteOrphanGeneration = generation.beginHistoryRequest(generationKey, "orphan");
+  generation.invalidateHistoryRequest(generationKey, "orphan");
+  assert(!generation.isCurrentHistoryRequest(generationKey, "orphan", obsoleteOrphanGeneration), "state-changing cleanup must invalidate an in-flight orphan scan");
   generation.setCurrentHistoryArtifactMode(generationKey, "large");
   assert(generation.getCurrentHistoryArtifactMode(generationKey, "missing") === "large", "latest artifact mode must survive handler recreation");
   checks.push("history request generations persist per App setter and stay isolated by channel");
@@ -100,10 +120,13 @@ async function run() {
   });
 
   const artifactRequests = [];
+  const historyListRequests = [];
+  const orphanScanRequests = [];
   let artifactMode = "missing";
   let artifactQuery = { old: true };
   let artifactLoading = false;
   const committedHistoryLists = [];
+  const committedOrphanScans = [];
   const setArtifactQuery = (value) => { artifactQuery = value; };
   const historyDeps = {
     service: {
@@ -112,15 +135,28 @@ async function run() {
         artifactRequests.push(request);
         return request.promise;
       },
-      async listDocumentHistories() { return { items: [{ docId: "new-list" }] }; },
+      listDocumentHistories() {
+        const request = deferred();
+        historyListRequests.push(request);
+        return request.promise;
+      },
+      scanHistoryOrphans() {
+        const request = deferred();
+        orphanScanRequests.push(request);
+        return request.promise;
+      },
     },
     getHistoryArtifactMode: () => artifactMode,
     getDocumentStatus: () => ({ docId: "doc-current" }),
+    getRoundResult: () => null,
+    getActiveCompareData: () => null,
+    getLastExportResult: () => null,
     getHistoryItems: () => [],
     setHistoryArtifactMode: (value) => { artifactMode = value; },
     setHistoryArtifactQuery: setArtifactQuery,
     setHistoryArtifactLoading: (value) => { artifactLoading = value; },
     setHistoryItems: (value) => { committedHistoryLists.push(value); },
+    setHistoryOrphanScan: (value) => { committedOrphanScans.push(value); },
     setError: () => undefined,
   };
   const firstHistoryHandlers = historyModule.createHistoryListGovernanceHandlers(historyDeps);
@@ -136,10 +172,266 @@ async function run() {
   assert(artifactQuery.items[0].path === "latest", "latest artifact response must commit");
   assert(artifactQuery.filters.minBytes === 65536 && artifactMode === "large", "mode and committed query filters must match");
   assert(!artifactLoading, "latest artifact completion must clear loading");
-  const guardedItems = await secondHistoryHandlers.refreshHistoryList({ shouldCommit: () => false });
-  assert(guardedItems[0].docId === "new-list" && committedHistoryLists.length === 0, "history list guard must skip UI commit but return items");
+  const oldListPromise = firstHistoryHandlers.refreshHistoryList();
+  const latestListPromise = secondHistoryHandlers.refreshHistoryList();
+  historyListRequests[1].resolve({ items: [{ docId: "latest-list" }] });
+  const latestItems = await latestListPromise;
+  assert(latestItems.status === "current", "the latest history request must return a current result");
+  assert(latestItems.items[0].docId === "latest-list", "the latest history request must return its fetched items");
+  assert(latestItems.isCurrent(), "the latest history result must still own the list before a replacement starts");
+  assert(committedHistoryLists.length === 1 && committedHistoryLists[0][0].docId === "latest-list", "the latest history response must commit");
+  historyListRequests[0].resolve({ items: [{ docId: "stale-list" }] });
+  const staleItems = await oldListPromise;
+  assert(staleItems.status === "stale", "a superseded history request must return an explicit stale result");
+  assert(!("items" in staleItems), "a stale history request must not expose payload data");
+  assert(committedHistoryLists.length === 1 && committedHistoryLists[0][0].docId === "latest-list", "a late history response must not overwrite the latest list");
+  const guardedPromise = secondHistoryHandlers.refreshHistoryList({ shouldCommit: () => false });
+  historyListRequests[2].resolve({ items: [{ docId: "guarded-list" }] });
+  const guardedItems = await guardedPromise;
+  assert(guardedItems.status === "stale" && committedHistoryLists.length === 1, "history list commit guard must return stale without UI commit");
   checks.push("reverse-order artifact responses cannot overwrite the latest mode/query/loading state");
-  checks.push("history list commit guard preserves returned data without stale UI writes");
+  checks.push("reverse-order history list responses are latest-wins across handler recreation");
+  checks.push("history list commit guards return explicit stale results without stale UI writes");
+
+  const appDocumentModule = await importTypeScript(paths.appDocument, {
+    "@/lib/appOptionalUiFeedbackHelpers": dataModule("export const planOptionalUiFeedbackApply = (value) => value;"),
+    "@/lib/errorText": errorTextUrl,
+    "@/lib/historyLoadHelpers": dataModule(`
+      export const buildHistoryDocumentLoadingRuntimeStep = () => 'loading-history';
+      export const buildHistoryDocumentLoadFailureRuntimeStep = () => 'history-load-failed';
+    `),
+  });
+  {
+    let currentTaskTicket = 0;
+    const historyLoads = [];
+    const committedNotices = [];
+    const committedRuntimeSteps = [];
+    const committedErrors = [];
+    const selectionHandlers = appDocumentModule.createAppDocumentHandlers({
+      getModelConfig: () => ({}),
+      setError: (value) => { committedErrors.push(value); },
+      setNotice: (value) => { committedNotices.push(value); },
+      setRuntimeStep: (value) => { committedRuntimeSteps.push(value); },
+      setRoundResult: () => undefined,
+      setProgress: () => undefined,
+      setPreview: () => undefined,
+      setCompareData: () => undefined,
+      setLastExportResult: () => undefined,
+      setRoundProgressStatus: () => undefined,
+      setRerunFailures: () => undefined,
+      setReviewDecisions: () => undefined,
+      liveCompareRef: { current: null },
+      beginTask: () => { currentTaskTicket += 1; return currentTaskTicket; },
+      isTaskCurrent: (ticket) => ticket === currentTaskTicket,
+      finishTask: () => undefined,
+      clearAutoSnapshotSuppression: () => undefined,
+      invalidateRoundArtifactSnapshotRequests: () => undefined,
+      clearPendingAutoActionForManualContextChange: () => undefined,
+      loadSelectedHistoryDocument: (item, _config, options) => {
+        const request = { ...deferred(), item, options };
+        historyLoads.push(request);
+        return request.promise;
+      },
+    });
+    const staleSelection = selectionHandlers.handleSelectHistory({ docId: "old" });
+    const currentSelection = selectionHandlers.handleSelectHistory({ docId: "new" });
+    assert(historyLoads[0].options.shouldCommit() === false, "a newer history selection must immediately stale the older task guard");
+    assert(historyLoads[1].options.shouldCommit() === true, "the latest history selection must own its task guard");
+    historyLoads[1].resolve({ notice: "new-notice", runtimeStep: "new-runtime" });
+    await currentSelection;
+    historyLoads[0].reject(new Error("stale history failure"));
+    await staleSelection;
+    assert(committedNotices.join(",") === "new-notice", "stale history feedback must not overwrite the latest selection notice");
+    assert(committedRuntimeSteps.at(-1) === "new-runtime" && !committedRuntimeSteps.includes("history-load-failed"), "stale history completion and failure must not overwrite runtime state");
+    assert(committedErrors.length === 0, "a superseded history failure must stay hidden");
+  }
+  checks.push("reverse-order manual history selections commit feedback only for the current task ticket");
+
+  const historyRouteModule = await importTypeScript(paths.historyRoute, {
+    "@/lib/documentStatusCopy": dataModule(`
+      export const describeDocumentProgress = () => 'ready';
+      export const formatDocumentLoadStep = () => 'loaded';
+    `),
+    "@/lib/historyHelpers": dataModule(`
+      export const buildConfigForHistorySelection = (item, config) => ({ ...config, selectedDocId: item.docId });
+      export const buildHistoryRouteStatusResult = (status, statusConfig) => ({ status, statusConfig });
+      export const planHistoryDocumentLoadFeedback = () => ({ notice: 'loaded', runtimeStep: 'ready' });
+      export const resolveLoadedHistoryRoute = ({ selectedConfig }) => ({
+        shouldResync: true,
+        statusConfig: { ...selectedConfig, resynced: true },
+      });
+      export const shouldSyncHistorySelectionConfig = () => true;
+    `),
+  });
+  {
+    const refreshGuards = [];
+    const snapshotGuards = [];
+    const syncedConfigs = [];
+    const routeHandlers = historyRouteModule.createHistoryDocumentRouteHandlers({
+      getPromptOptions: () => [],
+      getPromptWorkflows: () => [],
+      getModelConfig: () => ({}),
+      refreshDocumentState: async (sourcePath, _config, options) => {
+        refreshGuards.push(options?.shouldCommit);
+        return { sourcePath };
+      },
+      loadLatestRoundSnapshot: async (_status, _config, options) => {
+        snapshotGuards.push(options?.shouldCommit);
+        return { compareData: {} };
+      },
+    }, {
+      syncHistorySelectionConfigToUi: (value) => { syncedConfigs.push(value); },
+    });
+    const shouldCommit = () => true;
+    await routeHandlers.loadSelectedHistoryDocument(
+      { docId: "current", sourcePath: "/current.docx" },
+      {},
+      { shouldCommit },
+    );
+    assert(refreshGuards.length === 2 && refreshGuards.every((guard) => guard === shouldCommit), "history status load and route resync must share the selection commit guard");
+    assert(snapshotGuards.length === 1 && snapshotGuards[0] === shouldCommit, "history snapshot loading must receive the selection commit guard");
+    assert(syncedConfigs.length === 2 && syncedConfigs.at(-1).resynced === true, "a current history selection may synchronize its selected and restored routes");
+
+    let stale = false;
+    let staleSnapshotCalls = 0;
+    const staleSyncedConfigs = [];
+    const staleRouteHandlers = historyRouteModule.createHistoryDocumentRouteHandlers({
+      getPromptOptions: () => [],
+      getPromptWorkflows: () => [],
+      getModelConfig: () => ({}),
+      refreshDocumentState: async (sourcePath, _config, options) => {
+        assert(options?.shouldCommit?.() === true, "a history request must start while it owns the selection");
+        stale = true;
+        return { sourcePath };
+      },
+      loadLatestRoundSnapshot: async () => {
+        staleSnapshotCalls += 1;
+        return null;
+      },
+    }, {
+      syncHistorySelectionConfigToUi: (value) => { staleSyncedConfigs.push(value); },
+    });
+    await staleRouteHandlers.loadSelectedHistoryDocument(
+      { docId: "stale", sourcePath: "/stale.docx" },
+      {},
+      { shouldCommit: () => !stale },
+    );
+    assert(staleSnapshotCalls === 0, "a selection superseded during status loading must not continue into snapshot loading");
+    assert(staleSyncedConfigs.length === 1 && !staleSyncedConfigs[0].resynced, "a stale selection must not resynchronize its old model route");
+  }
+  checks.push("history selection guards cover status, snapshot, route resync, and downstream feedback");
+
+  const staleOrphanPromise = firstHistoryHandlers.refreshHistoryOrphanScan();
+  const currentOrphanPromise = secondHistoryHandlers.refreshHistoryOrphanScan();
+  const currentOrphanScan = { totalOrphanFiles: 2, orphanStats: { bytes: 20 } };
+  orphanScanRequests[1].resolve(currentOrphanScan);
+  const currentOrphanResult = await currentOrphanPromise;
+  assert(currentOrphanResult.status === "current" && currentOrphanResult.scan === currentOrphanScan, "the latest orphan scan must return its current payload");
+  const replacementOrphanPromise = firstHistoryHandlers.refreshHistoryOrphanScan();
+  assert(!currentOrphanResult.isCurrent(), "a replacement orphan scan must invalidate the prior result before downstream feedback");
+  orphanScanRequests[0].reject(new Error("stale orphan failure"));
+  const staleOrphanResult = await staleOrphanPromise;
+  assert(staleOrphanResult.status === "stale" && !("scan" in staleOrphanResult), "a stale orphan failure must be absorbed without exposing old data");
+  const replacementOrphanScan = { totalOrphanFiles: 0, orphanStats: { bytes: 0 } };
+  orphanScanRequests[2].resolve(replacementOrphanScan);
+  const replacementOrphanResult = await replacementOrphanPromise;
+  assert(replacementOrphanResult.status === "current" && committedOrphanScans.length === 2 && committedOrphanScans[1] === replacementOrphanScan, "only current orphan scans may publish state");
+  checks.push("orphan scans and failures are latest-wins and stale payloads stay hidden from downstream feedback");
+
+  const restoreSuccessModule = await importTypeScript(paths.restoreSuccess, {
+    "@/lib/documentRestoreHelpers": dataModule(`
+      export const buildRestoredSnapshotRuntimeStep = () => 'restored';
+      export const buildRestoredSuppressedSnapshotRuntimeStep = () => 'suppressed';
+      export const persistRestoredPromptRoute = () => undefined;
+      export const resolveLoadedSnapshotPromptRoute = () => ({ shouldSync: false });
+    `),
+    "@/lib/autoSnapshot": dataModule("export const shouldSuppressAutoSnapshotRestore = () => false;"),
+  });
+  const restoreListKey = {};
+  const restoreListGeneration = generation.beginHistoryRequest(restoreListKey, "list");
+  const restoreSnapshotStartedSignal = deferred();
+  const restoreSnapshotRelease = deferred();
+  let restoreSnapshotStarted = false;
+  let restoreSnapshotCommitted = false;
+  const restoreRuntimeSteps = [];
+  const restorePromise = restoreSuccessModule.runDocumentRestoreSuccessPath({
+    sourcePath: "doc-restore",
+    nextConfig: {},
+    promptOptions: [],
+    promptWorkflows: [],
+    taskTicket: 1,
+    taskTicketRef: { current: 1 },
+    refreshDocumentState: async (_sourcePath, _config, options) => {
+      assert(options?.shouldCommit?.() !== false, "restore status read must start with its task guard");
+      return { sourcePath: "doc-restore" };
+    },
+    refreshHistoryList: async (options) => {
+      assert(options?.shouldCommit?.() !== false, "restore history read must start with its task guard");
+      generation.finishHistoryRequest(restoreListKey, "list", restoreListGeneration);
+      return {
+        status: "current",
+        items: [],
+        isCurrent: () => generation.isCurrentHistoryRequest(restoreListKey, "list", restoreListGeneration),
+      };
+    },
+    clearLoadedRoundSnapshot: () => undefined,
+    loadLatestRoundSnapshot: async (_status, _config, options) => {
+      restoreSnapshotStarted = true;
+      restoreSnapshotStartedSignal.resolve();
+      await restoreSnapshotRelease.promise;
+      if (options?.shouldCommit && !options.shouldCommit()) return null;
+      restoreSnapshotCommitted = true;
+      return { compareData: null };
+    },
+    setModelConfig: () => undefined,
+    setRuntimeStep: (step) => { restoreRuntimeSteps.push(step); },
+  });
+  // The snapshot is intentionally held open while a newer list request takes ownership.
+  await restoreSnapshotStartedSignal.promise;
+  assert(restoreSnapshotStarted, "restore must reach the async snapshot read");
+  const replacementRestoreListGeneration = generation.beginHistoryRequest(restoreListKey, "list");
+  restoreSnapshotRelease.resolve();
+  await restorePromise;
+  assert(!restoreSnapshotCommitted && restoreRuntimeSteps.length === 0, "a list replacement during restore snapshot must block the old snapshot and feedback");
+  generation.finishHistoryRequest(restoreListKey, "list", replacementRestoreListGeneration);
+  checks.push("history replacement during document restore blocks the old async snapshot commit");
+
+  const bootstrapHistoryModule = await importTypeScript(paths.bootstrapHistory, {
+    "@/lib/errorText": errorTextUrl,
+    "@/lib/historyRequestGeneration": generationUrl,
+  });
+  const bootstrapListRequest = deferred();
+  const replacementBootstrapListRequest = deferred();
+  const bootstrapHistoryCommits = [];
+  const bootstrapArtifactCommits = [];
+  let bootstrapReady = false;
+  const sharedBootstrapListSetter = (items) => { bootstrapHistoryCommits.push(items); };
+  const bootstrapPromise = bootstrapHistoryModule.bootstrapAppHistories({
+    service: {
+      listDocumentHistories: () => bootstrapListRequest.promise,
+      queryHistoryArtifacts: async () => ({ ok: true, filters: {}, items: [] }),
+    },
+    cancelled: () => false,
+    setError: () => undefined,
+    setHistoryItems: sharedBootstrapListSetter,
+    setHistoryArtifactQuery: (value) => { bootstrapArtifactCommits.push(value); },
+    setHistoryListReady: (value) => { bootstrapReady = value; },
+  });
+  const replacementBootstrapHandlers = historyModule.createHistoryListGovernanceHandlers({
+    service: { listDocumentHistories: () => replacementBootstrapListRequest.promise },
+    setHistoryItems: sharedBootstrapListSetter,
+  });
+  const replacementBootstrapPromise = replacementBootstrapHandlers.refreshHistoryList();
+  bootstrapListRequest.resolve({ items: [{ docId: "stale-bootstrap" }] });
+  await new Promise((resolveValue) => setImmediate(resolveValue));
+  assert(bootstrapHistoryCommits.length === 0, "a superseded bootstrap list must not commit");
+  assert(!bootstrapReady, "bootstrap readiness must wait until the replacement list request settles");
+  replacementBootstrapListRequest.resolve({ items: [{ docId: "latest-after-bootstrap" }] });
+  await Promise.all([bootstrapPromise, replacementBootstrapPromise]);
+  assert(bootstrapHistoryCommits.length === 1 && bootstrapHistoryCommits[0][0].docId === "latest-after-bootstrap", "the post-bootstrap refresh must own the visible list");
+  assert(bootstrapReady, "bootstrap readiness must become true after the latest list request settles");
+  assert(bootstrapArtifactCommits.length === 1, "bootstrap artifact loading must still complete normally");
+  checks.push("bootstrap history loading shares list ownership and waits for a replacement refresh before declaring readiness");
 
   const recoveryMessageUrl = dataModule("export const buildHistoryDatabaseRecoverySuccessMessage = () => 'recovered';");
   const maintenanceModule = await importTypeScript(paths.maintenance, {
@@ -278,7 +570,10 @@ async function run() {
   }
   checks.push("clipboard rejection propagates to visible UI feedback and cleans compatibility DOM state");
 
-  assertIncludes(paths.history, ["isCurrentHistoryRequest", "setHistoryArtifactQuery(null)", "options.shouldCommit"]);
+  assertIncludes(paths.generation, ["\"list\"", "finishHistoryRequest", "waitForLatestHistoryRequest"]);
+  assertIncludes(paths.history, ["isCurrentHistoryRequest", "setHistoryArtifactQuery(null)", "options.shouldCommit", "\"list\""]);
+  assertIncludes(paths.restoreRunner, ["refreshHistoryList: (...args) => input.refreshHistoryListRef.current(...args)"]);
+  assertIncludes(paths.bootstrapHistory, ["beginHistoryRequest", "waitForLatestHistoryRequest", "setHistoryListReady(true)"]);
   assertIncludes(paths.maintenance, ["isCurrentHistoryRequest", "\"maintenance\"", "\"backups\""]);
   assertIncludes(paths.lazyViews, ["diagnosticsRequestStartedRef", "refreshDiagnosticsRef.current({ silent: true })"]);
   assertIncludes(paths.diagnosticsPage, ["复制诊断失败", "copyError"]);

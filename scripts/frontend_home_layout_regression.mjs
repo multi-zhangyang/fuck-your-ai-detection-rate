@@ -108,7 +108,7 @@ function runRegression() {
   const cssSource = existsSync(GLOBAL_CSS_PATH) ? readFileSync(GLOBAL_CSS_PATH, "utf-8") : "";
   if (appSource) {
     assertIncludes(appSource, "SidebarProvider defaultOpen className=\"h-svh min-h-0 overflow-hidden\"", "Workbench shell must stay viewport-bound through shadcn SidebarProvider.", failures);
-    assertIncludes(appSource, "<SidebarInset id=\"fyadr-main-content\" tabIndex={-1} className=\"h-svh overflow-hidden outline-none md:h-[calc(100svh-1rem)]\">", "Main workbench inset must keep its height, overflow boundary, and skip-link target.", failures);
+    assertIncludes(appSource, "<SidebarInset id=\"fyadr-main-content\" tabIndex={-1} aria-labelledby=\"fyadr-active-view-title\" className=\"h-svh overflow-hidden outline-none md:h-[calc(100svh-1rem)]\">", "Main workbench inset must keep its height, overflow boundary, skip-link target, and active-view label.", failures);
     assertIncludes(appSource, "<header className=\"shrink-0 border-b border-border/80 bg-background/80 backdrop-blur-md\">", "Global top status area must stay visible above every view.", failures);
     assertIncludes(appSource, "openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)", "Top status area must jump directly into focused inline Diff review.", failures);
     assertIncludes(appSource, "activeView === \"home\"", "Home route must remain the first-class workbench view.", failures);

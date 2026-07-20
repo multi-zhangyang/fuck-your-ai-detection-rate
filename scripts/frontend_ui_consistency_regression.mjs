@@ -1021,7 +1021,12 @@ function runRegression() {
     ].join("\n")}`, "modelRouteLines", "Model route summary must list effective providers and models per round.", failures);
     assertIncludes(appSource, "scopeDiagnostics", "Protection view must keep DOCX body-scope diagnostics in app state.", failures);
     assertIncludes(appSource, "service.getDocumentScopeDiagnostics(sourcePath)", "Document refresh must fetch DOCX body-scope diagnostics with the other document state.", failures);
-    assertIncludes(appSource, "<ProtectionMapCard value={protectionMap} diagnostics={scopeDiagnostics} />", "Protection view must pass body-scope diagnostics into the protection map.", failures);
+    assertIncludes(
+      appSource.replace(/\s+/g, " "),
+      "<ProtectionMapCard value={protectionMap} diagnostics={scopeDiagnostics}",
+      "Protection view must pass body-scope diagnostics into the protection map.",
+      failures,
+    );
     assertIncludes([
       existsSync(DOCUMENT_RESTORE_HELPERS_PATH) ? readFileSync(DOCUMENT_RESTORE_HELPERS_PATH, "utf-8") : "",
       existsSync(DOCUMENT_RESTORE_STORE_HELPERS_PATH) ? readFileSync(DOCUMENT_RESTORE_STORE_HELPERS_PATH, "utf-8") : "",

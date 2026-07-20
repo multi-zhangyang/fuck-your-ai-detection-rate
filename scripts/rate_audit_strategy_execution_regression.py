@@ -18,6 +18,7 @@ from docx import Document  # type: ignore[import]
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT_DIR / "scripts"
+ASYNC_STATUS_TIMEOUT_SECONDS = 60.0
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -111,6 +112,26 @@ class Fixture:
 def _assert(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def _wait_for_terminal_async_status(client: Any, run_id: str) -> dict[str, Any]:
+    deadline = time.monotonic() + ASYNC_STATUS_TIMEOUT_SECONDS
+    last_status: dict[str, Any] = {}
+    while True:
+        response = client.get(f"/api/batch-rerun-status/{run_id}")
+        _assert(response.status_code == 200, f"strategy status API returned {response.status_code}: {response.get_data(as_text=True)}")
+        payload = response.get_json()
+        _assert(isinstance(payload, dict), f"strategy status API returned a non-object payload: {payload!r}")
+        _assert(payload.get("runId") == run_id, f"strategy status API returned the wrong runId: {payload}")
+        last_status = payload
+        if payload.get("completed") is True:
+            return payload
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.02)
+    raise AssertionError(
+        f"strategy task did not reach a terminal status within {ASYNC_STATUS_TIMEOUT_SECONDS:.0f}s: {last_status}"
+    )
 
 
 @contextmanager
@@ -843,18 +864,25 @@ def _exercise_async_status_api() -> list[str]:
             _assert(response.status_code == 202 and isinstance(payload, dict), f"valid strategy did not return 202: {response.status_code} {payload}")
             run_id = str(payload.get("runId", "") or "")
             _assert(bool(run_id), "valid strategy 202 response omitted runId")
-            deadline = time.monotonic() + 8.0
-            status: dict[str, Any] = {}
-            while time.monotonic() < deadline:
-                status_response = client.get(f"/api/batch-rerun-status/{run_id}")
-                status = status_response.get_json() or {}
-                if status.get("completed"):
-                    break
-                time.sleep(0.01)
-            _assert(status.get("completed") is True, f"strategy task did not complete through status API: {status}")
+            status = _wait_for_terminal_async_status(client, run_id)
             _assert(status.get("status") == "completed", f"strategy task terminal status drifted: {status}")
+            last_event = status.get("lastEvent")
+            _assert(
+                isinstance(last_event, dict) and last_event.get("phase") == "batch-complete",
+                f"strategy task terminal event drifted: {status}",
+            )
+            _assert(
+                status.get("completedCount") == status.get("totalCount") == status.get("successCount") == 1
+                and status.get("failureCount") == 0,
+                f"strategy task terminal counters drifted: {status}",
+            )
             result = status.get("result")
-            _assert(isinstance(result, dict) and result.get("successCount") == 1, f"BatchRerun-compatible result missing: {status}")
+            _assert(isinstance(result, dict), f"BatchRerun-compatible result missing: {status}")
+            _assert(
+                result.get("completedCount") == result.get("totalCount") == result.get("successCount") == 1
+                and result.get("failureCount") == 0,
+                f"strategy task result counters drifted: {status}",
+            )
             _assert(result.get("runId") == run_id, "strategy task result runId drifted")
             _assert(isinstance(result.get("postAudit"), dict), "strategy task did not return a fresh postAudit")
             public_post_audit = json.dumps(result.get("postAudit"), ensure_ascii=False, sort_keys=True)
@@ -896,15 +924,10 @@ def _exercise_async_status_api() -> list[str]:
             output_lock.release()
 
         try:
-            deadline = time.monotonic() + 8.0
-            race_status: dict[str, Any] = {}
-            while time.monotonic() < deadline:
-                race_status = client.get(f"/api/batch-rerun-status/{race_run_id}").get_json() or {}
-                if race_status.get("completed"):
-                    break
-                time.sleep(0.01)
+            race_status = _wait_for_terminal_async_status(client, race_run_id)
             _assert(race_status.get("status") == "failed", f"worker did not reject post-202 stale plan: {race_status}")
             last_event = race_status.get("lastEvent") or {}
+            _assert(last_event.get("phase") == "strategy-stale", f"worker stale event lost its phase: {race_status}")
             _assert(last_event.get("code") == "stale_strategy_plan", f"worker stale event lost its code: {race_status}")
             _assert(
                 "plan_digest_mismatch" in (last_event.get("mismatchCodes") or []),

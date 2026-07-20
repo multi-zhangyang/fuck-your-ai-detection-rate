@@ -51,7 +51,7 @@ export function createModelConfigProviderMutationHandlers(input: ModelConfigProv
     const provider = (input.getValue().modelProviders ?? []).find((item) => item.id === providerId);
     if (!provider) return;
     if (typeof globalThis.confirm === "function" && !globalThis.confirm(
-      `确认删除服务商“${provider.name || provider.id}”吗？确认后会立即保存本机配置，不会删除任何远端账号或数据。`,
+      `确认删除服务商“${provider.name || provider.id}”吗？确认后会立即更新当前部署的配置，不会删除任何远端账号或数据。`,
     )) return;
     const nextConfig = removeModelProvider(input.getValue(), providerId);
     const nextProviders = nextConfig.modelProviders ?? [];

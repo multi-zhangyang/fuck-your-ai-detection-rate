@@ -2,6 +2,7 @@ import { stringifyError } from "@/lib/errorText";
 import { buildHistoryDatabaseRecoverySuccessMessage } from "@/lib/historyDatabaseRecoveryMessage";
 import {
   beginHistoryRequest,
+  finishHistoryRequest,
   isCurrentHistoryRequest,
 } from "@/lib/historyRequestGeneration";
 import type { HistoryCoreHandlers, HistoryHandlersDeps } from "@/lib/historyHandlerTypes";
@@ -39,6 +40,7 @@ export function createHistoryDatabaseMaintenanceHandlers(
       if (isCurrentHistoryRequest(requestKey, "maintenance", generation)) {
         deps.setHistoryDatabaseMaintenanceLoading(false);
       }
+      finishHistoryRequest(requestKey, "maintenance", generation);
     }
   }
 
@@ -64,6 +66,7 @@ export function createHistoryDatabaseMaintenanceHandlers(
       if (isCurrentHistoryRequest(requestKey, "backups", generation)) {
         deps.setHistoryDatabaseBackupsLoading(false);
       }
+      finishHistoryRequest(requestKey, "backups", generation);
     }
   }
 

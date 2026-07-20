@@ -65,6 +65,7 @@ export function PromptPreviewEditorPanel({
   onNewDescriptionChange,
   onNewContentChange,
 }: Props) {
+  const interactionBusy = busy || saving;
   return (
     <div className="min-h-[42rem] xl:h-full xl:min-h-0">
     <Card className="h-full min-h-0 overflow-hidden">
@@ -72,7 +73,7 @@ export function PromptPreviewEditorPanel({
       {createMode ? (
         <PromptPreviewCreateEditor
           contentLineCount={contentLineCount}
-          saving={saving}
+          saving={interactionBusy}
           newLabel={newLabel}
           newDescription={newDescription}
           newContent={newContent}
@@ -86,7 +87,7 @@ export function PromptPreviewEditorPanel({
         <PromptPreviewActiveEditor
           activeItem={activeItem}
           contentLineCount={contentLineCount}
-          saving={saving}
+          saving={interactionBusy}
           editable={editable}
           dirty={dirty}
           metaDirty={metaDirty}

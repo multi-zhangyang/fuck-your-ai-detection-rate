@@ -18,11 +18,21 @@ import type {
 type Props = {
   value: DocumentProtectionMap | null;
   diagnostics?: DocumentScopeDiagnostics | null;
+  onChooseFile?: () => void;
+  onGoHome?: () => void;
+  chooseFileDisabled?: boolean;
 };
 
-export function ProtectionMapCard({ value, diagnostics }: Props) {
+export function ProtectionMapCard({ value, diagnostics, onChooseFile, onGoHome, chooseFileDisabled }: Props) {
   if (!value || !value.available) {
-    return <ProtectionMapEmptyState diagnostics={diagnostics} />;
+    return (
+      <ProtectionMapEmptyState
+        diagnostics={diagnostics}
+        onChooseFile={onChooseFile}
+        onGoHome={onGoHome}
+        chooseFileDisabled={chooseFileDisabled}
+      />
+    );
   }
 
   const { summary } = value;
@@ -67,7 +77,7 @@ export function ProtectionMapCard({ value, diagnostics }: Props) {
               <span>可改写正文占比</span>
               <span>{editableRate}%</span>
             </div>
-            <Progress value={editableRate} className="h-3" />
+            <Progress value={editableRate} className="h-3" aria-label="可改写正文占比" />
           </div>
 
           <BoundaryStrip sections={value.sections} totalUnits={summary.totalUnits} />

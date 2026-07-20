@@ -18,7 +18,7 @@ export function createPromptWorkflowRouteHandlers(
   reloadDocumentAfterPromptRouteSwitch: (
     nextConfig: ModelConfig,
     options?: { shouldCommit?: () => boolean },
-  ) => Promise<boolean>,
+  ) => Promise<boolean | null>,
 ) {
   async function applyUpdatedDefaultPromptWorkflow(
     workflowId: PromptWorkflow["id"],
@@ -44,9 +44,12 @@ export function createPromptWorkflowRouteHandlers(
 
   async function handleUpdatePromptWorkflow(
     workflowId: PromptWorkflow["id"],
-    payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit">,
+    payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit" | "roundLimit">,
   ) {
-    const result = await deps.service.updatePromptWorkflow(workflowId, payload);
+    const result = await crud.runPromptPreviewMutation(
+      () => deps.service.updatePromptWorkflow(workflowId, payload),
+    );
+    if (!result) return null;
     const items = deps.getPromptPreviews()?.items ?? [];
     deps.setPromptPreviews((current) => ({
       ok: true,
@@ -56,6 +59,7 @@ export function createPromptWorkflowRouteHandlers(
     }));
     await applyUpdatedDefaultPromptWorkflow(workflowId, result, items);
     deps.setNotice("改写流程已保存。");
+    return result;
   }
 
   return {

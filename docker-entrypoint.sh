@@ -10,8 +10,14 @@ set -euo pipefail
 # non-root branch keeps the image usable with an explicit `docker run --user`
 # when the mounted directories were prepared by the operator.
 mkdir -p /app/origin /app/finish /app/config /app/prompts/custom
+if [ -d /app/prompt-seed ]; then
+  # Three-way merge factory updates into the persistent prompt volume. This
+  # also imports safe legacy custom prompt files without replacing user edits.
+  python -c \
+    "import sys; sys.path.insert(0, '/app/scripts'); from prompt_library import sync_prompt_seed; sync_prompt_seed('/app/prompt-seed', legacy_custom_dir='/app/legacy-prompts-custom')"
+fi
 if [ "$(id -u)" = "0" ]; then
-  chown -R fyadr:fyadr /app/origin /app/finish /app/config /app/prompts/custom
+  chown -R fyadr:fyadr /app/origin /app/finish /app/config /app/prompts
 fi
 
 run_as_fyadr() {

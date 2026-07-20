@@ -1,4 +1,5 @@
 import type { PendingAutoAction, PendingAutoNextRoundAction, PendingAutoRetryAction } from "@/lib/autoRun";
+import type { HistoryListRefreshResult } from "@/lib/historyHandlerInputTypes";
 import type { ClassifiedRunFailure, FinalizeFailedRoundInput, MaybeScheduleFailureAutoRetryInput } from "@/lib/runRoundPrep";
 import type {
   RateAuditAutoNextApproval,
@@ -48,7 +49,7 @@ export type AutoRunHandlersDeps = {
   ) => void;
   setNotice: (notice: string) => void;
   refreshDocumentState: (sourcePath: string, config?: ModelConfig) => Promise<DocumentStatus>;
-  refreshHistoryList: () => Promise<HistoryDocumentSummary[]>;
+  refreshHistoryList: () => Promise<HistoryListRefreshResult>;
   getRateAudit: (sourcePath: string, outputPath?: string) => Promise<RateAuditReport>;
   handleRunRound: (approval?: RateAuditAutoNextApproval) => Promise<void>;
 };

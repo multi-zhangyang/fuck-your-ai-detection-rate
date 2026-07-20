@@ -64,11 +64,18 @@ export function PromptPreviewListPanel({
       </CardHeader>
 
       <CardContent className="flex min-h-0 flex-1 flex-col gap-4 px-5 pb-5">
-        {error || localError ? (
+        {error ? (
           <Alert variant="destructive">
             <AlertCircle />
-            <AlertTitle>读取失败</AlertTitle>
-            <AlertDescription>{localError || error}</AlertDescription>
+            <AlertTitle>读取提示词失败</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+        {localError ? (
+          <Alert variant="destructive">
+            <AlertCircle />
+            <AlertTitle>提示词操作失败</AlertTitle>
+            <AlertDescription>{localError}</AlertDescription>
           </Alert>
         ) : null}
 
@@ -86,7 +93,9 @@ export function PromptPreviewListPanel({
                       "relative h-auto w-full justify-start overflow-hidden rounded-md px-3 py-3 text-left before:absolute before:left-0 before:h-8 before:w-0.5 before:rounded-full before:bg-foreground before:opacity-0",
                       active && "border-foreground/25 bg-muted shadow-sm before:opacity-100",
                     )}
+                    aria-current={active ? "true" : undefined}
                     onClick={() => onSelect(item.id)}
+                    disabled={busy || saving}
                   >
                     <span className="flex min-w-0 flex-1 flex-col gap-1">
                       <span className="flex items-center justify-between gap-3 pl-1">

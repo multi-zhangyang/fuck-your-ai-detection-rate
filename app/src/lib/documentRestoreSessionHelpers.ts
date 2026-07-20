@@ -7,6 +7,7 @@ import type {
   PromptOption,
   PromptWorkflow,
 } from "@/types/app";
+import type { HistoryListRefreshResult } from "@/lib/historyHandlerInputTypes";
 
 export type DocumentRestoreSessionDeps = {
   sourcePath: string;
@@ -15,8 +16,12 @@ export type DocumentRestoreSessionDeps = {
   promptWorkflows: PromptWorkflow[];
   taskTicket: number;
   taskTicketRef: { current: number };
-  refreshDocumentState: (sourcePath: string, config?: ModelConfig) => Promise<DocumentStatus>;
-  refreshHistoryList: () => Promise<HistoryDocumentSummary[]>;
+  refreshDocumentState: (
+    sourcePath: string,
+    config?: ModelConfig,
+    options?: { shouldCommit?: () => boolean },
+  ) => Promise<DocumentStatus>;
+  refreshHistoryList: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryListRefreshResult>;
   clearLoadedRoundSnapshot: () => void;
   loadLatestRoundSnapshot: (
     status: DocumentStatus,
@@ -24,6 +29,7 @@ export type DocumentRestoreSessionDeps = {
     options?: {
       historyItems?: HistoryDocumentSummary[];
       allowProfileFallback?: boolean;
+      shouldCommit?: () => boolean;
     },
   ) => Promise<unknown>;
   setModelConfig: (config: ModelConfig) => void;

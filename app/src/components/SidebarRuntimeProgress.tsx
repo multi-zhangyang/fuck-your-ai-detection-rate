@@ -14,9 +14,14 @@ export function SidebarRuntimeProgress({ status, percent }: { status: string; pe
       <SidebarFooter className="items-center px-2 pb-3 pt-2">
         <div
           data-runtime-progress-ring
+          role="progressbar"
+          aria-label={status}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={value}
+          aria-valuetext={`${status}，${value}%`}
           className="vercel-icon-frame relative size-8 text-foreground"
           title={`${status} ${value}%`}
-          aria-label={`${status} ${value}%`}
         >
           <svg viewBox="0 0 32 32" className="size-7 -rotate-90" aria-hidden="true">
             <circle cx="16" cy="16" r={radius} fill="none" stroke="currentColor" strokeWidth="3" className="text-muted" />
@@ -48,7 +53,7 @@ export function SidebarRuntimeProgress({ status, percent }: { status: string; pe
           </span>
           <span className="font-mono text-[11px] font-medium text-foreground">{value}%</span>
         </div>
-        <Progress value={value} className="mt-2 h-1.5" />
+        <Progress value={value} aria-label={status} aria-valuetext={`${status}，${value}%`} className="mt-2 h-1.5" />
       </div>
     </SidebarFooter>
   );

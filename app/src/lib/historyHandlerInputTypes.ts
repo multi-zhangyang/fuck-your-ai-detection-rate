@@ -2,6 +2,7 @@ import type {
   DeleteHistoryOptions,
   DeleteHistoryResult,
   DocumentStatus,
+  HistoryDocumentSummary,
   HistoryRound,
   ModelConfig,
   PromptId,
@@ -18,6 +19,11 @@ export type ResyncHistoryDocumentRouteInput = {
   selectedConfig: ModelConfig;
   loadedSnapshot: unknown;
   status: DocumentStatus;
+  shouldCommit?: () => boolean;
+};
+
+export type HistoryDocumentLoadOptions = {
+  shouldCommit?: () => boolean;
 };
 
 export type HistoryRouteStatusResult = {
@@ -48,8 +54,26 @@ export type RefreshHistoryListOptions = {
   shouldCommit?: () => boolean;
 };
 
+/**
+ * Superseded requests do not expose their payload to downstream workflows.
+ */
+export type HistoryListRefreshResult =
+  | { status: "current"; items: HistoryDocumentSummary[]; isCurrent: () => boolean }
+  | { status: "stale" };
+
+export type HistoryOrphanScanRefreshResult =
+  | {
+      status: "current";
+      scan: import("@/types/app").HistoryOrphanScanResult;
+      isCurrent: () => boolean;
+    }
+  | { status: "stale" };
+
 export type LoadLatestRoundSnapshotOptions = {
   historyItems?: import("@/types/app").HistoryDocumentSummary[];
   historyItem?: import("@/types/app").HistoryDocumentSummary | null;
   allowProfileFallback?: boolean;
+  shouldCommit?: () => boolean;
+  promptOptions?: import("@/types/app").PromptOption[];
+  promptWorkflows?: import("@/types/app").PromptWorkflow[];
 };

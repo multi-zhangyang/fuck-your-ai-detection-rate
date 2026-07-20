@@ -1,4 +1,5 @@
 import type { AppService } from "@/lib/appService";
+import type { HistoryListRefreshResult } from "@/lib/historyHandlerInputTypes";
 import type { TaskPhase } from "@/lib/taskState";
 import type {
   DocumentStatus,
@@ -46,5 +47,5 @@ export type DocumentLoadHandlersDeps = {
     config?: ModelConfig,
     options?: { shouldCommit?: () => boolean },
   ) => Promise<DocumentStatus>;
-  refreshHistoryList: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryDocumentSummary[]>;
+  refreshHistoryList: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryListRefreshResult>;
 };

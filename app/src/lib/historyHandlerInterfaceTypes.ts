@@ -1,6 +1,9 @@
 import type {
   ExecuteHistoryDeleteInput,
   HistoryDocumentLoadFeedback,
+  HistoryDocumentLoadOptions,
+  HistoryListRefreshResult,
+  HistoryOrphanScanRefreshResult,
   HistoryRouteStatusResult,
   RefreshHistoryListOptions,
   ResyncHistoryDocumentRouteInput,
@@ -16,7 +19,6 @@ import type {
   HistoryDeleteImpact,
   HistoryDocumentSummary,
   HistoryExportSelection,
-  HistoryOrphanScanResult,
   ModelConfig,
   RoundResult,
 } from "@/types/app";
@@ -24,18 +26,24 @@ import type {
 export type HistoryCoreHandlers = {
   syncHistorySelectionConfigToUi: (nextConfig: ModelConfig) => void;
   getProtectedHistoryArtifactPaths: () => string[];
-  refreshHistoryList: (options?: RefreshHistoryListOptions) => Promise<HistoryDocumentSummary[]>;
-  refreshHistoryOrphanScan: () => Promise<HistoryOrphanScanResult>;
+  refreshHistoryList: (options?: RefreshHistoryListOptions) => Promise<HistoryListRefreshResult>;
+  refreshHistoryOrphanScan: () => Promise<HistoryOrphanScanRefreshResult>;
   refreshHistoryArtifactGovernance: (mode?: HistoryArtifactGovernanceMode) => Promise<HistoryArtifactQueryResponse | null>;
-  resolveHistorySelectionConfig: (item: HistoryDocumentSummary, configOverride: ModelConfig) => ModelConfig;
+  resolveHistorySelectionConfig: (
+    item: HistoryDocumentSummary,
+    configOverride: ModelConfig,
+    options?: HistoryDocumentLoadOptions,
+  ) => ModelConfig;
   resyncHistoryDocumentRoute: (input: ResyncHistoryDocumentRouteInput) => Promise<HistoryRouteStatusResult>;
   loadAndResyncHistoryDocument: (
     item: HistoryDocumentSummary,
     selectedConfig: ModelConfig,
+    options?: HistoryDocumentLoadOptions,
   ) => Promise<{ resynced: HistoryRouteStatusResult; loadedSnapshot: unknown }>;
   loadSelectedHistoryDocument: (
     item: HistoryDocumentSummary,
     configOverride: ModelConfig,
+    options?: HistoryDocumentLoadOptions,
   ) => Promise<HistoryDocumentLoadFeedback>;
   loadCompletedRoundArtifacts: (result: RoundResult) => Promise<void>;
   handleExportFromHistory: (item: HistoryExportSelection, format: "txt" | "docx") => Promise<void>;

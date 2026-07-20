@@ -1,4 +1,7 @@
 import {
+  invalidateHistoryRequest,
+} from "@/lib/historyRequestGeneration";
+import {
   buildHistoryDeleteResultNotice,
   resolveHistoryDeleteDocumentFollowup,
 } from "@/lib/historyDeleteCopy";
@@ -14,7 +17,22 @@ export function createHistoryDeleteApplyHandlers(
   core: HistoryCoreHandlers,
 ) {
   async function applyHistoryDeleteSuccess(input: ExecuteHistoryDeleteInput, result: DeleteHistoryResult) {
-    const items = await core.refreshHistoryList();
+    const refreshed = await core.refreshHistoryList();
+    // A superseded list must never be used to decide which document to load
+    // next. The winning refresh owns the visible list and its follow-up.
+    if (refreshed.status !== "current" || !refreshed.isCurrent()) {
+      if (result.removedDocument && deps.getDocumentStatus()?.docId === input.docId) {
+        deps.setDocumentStatus(null);
+        deps.setHistory(null);
+        deps.setProtectionMap(null);
+        deps.setScopeDiagnostics(null);
+        deps.clearDocumentDerivedState();
+      }
+      return;
+    }
+    const items = refreshed.items;
+    const historyShouldCommit = () => refreshed.isCurrent();
+    invalidateHistoryRequest(deps.setHistoryOrphanScan as unknown as object, "orphan");
     deps.setHistoryOrphanScan(null);
     void core.refreshHistoryArtifactGovernance();
     const followup = resolveHistoryDeleteDocumentFollowup({
@@ -30,14 +48,29 @@ export function createHistoryDeleteApplyHandlers(
       deps.setScopeDiagnostics(null);
       deps.clearDocumentDerivedState();
     } else if (followup.type === "reload" && followup.sourcePath) {
-      await deps.loadLatestRoundSnapshot(
-        await deps.refreshDocumentState(followup.sourcePath),
-        deps.getModelConfig(),
-        { historyItem: followup.historyItem, allowProfileFallback: true },
-      );
+      if (!historyShouldCommit()) return;
+      try {
+        const reloadedStatus = await deps.refreshDocumentState(followup.sourcePath, undefined, {
+          shouldCommit: historyShouldCommit,
+        });
+        if (!historyShouldCommit()) return;
+        await deps.loadLatestRoundSnapshot(
+          reloadedStatus,
+          deps.getModelConfig(),
+          {
+            historyItem: followup.historyItem,
+            allowProfileFallback: true,
+            shouldCommit: historyShouldCommit,
+          },
+        );
+      } catch (appError) {
+        if (!historyShouldCommit()) return;
+        throw appError;
+      }
     } else if (followup.type === "clear-snapshot") {
       deps.clearDocumentDerivedState();
     }
+    if (!historyShouldCommit()) return;
     deps.setNotice(buildHistoryDeleteResultNotice(result));
     deps.setRuntimeStep(input.doneLabel);
   }

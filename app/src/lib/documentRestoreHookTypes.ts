@@ -8,6 +8,7 @@ import type {
   PromptOption,
   PromptWorkflow,
 } from "@/types/app";
+import type { HistoryListRefreshResult } from "@/lib/historyHandlerInputTypes";
 
 export type UseDocumentRestoreInput = {
   modelConfigReady: boolean;
@@ -28,8 +29,12 @@ export type UseDocumentRestoreInput = {
     options?: { globalBusy?: boolean; clearMessages?: boolean; runtimeStep?: string },
   ) => number;
   finishTask: (ticket: number) => void;
-  refreshDocumentState: (sourcePath: string, config?: ModelConfig) => Promise<DocumentStatus>;
-  refreshHistoryList: () => Promise<HistoryDocumentSummary[]>;
+  refreshDocumentState: (
+    sourcePath: string,
+    config?: ModelConfig,
+    options?: { shouldCommit?: () => boolean },
+  ) => Promise<DocumentStatus>;
+  refreshHistoryList: (options?: { shouldCommit?: () => boolean }) => Promise<HistoryListRefreshResult>;
   clearLoadedRoundSnapshot: () => void;
   loadLatestRoundSnapshot: (
     status: DocumentStatus,
@@ -37,6 +42,7 @@ export type UseDocumentRestoreInput = {
     options?: {
       historyItems?: HistoryDocumentSummary[];
       allowProfileFallback?: boolean;
+      shouldCommit?: () => boolean;
     },
   ) => Promise<unknown>;
 };

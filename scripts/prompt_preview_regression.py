@@ -4,7 +4,15 @@ import json
 from pathlib import Path
 
 from web_app import app
-from prompt_library import PROMPT_REGISTRY_PATH, PROMPT_WORKFLOW_REGISTRY_PATH, get_max_rounds, get_prompt_id_for_round, get_prompt_mapping
+from prompt_library import (
+    PROMPT_REGISTRY_PATH,
+    PROMPT_WORKFLOW_REGISTRY_PATH,
+    get_max_rounds,
+    get_prompt_id_for_round,
+    get_prompt_mapping,
+    load_prompt_workflows,
+    save_prompt_workflows,
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 APP_PATH = ROOT_DIR / "app" / "src" / "App.tsx"
@@ -32,6 +40,10 @@ PROMPT_EDITOR_PANEL_PATH = ROOT_DIR / "app" / "src" / "components" / "PromptPrev
 PROMPT_CREATE_EDITOR_PATH = ROOT_DIR / "app" / "src" / "components" / "PromptPreviewCreateEditor.tsx"
 PROMPT_ACTIVE_EDITOR_PATH = ROOT_DIR / "app" / "src" / "components" / "PromptPreviewActiveEditor.tsx"
 PROMPT_EDITOR_EMPTY_PATH = ROOT_DIR / "app" / "src" / "components" / "PromptPreviewEditorEmpty.tsx"
+PROMPT_WORKFLOW_EDITOR_PATH = ROOT_DIR / "app" / "src" / "components" / "PromptWorkflowEditor.tsx"
+PROMPT_WORKFLOW_DRAFT_HOOK_PATH = ROOT_DIR / "app" / "src" / "hooks" / "usePromptWorkflowDraftState.ts"
+PROMPT_WORKFLOW_DRAFT_HELPERS_PATH = ROOT_DIR / "app" / "src" / "lib" / "promptWorkflowDraftHelpers.ts"
+PROMPT_WORKFLOW_ROUTE_HANDLERS_PATH = ROOT_DIR / "app" / "src" / "lib" / "promptWorkflowRouteHandlers.ts"
 WORKBENCH_NAV_PATH = ROOT_DIR / "app" / "src" / "lib" / "workbenchNav.ts"
 HOME_PANEL_PATH = ROOT_DIR / "app" / "src" / "components" / "HomeRunPanel.tsx"
 HOME_PANEL_MODEL_PATH = ROOT_DIR / "app" / "src" / "hooks" / "useHomeRunPanelModel.ts"
@@ -166,8 +178,30 @@ def run_regression() -> dict[str, object]:
 
         legacy_workflow_response = client.patch("/api/prompt-workflows/cn", json={"label": "x"})
         _assert(legacy_workflow_response.status_code == 400, "Legacy workflows must stay read-only")
+        locked_workflows = load_prompt_workflows()
+        locked_workflows.append({
+            "id": "locked_workflow",
+            "label": "Locked workflow",
+            "description": "regression fixture",
+            "defaultSequence": ["round1"],
+            "customizable": False,
+            "sequenceLimit": 1,
+            "roundLimit": 1,
+            "chunkMetric": "char",
+            "legacy": False,
+            "visible": True,
+        })
+        save_prompt_workflows(locked_workflows)
+        locked_workflow_response = client.patch("/api/prompt-workflows/locked_workflow", json={"label": "x"})
+        _assert(locked_workflow_response.status_code == 400, "Non-customizable workflows must stay read-only")
+        save_prompt_workflows([item for item in load_prompt_workflows() if item.get("id") != "locked_workflow"])
         invalid_workflow_response = client.patch("/api/prompt-workflows/cn_custom", json={"defaultSequence": ["missing"]})
         _assert(invalid_workflow_response.status_code == 400, "Workflow update must reject unsupported prompt ids")
+        invalid_round_limit_response = client.patch(
+            "/api/prompt-workflows/cn_custom",
+            json={"sequenceLimit": 3, "roundLimit": 2},
+        )
+        _assert(invalid_round_limit_response.status_code == 400, "Workflow update must reject a runtime round limit below the default sequence limit")
         workflow_response = client.patch(
             "/api/prompt-workflows/cn_custom",
             json={
@@ -175,6 +209,7 @@ def run_regression() -> dict[str, object]:
                 "description": "workflow regression",
                 "defaultSequence": ["round1", "round2"],
                 "sequenceLimit": 2,
+                "roundLimit": 4,
             },
         )
         _assert(workflow_response.status_code == 200, "Workflow update endpoint should save editable workflows")
@@ -183,7 +218,7 @@ def run_regression() -> dict[str, object]:
         _assert(isinstance(updated_workflow, dict), "Workflow update should return the saved workflow list")
         _assert(updated_workflow.get("label") == "回归流程", "Workflow update should persist labels")
         _assert(updated_workflow.get("defaultSequence") == ["round1", "round2"], "Workflow update should persist default sequence")
-        _assert(updated_workflow.get("roundLimit") == 12, "Workflow update should preserve manual continuation limit")
+        _assert(updated_workflow.get("roundLimit") == 4, "Workflow update should persist the runtime round limit")
         checks.append("backend prompt workflow update validates and persists editable flows")
     finally:
         if registry_backup is None:
@@ -214,6 +249,12 @@ def run_regression() -> dict[str, object]:
     prompt_create_editor_source = PROMPT_CREATE_EDITOR_PATH.read_text(encoding="utf-8") if PROMPT_CREATE_EDITOR_PATH.exists() else ""
     prompt_active_editor_source = PROMPT_ACTIVE_EDITOR_PATH.read_text(encoding="utf-8") if PROMPT_ACTIVE_EDITOR_PATH.exists() else ""
     prompt_editor_empty_source = PROMPT_EDITOR_EMPTY_PATH.read_text(encoding="utf-8") if PROMPT_EDITOR_EMPTY_PATH.exists() else ""
+    prompt_workflow_editor_source = PROMPT_WORKFLOW_EDITOR_PATH.read_text(encoding="utf-8") if PROMPT_WORKFLOW_EDITOR_PATH.exists() else ""
+    prompt_workflow_draft_source = "\n".join([
+        PROMPT_WORKFLOW_DRAFT_HOOK_PATH.read_text(encoding="utf-8") if PROMPT_WORKFLOW_DRAFT_HOOK_PATH.exists() else "",
+        PROMPT_WORKFLOW_DRAFT_HELPERS_PATH.read_text(encoding="utf-8") if PROMPT_WORKFLOW_DRAFT_HELPERS_PATH.exists() else "",
+    ])
+    prompt_workflow_route_source = PROMPT_WORKFLOW_ROUTE_HANDLERS_PATH.read_text(encoding="utf-8") if PROMPT_WORKFLOW_ROUTE_HANDLERS_PATH.exists() else ""
     workbench_nav_source = WORKBENCH_NAV_PATH.read_text(encoding="utf-8")
     home_panel_source = HOME_PANEL_PATH.read_text(encoding="utf-8")
     home_panel_model_source = "\n".join([
@@ -271,7 +312,7 @@ def run_regression() -> dict[str, object]:
     _assert('{ view: "prompts", label: "提示词"' in workbench_nav_source, "Sidebar should expose the prompt workspace")
     _assert("export function PromptPreviewPage" in prompt_page_source, "PromptPreviewPage component is missing")
     _assert('activeView === "prompts" ? (\n              <div className="h-full min-h-0 overflow-hidden">' in app_source, "Prompt preview page must use fixed page bounds instead of page-level scrolling")
-    component_source = f"{prompt_page_source}\n{prompt_list_panel_source}\n{prompt_editor_panel_source}\n{prompt_create_editor_source}\n{prompt_active_editor_source}\n{prompt_editor_empty_source}"
+    component_source = f"{prompt_page_source}\n{prompt_list_panel_source}\n{prompt_editor_panel_source}\n{prompt_create_editor_source}\n{prompt_active_editor_source}\n{prompt_editor_empty_source}\n{prompt_workflow_editor_source}\n{prompt_workflow_draft_source}"
     _assert("grid h-full min-h-0 gap-5 overflow-hidden" in component_source, "Prompt preview layout must keep scrolling inside panels")
     _assert('Card className="h-full min-h-0 overflow-hidden"' in component_source, "Prompt preview panels must not grow with long prompt content")
     _assert("Textarea" in component_source, "Prompt workspace must expose a shadcn Textarea editor")
@@ -279,6 +320,15 @@ def run_regression() -> dict[str, object]:
     _assert("onRestoreDefaultPrompt" in component_source, "Prompt workspace must expose default restore flow")
     _assert("onCreatePrompt" in component_source, "Prompt workspace must expose create flow")
     _assert("onDeletePrompt" in component_source, "Prompt workspace must expose custom prompt delete flow")
+    _assert('TabsTrigger value="workflows"' in prompt_page_source and "onUpdatePromptWorkflow" in prompt_page_source, "Prompt workspace must expose a guarded workflow-template tab")
+    _assert("defaultSequence" in prompt_workflow_editor_source and "sequenceLimit" in prompt_workflow_editor_source and "roundLimit" in prompt_workflow_editor_source, "Workflow editor must expose default sequence and runtime round limits")
+    _assert('key={promptId}' in prompt_workflow_editor_source and 'key={`${index}-${promptId}`}' not in prompt_workflow_editor_source, "Workflow reordering must preserve row identity and keyboard focus")
+    _assert("读取流程模板失败" in prompt_workflow_editor_source and "保存流程失败" in prompt_workflow_editor_source, "Workflow errors must distinguish loading from mutations")
+    _assert("读取提示词失败" in prompt_list_panel_source and "提示词操作失败" in prompt_list_panel_source, "Prompt errors must distinguish loading from mutations")
+    _assert('aria-current={active ? "true" : undefined}' in prompt_list_panel_source, "The active prompt must be exposed to assistive technology")
+    _assert("customizable" in prompt_workflow_editor_source and "只读" in prompt_workflow_editor_source, "Workflow editor must respect non-customizable workflow metadata")
+    _assert("discardAllChanges" in prompt_page_source and "discardChanges" in prompt_page_source and "resetDraft" in prompt_workflow_draft_source, "Switching prompt tabs must discard confirmed drafts instead of retaining hidden dirty state")
+    _assert("runPromptPreviewMutation" in prompt_workflow_route_source, "Workflow saves must use the shared prompt mutation registry")
     _assert("保存内容" not in component_source, "Prompt workspace must not split content save into a duplicate button")
     _assert("保存信息" not in component_source, "Prompt workspace must not split metadata save into a duplicate button")
     _assert("选择备份" not in component_source and "restoreSelectedBackup" not in component_source, "Prompt workspace must not expose backup clutter in the main UI")
@@ -299,6 +349,7 @@ def run_regression() -> dict[str, object]:
     _assert("buildBootstrapModelConfigState({" in bootstrap_source, "Model config bootstrap should normalize against backend prompt workflows")
     _assert("input.normalizeActiveModelConfig(" in helpers_source and "loadedPromptOptions" in helpers_source and "loadedPromptWorkflows" in helpers_source, "Model config bootstrap should normalize against backend prompt workflows")
     _assert("setPromptPreviews(bootstrapped.loadedPrompts)" in bootstrap_source, "Prompt registry should load during bootstrap instead of only inside the prompt page")
+    _assert("loadedPrompts: promptRequestCurrent ? loadedPrompts : null" in bootstrap_source and "normalizePromptRegistry: promptRequestCurrent" in bootstrap_source, "Stale bootstrap prompt responses must not derive model configuration")
 
     _assert("useAppBootstrap({" in app_source, "App should wire document bootstrap through the shared bootstrap hook")
     _assert("getDefaultPromptProfile(promptWorkflows)" in home_run_source, "Frontend should derive editable prompt profile from backend workflows")
