@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import gzip
 import json
 import os
@@ -24,12 +25,12 @@ REPORT_PATH = ROOT_DIR / "finish" / "regression" / "history_backup_compression_r
 
 
 def _document_count(path: Path) -> int:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return int(connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0])
 
 
 def _delete_documents(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         connection.execute("DELETE FROM documents")
         connection.commit()
 
