@@ -8,7 +8,7 @@ Windows PowerShell：
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.txt
 npm --prefix app ci
 ```
 
@@ -16,17 +16,17 @@ macOS / Linux：
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install --require-hashes -r requirements-dev.lock
+.venv/bin/python -m pip install --require-hashes -r requirements-dev.txt
 npm --prefix app ci
 ```
 
 下面的检查通过 `scripts/run_python.mjs` 自动选择项目虚拟环境中的 Python，在 Windows、macOS 和 Linux 上使用相同命令。
 
-Python 的直接依赖以根目录 `pyproject.toml` 为准，`requirements.lock` 与 `requirements-dev.lock` 分别锁定运行环境和开发检查环境。修改依赖后，使用同一版 `uv` 重新生成两份带哈希锁文件并一并提交：
+Python 的直接依赖以根目录 `pyproject.toml` 为准，`requirements.txt` 与 `requirements-dev.txt` 分别锁定运行环境和开发检查环境，并采用 Dependabot 可识别的标准文件名。修改依赖后，使用同一版 `uv` 重新生成两份带哈希锁文件并一并提交：
 
 ```bash
-uv pip compile pyproject.toml --universal --generate-hashes --output-file requirements.lock
-uv pip compile pyproject.toml --extra dev --universal --generate-hashes --output-file requirements-dev.lock
+uv pip compile pyproject.toml --universal --generate-hashes --output-file requirements.txt
+uv pip compile pyproject.toml --extra dev --universal --generate-hashes --output-file requirements-dev.txt
 ```
 
 ## 快速检查

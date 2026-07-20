@@ -274,11 +274,11 @@ try {
         "const [a,b]=process.versions.node.split('.').map(Number);process.exit((a===20&&b>=19)||(a===22&&b>=12)||a>22?0:1)"
     ) "Node.js 20.19+, 22.12+, or a newer major release is required"
 
-    $RequirementsPath = Join-Path $RepoRoot "requirements.lock"
+    $RequirementsPath = Join-Path $RepoRoot "requirements.txt"
     $PackagePath = Join-Path $RepoRoot "app\package.json"
     $LockPath = Join-Path $RepoRoot "app\package-lock.json"
     if (-not (Test-Path -LiteralPath $RequirementsPath -PathType Leaf)) {
-        Fail "requirements.lock is missing; run the launcher from a complete checkout."
+        Fail "requirements.txt is missing; run the launcher from a complete checkout."
     }
     if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
         Fail "app\package.json is missing; run the launcher from a complete checkout."

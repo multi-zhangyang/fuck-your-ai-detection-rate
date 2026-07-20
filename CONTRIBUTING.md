@@ -41,7 +41,7 @@
 ## 常用命令
 
 ```bash
-node scripts/run_python.mjs -m pip install --require-hashes -r requirements-dev.lock
+node scripts/run_python.mjs -m pip install --require-hashes -r requirements-dev.txt
 node scripts/run_python.mjs -m ruff check .
 npm --prefix app ci
 npm --prefix app run build

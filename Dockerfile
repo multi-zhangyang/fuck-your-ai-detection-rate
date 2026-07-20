@@ -37,9 +37,9 @@ WORKDIR /app
 
 # 1) Python deps first (best layer caching). The reviewed lock makes container
 # builds reproducible instead of resolving new transitive versions over time.
-COPY requirements.lock ./
+COPY requirements.txt ./
 COPY LICENSE ./LICENSE
-RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 # 2) Backend source. scripts/ is flat (sibling imports), so it lives at
 #    /app/scripts and ROOT_DIR resolves to /app (repo root equivalent).

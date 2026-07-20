@@ -25,9 +25,8 @@ def _locked_packages(text: str) -> dict[str, str]:
 def run_regression() -> dict[str, object]:
     checks: list[str] = []
     pyproject = (ROOT_DIR / "pyproject.toml").read_text(encoding="utf-8")
-    runtime_lock = (ROOT_DIR / "requirements.lock").read_text(encoding="utf-8")
-    dev_lock = (ROOT_DIR / "requirements-dev.lock").read_text(encoding="utf-8")
-    compatibility_requirements = (ROOT_DIR / "requirements.txt").read_text(encoding="utf-8")
+    runtime_lock = (ROOT_DIR / "requirements.txt").read_text(encoding="utf-8")
+    dev_lock = (ROOT_DIR / "requirements-dev.txt").read_text(encoding="utf-8")
     gitignore = (ROOT_DIR / ".gitignore").read_text(encoding="utf-8")
     dockerfile = (ROOT_DIR / "Dockerfile").read_text(encoding="utf-8")
     workflow = (ROOT_DIR / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -40,12 +39,9 @@ def run_regression() -> dict[str, object]:
     _assert("pypdf" not in pyproject.lower(), "unused pypdf dependency must not return")
     checks.append("pyproject owns bounded cross-platform direct dependencies")
 
-    compatibility_lines = [
-        line.strip()
-        for line in compatibility_requirements.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    _assert(compatibility_lines == ["-r requirements.lock"], "requirements.txt must remain a compatibility alias to the runtime lock")
+    _assert("-r requirements.lock" not in runtime_lock, "Dependabot-incompatible custom lock indirection must not return")
+    _assert("--output-file requirements.txt" in runtime_lock, "runtime lock must retain its reproducible generation command")
+    _assert("--output-file requirements-dev.txt" in dev_lock, "development lock must retain its reproducible generation command")
     _assert("/uv.lock" in gitignore, "the redundant uv project lock must stay ignored")
 
     runtime_packages = _locked_packages(runtime_lock)
@@ -59,16 +55,15 @@ def run_regression() -> dict[str, object]:
     _assert(dev_lock.count("--hash=sha256:") >= len(dev_packages), "development lock must hash every resolved package")
     checks.append("runtime and development locks are exact, hashed, and mutually consistent")
 
-    _assert("COPY requirements.lock ./" in dockerfile, "Docker must copy the runtime lock")
-    _assert("--require-hashes -r requirements.lock" in dockerfile, "Docker must enforce dependency hashes")
-    _assert("requirements.txt" not in dockerfile, "Docker must not resolve the compatibility requirements file")
-    _assert("requirements-dev.lock" in workflow and "python -m ruff check ." in workflow, "CI must install the development lock and run Ruff")
-    _assert(workflow.count("--require-hashes -r requirements.lock") >= 1, "platform CI must install the hashed runtime lock")
+    _assert("COPY requirements.txt ./" in dockerfile, "Docker must copy the runtime lock")
+    _assert("--require-hashes -r requirements.txt" in dockerfile, "Docker must enforce dependency hashes")
+    _assert("requirements-dev.txt" in workflow and "python -m ruff check ." in workflow, "CI must install the development lock and run Ruff")
+    _assert(workflow.count("--require-hashes -r requirements.txt") >= 1, "platform CI must install the hashed runtime lock")
     _assert("pip install --upgrade pip" not in workflow, "CI must not mutate pip before installing the reviewed lock")
     checks.append("Docker and CI consume reviewed locks without fresh dependency resolution")
 
-    _assert("requirements.lock" in posix_launcher and "--require-hashes" in posix_launcher, "POSIX launcher must install the hashed runtime lock")
-    _assert("requirements.lock" in windows_launcher and '"--require-hashes"' in windows_launcher, "Windows launcher must install the hashed runtime lock")
+    _assert("requirements.txt" in posix_launcher and "--require-hashes" in posix_launcher, "POSIX launcher must install the hashed runtime lock")
+    _assert("requirements.txt" in windows_launcher and '"--require-hashes"' in windows_launcher, "Windows launcher must install the hashed runtime lock")
     _assert("pypdf" not in posix_launcher.lower() and "pypdf" not in windows_launcher.lower(), "launchers must not require removed pypdf")
     checks.append("native launchers use the same runtime lock and import only real dependencies")
 
