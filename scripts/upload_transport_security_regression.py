@@ -48,11 +48,11 @@ def _minimal_docx_bytes(*, extra_parts: list[tuple[str, bytes]] | None = None) -
 
 
 def _expect_unsafe(payload: bytes, expected_fragment: str) -> None:
-    with tempfile.NamedTemporaryFile(suffix=".docx") as handle:
-        handle.write(payload)
-        handle.flush()
+    with tempfile.TemporaryDirectory(prefix="fyadr-unsafe-docx-") as temporary_name:
+        fixture_path = Path(temporary_name) / "fixture.docx"
+        fixture_path.write_bytes(payload)
         try:
-            docx_security.validate_docx_package(Path(handle.name))
+            docx_security.validate_docx_package(fixture_path)
         except docx_security.UnsafeDocxError as exc:
             assert expected_fragment.lower() in str(exc).lower(), str(exc)
         else:
@@ -62,10 +62,10 @@ def _expect_unsafe(payload: bytes, expected_fragment: str) -> None:
 def run() -> dict[str, object]:
     checks: list[str] = []
     valid_docx = _docx_bytes()
-    with tempfile.NamedTemporaryFile(suffix=".docx") as handle:
-        handle.write(valid_docx)
-        handle.flush()
-        report = docx_security.validate_docx_package(Path(handle.name))
+    with tempfile.TemporaryDirectory(prefix="fyadr-valid-docx-") as temporary_name:
+        fixture_path = Path(temporary_name) / "fixture.docx"
+        fixture_path.write_bytes(valid_docx)
+        report = docx_security.validate_docx_package(fixture_path)
         assert report["ok"] is True
         assert report["entryCount"] >= 3
     checks.append("normal python-docx packages pass bounded OOXML preflight")
