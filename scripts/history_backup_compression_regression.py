@@ -10,6 +10,7 @@ import stat
 import tempfile
 
 from fyadr_history_db import (
+    _connect_history_db,
     backup_history_index,
     get_history_index_status,
     list_history_index_backups,
@@ -48,6 +49,18 @@ def run() -> dict[str, object]:
         }
         rebuild_history_index(records, records_hash="fixture", db_path=db_path)
         assert get_history_index_status(db_path=db_path)["documentCount"] == 1
+
+        retained_connection: sqlite3.Connection | None = None
+        with _connect_history_db(db_path) as active_connection:
+            retained_connection = active_connection
+            assert active_connection.execute("SELECT 1").fetchone() == (1,)
+        try:
+            retained_connection.execute("SELECT 1")
+        except sqlite3.ProgrammingError as exc:
+            assert "closed" in str(exc).lower()
+        else:
+            raise AssertionError("history database connection remained open after its context exited")
+        checks.append("history database contexts close file handles before temporary cleanup")
 
         backup = backup_history_index(
             reason="compression_regression",

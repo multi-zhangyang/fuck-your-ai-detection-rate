@@ -17,7 +17,7 @@ import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from prompt_library import LEGACY_PROMPT_PROFILE, is_prompt_sequence_customizable
 from path_utils import is_path_under
@@ -68,21 +68,28 @@ MIGRATION_IDS = (
 HISTORY_DB_BUSY_TIMEOUT_SECONDS = 30.0
 
 
-def _connect_history_db(db_path: Path) -> sqlite3.Connection:
+@contextmanager
+def _connect_history_db(db_path: Path) -> Iterator[sqlite3.Connection]:
     """Open a history-index connection with safe concurrency defaults.
 
     Enables foreign keys and a busy_timeout so concurrent writers (round
     completion vs. API requests) wait for the file lock instead of raising
-    ``database is locked``. Callers own the connection; use as a context
-    manager to commit/rollback.
+    ``database is locked``. The context manager commits or rolls back the
+    transaction and always closes the connection before returning. Explicit
+    closure matters on Windows, where an open SQLite handle prevents temporary
+    backup and recovery files from being removed.
     """
 
     ensure_private_directory(db_path.parent)
     connection = sqlite3.connect(str(db_path), timeout=HISTORY_DB_BUSY_TIMEOUT_SECONDS)
-    harden_private_file(db_path)
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute(f"PRAGMA busy_timeout = {int(HISTORY_DB_BUSY_TIMEOUT_SECONDS * 1000)}")
-    return connection
+    try:
+        harden_private_file(db_path)
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(f"PRAGMA busy_timeout = {int(HISTORY_DB_BUSY_TIMEOUT_SECONDS * 1000)}")
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 PATH_FIELDS = (
