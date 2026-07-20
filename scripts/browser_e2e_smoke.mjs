@@ -535,20 +535,39 @@ async function clickBySelector(client, selector, timeoutMs = 10_000) {
   const started = Date.now();
   const effectiveTimeout = boundedTimeout(timeoutMs, `clickable selector ${selector}`);
   let point = null;
+  let previousPoint = null;
+  let stableObservations = 0;
   while (Date.now() - started < effectiveTimeout) {
-    point = await findClickablePointBySelector(client, selector);
-    if (point) {
-      await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
-      await wait(50);
+    const candidate = await findClickablePointBySelector(client, selector);
+    if (candidate) {
+      const positionStable = previousPoint
+        && Math.abs(candidate.x - previousPoint.x) <= 1
+        && Math.abs(candidate.y - previousPoint.y) <= 1;
+      stableObservations = positionStable ? stableObservations + 1 : 1;
+      previousPoint = candidate;
+      await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: candidate.x, y: candidate.y });
+      // Expanding the desktop sidebar restores group-label height while its
+      // links are still moving. Require three consecutive box observations
+      // before dispatching a trusted click so the checked coordinate cannot
+      // turn into an adjacent label between hit-testing and mousePressed.
+      if (stableObservations < 3) {
+        await wait(80);
+        continue;
+      }
       const stillTargeted = await evaluate(client, `(() => {
-        const hit = document.elementFromPoint(${JSON.stringify(point.x)}, ${JSON.stringify(point.y)});
+        const hit = document.elementFromPoint(${JSON.stringify(candidate.x)}, ${JSON.stringify(candidate.y)});
         return Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
           .some((element) => hit === element || Boolean(hit && element.contains(hit)));
       })()`, 3000).catch(() => false);
-      if (stillTargeted) break;
-      point = null;
+      if (stillTargeted) {
+        point = candidate;
+        break;
+      }
+    } else {
+      previousPoint = null;
+      stableObservations = 0;
     }
-    await wait(100);
+    await wait(80);
   }
   if (!point) throw new Error(`Unable to find an unobstructed clickable element: ${selector}`);
   await evaluate(client, `(() => {

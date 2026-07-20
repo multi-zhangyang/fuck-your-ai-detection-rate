@@ -281,8 +281,9 @@ def create_app() -> Flask:
     # gzip for both /api JSON and served static assets (low-latency public access).
     # Only the production Docker image installs flask-compress; in local dev it
     # is absent and gzip is simply skipped (no crash).
-    if Compress is not None:
+    if Compress is not None and app.extensions.get("fyadr_compress_initialized") is not True:
         Compress(app)
+        app.extensions["fyadr_compress_initialized"] = True
     # Optional single-user authentication is installed once and reloaded when
     # tests or an embedding process call the factory with a changed environment.
     # With no auth password source configured this is a no-op for API access.

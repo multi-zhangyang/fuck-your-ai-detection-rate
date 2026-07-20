@@ -77,6 +77,13 @@ def run_regression() -> dict[str, object]:
             _assert("X-Frame-Options" in response.headers, "security headers must be present when auth is disabled")
             checks.append("authentication is disabled by default without changing local API access")
 
+            # The app factory is also used to reload auth environment settings
+            # in tests and embeddings. Optional response compression must be
+            # installed only once because Flask forbids registering a new
+            # after_request hook after the first response has been served.
+            web_app.create_app()
+            checks.append("application factory remains idempotent after the first response")
+
             os.environ["FYADR_AUTH_USERNAME"] = "operator"
             os.environ["FYADR_AUTH_PASSWORD"] = "correct horse"
             os.environ["FYADR_AUTH_RATE_LIMIT_MAX"] = "2"
