@@ -54,10 +54,21 @@ def run() -> dict[str, object]:
         immutable_file.chmod(0o444)
         report = private_fs.harden_private_tree(legacy_root, strict=True)
         assert report.get("ok") is True
+        assert report.get("supported") is (os.name != "nt")
         _assert_private_directory(legacy_root)
         _assert_private_file(legacy_file)
         _assert_private_file(immutable_file, expected=0o400)
         checks.append("legacy trees are remediated without making immutable anchors writable")
+
+        if os.name != "nt":
+            outside_tree = root / "outside-tree"
+            outside_tree.mkdir()
+            symlink_tree = root / "symlink-tree"
+            symlink_tree.symlink_to(outside_tree, target_is_directory=True)
+            failed_report = private_fs.harden_private_tree(symlink_tree, strict=False)
+            assert failed_report.get("ok") is False
+            assert failed_report.get("errors")
+            checks.append("non-strict hardening failures remain explicit instead of defaulting to success")
 
         atomic_path = root / "state" / "run.json"
         web_app.write_json_atomic(atomic_path, {"secret": "state"})

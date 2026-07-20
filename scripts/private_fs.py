@@ -82,6 +82,7 @@ def harden_private_tree(path: str | Path, *, strict: bool = False) -> dict[str, 
 
     normalized = Path(path)
     report: dict[str, object] = {
+        "ok": True,
         "path": str(normalized),
         "directories": 0,
         "files": 0,
@@ -99,6 +100,7 @@ def harden_private_tree(path: str | Path, *, strict: bool = False) -> dict[str, 
         if strict:
             raise
         errors.append(str(exc))
+        report["ok"] = False
         return report
 
     for current_root, directory_names, file_names in os.walk(normalized, topdown=True, followlinks=False):
