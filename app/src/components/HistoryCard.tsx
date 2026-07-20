@@ -31,8 +31,11 @@ export function HistoryCard({
   dbMaintenanceSummaryLoading,
   dbBackups,
   dbBackupsLoading,
+  dbCheck,
+  dbCheckLoading,
   onRefreshDatabaseMaintenance,
   onRefreshDatabaseBackups,
+  onCheckDatabase,
   onBackupDatabase,
   onCompactDatabase,
   onRecoverDatabase,
@@ -90,8 +93,11 @@ export function HistoryCard({
           dbMaintenanceSummaryLoading={dbMaintenanceSummaryLoading}
           dbBackups={dbBackups}
           dbBackupsLoading={dbBackupsLoading}
+          dbCheck={dbCheck}
+          dbCheckLoading={dbCheckLoading}
           onRefreshDatabaseMaintenance={onRefreshDatabaseMaintenance}
           onRefreshDatabaseBackups={onRefreshDatabaseBackups}
+          onCheckDatabase={onCheckDatabase}
           onBackupDatabase={onBackupDatabase}
           onCompactDatabase={onCompactDatabase}
           onRecoverDatabase={onRecoverDatabase}

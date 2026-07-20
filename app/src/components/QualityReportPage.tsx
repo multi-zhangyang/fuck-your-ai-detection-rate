@@ -42,7 +42,7 @@ function ReportStat({
   return (
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="text-xs font-medium text-muted-foreground">{label}</div>
-      <div className={cn("mt-2 text-3xl font-semibold tracking-tight", toneClass)}>{value}</div>
+      <div className={cn("mt-2 text-3xl font-semibold tracking-normal", toneClass)}>{value}</div>
       <div className="mt-1 text-xs leading-5 text-muted-foreground">{hint}</div>
     </div>
   );
@@ -57,7 +57,7 @@ function EmptyQualityReport({ onGoHome }: { onGoHome?: () => void }) {
             <ClipboardCheck className="size-7" />
           </div>
           <Badge variant="outline" className="mt-6">降检报告</Badge>
-          <h1 className="mt-4 text-balance text-2xl font-semibold tracking-tight sm:text-3xl">尚未载入论文</h1>
+          <h1 className="mt-4 text-balance text-2xl font-semibold tracking-normal sm:text-3xl">尚未载入论文</h1>
           <p className="mt-3 max-w-xl text-pretty text-sm leading-7 text-muted-foreground sm:text-base">
             上传 Word 或 TXT 后，这里会先建立原文诊断基线；完成处理后再展示分轮变化、问题热区与导出完整性。
           </p>
@@ -150,7 +150,7 @@ export function QualityReportPage({
         <>
           <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold tracking-tight">内容与导出完整性</h2>
+              <h2 className="text-lg font-semibold tracking-normal">内容与导出完整性</h2>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">降检信号之外，事实保护、引用和 Word 结构仍是不可跳过的硬边界。</p>
             </div>
             {onGoHome ? (

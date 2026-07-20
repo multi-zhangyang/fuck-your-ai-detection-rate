@@ -42,8 +42,8 @@ export class AppErrorBoundary extends Component<Props, State> {
             <div className="flex size-12 items-center justify-center rounded-2xl border border-destructive/25 bg-destructive/10 text-destructive">
               <AlertTriangle className="size-6" />
             </div>
-            <p className="mt-6 text-xs font-bold uppercase tracking-[0.18em] text-destructive">界面恢复</p>
-            <h1 className="mt-2 text-2xl font-bold tracking-tight">工作台遇到了一项未预期错误</h1>
+            <p className="mt-6 text-xs font-bold uppercase tracking-normal text-destructive">界面恢复</p>
+            <h1 className="mt-2 text-2xl font-bold tracking-normal">工作台遇到了一项未预期错误</h1>
             <p className="mt-3 text-sm leading-7 text-muted-foreground">
               文档和运行产物仍保存在本地。重新载入通常可以恢复；如果问题持续，可复制诊断详情后再反馈。
             </p>

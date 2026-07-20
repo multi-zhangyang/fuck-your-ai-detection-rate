@@ -28,6 +28,7 @@ type Props = {
   onRestoreDefault: () => void;
   onDelete: () => void;
   onResetDraftContent: () => void;
+  onOpenHistory: () => void;
   onDraftContentChange: (value: string) => void;
   onDraftLabelChange: (value: string) => void;
   onDraftDescriptionChange: (value: string) => void;
@@ -58,6 +59,7 @@ export function PromptPreviewEditorPanel({
   onRestoreDefault,
   onDelete,
   onResetDraftContent,
+  onOpenHistory,
   onDraftContentChange,
   onDraftLabelChange,
   onDraftDescriptionChange,
@@ -95,6 +97,7 @@ export function PromptPreviewEditorPanel({
           draftLabel={draftLabel}
           draftDescription={draftDescription}
           onResetDraftContent={onResetDraftContent}
+          onOpenHistory={onOpenHistory}
           onRestoreDefault={onRestoreDefault}
           onDelete={onDelete}
           onSave={onSave}

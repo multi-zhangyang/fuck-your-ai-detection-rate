@@ -103,6 +103,7 @@ from prompt_library import (
     update_prompt_workflow,
 )
 from runtime_error_safety import public_provider_error_message
+from web_auth import configure_auth
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -282,6 +283,10 @@ def create_app() -> Flask:
     # is absent and gzip is simply skipped (no crash).
     if Compress is not None:
         Compress(app)
+    # Optional single-user authentication is installed once and reloaded when
+    # tests or an embedding process call the factory with a changed environment.
+    # With no auth password source configured this is a no-op for API access.
+    configure_auth(app)
     return app
 
 
@@ -2254,6 +2259,13 @@ def summarize_workspace_path(path: Path, *, label: str, kind: str, include_stats
         except OSError:
             pass
     writable_target = path if path.is_dir() else path.parent
+    # Saving a not-yet-created config is supported: app_config creates its
+    # parent directories atomically on first save.  Check the nearest existing
+    # ancestor so diagnostics reflect whether that mkdir operation can succeed
+    # instead of reporting a false failure merely because the optional config
+    # directory has not been materialized yet.
+    while not writable_target.exists() and writable_target.parent != writable_target:
+        writable_target = writable_target.parent
     writable = writable_target.exists() and os.access(writable_target, os.W_OK)
     return {
         "key": kind,
@@ -2264,6 +2276,36 @@ def summarize_workspace_path(path: Path, *, label: str, kind: str, include_stats
         "fileCount": file_count,
         "sizeBytes": size_bytes,
     }
+
+
+def workspace_paths_are_ready(path_summaries: list[dict[str, Any]]) -> bool:
+    """Return whether the paths required for normal runtime writes are ready.
+
+    Production images intentionally keep the application root read-only for
+    the non-root service account.  Treating that immutable root like a data
+    directory makes an otherwise healthy container report ``ok=false``.  The
+    root only has to exist; uploads, intermediate files, exports, and the
+    configuration parent are the locations that must remain writable.
+    """
+
+    summaries_by_key = {
+        str(item.get("key", "")): item
+        for item in path_summaries
+        if isinstance(item, dict) and item.get("key")
+    }
+    workspace = summaries_by_key.get("workspace")
+    if not workspace or not bool(workspace.get("exists")):
+        return False
+
+    for key in ("origin", "intermediate", "exports"):
+        item = summaries_by_key.get(key)
+        if not item or not bool(item.get("exists")) or not bool(item.get("writable")):
+            return False
+
+    # The configuration file is optional until the operator saves model
+    # settings, so only its parent-directory writability is required here.
+    config = summaries_by_key.get("config")
+    return bool(config and config.get("writable"))
 
 
 def build_environment_diagnostics() -> dict[str, Any]:
@@ -2350,6 +2392,7 @@ def build_environment_diagnostics() -> dict[str, Any]:
         summarize_workspace_path(EXPORT_DIR, label="项目导出目录", kind="exports"),
         summarize_workspace_path(config_path, label="本地配置文件", kind="config"),
     ]
+    workspace_paths_ready = workspace_paths_are_ready(path_summaries)
     checks = [
         {
             "key": "backend",
@@ -2382,9 +2425,9 @@ def build_environment_diagnostics() -> dict[str, Any]:
         {
             "key": "paths",
             "label": "工作目录",
-            "ok": all(item.get("exists") and item.get("writable") for item in path_summaries if item["key"] != "config"),
-            "level": "success" if all(item.get("exists") and item.get("writable") for item in path_summaries if item["key"] != "config") else "error",
-            "message": "项目工作目录可读写。" if all(item.get("exists") and item.get("writable") for item in path_summaries if item["key"] != "config") else "部分项目工作目录不可写，请检查权限。",
+            "ok": workspace_paths_ready,
+            "level": "success" if workspace_paths_ready else "error",
+            "message": "运行数据目录可读写，项目根目录可保持只读。" if workspace_paths_ready else "部分运行数据目录不可写，请检查权限。",
         },
         {
             "key": "runs",
@@ -2776,8 +2819,9 @@ def add_cors_headers(response: Response) -> Response:
     }
     if origin in allowed_origins:
         response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Vary"] = "Origin"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-FYADR-CSRF"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
     response.headers["Access-Control-Expose-Headers"] = (
         "Content-Disposition, X-Export-Path, X-Export-Format, X-Export-Layout-Mode, "
@@ -3654,62 +3698,58 @@ def delete_round_progress_route() -> tuple[Response, int] | Response:
         return error_response(str(exc))
 
 
-@app.route("/api/export-round", methods=["GET", "POST"])
-def get_export_round() -> tuple[Response, int] | Response:
+@app.route("/api/export-round", methods=["POST"])
+def post_export_round() -> tuple[Response, int] | Response:
     try:
         revision_binding: dict[str, Any] = {}
-        if request.method == "POST":
-            payload = request.get_json(silent=True) or {}
-            output_path = str(payload.get("outputPath", "") or "").strip()
-            target_format = str(payload.get("targetFormat", "") or "").strip().lower()
-            if not output_path:
-                return error_response("outputPath is required.", 400)
-            if not target_format:
-                return error_response("targetFormat is required.", 400)
-            binding_fields = {
-                "expectedDocId": payload.get("expectedDocId"),
-                "expectedRound": payload.get("expectedRound"),
-                "expectedCompareRevision": payload.get("expectedCompareRevision"),
-                "expectedContentRevision": payload.get("expectedContentRevision"),
-                "expectedArtifactSnapshotDigest": payload.get("expectedArtifactSnapshotDigest"),
+        payload = request.get_json(silent=True) or {}
+        output_path = str(payload.get("outputPath", "") or "").strip()
+        target_format = str(payload.get("targetFormat", "") or "").strip().lower()
+        if not output_path:
+            return error_response("outputPath is required.", 400)
+        if not target_format:
+            return error_response("targetFormat is required.", 400)
+        binding_fields = {
+            "expectedDocId": payload.get("expectedDocId"),
+            "expectedRound": payload.get("expectedRound"),
+            "expectedCompareRevision": payload.get("expectedCompareRevision"),
+            "expectedContentRevision": payload.get("expectedContentRevision"),
+            "expectedArtifactSnapshotDigest": payload.get("expectedArtifactSnapshotDigest"),
+        }
+        if any(value is not None for value in binding_fields.values()):
+            missing = [key for key, value in binding_fields.items() if value is None]
+            if missing:
+                return error_response(
+                    "Revision-bound export fields must be supplied together: " + ", ".join(missing),
+                    400,
+                )
+            for key in (
+                "expectedDocId",
+                "expectedCompareRevision",
+                "expectedContentRevision",
+                "expectedArtifactSnapshotDigest",
+            ):
+                value = binding_fields[key]
+                if not isinstance(value, str) or not value.strip() or len(value) > 512:
+                    return error_response(f"{key} must be a non-empty string.", 400)
+                binding_fields[key] = value.strip()
+            raw_expected_round = binding_fields["expectedRound"]
+            if (
+                isinstance(raw_expected_round, bool)
+                or not isinstance(raw_expected_round, int)
+                or raw_expected_round < 1
+            ):
+                return error_response("expectedRound must be a positive integer.", 400)
+            for key in ("expectedContentRevision", "expectedArtifactSnapshotDigest"):
+                if not re.fullmatch(r"[0-9a-f]{64}", str(binding_fields[key])):
+                    return error_response(f"{key} must be a lowercase SHA-256 digest.", 400)
+            revision_binding = {
+                "expected_doc_id": binding_fields["expectedDocId"],
+                "expected_round": raw_expected_round,
+                "expected_compare_revision": binding_fields["expectedCompareRevision"],
+                "expected_content_revision": binding_fields["expectedContentRevision"],
+                "expected_artifact_snapshot_digest": binding_fields["expectedArtifactSnapshotDigest"],
             }
-            if any(value is not None for value in binding_fields.values()):
-                missing = [key for key, value in binding_fields.items() if value is None]
-                if missing:
-                    return error_response(
-                        "Revision-bound export fields must be supplied together: " + ", ".join(missing),
-                        400,
-                    )
-                for key in (
-                    "expectedDocId",
-                    "expectedCompareRevision",
-                    "expectedContentRevision",
-                    "expectedArtifactSnapshotDigest",
-                ):
-                    value = binding_fields[key]
-                    if not isinstance(value, str) or not value.strip() or len(value) > 512:
-                        return error_response(f"{key} must be a non-empty string.", 400)
-                    binding_fields[key] = value.strip()
-                raw_expected_round = binding_fields["expectedRound"]
-                if (
-                    isinstance(raw_expected_round, bool)
-                    or not isinstance(raw_expected_round, int)
-                    or raw_expected_round < 1
-                ):
-                    return error_response("expectedRound must be a positive integer.", 400)
-                for key in ("expectedContentRevision", "expectedArtifactSnapshotDigest"):
-                    if not re.fullmatch(r"[0-9a-f]{64}", str(binding_fields[key])):
-                        return error_response(f"{key} must be a lowercase SHA-256 digest.", 400)
-                revision_binding = {
-                    "expected_doc_id": binding_fields["expectedDocId"],
-                    "expected_round": raw_expected_round,
-                    "expected_compare_revision": binding_fields["expectedCompareRevision"],
-                    "expected_content_revision": binding_fields["expectedContentRevision"],
-                    "expected_artifact_snapshot_digest": binding_fields["expectedArtifactSnapshotDigest"],
-                }
-        else:
-            output_path = require_query_value("outputPath")
-            target_format = require_query_value("targetFormat").lower()
         if target_format not in {"txt", "docx"}:
             return error_response(f"Unsupported export format: {target_format}", 400)
         # Path.stem yields only the basename, so it cannot escape EXPORT_DIR;
@@ -3800,9 +3840,6 @@ def get_export_round() -> tuple[Response, int] | Response:
         response.headers["X-Export-Guard-Issue-Samples"] = make_ascii_header_json(result.get("guardIssueSamples", []))
         response.headers["X-Export-Audit-Issue-Samples"] = make_ascii_header_json(result.get("auditIssueSamples", []))
         response.headers["X-Export-Ooxml-Audit-Issue-Samples"] = make_ascii_header_json(result.get("ooxmlAuditIssueSamples", []))
-        if request.method == "GET":
-            response.headers["Deprecation"] = "true"
-            response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
         return response
     except ExportRoundError as exc:
         return error_response(
@@ -3925,9 +3962,17 @@ def _serve_frontend_asset(asset_path: str) -> Response:
 def serve_frontend(path: str) -> Response:
     """Serve real dist files and use index.html only for extensionless SPA routes."""
 
+    normalized_path = str(path or "").replace("\\", "/").lstrip("/")
+    # The generic SPA GET route would otherwise hide Flask's method rejection
+    # for this former compatibility endpoint.  Keep the API POST-only and make
+    # the retired side-effecting GET contract explicit to old clients.
+    if normalized_path == "api/export-round":
+        response = jsonify({"ok": False, "code": "method_not_allowed", "message": "Use POST to export an artifact."})
+        response.status_code = 405
+        response.headers["Allow"] = "POST, OPTIONS"
+        return response
     if not WEB_STATIC_DIR:
         return error_response("Unknown route", 404)
-    normalized_path = str(path or "").replace("\\", "/").lstrip("/")
     if normalized_path == "api" or normalized_path.startswith("api/"):
         return error_response("Unknown route", 404)
 

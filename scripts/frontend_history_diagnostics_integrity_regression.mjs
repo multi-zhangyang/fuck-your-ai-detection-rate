@@ -577,7 +577,16 @@ async function run() {
   assertIncludes(paths.maintenance, ["isCurrentHistoryRequest", "\"maintenance\"", "\"backups\""]);
   assertIncludes(paths.lazyViews, ["diagnosticsRequestStartedRef", "refreshDiagnosticsRef.current({ silent: true })"]);
   assertIncludes(paths.diagnosticsPage, ["复制诊断失败", "copyError"]);
-  assertIncludes(paths.maintenancePanel, ["busy || summaryLoading", "busy || backupsLoading", "尚未读取维护概览", "尚未读取备份列表", "暂无历史库备份"]);
+  assertIncludes(paths.maintenancePanel, [
+    "busy || summaryLoading",
+    "busy || backupsLoading",
+    "尚未读取维护概览",
+    "尚未读取备份列表",
+    "暂无历史库备份",
+    '\"history-db-repair\": \"修复历史索引\"',
+    '\"manual-review\": \"人工检查历史记录\"',
+    "HISTORY_CHECK_ACTION_LABELS[normalized] ?? normalized",
+  ]);
   assertIncludes(paths.artifactBody, ["尚未读取资产", "无资产", "读取中"]);
   checks.push("history and diagnostics surfaces distinguish loading, unrequested, empty, and failed states");
 

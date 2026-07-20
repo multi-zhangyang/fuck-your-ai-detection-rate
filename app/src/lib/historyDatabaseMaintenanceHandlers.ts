@@ -9,6 +9,7 @@ import type { HistoryCoreHandlers, HistoryHandlersDeps } from "@/lib/historyHand
 import type {
   HistoryDatabaseBackupListResult,
   HistoryDatabaseBackupResult,
+  HistoryDatabaseCheckResult,
   HistoryDatabaseCompactResult,
   HistoryDatabaseMaintenanceSummary,
   HistoryDatabaseRecoverResult,
@@ -45,7 +46,7 @@ export function createHistoryDatabaseMaintenanceHandlers(
   }
 
   async function refreshHistoryDatabaseBackups(
-    validate = false,
+    validate = true,
   ): Promise<HistoryDatabaseBackupListResult | null> {
     const requestKey = deps.setHistoryDatabaseBackups as unknown as object;
     const generation = beginHistoryRequest(requestKey, "backups");
@@ -70,6 +71,29 @@ export function createHistoryDatabaseMaintenanceHandlers(
     }
   }
 
+  async function refreshHistoryDatabaseCheck(): Promise<HistoryDatabaseCheckResult | null> {
+    const requestKey = deps.setHistoryDatabaseCheck as unknown as object;
+    const generation = beginHistoryRequest(requestKey, "check");
+    deps.setHistoryDatabaseCheckLoading(true);
+    try {
+      const result = await deps.service.checkHistoryDatabase();
+      if (isCurrentHistoryRequest(requestKey, "check", generation)) {
+        deps.setHistoryDatabaseCheck(result);
+      }
+      return result;
+    } catch (appError) {
+      if (isCurrentHistoryRequest(requestKey, "check", generation)) {
+        deps.setError(stringifyError(appError));
+      }
+      return null;
+    } finally {
+      if (isCurrentHistoryRequest(requestKey, "check", generation)) {
+        deps.setHistoryDatabaseCheckLoading(false);
+      }
+      finishHistoryRequest(requestKey, "check", generation);
+    }
+  }
+
   function applyMaintenanceFeedback(label: string, ok: boolean, error?: string) {
     deps.applyOptionalUiFeedback({
       notice: ok ? label : undefined,
@@ -83,7 +107,7 @@ export function createHistoryDatabaseMaintenanceHandlers(
     try {
       const result = await deps.service.backupHistoryDatabase({ reason, keep: DEFAULT_BACKUP_KEEP });
       if (result.ok) {
-        await Promise.all([refreshHistoryDatabaseMaintenance(), refreshHistoryDatabaseBackups(false)]);
+        await Promise.all([refreshHistoryDatabaseMaintenance(), refreshHistoryDatabaseBackups(true)]);
         await core.refreshHistoryList();
       }
       applyMaintenanceFeedback(
@@ -103,7 +127,11 @@ export function createHistoryDatabaseMaintenanceHandlers(
     try {
       const result = await deps.service.compactHistoryDatabase({ createBackup, keep: DEFAULT_BACKUP_KEEP });
       if (result.ok) {
-        await Promise.all([refreshHistoryDatabaseMaintenance(), refreshHistoryDatabaseBackups(false)]);
+        await Promise.all([
+          refreshHistoryDatabaseMaintenance(),
+          refreshHistoryDatabaseBackups(true),
+          refreshHistoryDatabaseCheck(),
+        ]);
         await core.refreshHistoryList();
       }
       const saved = result.savedBytes ?? 0;
@@ -137,7 +165,11 @@ export function createHistoryDatabaseMaintenanceHandlers(
         keep: DEFAULT_BACKUP_KEEP,
       });
       if (result.ok) {
-        await Promise.all([refreshHistoryDatabaseMaintenance(), refreshHistoryDatabaseBackups(false)]);
+        await Promise.all([
+          refreshHistoryDatabaseMaintenance(),
+          refreshHistoryDatabaseBackups(true),
+          refreshHistoryDatabaseCheck(),
+        ]);
         await core.refreshHistoryList();
         await core.refreshHistoryArtifactGovernance();
       }
@@ -156,6 +188,7 @@ export function createHistoryDatabaseMaintenanceHandlers(
   return {
     refreshHistoryDatabaseMaintenance,
     refreshHistoryDatabaseBackups,
+    refreshHistoryDatabaseCheck,
     handleBackupHistoryDatabase,
     handleCompactHistoryDatabase,
     handleRecoverHistoryDatabase,

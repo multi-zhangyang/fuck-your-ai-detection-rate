@@ -167,6 +167,7 @@ def build_commands(
         {"name": "pre-release check regression", "command": [sys.executable, "scripts/pre_release_check_regression.py"]},
         {"name": "start web regression", "command": [sys.executable, "scripts/start_web_regression.py"]},
         {"name": "web security regression", "command": [sys.executable, "scripts/web_security_regression.py"]},
+        {"name": "web auth regression", "command": [sys.executable, "scripts/web_auth_regression.py"]},
         {"name": "production deployment regression", "command": [sys.executable, "scripts/production_deployment_regression.py"]},
         {"name": "web health check regression", "command": [sys.executable, "scripts/web_health_check_regression.py"]},
         {"name": "open-source audit", "command": [sys.executable, "scripts/open_source_audit.py"]},

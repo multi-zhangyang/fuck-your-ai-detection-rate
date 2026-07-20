@@ -4,6 +4,7 @@ import type {
   HistoryArtifactGovernanceMode,
   HistoryArtifactQueryResponse,
   HistoryDatabaseBackupListResult,
+  HistoryDatabaseCheckResult,
   HistoryDatabaseMaintenanceSummary,
   HistoryDeleteImpact,
   HistoryDocumentSummary,
@@ -40,8 +41,11 @@ export type HistoryCardBodyProps = {
   dbMaintenanceSummaryLoading: boolean;
   dbBackups: HistoryDatabaseBackupListResult | null;
   dbBackupsLoading: boolean;
+  dbCheck: HistoryDatabaseCheckResult | null;
+  dbCheckLoading: boolean;
   onRefreshDatabaseMaintenance: () => void;
   onRefreshDatabaseBackups: () => void;
+  onCheckDatabase: () => void;
   onBackupDatabase: () => void;
   onCompactDatabase: () => void;
   onRecoverDatabase: (backupPath: string | null) => void;

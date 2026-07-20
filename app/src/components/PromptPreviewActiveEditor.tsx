@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { FileCode2, Loader2, RefreshCw, Save, Trash2 } from "lucide-react";
+import { FileClock, FileCode2, Loader2, RefreshCw, Save, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ export function PromptPreviewActiveEditor({
   draftLabel,
   draftDescription,
   onResetDraftContent,
+  onOpenHistory,
   onRestoreDefault,
   onDelete,
   onSave,
@@ -41,6 +42,7 @@ export function PromptPreviewActiveEditor({
   draftLabel: string;
   draftDescription: string;
   onResetDraftContent: () => void;
+  onOpenHistory: () => void;
   onRestoreDefault: () => void;
   onDelete: () => void;
   onSave: () => void;
@@ -69,6 +71,10 @@ export function PromptPreviewActiveEditor({
             </div>
           </div>
           <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:items-center">
+              <Button type="button" variant="outline" size="sm" className="min-w-0" onClick={onOpenHistory} disabled={saving}>
+                <FileClock data-icon="inline-start" />
+                <span className="min-w-0 truncate">版本</span>
+              </Button>
               <Button type="button" variant="outline" size="sm" className="min-w-0" onClick={onResetDraftContent} disabled={saving || !dirty}>
                 <span className="min-w-0 truncate">还原</span>
               </Button>

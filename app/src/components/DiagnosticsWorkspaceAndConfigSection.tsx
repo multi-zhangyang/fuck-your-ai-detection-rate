@@ -6,7 +6,23 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { formatBytes } from "@/lib/formatters";
 import { MAX_REWRITE_CONCURRENCY } from "@/lib/modelRoute";
-import type { EnvironmentDiagnostics } from "@/types/app";
+import type { EnvironmentDiagnostics, EnvironmentPathSummary } from "@/types/app";
+
+function getPathState(item: EnvironmentPathSummary): { ready: boolean; label: string } {
+  if (item.key === "workspace") {
+    return {
+      ready: item.exists,
+      label: item.exists ? item.writable ? "可读写" : "只读（正常）" : "不存在",
+    };
+  }
+  if (item.key === "config" && !item.exists && item.writable) {
+    return { ready: true, label: "可创建" };
+  }
+  return {
+    ready: item.exists && item.writable,
+    label: item.exists ? item.writable ? "可写" : "不可写" : "不存在",
+  };
+}
 
 export function DiagnosticsWorkspaceAndConfigSection({
   value,
@@ -21,21 +37,24 @@ export function DiagnosticsWorkspaceAndConfigSection({
         </CardHeader>
         <CardContent className="px-4 pb-4 pt-0">
           <div className="overflow-hidden rounded-lg border bg-card">
-            {value.paths.map((item, index) => (
-              <Fragment key={item.key}>
-                {index ? <Separator /> : null}
-                <div className="grid gap-2 p-3 text-xs md:grid-cols-[150px_minmax(0,1fr)_140px] md:items-center">
-                  <div>
-                    <div className="font-semibold text-foreground">{item.label}</div>
-                    <Badge className="mt-1" variant={item.exists && item.writable ? "success" : item.exists ? "warning" : "danger"}>
-                      {item.exists ? item.writable ? "可写" : "不可写" : "不存在"}
-                    </Badge>
+            {value.paths.map((item, index) => {
+              const pathState = getPathState(item);
+              return (
+                <Fragment key={item.key}>
+                  {index ? <Separator /> : null}
+                  <div className="grid gap-2 p-3 text-xs md:grid-cols-[150px_minmax(0,1fr)_140px] md:items-center">
+                    <div>
+                      <div className="font-semibold text-foreground">{item.label}</div>
+                      <Badge className="mt-1" variant={pathState.ready ? "success" : "danger"}>
+                        {pathState.label}
+                      </Badge>
+                    </div>
+                    <div className="min-w-0 truncate text-muted-foreground">{item.path}</div>
+                    <div className="font-semibold text-foreground md:text-right">{item.fileCount} 文件 · {formatBytes(item.sizeBytes)}</div>
                   </div>
-                  <div className="min-w-0 truncate text-muted-foreground">{item.path}</div>
-                  <div className="font-semibold text-foreground md:text-right">{item.fileCount} 文件 · {formatBytes(item.sizeBytes)}</div>
-                </div>
-              </Fragment>
-            ))}
+                </Fragment>
+              );
+            })}
           </div>
         </CardContent>
       </Card>

@@ -717,10 +717,11 @@ function runRegression() {
     assertIncludes(appSource, "<ThemeModeMenu />", "Top header must expose the light/dark/system theme control.", failures);
     assertIncludes(readFileSync(resolve(ROOT_DIR, "app", "src", "components", "AppSidebar.tsx"), "utf-8"), "SidebarMenuButton", "Sidebar items must use the shadcn Sidebar menu button primitive.", failures);
     assertIncludes(readFileSync(resolve(ROOT_DIR, "app", "src", "components", "AppSidebar.tsx"), "utf-8"), "isActive={activeView === item.view}", "Sidebar active state must be delegated to the shadcn Sidebar item.", failures);
-    assertIncludes(appSource, "<Breadcrumb", "Top status area must use shadcn Breadcrumb composition.", failures);
+    assertIncludes(appSource, 'id="fyadr-active-view-title"', "Top header must expose the active page title as its accessible heading.", failures);
+    assertIncludes(appSource, "{activeViewMeta.label}", "Top header must derive its title from the active workbench route.", failures);
     assertIncludes(appSource, "data-ui-section=\"current-file-chip\"", "Top status area must keep the current-file chip identifiable.", failures);
-    assertIncludes(appSource, "flex h-11 min-w-0 items-center gap-2 overflow-hidden border-t px-3 text-xs sm:h-10 sm:px-4", "Top status bar must remain single-line while adapting its height and padding on mobile.", failures);
-    assertIncludes(appSource, "h-9 min-w-0 flex-1 justify-start overflow-hidden px-2 text-xs sm:h-7 sm:min-w-[16rem]", "Current document chip must shrink safely on mobile and retain a readable desktop base width.", failures);
+    assertIncludes(appSource, "vercel-subbar flex h-10 min-w-0 items-center gap-2 overflow-hidden border-t px-3 text-xs sm:px-4", "Top status bar must remain single-line with responsive horizontal padding.", failures);
+    assertIncludes(appSource, "h-8 min-w-0 flex-1 justify-start overflow-hidden px-2 text-xs sm:h-7 sm:min-w-[16rem] sm:max-w-[min(54vw,48rem)] sm:flex-none", "Current document chip must shrink safely on mobile and stay width-bounded on desktop.", failures);
     assertIncludes(appSource, "flex shrink-0 items-center gap-2", "Top route, Diff, and feedback controls must follow the current-file chip without a large blank gap.", failures);
     assertNotIncludes(appSource, "ml-auto flex min-w-0 shrink-0 items-center gap-2", "Top status bar must not push route, Diff, and feedback controls into a far-right island.", failures);
     assertIncludes(appSource, "min-w-0 truncate text-foreground", "Current document name must truncate instead of clipping mobile status actions.", failures);

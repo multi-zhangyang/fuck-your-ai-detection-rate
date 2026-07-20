@@ -14,6 +14,7 @@ import type {
   HistoryArtifactGovernanceMode,
   HistoryArtifactQueryResponse,
   HistoryDatabaseBackupListResult,
+  HistoryDatabaseCheckResult,
   HistoryDatabaseMaintenanceSummary,
   HistoryDatabaseRepairResult,
   HistoryDeleteImpact,
@@ -62,6 +63,7 @@ export type HistoryDeleteHandlers = {
   handleRepairHistoryDatabase: () => Promise<void>;
   refreshHistoryDatabaseMaintenance: () => Promise<HistoryDatabaseMaintenanceSummary | null>;
   refreshHistoryDatabaseBackups: (validate?: boolean) => Promise<HistoryDatabaseBackupListResult | null>;
+  refreshHistoryDatabaseCheck: () => Promise<HistoryDatabaseCheckResult | null>;
   handleBackupHistoryDatabase: (reason: string) => Promise<void>;
   handleCompactHistoryDatabase: (createBackup: boolean) => Promise<void>;
   handleRecoverHistoryDatabase: (backupPath: string | null) => Promise<void>;

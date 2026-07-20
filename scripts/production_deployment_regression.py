@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -20,6 +21,8 @@ def run_regression() -> dict[str, object]:
     checks: list[str] = []
     dockerfile = (ROOT_DIR / "Dockerfile").read_text(encoding="utf-8")
     compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+    deploy_doc = (ROOT_DIR / "DEPLOY.md").read_text(encoding="utf-8")
     ci_workflow = (ROOT_DIR / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     entrypoint_path = ROOT_DIR / "docker-entrypoint.sh"
     entrypoint = entrypoint_path.read_text(encoding="utf-8")
@@ -96,7 +99,26 @@ def run_regression() -> dict[str, object]:
     _assert("legacy_custom_dir='/app/legacy-prompts-custom'" in entrypoint, "entrypoint must migrate legacy custom prompts through the guarded seed merge")
     _assert("cp -a -n /app/legacy-prompts-custom" not in entrypoint, "legacy prompt migration must not copy symlinks or arbitrary files as root")
     _assert("--forwarded-allow-ips='*'" not in entrypoint, "entrypoint must not blindly trust forwarded headers from every peer")
+    _assert(
+        all(
+            marker in compose
+            for marker in (
+                "FYADR_AUTH_USERNAME",
+                "FYADR_AUTH_PASSWORD",
+                "FYADR_AUTH_PASSWORD_HASH",
+                "FYADR_AUTH_PASSWORD_FILE",
+                "FYADR_AUTH_SECRET_FILE",
+                "FYADR_AUTH_COOKIE_SECURE",
+            )
+        ),
+        "Compose must expose optional auth settings without baking in credentials",
+    )
+    _assert("FYADR_AUTH_PASSWORD: \"${FYADR_AUTH_PASSWORD:-}\"" in compose, "Compose auth must remain disabled until an operator supplies a password")
+    _assert("FYADR_AUTH_PASSWORD_FILE=" in env_example, "the environment template must document password-file authentication")
+    _assert("FYADR_AUTH_SECRET_FILE=" in env_example, "the environment template must document signing-key files")
+    _assert("GET /api/ping" in deploy_doc and "X-FYADR-CSRF" in deploy_doc, "deployment docs must explain the public probe and CSRF contract")
     checks.append("container loopback publishing, resource and log ceilings, initialization, privilege drop, and single-worker contract are guarded")
+    checks.append("Compose and deployment docs expose opt-in authentication without default credentials")
 
     import web_app
 
@@ -122,6 +144,45 @@ def run_regression() -> dict[str, object]:
         "history readiness must run at startup",
     )
     checks.append("production runtime initialization executes both writable-store readiness checks")
+
+    immutable_root_paths = [
+        {"key": "workspace", "exists": True, "writable": False},
+        {"key": "origin", "exists": True, "writable": True},
+        {"key": "intermediate", "exists": True, "writable": True},
+        {"key": "exports", "exists": True, "writable": True},
+        {"key": "config", "exists": False, "writable": True},
+    ]
+    _assert(
+        web_app.workspace_paths_are_ready(immutable_root_paths),
+        "a read-only application root must remain healthy when every runtime data directory is writable",
+    )
+    for runtime_key in ("origin", "intermediate", "exports", "config"):
+        unavailable_runtime_paths = [dict(item) for item in immutable_root_paths]
+        unavailable_item = next(item for item in unavailable_runtime_paths if item["key"] == runtime_key)
+        unavailable_item["writable"] = False
+        _assert(
+            not web_app.workspace_paths_are_ready(unavailable_runtime_paths),
+            f"an unwritable {runtime_key} runtime path must fail environment readiness",
+        )
+    missing_workspace_paths = [dict(item) for item in immutable_root_paths]
+    missing_workspace_paths[0]["exists"] = False
+    _assert(
+        not web_app.workspace_paths_are_ready(missing_workspace_paths),
+        "a missing application root must fail environment readiness",
+    )
+    with tempfile.TemporaryDirectory(prefix="fyadr-config-readiness-") as temporary_directory:
+        unmaterialized_config = Path(temporary_directory) / "config" / "config.json"
+        config_summary = web_app.summarize_workspace_path(
+            unmaterialized_config,
+            label="config",
+            kind="config",
+        )
+        _assert(config_summary["exists"] is False, "readiness fixture config must start absent")
+        _assert(
+            config_summary["writable"] is True,
+            "an optional config beneath a writable ancestor must be considered creatable",
+        )
+    checks.append("read-only image root is allowed while every mutable runtime path remains mandatory")
 
     return {"ok": True, "checks": checks}
 

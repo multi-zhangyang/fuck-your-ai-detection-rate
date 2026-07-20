@@ -27,7 +27,7 @@ export function HomeDocumentEntryCard({
             {hasDocument ? <FileCheck2 className="size-4" /> : <UploadCloud className="size-4" />}
           </span>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold tracking-tight">文档入口</div>
+            <div className="text-sm font-semibold tracking-normal">文档入口</div>
             <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground">{hasDocument ? "源文件已就绪，可随时更换" : "支持 Word 与纯文本文件"}</div>
           </div>
           <span className="font-mono text-[10px] text-muted-foreground">DOCX / TXT</span>

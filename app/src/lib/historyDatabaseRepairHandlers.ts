@@ -15,6 +15,7 @@ export function createHistoryDatabaseRepairHandlers(
   core: HistoryCoreHandlers,
 ) {
   async function applyHistoryDatabaseRepairResult(result: HistoryDatabaseRepairResult) {
+    deps.setHistoryDatabaseCheck(result.after ?? null);
     await core.refreshHistoryList();
     invalidateHistoryRequest(deps.setHistoryOrphanScan as unknown as object, "orphan");
     deps.setHistoryOrphanScan(null);

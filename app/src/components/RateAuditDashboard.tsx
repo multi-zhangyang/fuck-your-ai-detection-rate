@@ -92,7 +92,7 @@ function AuditStat({
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="text-xs font-medium text-muted-foreground">{label}</div>
       <div className={cn(
-        "mt-2 text-2xl font-semibold tracking-tight",
+        "mt-2 text-2xl font-semibold tracking-normal",
         tone === "success" && "text-status-success",
         tone === "warning" && "text-status-warning",
       )}>
@@ -115,7 +115,7 @@ function StageCard({ stage, maxPoints, current }: { stage: RateAuditStage; maxPo
         {current ? <Badge variant="outline">当前</Badge> : null}
       </div>
       <div className="mt-4 flex items-end justify-between gap-3">
-        <span className="text-2xl font-semibold tracking-tight">{stage.riskPoints}</span>
+        <span className="text-2xl font-semibold tracking-normal">{stage.riskPoints}</span>
         <span className="pb-0.5 text-[11px] text-muted-foreground">{stage.riskCount} 项信号</span>
       </div>
       <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
@@ -466,7 +466,7 @@ export function RateAuditDashboard({
                 <Badge variant={value.current.highRiskCount ? "warning" : "secondary"}>{value.current.riskCount} 项当前信号</Badge>
                 {loading ? <Badge variant="outline">刷新中</Badge> : null}
               </div>
-              <h2 className="mt-3 text-xl font-semibold tracking-tight sm:text-2xl">降检诊断</h2>
+              <h2 className="mt-3 text-xl font-semibold tracking-normal sm:text-2xl">降检诊断</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
                 {value.sourceOnly
                   ? "原文基线已经建立。完成一轮处理后，这里会用完全相同的规则展示风险信号增减和问题段落。"

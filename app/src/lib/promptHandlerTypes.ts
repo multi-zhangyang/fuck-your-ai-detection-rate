@@ -3,6 +3,7 @@ import type {
   HistoryDocumentSummary,
   ModelConfig,
   PromptId,
+  PromptBackupsResult,
   PromptOption,
   PromptPreviewResponse,
   PromptDeleteResult,
@@ -30,6 +31,8 @@ export type PromptHandlersDeps = {
     updatePromptMeta: (promptId: PromptId, payload: { label: string; description?: string }) => Promise<PromptSaveResult>;
     savePrompt: (promptId: PromptId, content: string) => Promise<PromptSaveResult>;
     restoreDefaultPrompt: (promptId: PromptId) => Promise<PromptSaveResult>;
+    listPromptBackups: (promptId: PromptId) => Promise<PromptBackupsResult>;
+    restorePromptBackup: (promptId: PromptId, relativePath: string) => Promise<PromptSaveResult>;
     createPrompt: (payload: { label: string; description?: string; content: string }) => Promise<PromptSaveResult>;
     deletePrompt: (promptId: PromptId) => Promise<PromptDeleteResult>;
     updatePromptWorkflow: (
@@ -84,12 +87,13 @@ export type PromptCrudHandlers = {
   runPromptPreviewMutation: <T>(operation: () => Promise<T>) => Promise<T | null>;
   persistActivePromptRoute: (config: ModelConfig) => void;
   refreshPromptPreviews: (options?: { silent?: boolean }) => Promise<PromptPreviewResponse | null>;
-  applyPromptSaveResult: (result: PromptSaveResult) => void;
+  applyPromptSaveResult: (result: PromptSaveResult, options?: { activate?: boolean }) => void;
   handleSavePromptDraft: (
     promptId: PromptId,
     payload: { label: string; description?: string; content: string; contentDirty: boolean; metaDirty: boolean },
   ) => Promise<void>;
   handleRestoreDefaultPrompt: (promptId: PromptId) => Promise<void>;
+  handleRestorePromptBackup: (promptId: PromptId, relativePath: string) => Promise<boolean>;
   handleCreatePrompt: (payload: { label: string; description?: string; content: string }) => Promise<void>;
   handleDeletePrompt: (promptId: PromptId) => Promise<void>;
 };

@@ -13,9 +13,10 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { SidebarRuntimeProgress } from "@/components/SidebarRuntimeProgress";
+import { useAuthSession } from "@/components/AuthGate";
 import { WORKBENCH_NAV_ITEMS, type WorkbenchView } from "@/lib/workbenchNav";
 import { buildWorkbenchViewUrl } from "@/lib/workbenchRoute";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, LogOut, UserRound } from "lucide-react";
 import type { MouseEvent } from "react";
 
 export function AppSidebar({
@@ -30,6 +31,7 @@ export function AppSidebar({
   progressPercent: number;
 }) {
   const { isMobile, closeMobileForNavigation } = useSidebar();
+  const auth = useAuthSession();
   const primaryItems = WORKBENCH_NAV_ITEMS.filter((item) => ["home", "quality", "model"].includes(item.view));
   const documentItems = WORKBENCH_NAV_ITEMS.filter((item) => ["prompts", "protection", "history"].includes(item.view));
   const systemItems = WORKBENCH_NAV_ITEMS.filter((item) => ["diagnostics"].includes(item.view));
@@ -144,6 +146,33 @@ export function AppSidebar({
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        {auth.enabled ? (
+          <SidebarGroup className="mt-auto px-3 py-2">
+            <SidebarGroupLabel className="vercel-kicker px-1">安全会话</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    type="button"
+                    tooltip={`退出 ${auth.username || "当前会话"}`}
+                    className="h-10 text-sidebar-foreground/70 hover:text-sidebar-foreground"
+                    onClick={() => { void auth.logout(); }}
+                    disabled={auth.busy}
+                  >
+                    <UserRound />
+                    <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                      <span className="truncate">{auth.username || "已登录"}</span>
+                      <LogOut className="size-3.5 shrink-0" />
+                    </span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+              {auth.error ? (
+                <p className="mt-2 px-2 text-[11px] leading-4 text-destructive" role="alert">{auth.error}</p>
+              ) : null}
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ) : null}
       </SidebarContent>
       <SidebarRuntimeProgress status={runtimeStatus} percent={progressPercent} />
       <SidebarRail />

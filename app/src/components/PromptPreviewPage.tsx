@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { PromptBackupHistorySheet } from "@/components/PromptBackupHistorySheet";
 import { PromptPreviewEditorPanel } from "@/components/PromptPreviewEditorPanel";
 import { PromptPreviewListPanel } from "@/components/PromptPreviewListPanel";
 import { usePromptPreviewDraftState } from "@/hooks/usePromptPreviewDraftState";
@@ -7,7 +8,10 @@ import { usePromptWorkflowDraftState } from "@/hooks/usePromptWorkflowDraftState
 import { PromptWorkflowEditor } from "@/components/PromptWorkflowEditor";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getPromptOptionsFromPreviews, getPromptWorkflowsFromPreviews } from "@/lib/promptRegistry";
+import { stringifyError } from "@/lib/errorText";
 import type {
+  PromptBackupItem,
+  PromptBackupsResult,
   PromptId,
   PromptPreviewResponse,
   PromptWorkflow,
@@ -25,6 +29,8 @@ export function PromptPreviewPage({
   onRestoreDefaultPrompt,
   onCreatePrompt,
   onDeletePrompt,
+  onListPromptBackups,
+  onRestorePromptBackup,
   onUpdatePromptWorkflow,
   onDirtyStateChange,
   onConfirmDiscardChanges,
@@ -39,6 +45,8 @@ export function PromptPreviewPage({
   onRestoreDefaultPrompt: (promptId: PromptId) => Promise<void>;
   onCreatePrompt: (payload: { label: string; description?: string; content: string }) => Promise<void>;
   onDeletePrompt: (promptId: PromptId) => Promise<void>;
+  onListPromptBackups: (promptId: PromptId) => Promise<PromptBackupsResult>;
+  onRestorePromptBackup: (promptId: PromptId, relativePath: string) => Promise<boolean>;
   onUpdatePromptWorkflow: (
     workflowId: PromptWorkflow["id"],
     payload: Pick<PromptWorkflow, "label" | "description" | "defaultSequence" | "sequenceLimit" | "roundLimit">,
@@ -47,6 +55,12 @@ export function PromptPreviewPage({
   onConfirmDiscardChanges: () => Promise<boolean>;
 }) {
   const [activeSection, setActiveSection] = useState<"prompts" | "workflows">("prompts");
+  const [backupSheetOpen, setBackupSheetOpen] = useState(false);
+  const [promptBackups, setPromptBackups] = useState<PromptBackupItem[] | null>(null);
+  const [promptBackupsLoading, setPromptBackupsLoading] = useState(false);
+  const [promptBackupsError, setPromptBackupsError] = useState("");
+  const [restoringBackupPath, setRestoringBackupPath] = useState("");
+  const backupRequestRef = useRef(0);
   const promptOptions = useMemo(() => getPromptOptionsFromPreviews(value), [value]);
   const promptWorkflows = useMemo(
     () => getPromptWorkflowsFromPreviews(value, promptOptions),
@@ -65,9 +79,57 @@ export function PromptPreviewPage({
     promptOptions,
     onUpdatePromptWorkflow,
   });
+  const activePromptIdRef = useRef<PromptId | "">(draft.activeItem?.id ?? "");
+  activePromptIdRef.current = draft.activeItem?.id ?? "";
 
   const hasUnsavedChanges = draft.hasUnsavedChanges || workflowDraft.dirty;
-  const interactionBusy = busy || draft.saving || workflowDraft.saving;
+  const interactionBusy = busy || draft.saving || workflowDraft.saving || Boolean(restoringBackupPath);
+
+  async function loadPromptBackups() {
+    const promptId = draft.activeItem?.id;
+    if (!promptId) return;
+    const generation = ++backupRequestRef.current;
+    setPromptBackupsLoading(true);
+    setPromptBackupsError("");
+    try {
+      const result = await onListPromptBackups(promptId);
+      if (generation === backupRequestRef.current && activePromptIdRef.current === promptId) {
+        setPromptBackups(result.items);
+      }
+    } catch (requestError) {
+      if (generation === backupRequestRef.current) {
+        setPromptBackupsError(stringifyError(requestError));
+      }
+    } finally {
+      if (generation === backupRequestRef.current) {
+        setPromptBackupsLoading(false);
+      }
+    }
+  }
+
+  function openPromptBackups() {
+    setBackupSheetOpen(true);
+    void loadPromptBackups();
+  }
+
+  async function restorePromptBackup(item: PromptBackupItem) {
+    const promptId = draft.activeItem?.id;
+    if (!promptId || restoringBackupPath) return;
+    setRestoringBackupPath(item.relativePath);
+    setPromptBackupsError("");
+    try {
+      const restored = await onRestorePromptBackup(promptId, item.relativePath);
+      if (restored && activePromptIdRef.current === promptId) {
+        backupRequestRef.current += 1;
+        setPromptBackups(null);
+        setBackupSheetOpen(false);
+      }
+    } catch (requestError) {
+      setPromptBackupsError(stringifyError(requestError));
+    } finally {
+      setRestoringBackupPath("");
+    }
+  }
 
   function discardAllChanges() {
     draft.discardChanges();
@@ -143,6 +205,15 @@ export function PromptPreviewPage({
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [hasUnsavedChanges]);
 
+  useEffect(() => {
+    backupRequestRef.current += 1;
+    setBackupSheetOpen(false);
+    setPromptBackups(null);
+    setPromptBackupsError("");
+    setPromptBackupsLoading(false);
+    setRestoringBackupPath("");
+  }, [draft.activeItem?.id]);
+
   return (
     <Tabs
       value={activeSection}
@@ -192,6 +263,7 @@ export function PromptPreviewPage({
             onRestoreDefault={() => { void restoreDefaultPrompt(); }}
             onDelete={() => { void deletePrompt(); }}
             onResetDraftContent={() => { if (draft.activeItem) draft.setDraftContent(draft.activeItem.content); }}
+            onOpenHistory={openPromptBackups}
             onDraftContentChange={draft.setDraftContent}
             onDraftLabelChange={draft.setDraftLabel}
             onDraftDescriptionChange={draft.setDraftDescription}
@@ -225,6 +297,17 @@ export function PromptPreviewPage({
           onSave={() => { void workflowDraft.saveWorkflow(); }}
         />
       </TabsContent>
+      <PromptBackupHistorySheet
+        open={backupSheetOpen}
+        prompt={draft.activeItem}
+        items={promptBackups}
+        loading={promptBackupsLoading}
+        error={promptBackupsError}
+        restoringPath={restoringBackupPath}
+        onOpenChange={(open) => { if (open || !restoringBackupPath) setBackupSheetOpen(open); }}
+        onReload={() => { void loadPromptBackups(); }}
+        onRestore={(item) => { void restorePromptBackup(item); }}
+      />
     </Tabs>
   );
 }

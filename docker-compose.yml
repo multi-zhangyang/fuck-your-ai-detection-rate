@@ -35,6 +35,20 @@ services:
       # --- CORS: only needed if the frontend is served from ANOTHER origin.
       #     With Flask-serving-dist (single origin) this can stay empty. ---
       FYADR_ALLOWED_ORIGINS: ""
+      # --- Optional single-user login (disabled while all password sources are empty) ---
+      # Configure exactly one source through an untracked .env file or a
+      # secret manager. Never commit a literal password or provider secret.
+      FYADR_AUTH_USERNAME: "${FYADR_AUTH_USERNAME:-admin}"
+      FYADR_AUTH_PASSWORD: "${FYADR_AUTH_PASSWORD:-}"
+      FYADR_AUTH_PASSWORD_HASH: "${FYADR_AUTH_PASSWORD_HASH:-}"
+      FYADR_AUTH_PASSWORD_FILE: "${FYADR_AUTH_PASSWORD_FILE:-}"
+      FYADR_AUTH_SECRET_KEY: "${FYADR_AUTH_SECRET_KEY:-}"
+      FYADR_AUTH_SECRET_FILE: "${FYADR_AUTH_SECRET_FILE:-}"
+      FYADR_AUTH_COOKIE_SECURE: "${FYADR_AUTH_COOKIE_SECURE:-0}"
+      FYADR_AUTH_COOKIE_SAMESITE: "${FYADR_AUTH_COOKIE_SAMESITE:-Lax}"
+      FYADR_AUTH_SESSION_TTL_SECONDS: "${FYADR_AUTH_SESSION_TTL_SECONDS:-43200}"
+      FYADR_AUTH_RATE_LIMIT_MAX: "${FYADR_AUTH_RATE_LIMIT_MAX:-5}"
+      FYADR_AUTH_RATE_LIMIT_WINDOW_SECONDS: "${FYADR_AUTH_RATE_LIMIT_WINDOW_SECONDS:-60}"
       # --- request limits (match .env.example defaults) ---
       FYADR_MAX_REQUEST_BYTES: "67108864"   # 64 MiB
       FYADR_MAX_UPLOAD_BYTES: "41943040"    # 40 MiB

@@ -1,6 +1,6 @@
 import type { HistoryArtifactGovernanceMode } from "@/types/app";
 
-type RequestChannel = "list" | "orphan" | "artifact" | "maintenance" | "backups";
+type RequestChannel = "list" | "orphan" | "artifact" | "maintenance" | "backups" | "check";
 
 type ActiveRequest = {
   generation: number;
@@ -14,6 +14,7 @@ type RequestState = {
   artifact: number;
   maintenance: number;
   backups: number;
+  check: number;
   active: Partial<Record<RequestChannel, ActiveRequest>>;
   artifactMode?: HistoryArtifactGovernanceMode;
 };
@@ -32,6 +33,7 @@ function getState(key: object): RequestState {
     artifact: 0,
     maintenance: 0,
     backups: 0,
+    check: 0,
     active: {},
   };
   stateByKey.set(key, created);

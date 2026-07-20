@@ -33,7 +33,7 @@
     --border: 0 0% 88.5%;
     --input: 0 0% 87%;
     --ring: 0 0% 16%;
-    --radius: 0.75rem;
+    --radius: 0.5rem;
     --sidebar-background: 0 0% 97.8%;
     --sidebar-foreground: 0 0% 18%;
     --sidebar-primary: 0 0% 7%;
@@ -129,6 +129,30 @@
     background-size: auto, 48px 48px, 48px 48px;
   }
 
+  .auth-shell {
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.24) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.24) 1px, transparent 1px);
+    background-position: center;
+    background-size: 48px 48px;
+  }
+
+  .auth-shell::before {
+    position: fixed;
+    inset: 0;
+    content: "";
+    pointer-events: none;
+    background: linear-gradient(115deg, hsl(var(--background)) 10%, transparent 48%, hsl(var(--background) / 0.72));
+  }
+
+  .auth-signal-line:nth-child(2) {
+    width: 74%;
+  }
+
+  .auth-signal-line:nth-child(3) {
+    width: 42%;
+  }
+
   .vercel-subbar {
     @apply border-border/70 bg-background/75 backdrop-blur-xl;
     box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.025);
@@ -163,7 +187,7 @@
   }
 
   .vercel-kicker {
-    @apply font-mono text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground;
+    @apply font-mono text-[10px] font-medium uppercase tracking-normal text-muted-foreground;
   }
 
   .vercel-icon-frame {

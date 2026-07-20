@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 
 import { DiagnosticsTaskSections } from "@/components/DiagnosticsTaskSections";
+import { DiagnosticsHistoryDatabaseSection } from "@/components/DiagnosticsHistoryDatabaseSection";
 import { DiagnosticsWorkspaceAndConfigSection } from "@/components/DiagnosticsWorkspaceAndConfigSection";
 import type { DiagnosticTaskItem } from "@/lib/diagnosticsHelpers";
 import type { EnvironmentDiagnostics } from "@/types/app";
@@ -25,6 +26,7 @@ export function DiagnosticsRuntimeSections({
   return (
     <>
       <DiagnosticsWorkspaceAndConfigSection value={value} />
+      <DiagnosticsHistoryDatabaseSection value={value.historyDatabase} />
       <DiagnosticsTaskSections
         busy={busy}
         activeTaskCount={activeTaskCount}

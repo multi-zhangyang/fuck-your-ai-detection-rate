@@ -9,6 +9,7 @@ import type {
   HistoryArtifactGovernanceMode,
   HistoryArtifactQueryResponse,
   HistoryDatabaseBackupListResult,
+  HistoryDatabaseCheckResult,
   HistoryDatabaseMaintenanceSummary,
   HistoryDeleteImpact,
   HistoryOrphanScanResult,
@@ -48,8 +49,11 @@ export function HistoryCardMaintenanceSection({
   dbMaintenanceSummaryLoading,
   dbBackups,
   dbBackupsLoading,
+  dbCheck,
+  dbCheckLoading,
   onRefreshDatabaseMaintenance,
   onRefreshDatabaseBackups,
+  onCheckDatabase,
   onBackupDatabase,
   onCompactDatabase,
   onRecoverDatabase,
@@ -77,8 +81,11 @@ export function HistoryCardMaintenanceSection({
   dbMaintenanceSummaryLoading: boolean;
   dbBackups: HistoryDatabaseBackupListResult | null;
   dbBackupsLoading: boolean;
+  dbCheck: HistoryDatabaseCheckResult | null;
+  dbCheckLoading: boolean;
   onRefreshDatabaseMaintenance: () => void;
   onRefreshDatabaseBackups: () => void;
+  onCheckDatabase: () => void;
   onBackupDatabase: () => void;
   onCompactDatabase: () => void;
   onRecoverDatabase: (backupPath: string | null) => void;
@@ -121,9 +128,12 @@ export function HistoryCardMaintenanceSection({
             summaryLoading={dbMaintenanceSummaryLoading}
             backups={dbBackups}
             backupsLoading={dbBackupsLoading}
+            check={dbCheck}
+            checkLoading={dbCheckLoading}
             busy={busy}
             onRefresh={onRefreshDatabaseMaintenance}
             onRefreshBackups={onRefreshDatabaseBackups}
+            onCheck={onCheckDatabase}
             onBackup={onBackupDatabase}
             onCompact={onCompactDatabase}
             onRecover={onRecoverDatabase}

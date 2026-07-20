@@ -88,13 +88,6 @@ import type {
 import { ThemeModeMenu } from "@/components/ThemeModeMenu";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -374,6 +367,7 @@ import type {
   HistoryArtifactQueryFilters,
   HistoryArtifactQueryResponse,
   HistoryDatabaseBackupListResult,
+  HistoryDatabaseCheckResult,
   HistoryDatabaseMaintenanceSummary,
   HistoryDeleteImpact,
   HistoryDeleteMode,
@@ -523,6 +517,8 @@ export function App({ service }: Props) {
   const [historyDatabaseMaintenanceLoading, setHistoryDatabaseMaintenanceLoading] = useState(false);
   const [historyDatabaseBackups, setHistoryDatabaseBackups] = useState<HistoryDatabaseBackupListResult | null>(null);
   const [historyDatabaseBackupsLoading, setHistoryDatabaseBackupsLoading] = useState(false);
+  const [historyDatabaseCheck, setHistoryDatabaseCheck] = useState<HistoryDatabaseCheckResult | null>(null);
+  const [historyDatabaseCheckLoading, setHistoryDatabaseCheckLoading] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>(() => loadNotificationHistory());
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [diffFocusRequest, setDiffFocusRequest] = useState<DiffFocusRequest | null>(null);
@@ -1065,6 +1061,7 @@ const {
     handleRepairHistoryDatabase,
     refreshHistoryDatabaseMaintenance,
     refreshHistoryDatabaseBackups,
+    refreshHistoryDatabaseCheck,
     handleBackupHistoryDatabase,
     handleCompactHistoryDatabase,
     handleRecoverHistoryDatabase} = createHistoryHandlers({
@@ -1091,6 +1088,8 @@ const {
     setHistoryDatabaseMaintenanceLoading,
     setHistoryDatabaseBackups,
     setHistoryDatabaseBackupsLoading,
+    setHistoryDatabaseCheck,
+    setHistoryDatabaseCheckLoading,
     setHistoryArtifactMode,
     setHistoryArtifactQuery,
     setHistoryArtifactLoading,
@@ -1271,6 +1270,7 @@ const {
     applyPromptSaveResult,
     handleSavePromptDraft,
     handleRestoreDefaultPrompt,
+    handleRestorePromptBackup,
     handleCreatePrompt,
     handleDeletePrompt,
     applyUpdatedDefaultPromptWorkflow,
@@ -1639,30 +1639,41 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
               <span className="vercel-icon-frame hidden size-8 sm:flex">
                 <ActiveViewIcon className="size-4" />
               </span>
-              <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-                <h1 id="fyadr-active-view-title" className="sr-only">{activeViewMeta.label}</h1>
-                <Breadcrumb>
-                  <BreadcrumbList className="text-xs">
-                    <BreadcrumbItem>
-                      <span className="text-muted-foreground">论文 AI 降检平台</span>
-                    </BreadcrumbItem>
-                    <BreadcrumbSeparator />
-                    <BreadcrumbItem>
-                      <BreadcrumbPage className="font-semibold">{activeViewMeta.label}</BreadcrumbPage>
-                    </BreadcrumbItem>
-                  </BreadcrumbList>
-                </Breadcrumb>
-                <p className="hidden truncate text-[11px] leading-none text-muted-foreground lg:block">{activeViewMeta.description}</p>
+              <div className="flex min-w-0 flex-1 flex-col justify-center">
+                <h1 id="fyadr-active-view-title" className="truncate text-sm font-semibold leading-5">{activeViewMeta.label}</h1>
+                <p className="hidden truncate text-[11px] leading-4 text-muted-foreground md:block">{activeViewMeta.description}</p>
               </div>
+              <Button
+                type="button"
+                variant={notificationStatusKind === "error" ? "outlineDanger" : hasStatusFeedback ? "outlineSuccess" : unreadNotificationCount || activeRuntimeTaskCount ? "outline" : "ghost"}
+                size="sm"
+                className={cn(
+                  "relative size-9 min-w-9 shrink-0 justify-center px-0 text-xs lg:h-8 lg:w-auto lg:min-w-[200px] lg:max-w-[min(36vw,480px)] lg:justify-start lg:px-3",
+                  hasStatusFeedback && "border-border bg-muted/60 shadow-sm",
+                  notificationStatusKind === "error" && "border-destructive/40 bg-destructive/10",
+                )}
+                aria-label="打开通知与任务中心"
+                aria-live="polite"
+                onClick={openNotificationCenter}
+              >
+                <NotificationStatusIcon className={cn(hasActiveOperationFeedback && LOADING_ICON_CLASS_NAME)} data-icon="inline-start" />
+                {unreadNotificationCount || activeRuntimeTaskCount || error ? (
+                  <span className={cn("absolute right-1 top-1 size-2 rounded-full ring-2 ring-background lg:hidden", error ? "bg-destructive" : "bg-primary")} aria-hidden="true" />
+                ) : null}
+                <Badge variant={notificationStatusKind === "error" ? "danger" : hasStatusFeedback ? "secondary" : "outline"} className="hidden shrink-0 xl:inline-flex">
+                  {notificationStatusLabel}
+                </Badge>
+                <span className={cn("hidden min-w-0 flex-1 truncate text-left text-foreground lg:block", hasStatusFeedback && "font-semibold")}>{notificationStatusText}</span>
+              </Button>
               <ThemeModeMenu />
             </div>
-            <div className="vercel-subbar flex h-11 min-w-0 items-center gap-2 overflow-hidden border-t px-3 text-xs sm:h-10 sm:px-4">
+            <div className="vercel-subbar flex h-10 min-w-0 items-center gap-2 overflow-hidden border-t px-3 text-xs sm:px-4">
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
                 data-ui-section="current-file-chip"
-                className="h-9 min-w-0 flex-1 justify-start overflow-hidden px-2 text-xs sm:h-7 sm:min-w-[16rem] sm:max-w-[min(58vw,56rem)] sm:flex-none"
+                className="h-8 min-w-0 flex-1 justify-start overflow-hidden px-2 text-xs sm:h-7 sm:min-w-[16rem] sm:max-w-[min(54vw,48rem)] sm:flex-none"
                 onClick={() => navigateToWorkbenchView("home")}
               >
                 <FileText data-icon="inline-start" />
@@ -1670,40 +1681,17 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
                 <span className="min-w-0 truncate text-foreground">{documentStatus ? formatFileScopeLabel(documentStatus.sourcePath) : "未选择"}</span>
               </Button>
               <div className="flex shrink-0 items-center gap-2">
-                <Separator orientation="vertical" className="hidden h-4 md:block" />
-                <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs md:inline-flex" onClick={() => navigateToWorkbenchView("model")}>
+                <Separator orientation="vertical" className="hidden h-4 min-[1040px]:block" />
+                <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs min-[1040px]:inline-flex" onClick={() => navigateToWorkbenchView("model")}>
                   <Route data-icon="inline-start" />
                   <span className="text-muted-foreground">路线</span>
                   <span className="max-w-[260px] truncate text-foreground">{getPromptProfileLabel(modelConfig.promptProfile, promptWorkflows)} · {formatPromptSequence(modelConfig.promptSequence, promptOptions, modelConfig.promptProfile, promptWorkflows)}</span>
                 </Button>
-                <Separator orientation="vertical" className="hidden h-4 md:block" />
-                <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs md:inline-flex" onClick={() => openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)}>
+                <Separator orientation="vertical" className="hidden h-4 min-[1280px]:block" />
+                <Button type="button" variant="ghost" size="sm" className="hidden h-7 min-w-0 shrink-0 px-2 text-xs min-[1280px]:inline-flex" onClick={() => openDiffTaskTarget(diffDashboardStats.preferredFilter, diffDashboardStats.preferredChunkId)}>
                   <Wand2 data-icon="inline-start" />
                   <span className="text-muted-foreground">Diff</span>
                   <span className="text-foreground">{formatDiffDashboardLabel(diffDashboardStats)}</span>
-                </Button>
-                <Separator orientation="vertical" className="hidden h-4 md:block" />
-                <Button
-                  type="button"
-                  variant={notificationStatusKind === "error" ? "outlineDanger" : hasStatusFeedback ? "outlineSuccess" : unreadNotificationCount || activeRuntimeTaskCount ? "outline" : "ghost"}
-                  size="sm"
-                  className={cn(
-                    "relative size-9 min-w-9 shrink-0 justify-center px-0 text-xs sm:h-8 sm:w-auto sm:min-w-[220px] sm:max-w-[min(42vw,560px)] sm:justify-start sm:px-3",
-                    hasStatusFeedback && "border-border bg-muted/60 shadow-sm",
-                    notificationStatusKind === "error" && "border-destructive/40 bg-destructive/10",
-                  )}
-                  aria-label="打开通知与任务中心"
-                  aria-live="polite"
-                  onClick={openNotificationCenter}
-                >
-                  <NotificationStatusIcon className={cn(hasActiveOperationFeedback && LOADING_ICON_CLASS_NAME)} data-icon="inline-start" />
-                  {unreadNotificationCount || activeRuntimeTaskCount || error ? (
-                    <span className={cn("absolute right-1 top-1 size-2 rounded-full ring-2 ring-background sm:hidden", error ? "bg-destructive" : "bg-primary")} aria-hidden="true" />
-                  ) : null}
-                  <Badge variant={notificationStatusKind === "error" ? "danger" : hasStatusFeedback ? "secondary" : "outline"} className="hidden shrink-0 sm:inline-flex">
-                    {notificationStatusLabel}
-                  </Badge>
-                  <span className={cn("hidden min-w-0 flex-1 truncate text-left text-foreground sm:block", hasStatusFeedback && "font-semibold")}>{notificationStatusText}</span>
                 </Button>
               </div>
             </div>
@@ -1720,7 +1708,7 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
             ) : null}
           </header>
 
-          <section className="vercel-shell min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 min-[1180px]:overflow-hidden" aria-label={`${activeViewMeta.label}内容`}>
+          <section className="vercel-shell min-h-0 flex-1 overflow-y-auto p-2.5 sm:p-4 lg:p-5 min-[1180px]:overflow-hidden" aria-label={`${activeViewMeta.label}内容`}>
             {activeView === "home" ? (
               <div className="min-h-full overflow-visible min-[1180px]:h-full min-[1180px]:min-h-0 min-[1180px]:overflow-hidden">
                 <div className="grid min-h-full min-w-0 max-w-full gap-4 overflow-visible min-[1180px]:h-full min-[1180px]:min-h-0 min-[1180px]:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)] min-[1180px]:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)]">
@@ -1850,6 +1838,8 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
                     onRestoreDefaultPrompt={(promptId) => handleRestoreDefaultPrompt(promptId)}
                     onCreatePrompt={(payload) => handleCreatePrompt(payload)}
                     onDeletePrompt={(promptId) => handleDeletePrompt(promptId)}
+                    onListPromptBackups={(promptId) => service.listPromptBackups(promptId)}
+                    onRestorePromptBackup={(promptId, relativePath) => handleRestorePromptBackup(promptId, relativePath)}
                     onUpdatePromptWorkflow={(workflowId, payload) => handleUpdatePromptWorkflow(workflowId, payload)}
                     onDirtyStateChange={handlePromptPreviewDirtyStateChange}
                     onConfirmDiscardChanges={requestPromptPreviewDiscardConfirmation}
@@ -1909,8 +1899,11 @@ async function handleRerunChunk(chunkId: string, userFeedback?: string) {
                 dbMaintenanceSummaryLoading={historyDatabaseMaintenanceLoading}
                 dbBackups={historyDatabaseBackups}
                 dbBackupsLoading={historyDatabaseBackupsLoading}
+                dbCheck={historyDatabaseCheck}
+                dbCheckLoading={historyDatabaseCheckLoading}
                 onRefreshDatabaseMaintenance={() => void refreshHistoryDatabaseMaintenance()}
-                onRefreshDatabaseBackups={() => void refreshHistoryDatabaseBackups(false)}
+                onRefreshDatabaseBackups={() => void refreshHistoryDatabaseBackups(true)}
+                onCheckDatabase={() => void refreshHistoryDatabaseCheck()}
                 onBackupDatabase={() => void handleBackupHistoryDatabase("manual")}
                 onCompactDatabase={() => void handleCompactHistoryDatabase(true)}
                 onRecoverDatabase={(backupPath) => void handleRecoverHistoryDatabase(backupPath)}

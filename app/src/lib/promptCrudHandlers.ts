@@ -98,9 +98,9 @@ export function createPromptCrudHandlers(
     }
   }
 
-  function applyPromptSaveResult(result: PromptSaveResult) {
+  function applyPromptSaveResult(result: PromptSaveResult, options: { activate?: boolean } = {}) {
     deps.setPromptPreviewError("");
-    deps.setActivePromptPreviewId(result.item.id);
+    if (options.activate !== false) deps.setActivePromptPreviewId(result.item.id);
     deps.setPromptPreviews((current) => mergePromptSaveResultIntoPreviews(current, result));
   }
 
@@ -123,7 +123,7 @@ export function createPromptCrudHandlers(
       return saved;
     });
     if (!result) return;
-    applyPromptSaveResult(result);
+    applyPromptSaveResult(result, { activate: deps.getActivePromptPreviewId() === promptId });
     deps.setNotice("提示词已保存。");
   }
 
@@ -140,6 +140,22 @@ export function createPromptCrudHandlers(
     if (!result) return;
     applyPromptSaveResult(result);
     deps.setNotice("已恢复默认提示词。");
+  }
+
+  async function handleRestorePromptBackup(promptId: PromptId, relativePath: string): Promise<boolean> {
+    const item = deps.getPromptPreviews()?.items.find((prompt) => prompt.id === promptId);
+    if (!item || !relativePath) return false;
+    if (!await deps.requestConfirm({
+      title: "恢复提示词历史版本",
+      description: `将用所选历史版本覆盖「${item.label}」当前正文，未保存的修改也会丢失。系统会先备份当前版本。`,
+      confirmLabel: "恢复此版本",
+      tone: "warning",
+    })) return false;
+    const result = await runPromptPreviewMutation(() => deps.service.restorePromptBackup(promptId, relativePath));
+    if (!result) return false;
+    applyPromptSaveResult(result, { activate: deps.getActivePromptPreviewId() === promptId });
+    deps.setNotice("已恢复提示词历史版本，原版本已自动备份。");
+    return true;
   }
 
   async function handleCreatePrompt(payload: { label: string; description?: string; content: string }) {
@@ -225,6 +241,7 @@ export function createPromptCrudHandlers(
     applyPromptSaveResult,
     handleSavePromptDraft,
     handleRestoreDefaultPrompt,
+    handleRestorePromptBackup,
     handleCreatePrompt,
     handleDeletePrompt,
   };

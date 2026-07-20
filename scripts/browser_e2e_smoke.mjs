@@ -15,6 +15,7 @@ const CDP_COMMAND_TIMEOUT_MS = 10_000;
 const ROUTE_TIMEOUT_MS = 12_000;
 
 let smokeDeadline = Number.POSITIVE_INFINITY;
+let reloadSequence = 0;
 
 const WORKBENCH_VIEW_CASES = [
   { view: "home", label: "工作台", expected: "文档入口" },
@@ -502,6 +503,93 @@ async function clickByText(client, text, timeoutMs = 10_000) {
   return point;
 }
 
+async function findClickablePointBySelector(client, selector) {
+  return evaluate(client, `(() => {
+    const selector = ${JSON.stringify(selector)};
+    const candidates = Array.from(document.querySelectorAll(selector));
+    for (const element of candidates) {
+      if (!(element instanceof HTMLElement)) continue;
+      const style = window.getComputedStyle(element);
+      const initialRect = element.getBoundingClientRect();
+      if (
+        initialRect.width <= 0
+        || initialRect.height <= 0
+        || style.visibility === 'hidden'
+        || style.display === 'none'
+        || element.hasAttribute('disabled')
+        || element.getAttribute('aria-disabled') === 'true'
+      ) continue;
+      element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      const rect = element.getBoundingClientRect();
+      const x = Math.max(1, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
+      const y = Math.max(1, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || (hit !== element && !element.contains(hit))) continue;
+      return { x, y, tag: element.tagName.toLowerCase() };
+    }
+    return null;
+  })()`);
+}
+
+async function clickBySelector(client, selector, timeoutMs = 10_000) {
+  const started = Date.now();
+  const effectiveTimeout = boundedTimeout(timeoutMs, `clickable selector ${selector}`);
+  let point = null;
+  while (Date.now() - started < effectiveTimeout) {
+    point = await findClickablePointBySelector(client, selector);
+    if (point) {
+      await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+      await wait(50);
+      const stillTargeted = await evaluate(client, `(() => {
+        const hit = document.elementFromPoint(${JSON.stringify(point.x)}, ${JSON.stringify(point.y)});
+        return Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
+          .some((element) => hit === element || Boolean(hit && element.contains(hit)));
+      })()`, 3000).catch(() => false);
+      if (stillTargeted) break;
+      point = null;
+    }
+    await wait(100);
+  }
+  if (!point) throw new Error(`Unable to find an unobstructed clickable element: ${selector}`);
+  await evaluate(client, `(() => {
+    window.__fyadrE2eClickProbeController?.abort();
+    const controller = new AbortController();
+    window.__fyadrE2eClickProbeController = controller;
+    window.__fyadrE2eLastPointerClick = null;
+    document.addEventListener('click', (event) => {
+      const path = event.composedPath();
+      const record = {
+        selector: ${JSON.stringify(selector)},
+        trusted: event.isTrusted,
+        matched: path.some((item) => item instanceof Element && item.matches(${JSON.stringify(selector)})),
+        defaultPrevented: event.defaultPrevented,
+        path: path.slice(0, 6).map((item) => item instanceof Element ? {
+          tag: item.tagName.toLowerCase(),
+          id: item.id || '',
+          view: item.getAttribute('data-workbench-view') || '',
+          sidebar: item.getAttribute('data-sidebar') || '',
+        } : String(item)),
+      };
+      window.__fyadrE2eLastPointerClick = record;
+      queueMicrotask(() => { record.defaultPrevented = event.defaultPrevented; });
+    }, { capture: true, once: true, signal: controller.signal });
+    return true;
+  })()`, 3000);
+  await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
+  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
+  await wait(150);
+  const clickProbe = await evaluate(client, "window.__fyadrE2eLastPointerClick", 3000).catch(() => null);
+  await evaluate(client, "window.__fyadrE2eClickProbeController?.abort()", 3000).catch(() => undefined);
+  if (!clickProbe?.trusted || !clickProbe?.matched) {
+    throw new Error(`Trusted pointer click did not reach ${selector}: ${JSON.stringify(clickProbe)}`);
+  }
+  return { ...point, clickProbe };
+}
+
+async function clickWorkbenchView(client, view, timeoutMs = 10_000) {
+  return clickBySelector(client, `[data-workbench-view=${JSON.stringify(view)}]`, timeoutMs);
+}
+
 async function clickWorkbenchTab(client, value, label) {
   const focused = await evaluate(client, `(() => {
     const target = Array.from(document.querySelectorAll('[role="tab"]'))
@@ -545,8 +633,15 @@ async function navigateTo(client, url) {
 }
 
 async function reloadPage(client) {
+  const token = `reload-${Date.now()}-${++reloadSequence}`;
+  await evaluate(client, `window.__fyadrE2eReloadToken = ${JSON.stringify(token)}`, 3000);
   await client.send("Page.reload", { ignoreCache: true });
-  await wait(650);
+  await waitForExpression(
+    client,
+    `window.__fyadrE2eReloadToken !== ${JSON.stringify(token)} && document.readyState === "complete"`,
+    "browser reload completion",
+    20_000,
+  );
 }
 
 async function navigateBrowserHistory(client, offset) {
@@ -953,7 +1048,7 @@ async function runSmoke() {
     if (initialRoute && !initialRoute.includes("view=home")) {
       throw new Error(`Initial workbench route was not canonicalized: ${initialRoute}`);
     }
-    await clickByText(browserClient, "模型配置");
+    await clickWorkbenchView(browserClient, "model");
     await waitForText(browserClient, "默认连接", 12_000);
     const modelRoute = await evaluate(browserClient, "location.search", 3000);
     if (!modelRoute.includes("view=model")) throw new Error(`Model navigation did not update the URL: ${modelRoute}`);
@@ -962,15 +1057,17 @@ async function runSmoke() {
     await waitForText(browserClient, "改写对照", 12_000);
     const backRoute = await evaluate(browserClient, "location.search", 3000);
     if (backRoute.includes("view=model")) throw new Error(`Back navigation did not restore the home route: ${backRoute}`);
+    checks.push("browser Back restores the home route and active workspace");
     await navigateBrowserHistory(browserClient, 1);
     await waitForText(browserClient, "默认连接", 12_000);
     const forwardRoute = await evaluate(browserClient, "location.search", 3000);
     if (!forwardRoute.includes("view=model")) throw new Error(`Forward navigation did not restore the model route: ${forwardRoute}`);
-    await browserClient.send("Page.reload", { ignoreCache: true });
-    await wait(750);
+    checks.push("browser Forward restores the model route and active workspace");
+    await reloadPage(browserClient);
     await waitForText(browserClient, "默认连接", 12_000);
     const reloadRoute = await evaluate(browserClient, "location.search", 3000);
     if (!reloadRoute.includes("view=model")) throw new Error(`Reload lost the deep-linked view: ${reloadRoute}`);
+    checks.push("model deep link survives a fully synchronized browser reload");
     const desktopSidebarSemantics = await evaluate(browserClient, `(() => {
       const rail = document.querySelector('[data-sidebar="rail"]');
       const railHost = rail?.closest('[data-side="left"]');
@@ -997,15 +1094,26 @@ async function runSmoke() {
     if (collapsedSidebar?.state !== "collapsed" || !collapsedSidebar.cookie.includes("sidebar_state=false")) {
       throw new Error(`Sidebar collapse did not persist: ${JSON.stringify(collapsedSidebar)}`);
     }
-    await browserClient.send("Page.reload", { ignoreCache: true });
-    await wait(750);
+    await reloadPage(browserClient);
     await waitForText(browserClient, "默认连接", 12_000);
     const restoredSidebarState = await evaluate(browserClient, "document.querySelector('[data-side=\"left\"]')?.getAttribute('data-state')", 3000);
     if (restoredSidebarState !== "collapsed") throw new Error(`Sidebar cookie was not restored after reload: ${restoredSidebarState}`);
+    checks.push("collapsed sidebar state survives a fully synchronized browser reload");
     await evaluate(browserClient, "document.querySelector('[data-sidebar=\"trigger\"]')?.click()", 3000);
     await wait(250);
-    await clickByText(browserClient, "工作台");
-    await waitForText(browserClient, "改写对照", 12_000);
+    const expandedSidebarHomeClick = await clickWorkbenchView(browserClient, "home");
+    try {
+      await waitForText(browserClient, "改写对照", 12_000);
+    } catch (error) {
+      const postClickState = await evaluate(browserClient, `({
+        href: location.href,
+        historyState: history.state,
+        sidebarState: document.querySelector('[data-side="left"]')?.getAttribute('data-state') || '',
+        activeViews: Array.from(document.querySelectorAll('[data-workbench-view][aria-current="page"]'))
+          .map((item) => item.getAttribute('data-workbench-view')),
+      })`, 3000).catch(() => null);
+      throw new Error(`Expanded sidebar home navigation did not commit: ${error instanceof Error ? error.message : String(error)}\nClick: ${JSON.stringify(expandedSidebarHomeClick)}\nState: ${JSON.stringify(postClickState)}`);
+    }
     checks.push("URL deep-link, Back/Forward, reload recovery, sidebar cookie, rail, and ARIA semantics work in a real browser");
 
     let fileChooserIntercepted = false;
@@ -1024,24 +1132,24 @@ async function runSmoke() {
         if (!cancelNoticeVisible) {
           warnings.push("browser canceled the intercepted file chooser without dispatching a page-level cancel event");
         }
-        await clickByText(browserClient, "模型配置");
+        await clickWorkbenchView(browserClient, "model");
         await waitForText(browserClient, "默认连接", 12_000);
-        await clickByText(browserClient, "工作台");
+        await clickWorkbenchView(browserClient, "home");
         await waitForText(browserClient, "改写对照", 12_000);
         checks.push("document picker cancel releases UI and navigation remains clickable");
       } else {
         warnings.push("file chooser cancel smoke skipped because an existing document is already restored in the local backend state");
-        await clickByText(browserClient, "模型配置");
+        await clickWorkbenchView(browserClient, "model");
         await waitForText(browserClient, "默认连接", 12_000);
-        await clickByText(browserClient, "工作台");
+        await clickWorkbenchView(browserClient, "home");
         await waitForText(browserClient, "改写对照", 12_000);
         checks.push("existing document state still allows sidebar navigation");
       }
     } else if (fileChooserIntercepted) {
       warnings.push("file chooser cancel smoke skipped because an already-running local backend may carry user document state");
-      await clickByText(browserClient, "模型配置");
+      await clickWorkbenchView(browserClient, "model");
       await waitForText(browserClient, "默认连接", 12_000);
-      await clickByText(browserClient, "工作台");
+      await clickWorkbenchView(browserClient, "home");
       await waitForText(browserClient, "改写对照", 12_000);
       checks.push("existing local backend state still allows sidebar navigation");
     }
@@ -1050,15 +1158,15 @@ async function runSmoke() {
     await waitForText(browserClient, "文档入口", 10_000);
     checks.push("inline Diff workbench is visible inside the home canvas");
 
-    await clickByText(browserClient, "工作台");
+    await clickWorkbenchView(browserClient, "home");
     await waitForText(browserClient, "改写对照", 10_000);
     checks.push("home controls remain visible beside inline Diff workbench");
 
-    await clickByText(browserClient, "历史记录");
+    await clickWorkbenchView(browserClient, "history");
     await waitForText(browserClient, "继续处理与导出", 12_000);
-    await clickByText(browserClient, "启动诊断");
+    await clickWorkbenchView(browserClient, "diagnostics");
     await waitForText(browserClient, "重新自检", 12_000);
-    await clickByText(browserClient, "提示词");
+    await clickWorkbenchView(browserClient, "prompts");
     await waitForExpression(browserClient, "Boolean(document.querySelector('textarea'))", "prompt editor textarea", 12_000);
     const promptPageUsesFixedBoundary = await evaluate(browserClient, "Boolean(document.querySelector('textarea') && getComputedStyle(document.documentElement).overflow === 'hidden' && getComputedStyle(document.body).overflow === 'hidden')", 3000);
     if (!promptPageUsesFixedBoundary) {
@@ -1122,9 +1230,9 @@ async function runSmoke() {
     checks.push("prompt workspace edits a four-round workflow draft, preserves reorder focus, resets, and returns to prompt editing");
     checks.push("primary sidebar navigation remains responsive");
 
-    await clickByText(browserClient, "工作台");
+    await clickWorkbenchView(browserClient, "home");
     await waitForText(browserClient, "改写对照", 12_000);
-    await clickByText(browserClient, "降检报告");
+    await clickWorkbenchView(browserClient, "quality");
     await waitForExpression(
       browserClient,
       `document.body?.innerText?.includes("降检诊断") || document.body?.innerText?.includes("尚未载入论文")`,
@@ -1139,13 +1247,13 @@ async function runSmoke() {
     } else {
       checks.push("rate-audit report renders an honest empty state without a selected document");
     }
-    await clickByText(browserClient, "工作台");
+    await clickWorkbenchView(browserClient, "home");
     await waitForText(browserClient, "改写对照", 12_000);
 
-    await clickByText(browserClient, "提示词");
+    await clickWorkbenchView(browserClient, "prompts");
     await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
     const desktopDraft = await makePromptDraftDirty(browserClient, " desktop-navigation-guard");
-    await clickByText(browserClient, "工作台");
+    await clickWorkbenchView(browserClient, "home");
     await waitForText(browserClient, "放弃未保存的修改？", 12_000);
     await settleVisibleConfirmation(browserClient, "取消");
     await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
@@ -1156,15 +1264,15 @@ async function runSmoke() {
     if (desktopCancelState?.route !== "prompts" || desktopCancelState?.value !== desktopDraft) {
       throw new Error(`Desktop dirty-navigation cancel lost the route or draft: ${JSON.stringify(desktopCancelState)}`);
     }
-    await clickByText(browserClient, "工作台");
+    await clickWorkbenchView(browserClient, "home");
     await waitForText(browserClient, "放弃未保存的修改？", 12_000);
     await settleVisibleConfirmation(browserClient, "放弃修改");
     await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES[0]);
     checks.push("desktop dirty sidebar navigation preserves drafts on cancel and leaves only after confirmation");
 
-    await clickByText(browserClient, "模型配置");
+    await clickWorkbenchView(browserClient, "model");
     await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "model"));
-    await clickByText(browserClient, "提示词");
+    await clickWorkbenchView(browserClient, "prompts");
     await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
     const historyDraft = await makePromptDraftDirty(browserClient, " history-traversal-guard");
     await navigateBrowserHistory(browserClient, -2);
@@ -1198,7 +1306,7 @@ async function runSmoke() {
     if (staleTraversalState?.route !== "prompts" || staleTraversalState?.value !== staleTraversalDraft) {
       throw new Error(`Stale history confirmation cleared or navigated the current prompt draft: ${JSON.stringify(staleTraversalState)}`);
     }
-    await clickByText(browserClient, "工作台");
+    await clickWorkbenchView(browserClient, "home");
     await waitForText(browserClient, "放弃未保存的修改？", 12_000);
     await settleVisibleConfirmation(browserClient, "取消");
     await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
@@ -1206,7 +1314,7 @@ async function runSmoke() {
     if (guardedAfterStaleConfirmation !== staleTraversalDraft) {
       throw new Error("A stale history confirmation disabled the live prompt draft guard.");
     }
-    await clickByText(browserClient, "工作台");
+    await clickWorkbenchView(browserClient, "home");
     await waitForText(browserClient, "放弃未保存的修改？", 12_000);
     await settleVisibleConfirmation(browserClient, "放弃修改");
     await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES[0]);
@@ -1260,19 +1368,19 @@ async function runSmoke() {
     const mobileHeaderState = await evaluate(browserClient, `(() => {
       const notification = document.querySelector('button[aria-label="打开通知与任务中心"]');
       const subbar = document.querySelector('.vercel-subbar');
-      const productName = Array.from(document.querySelectorAll('header span')).find((item) => item.textContent?.trim() === '论文 AI 降检平台');
-      if (!notification || !subbar || !productName) return null;
+      const activeTitle = document.querySelector('#fyadr-active-view-title');
+      if (!notification || !subbar || !activeTitle) return null;
       const rect = notification.getBoundingClientRect();
-      const productRect = productName.getBoundingClientRect();
+      const titleRect = activeTitle.getBoundingClientRect();
       return {
         notificationVisible: rect.left >= 0 && rect.right <= window.innerWidth && rect.width >= 32,
-        productNameVisible: productRect.left >= 0 && productRect.right <= window.innerWidth && productRect.width > 0,
+        activeTitleVisible: titleRect.left >= 0 && titleRect.right <= window.innerWidth && titleRect.width > 0,
         subbarFits: subbar.scrollWidth <= subbar.clientWidth + 2,
         documentFits: document.documentElement.scrollWidth <= window.innerWidth + 2,
       };
     })()`, 3000);
-    if (!mobileHeaderState?.notificationVisible || !mobileHeaderState?.productNameVisible || !mobileHeaderState?.subbarFits || !mobileHeaderState?.documentFits) {
-      throw new Error(`Mobile global status controls are clipped: ${JSON.stringify(mobileHeaderState)}`);
+    if (!mobileHeaderState?.notificationVisible || !mobileHeaderState?.activeTitleVisible || !mobileHeaderState?.subbarFits || !mobileHeaderState?.documentFits) {
+      throw new Error(`Mobile workspace header controls are clipped: ${JSON.stringify(mobileHeaderState)}`);
     }
     await clickByText(browserClient, "打开通知与任务中心");
     await waitForText(browserClient, "通知与任务中心", 12_000);
@@ -1323,7 +1431,7 @@ async function runSmoke() {
     if (!mobilePromptEditorReachable) {
       throw new Error("Prompt editor is not reachable in the 390x844 mobile viewport.");
     }
-    checks.push("390px mobile product header, page width, and prompt editor remain reachable");
+    checks.push("390px mobile workspace header, page width, and prompt editor remain reachable");
 
     await makePromptDraftDirty(browserClient, " mobile-navigation-guard");
     await evaluate(browserClient, "document.querySelector('[data-sidebar=\"trigger\"]')?.click()", 3000);

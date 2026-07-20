@@ -296,7 +296,7 @@ def run_regression() -> dict[str, object]:
             _assert(long_name_response.status_code == 200, "long Unicode output names must not exceed filesystem component limits")
             long_export_path = Path(unquote(long_name_response.headers.get("X-Export-Path", "")))
             _assert(len(long_export_path.name.encode("utf-8")) <= 255, "server export filename exceeded the filesystem byte limit")
-            _assert(legacy_get_response.status_code == 200 and legacy_get_response.headers.get("Deprecation") == "true", "legacy GET export must be marked deprecated while compatibility remains")
+            _assert(legacy_get_response.status_code == 405, "export-round must reject legacy GET requests because exporting writes an artifact")
             _assert(export_response.headers.get("X-Export-Evidence-Version") == "1", "export-round must version its evidence protocol")
             _assert(export_response.headers.get("X-Export-Overall-Status") == "passed", "successful exports must carry an explicit passed status")
             _assert(export_response.headers.get("X-Export-Source-Kind") == "plain_text", "TXT exports must identify their source kind")
@@ -325,7 +325,10 @@ def run_regression() -> dict[str, object]:
                     )
 
                 web_app.export_round_output = fake_blocked_export
-                blocked_export_response = client.get("/api/export-round?outputPath=finish/regression/export-source.txt&targetFormat=docx")
+                blocked_export_response = client.post(
+                    "/api/export-round",
+                    json={"outputPath": "finish/regression/export-source.txt", "targetFormat": "docx"},
+                )
             finally:
                 web_app.export_round_output = original_export_round_output
             blocked_export_payload = blocked_export_response.get_json()
@@ -336,7 +339,10 @@ def run_regression() -> dict[str, object]:
 
             missing_output = ROOT_DIR / "finish" / "regression" / "missing-export-source.txt"
             missing_output.unlink(missing_ok=True)
-            missing_export_response = client.get(f"/api/export-round?outputPath={quote(str(missing_output))}&targetFormat=txt")
+            missing_export_response = client.post(
+                "/api/export-round",
+                json={"outputPath": str(missing_output), "targetFormat": "txt"},
+            )
             _assert(missing_export_response.status_code == 400, "export-round should reject missing output files")
             _assert("Output file does not exist" in missing_export_response.get_data(as_text=True), "missing output exports should return a clear error")
             checks.append("export-round rejects missing output paths clearly")

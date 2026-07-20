@@ -42,7 +42,7 @@ export function ensureRunStream(runToken: string): RunStream {
     rejectResult = reject;
   });
 
-  const eventSource = new EventSource(`${WEB_API_BASE}/api/run-round-events/${runToken}`);
+  const eventSource = new EventSource(`${WEB_API_BASE}/api/run-round-events/${runToken}`, { withCredentials: true });
   const stream: RunStream = {
     eventSource,
     progressListeners: new Set(),

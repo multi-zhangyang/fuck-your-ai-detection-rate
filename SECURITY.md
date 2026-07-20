@@ -12,19 +12,28 @@ Please do not post private documents, detector reports, API keys, provider URLs,
 
 ## Network boundary
 
-FYADR is a single-user, self-hosted application intended for a local machine or trusted network. The backend currently
-has no built-in login, tenant isolation, or per-route authorization. Its API can
-upload and read workspace documents, use saved provider credentials, trigger
-paid model calls, change prompts/configuration, and perform destructive history
-maintenance.
+FYADR is a single-user, self-hosted application intended for a local machine or trusted network. Optional built-in
+login protects the API when one password source is configured, but there is no tenant isolation or fine-grained
+authorization. The API can upload and read workspace documents, use saved provider credentials, trigger paid model
+calls, change prompts/configuration, and perform destructive history maintenance.
 
 - Keep the default listeners and Docker port mapping on `127.0.0.1`.
-- Do not expose port `8765` directly to the Internet.
+- Do not expose port `8765` directly to the Internet. If shared access is necessary, enable the built-in login and
+  put the service behind an HTTPS reverse proxy with network restrictions and rate limits.
 - CORS only controls which browser origins may read responses; it is not
   authentication. TLS only encrypts transport; it is not authorization.
-- If remote access is required, use a reviewed authentication gateway, restrict
-  source networks, enforce request/rate limits, and keep the backend unreachable
-  from untrusted peers.
+- `GET /api/ping` and CORS `OPTIONS` are intentionally public for health checks
+  and preflight. All other `/api` routes require an authenticated session when
+  login is enabled. State-changing requests also require the `X-FYADR-CSRF`
+  header.
+- Configure exactly one of `FYADR_AUTH_PASSWORD`,
+  `FYADR_AUTH_PASSWORD_HASH`, or `FYADR_AUTH_PASSWORD_FILE`. The session
+  signing key is generated in `FYADR_APP_CONFIG_DIR/.auth-secret-key` and must
+  be persisted and protected like the provider configuration. `FYADR_AUTH_SECRET_KEY`
+  and `FYADR_AUTH_SECRET_FILE` are explicit secret-store overrides.
+- Set `FYADR_AUTH_COOKIE_SECURE=1` only behind HTTPS. The default session
+  cookie is HttpOnly and `SameSite=Lax`; cross-site embedding requires an
+  explicit HTTPS/Secure configuration with an appropriate SameSite policy.
 - Only configure provider Base URLs that you trust. A saved API key is bound to
   its saved Base URL; changing that URL requires explicitly entering the key
   again.

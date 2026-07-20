@@ -240,7 +240,7 @@ export type EnvironmentDiagnostics = {
   recentTaskCount?: number;
   recentTasks?: TaskSummaryItem[];
   taskStateStore?: TaskStateStoreSummary;
-  historyDatabase?: Record<string, unknown>;
+  historyDatabase?: HistoryDatabaseMaintenanceSummary;
   config: {
     path: string;
     exists: boolean;
@@ -1715,6 +1715,34 @@ export type HistoryDatabaseStorageStats = {
   error?: string;
 };
 
+export type HistoryDatabaseIndexStatus = {
+  path?: string;
+  exists?: boolean;
+  schemaVersion?: number;
+  documentCount?: number;
+  roundCount?: number;
+  artifactCount?: number;
+  artifactRefCount?: number;
+  missingArtifactCount?: number;
+  existingBytes?: number;
+  recordsHash?: string;
+  syncedAt?: string;
+  migrationCount?: number;
+  appliedMigrations?: string[];
+};
+
+export type HistoryDatabaseReadiness = {
+  ok?: boolean;
+  reason?: string;
+  checkedAt?: string;
+  actions?: string[];
+  action?: string;
+  cached?: boolean;
+  compactEnabled?: boolean;
+  error?: string;
+  compactError?: string;
+};
+
 export type HistoryDatabaseMaintenanceCounters = {
   deleteEventCount?: number;
   deletedRowCount?: number;
@@ -1747,14 +1775,14 @@ export type HistoryDatabaseBackupEntry = {
 export type HistoryDatabaseMaintenanceSummary = {
   ok: boolean;
   path?: string;
-  status?: Record<string, unknown>;
+  status?: HistoryDatabaseIndexStatus;
   storage?: HistoryDatabaseStorageStats;
   counters?: HistoryDatabaseMaintenanceCounters;
   policy?: HistoryDatabaseCompactionAdvice;
   backupDir?: string;
   backupCount?: number;
   latestBackup?: HistoryDatabaseBackupEntry | null;
-  readiness?: Record<string, unknown>;
+  readiness?: HistoryDatabaseReadiness;
   error?: string;
 };
 

@@ -32,7 +32,7 @@ export function RewriteDiffPanelToolbar({
   return (
     <div className="sticky top-0 z-20 shrink-0 border-b border-border/70 bg-card/90 px-3 py-2.5 backdrop-blur-xl">
       <div className="flex items-center gap-2 overflow-x-auto overflow-y-hidden pb-1">
-        <span className="flex items-center gap-2 text-sm font-semibold tracking-tight text-foreground">
+        <span className="flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
           <span className="vercel-icon-frame size-7"><SplitSquareHorizontal className="size-3.5 text-primary" /></span>
           {title}
         </span>

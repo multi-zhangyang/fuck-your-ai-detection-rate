@@ -1,6 +1,7 @@
 import {
   createHttpRequestError,
 } from "@/lib/webServiceHttpErrorHelpers";
+import { notifyAuthenticationRequired, withAuthRequestInit } from "@/lib/authSession";
 
 export type RequestJsonInit = RequestInit & {
   timeoutMs?: number;
@@ -19,7 +20,11 @@ export const WEB_API_BASE = WEB_API_GLOBALS.__FYADR_WEB_API__ ?? import.meta.env
 
 export async function fetchWithFriendlyError(input: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${WEB_API_BASE}${input}`, init);
+    const response = await fetch(`${WEB_API_BASE}${input}`, withAuthRequestInit(init));
+    if (response.status === 401 && !input.startsWith("/api/auth/")) {
+      notifyAuthenticationRequired();
+    }
+    return response;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       const reason = String((init?.signal as AbortSignal & { reason?: unknown } | undefined)?.reason ?? "");

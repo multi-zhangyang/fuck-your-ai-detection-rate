@@ -17,6 +17,7 @@ import type {
   HistoryArtifactGovernanceMode,
   HistoryArtifactQueryResponse,
   HistoryDatabaseBackupListResult,
+  HistoryDatabaseCheckResult,
   HistoryDatabaseMaintenanceSummary,
   HistoryDocumentSummary,
   HistoryOrphanScanResult,
@@ -53,6 +54,8 @@ export type HistoryHandlersDeps = {
   setHistoryDatabaseMaintenanceLoading: (loading: boolean) => void;
   setHistoryDatabaseBackups: (backups: HistoryDatabaseBackupListResult | null) => void;
   setHistoryDatabaseBackupsLoading: (loading: boolean) => void;
+  setHistoryDatabaseCheck: (check: HistoryDatabaseCheckResult | null) => void;
+  setHistoryDatabaseCheckLoading: (loading: boolean) => void;
   setHistoryArtifactMode: (mode: HistoryArtifactGovernanceMode) => void;
   setHistoryArtifactQuery: (query: HistoryArtifactQueryResponse | null) => void;
   setHistoryArtifactLoading: (loading: boolean) => void;

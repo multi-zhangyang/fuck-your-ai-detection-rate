@@ -212,7 +212,14 @@ check(files.exportParser.includes("X-Export-Content-Contract-Ready") && files.ex
 check(files.exportHealth.includes('label: "格式锁"') && files.exportHealth.includes('label: "正文契约"'), "export health surfaces both format and scope gates");
 check(files.exportHealth.includes("contentContractBlockingCount") && !files.exportHealth.includes("contentContractIssueCount + editableHeadingCount"), "export health does not double-count editable headings already reported by the contract");
 check(files.page.includes("deriveExportHealthPanelState(exportResult)") && files.qualityStats.includes("contentContractBlockingCount: Math.max"), "quality report uses evidence-aware export health and the normalized content-contract blocking count");
-check(files.sidebar.includes(">论文 AI 降检平台<") && files.app.includes(">论文 AI 降检平台<") && files.index.includes("<title>论文 AI 降检平台 | FYADR</title>"), "sidebar, product header, and browser metadata use the product-aligned name");
+check(
+  files.sidebar.includes(">论文 AI 降检平台<")
+  && files.app.includes('id="fyadr-active-view-title"')
+  && files.app.includes("{activeViewMeta.label}")
+  && files.app.includes("document.title = `${viewLabel} | FYADR`")
+  && files.index.includes("<title>论文 AI 降检平台 | FYADR</title>"),
+  "sidebar identity, active page heading, and browser metadata use the product-aligned name",
+);
 check(
   files.roundSuccess.includes("runRateAuditGatedAutoNext")
   && files.roundSuccess.includes("input.result.outputPath")

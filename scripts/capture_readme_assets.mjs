@@ -987,6 +987,14 @@ function buildFixtures() {
   };
 
   return {
+    authStatus: {
+      ok: true,
+      enabled: false,
+      authenticated: true,
+      username: "",
+      csrfToken: "",
+      sessionExpiresAt: "",
+    },
     backendRuntime: {
       ok: true,
       service: "fyadr-web",
@@ -1425,6 +1433,7 @@ function buildInitScript(fixtures) {
       const method = String(init?.method || (typeof input === 'object' && input?.method) || 'GET').toUpperCase();
       records.push({ method, path: url.pathname, query: url.search });
       switch (url.pathname) {
+        case '/api/auth/status': return response(fixtures.authStatus);
         case '/api/ping': return response(fixtures.backendRuntime);
         case '/api/health': return response(fixtures.health);
         case '/api/model-config': return response(fixtures.modelConfig);
