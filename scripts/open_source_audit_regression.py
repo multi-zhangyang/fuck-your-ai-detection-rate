@@ -30,12 +30,14 @@ def main() -> int:
     url_name = "FYADR_" + "BASE_" + "URL"
     url_value = "https://" + "private-provider.invalid" + "/v1"
     local_doc = "C:" + r"\Users\Somebody\Desktop\paper.docx"
+    root_home_doc = "/" + "root/fyadr/private-paper.docx"
     probe_path.write_text(
         "\n".join(
             [
                 f'{key_name}="abcdefghijklmnopqrstuvwxyz123456"',
                 f"{url_name}={url_value}",
                 f"LOCAL_DOC={local_doc}",
+                f"ROOT_HOME_DOC={root_home_doc}",
             ]
         ),
         encoding="utf-8",
@@ -46,7 +48,7 @@ def main() -> int:
         probe_path.unlink(missing_ok=True)
 
     error_codes = {str(item.get("code", "")) for item in report.get("errors", []) if isinstance(item, dict)}
-    expected_codes = {"secret.assignment", "secret.provider_url", "path.windows_absolute"}
+    expected_codes = {"secret.assignment", "secret.provider_url", "path.windows_absolute", "path.user_home"}
     missing_codes = sorted(expected_codes - error_codes)
     if missing_codes:
         raise AssertionError(f"open-source audit did not catch expected private data leaks: {missing_codes}")

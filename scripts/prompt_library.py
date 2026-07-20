@@ -1023,7 +1023,7 @@ def save_prompt_registry(items: list[dict[str, Any]]) -> None:
             "editable": bool(item.get("editable", True)),
         })
         payload.append(serialized)
-    PROMPT_REGISTRY_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(PROMPT_REGISTRY_PATH, payload)
     _clear_prompt_library_cache()
 
 
@@ -1357,7 +1357,7 @@ def save_prompt_workflows(items: list[dict[str, Any]]) -> None:
             "visible": bool(item.get("visible", True)),
         })
         payload.append(serialized)
-    PROMPT_WORKFLOW_REGISTRY_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(PROMPT_WORKFLOW_REGISTRY_PATH, payload)
     _clear_prompt_library_cache()
 
 

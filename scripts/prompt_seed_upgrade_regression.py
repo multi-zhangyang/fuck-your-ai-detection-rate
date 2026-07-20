@@ -282,6 +282,8 @@ def run_regression() -> dict[str, object]:
         _assert(preview_by_id["legacy-only"]["content"] == "legacy custom content\n", "Prompt preview listing did not load migrated custom content")
         roundtripped_registry = _by_id(_read_json(prompt_dir / "prompt-registry.json"))
         roundtripped_workflows = _by_id(_read_json(prompt_dir / "prompt-workflows.json"))
+        _assert(b"\r\n" not in (prompt_dir / "prompt-registry.json").read_bytes(), "Registry saves must use canonical LF on every platform")
+        _assert(b"\r\n" not in (prompt_dir / "prompt-workflows.json").read_bytes(), "Workflow saves must use canonical LF on every platform")
         _assert(roundtripped_registry["alpha"]["category"] == "rewrite", "Prompt metadata extensions were lost during an application save")
         _assert(roundtripped_workflows["cn_custom"]["revision"] == 2, "Workflow metadata extensions were lost during an application save")
 

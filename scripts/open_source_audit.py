@@ -163,7 +163,7 @@ TEXT_RULES = [
         re.compile(r"\b[A-Za-z]:[\\/](?:Users|ChromeDownloads|Downloads|Desktop|Documents)[\\/][^\s`'\"<>]+"),
         "疑似个人 Windows 绝对路径。",
     ),
-    PatternRule("path.user_home", re.compile(r"(?<![%$])(?:/Users|/home)/[^\s`'\"<>]+"), "疑似个人用户目录绝对路径。"),
+    PatternRule("path.user_home", re.compile(r"(?<![%$])(?:/Users|/home|/root)/[^\s`'\"<>]+"), "疑似个人用户目录绝对路径。"),
     PatternRule("brand.old_project_name", OLD_PROJECT_NAME_RE, "疑似旧项目名残留。"),
     PatternRule("text.mojibake_replacement", MOJIBAKE_REPLACEMENT_RE, "疑似乱码替换字符。"),
 ]

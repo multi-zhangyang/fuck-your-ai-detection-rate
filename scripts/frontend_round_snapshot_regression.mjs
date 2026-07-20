@@ -33,7 +33,7 @@ function clone(value) {
 }
 
 function createSnapshot(overrides = {}) {
-  const outputPath = "/root/fyadr/finish/intermediate/doc-a-round1.txt";
+  const outputPath = "fixtures/finish/intermediate/doc-a-round1.txt";
   const compareRevision = "2026-07-18T06:30:00.000000Z";
   const text = "有效改写文本";
   return {
@@ -59,9 +59,9 @@ function createSnapshot(overrides = {}) {
       docId: "doc-a",
       round: 1,
       promptProfile: "default",
-      inputPath: "/root/fyadr/finish/intermediate/doc-a-round0.txt",
+      inputPath: "fixtures/finish/intermediate/doc-a-round0.txt",
       outputPath,
-      manifestPath: "/root/fyadr/finish/intermediate/doc-a.manifest.json",
+      manifestPath: "fixtures/finish/intermediate/doc-a.manifest.json",
       paragraphCount: 1,
       chunkCount: 1,
       updatedAt: compareRevision,
@@ -76,7 +76,7 @@ function createSnapshot(overrides = {}) {
       }],
     },
     review: {
-      path: "/root/fyadr/finish/intermediate/doc-a-round1.review.json",
+      path: "fixtures/finish/intermediate/doc-a-round1.review.json",
       outputPath,
       docId: "doc-a",
       round: 1,
@@ -340,7 +340,7 @@ async function testIntentEpochGuards(snapshotModule) {
   } = snapshotModule;
   const snapshotA = validateRoundArtifactSnapshot(createSnapshot());
   const identityA = { outputPath: snapshotA.outputPath, docId: snapshotA.docId, round: snapshotA.round };
-  const identityB = { outputPath: "/root/fyadr/finish/intermediate/doc-b-round1.txt", docId: "doc-b", round: 1 };
+  const identityB = { outputPath: "fixtures/finish/intermediate/doc-b-round1.txt", docId: "doc-b", round: 1 };
 
   let currentIntent = nextRoundArtifactSnapshotIntent(null, identityA);
   const requestA = currentIntent;
