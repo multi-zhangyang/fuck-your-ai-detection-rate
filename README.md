@@ -54,17 +54,21 @@ FYADR 是一个本地运行的长文档改写与审阅工具，支持 DOCX 和 T
 ```powershell
 git clone https://github.com/multi-zhangyang/fuck-your-ai-detection-rate.git
 cd fuck-your-ai-detection-rate
-pip install -r requirements.txt
-npm --prefix app install
-.\start_web.ps1
+.\start_web.bat
 ```
 
-也可以双击 `start_web.bat`。启动后打开 <http://127.0.0.1:1420>。
+也可以直接双击 `start_web.bat`。首次启动会自动安装缺少的项目依赖，随后打开 <http://127.0.0.1:1420>。
+
+使用 PowerShell 启动：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start_web.ps1
+```
 
 不希望自动打开浏览器时：
 
 ```powershell
-.\start_web.ps1 -NoBrowser
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start_web.ps1 -NoBrowser
 ```
 
 ## 使用流程

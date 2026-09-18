@@ -48,3 +48,19 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         run: python scripts/run_regressions.py --include-browser-e2e --fail-fast
+
+      - name: Verify one-click launcher
+        shell: pwsh
+        run: |
+          & cmd.exe /d /c start_web.bat -NoBrowser
+          if ($LASTEXITCODE -ne 0) {
+            throw "start_web.bat failed with exit code $LASTEXITCODE"
+          }
+          $backend = Invoke-RestMethod -Uri http://127.0.0.1:8765/api/ping -TimeoutSec 5
+          if (-not $backend.ok) {
+            throw "Backend health check failed"
+          }
+          $frontend = Invoke-WebRequest -Uri http://127.0.0.1:1420 -UseBasicParsing -TimeoutSec 5
+          if ($frontend.StatusCode -ne 200 -or -not $frontend.Content.Contains("FYADR")) {
+            throw "Frontend health check failed"
+          }
