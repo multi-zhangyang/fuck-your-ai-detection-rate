@@ -2,10 +2,6 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 
-const backendTarget = process.env.FYADR_E2E_BACKEND_URL
-  || process.env.FYADR_BACKEND_URL
-  || "http://127.0.0.1:8765";
-
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
@@ -20,7 +16,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/api": {
-        target: backendTarget,
+        target: process.env.FYADR_BACKEND_URL || "http://127.0.0.1:8765",
         changeOrigin: true,
       },
     },

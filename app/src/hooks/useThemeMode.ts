@@ -1,5 +1,4 @@
 import { useCallback, useLayoutEffect, useState } from "react";
-import { readStorageValue, writeStorageValue } from "@/lib/safeStorage";
 
 export type ThemeMode = "light" | "dark" | "system";
 export type ResolvedThemeMode = "light" | "dark";
@@ -15,11 +14,12 @@ function isThemeMode(value: unknown): value is ThemeMode {
 
 function getStoredThemeMode(): ThemeMode {
   try {
-    const value = readStorageValue(THEME_MODE_KEY);
-    const migrated = readStorageValue(THEME_MODE_DEFAULT_MIGRATION_KEY) === "1";
+    const storage = globalThis.localStorage;
+    const value = storage?.getItem(THEME_MODE_KEY);
+    const migrated = storage?.getItem(THEME_MODE_DEFAULT_MIGRATION_KEY) === "1";
     if (value === "system" && !migrated) {
-      writeStorageValue(THEME_MODE_KEY, DEFAULT_THEME_MODE);
-      writeStorageValue(THEME_MODE_DEFAULT_MIGRATION_KEY, "1");
+      storage?.setItem(THEME_MODE_KEY, DEFAULT_THEME_MODE);
+      storage?.setItem(THEME_MODE_DEFAULT_MIGRATION_KEY, "1");
       return DEFAULT_THEME_MODE;
     }
     return isThemeMode(value) ? value : DEFAULT_THEME_MODE;
@@ -70,8 +70,8 @@ export function useThemeMode() {
   const setMode = useCallback((nextMode: ThemeMode) => {
     setModeState(nextMode);
     try {
-      writeStorageValue(THEME_MODE_KEY, nextMode);
-      writeStorageValue(THEME_MODE_DEFAULT_MIGRATION_KEY, "1");
+      globalThis.localStorage?.setItem(THEME_MODE_KEY, nextMode);
+      globalThis.localStorage?.setItem(THEME_MODE_DEFAULT_MIGRATION_KEY, "1");
     } catch {
       // Theme preference is cosmetic; ignore storage failures.
     }

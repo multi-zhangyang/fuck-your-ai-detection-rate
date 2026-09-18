@@ -21,14 +21,14 @@ body:
     attributes:
       label: What happened?
       description: Describe the visible symptom and what you expected to happen.
-      placeholder: "Example: after selecting a history item, clicking adopt rewrite does nothing."
+      placeholder: "Example: after reopening a recent document, clicking adopt rewrite does nothing."
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
       label: Reproduction steps
-      description: Give exact steps. Include whether this happens after refresh, history switching, rerun, cancel, or export.
+      description: Give exact steps. Include whether this happens after refresh, reopening a recent document, rerun, cancel, or export.
       placeholder: |
         1. Start backend with ...
         2. Open ...
@@ -47,26 +47,17 @@ body:
         - Rewrite execution
         - Cancel / resume / rerun
         - Diff review UI
-        - Detection report feedback
-        - History / artifact cleanup
+        - Recent documents
         - Word export / formatting
-        - DOCX scope and format preservation
+        - TXT workflow
         - Other
-    validations:
-      required: true
-  - type: textarea
-    id: diagnostics
-    attributes:
-      label: Diagnostics
-      description: In the app, open 启动诊断 and click 复制诊断信息. Paste it here after checking it contains no private data.
-      render: json
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
       label: Logs and screenshots
-      description: Paste backend error text or browser console errors. Screenshots are helpful, but redact document content.
+      description: Paste the visible error or browser console error. Screenshots are helpful, but redact document content.
       render: text
     validations:
       required: false
