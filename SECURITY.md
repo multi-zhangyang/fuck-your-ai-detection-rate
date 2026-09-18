@@ -1,62 +1,17 @@
 # Security and Privacy
 
-Please do not post private documents, detector reports, API keys, provider URLs, local config files, or unreleased thesis content in public issues.
+## 本地数据
 
-## Data flow
+- 模型连接保存在 `%APPDATA%\FYADR\config.json`；浏览器接口不会回传完整密钥。
+- 上传文档、任务断点和导出文件保存在同目录的 `data` 子目录。
+- 服务默认只监听 `127.0.0.1`。
 
-- The Web UI stores model provider settings in a server-side configuration file on the deployment host. Native installations use the current user's FYADR config directory; Docker uses `/app/config/config.json`.
-- Uploaded documents are copied into runtime directories on the deployment host, including `origin/` and `finish/` (or their Docker volume equivalents).
-- Rewrite requests send editable paragraph text to the model provider configured by the user.
-- Protected areas such as table of contents, figures, tables, formulas, and references are not sent to the rewrite pipeline.
-- FYADR does not upload or parse external detector reports. Manually entered feedback is treated only as review context.
+## 外部请求
 
-## Network boundary
+只有用户选中的安全正文会发送给其配置的模型服务。表格、目录字段、公式、绘图、修订、内容控件、页眉和页脚不会进入模型请求。
 
-FYADR is a single-user, self-hosted application intended for a local machine or trusted network. Optional built-in
-login protects the API when one password source is configured, but there is no tenant isolation or fine-grained
-authorization. The API can upload and read workspace documents, use saved provider credentials, trigger paid model
-calls, change prompts/configuration, and perform destructive history maintenance.
+客户端读取系统和环境代理；本机地址自动绕过代理。请求体不包含 `max_tokens` 或 `max_output_tokens`。
 
-- Keep the default listeners and Docker port mapping on `127.0.0.1`.
-- Do not expose port `8765` directly to the Internet. If shared access is necessary, enable the built-in login and
-  put the service behind an HTTPS reverse proxy with network restrictions and rate limits.
-- CORS only controls which browser origins may read responses; it is not
-  authentication. TLS only encrypts transport; it is not authorization.
-- `GET /api/ping` and CORS `OPTIONS` are intentionally public for health checks
-  and preflight. All other `/api` routes require an authenticated session when
-  login is enabled. State-changing requests also require the `X-FYADR-CSRF`
-  header.
-- Configure exactly one of `FYADR_AUTH_PASSWORD`,
-  `FYADR_AUTH_PASSWORD_HASH`, or `FYADR_AUTH_PASSWORD_FILE`. The session
-  signing key is generated in `FYADR_APP_CONFIG_DIR/.auth-secret-key` and must
-  be persisted and protected like the provider configuration. `FYADR_AUTH_SECRET_KEY`
-  and `FYADR_AUTH_SECRET_FILE` are explicit secret-store overrides.
-- Set `FYADR_AUTH_COOKIE_SECURE=1` only behind HTTPS. The default session
-  cookie is HttpOnly and `SameSite=Lax`; cross-site embedding requires an
-  explicit HTTPS/Secure configuration with an appropriate SameSite policy.
-- Only configure provider Base URLs that you trust. A saved API key is bound to
-  its saved Base URL; changing that URL requires explicitly entering the key
-  again.
+## 报告问题
 
-On POSIX, the provider configuration directory and file are restricted to
-`0700` and `0600`. Configuration writes use an atomic temporary-file replace.
-The file still contains usable provider credentials, so do not copy it into bug
-reports, images, backups, or shared volumes without equivalent protection.
-
-## Reporting
-
-For an ordinary bug, open 启动诊断 in the Web UI and click 复制诊断信息, then review and redact the copied payload before pasting it into a public issue.
-
-Do not disclose vulnerability details, credentials, private documents, or provider responses in a public issue. This repository does not currently publish a private reporting address. To request private contact, open a minimal issue titled `Security contact request` without technical details or sensitive material; the maintainer can then arrange a private channel. If private contact cannot be established, do not publish the sensitive report.
-
-For non-sensitive document-dependent bugs, replace the document text with a minimal anonymized example that reproduces the issue.
-
-## Release hygiene
-
-Before publishing a repository snapshot, run:
-
-```bash
-node scripts/run_python.mjs scripts/open_source_audit.py
-```
-
-The audit blocks likely API keys, private model provider URLs, personal absolute paths, old project names, and mojibake text. Warnings about local PDFs, DOCX files, screenshots, `finish/`, `origin/`, `logs/`, `app/dist/`, and `app/node_modules/` must be checked before committing.
+请使用最小合成样例复现，不要上传真实文档全文、API Key、私有服务地址或未脱敏截图。

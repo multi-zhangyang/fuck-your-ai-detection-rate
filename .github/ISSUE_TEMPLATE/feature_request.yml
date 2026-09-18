@@ -26,10 +26,10 @@ body:
         - UI / interaction
         - Rewrite strategy
         - Model provider configuration
-        - Detection report feedback
-        - History / artifacts
+        - Prompt templates and plans
+        - Recent documents
         - DOCX export / formatting
-        - DOCX scope and format preservation
+        - TXT workflow
         - Developer experience
         - Documentation
     validations:

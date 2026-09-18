@@ -39,27 +39,13 @@ const config: Config = {
           DEFAULT: "hsl(var(--destructive))",
           foreground: "hsl(var(--destructive-foreground))",
         },
-        success: {
-          DEFAULT: "hsl(var(--success))",
-          foreground: "hsl(var(--success-foreground))",
-        },
-        warning: {
-          DEFAULT: "hsl(var(--warning))",
-          foreground: "hsl(var(--warning-foreground))",
-        },
-        info: {
-          DEFAULT: "hsl(var(--info))",
-          foreground: "hsl(var(--info-foreground))",
-        },
-        status: {
-          success: "hsl(var(--success-text))",
-          warning: "hsl(var(--warning-text))",
-          info: "hsl(var(--info-text))",
-          danger: "hsl(var(--destructive-text))",
-        },
         card: {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
         },
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",
@@ -79,12 +65,22 @@ const config: Config = {
         sm: "calc(var(--radius) - 6px)",
       },
       fontFamily: {
-        sans: ["ui-sans-serif", "-apple-system", "BlinkMacSystemFont", "\"Segoe UI Variable\"", "\"Segoe UI\"", "\"PingFang SC\"", "\"Microsoft YaHei UI\"", "sans-serif"],
-        serif: ["ui-serif", "\"Noto Serif SC\"", "\"Songti SC\"", "serif"],
-        mono: ["ui-monospace", "\"SFMono-Regular\"", "\"Cascadia Code\"", "\"JetBrains Mono\"", "monospace"],
-      },
-      boxShadow: {
-        soft: "0 1px 2px hsl(0 0% 0% / 0.05), 0 16px 40px -24px hsl(0 0% 0% / 0.24)",
+        sans: [
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          '\\"Segoe UI\\"',
+          '\\"PingFang SC\\"',
+          '\\"Microsoft YaHei UI\\"',
+          "sans-serif",
+        ],
+        serif: ['\\"Source Serif 4\\"', '\\"Noto Serif SC\\"', "serif"],
+        mono: [
+          "ui-monospace",
+          '\\"Cascadia Code\\"',
+          '\\"Microsoft YaHei UI\\"',
+          "monospace",
+        ],
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
@@ -92,12 +88,20 @@ const config: Config = {
       },
       keyframes: {
         "accordion-down": {
-          from: { height: "0" },
-          to: { height: "var(--radix-accordion-content-height)" },
+          from: {
+            height: "0",
+          },
+          to: {
+            height: "var(--radix-accordion-content-height)",
+          },
         },
         "accordion-up": {
-          from: { height: "var(--radix-accordion-content-height)" },
-          to: { height: "0" },
+          from: {
+            height: "var(--radix-accordion-content-height)",
+          },
+          to: {
+            height: "0",
+          },
         },
       },
     },

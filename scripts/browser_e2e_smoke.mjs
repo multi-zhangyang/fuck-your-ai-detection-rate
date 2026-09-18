@@ -2,29 +2,60 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const APP_DIR = resolve(ROOT_DIR, "app");
 const REPORT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_smoke_report.json");
 const SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_smoke_failure.png");
+const HOME_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_home.png");
+const RUNNING_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_running.png");
+const RESULTS_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_results.png");
+const MODEL_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_model.png");
+const MODEL_OFFICIAL_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_model_deepseek.png");
+const MODEL_MOBILE_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_model_mobile.png");
+const PROMPT_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_prompt.png");
+const PROTECTION_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_protection.png");
+const RECENT_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_recent.png");
+const TABLET_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_tablet.png");
+const MOBILE_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_mobile.png");
 const DEFAULT_TIMEOUT_MS = 90_000;
-const OVERALL_TIMEOUT_MS = 210_000;
-const CDP_COMMAND_TIMEOUT_MS = 10_000;
-const ROUTE_TIMEOUT_MS = 12_000;
 
-let smokeDeadline = Number.POSITIVE_INFINITY;
-let reloadSequence = 0;
+const SCOPE_FIXTURE_DOCUMENT_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="1"/></w:pPr><w:r><w:t>智能门禁系统设计与实现</w:t></w:r></w:p>
+    <w:p><w:r><w:t>摘要：本研究围绕校园门禁场景设计二维码验证流程，并通过10组实验完成可追溯的权限管理。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>关键词：门禁系统；二维码；权限管理</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="1"/></w:pPr><w:r><w:t>第一章 绪论</w:t></w:r></w:p>
+    <w:p><w:r><w:t>系统采用分层架构，实验值10，能够支持访客登记、二维码核验和通行记录追溯。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>图1-1 系统总体架构</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="1"/></w:pPr><w:r><w:t>致谢</w:t></w:r></w:p>
+    <w:p><w:r><w:t>在论文完成过程中，感谢指导教师在需求分析与论文修改方面给予的帮助。</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="1"/></w:pPr><w:r><w:t>参考文献</w:t></w:r></w:p>
+    <w:p><w:r><w:t>[1] 张三. 智能门禁系统设计与实现[J]. 软件工程, 2024.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>[2] Li Ming. Access Control Workflow Design[J]. Systems, 2023.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Abstract: This paper designs a QR-code access-control workflow and verifies its traceable permission management.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>KeyWords: access control; QR code; permission management</w:t></w:r></w:p>
+    <w:sectPr/>
+  </w:body>
+</w:document>`;
 
-const WORKBENCH_VIEW_CASES = [
-  { view: "home", label: "工作台", expected: "文档入口" },
-  { view: "quality", label: "降检报告", expected: "尚未载入论文", alternate: "降检诊断" },
-  { view: "model", label: "模型配置", expected: "默认连接" },
-  { view: "prompts", label: "提示词", selector: "textarea" },
-  { view: "protection", label: "保护区地图", expected: "文档边界地图" },
-  { view: "history", label: "历史记录", expected: "继续处理与导出" },
-  { view: "diagnostics", label: "启动诊断", expected: "重新自检" },
+const SCOPE_FIXTURE_EXPECTATIONS = [
+  { label: "论文标题", text: "智能门禁系统设计与实现", selected: false },
+  { label: "行内中文摘要", text: "摘要：本研究围绕校园门禁场景设计二维码验证流程，并通过10组实验完成可追溯的权限管理。", selected: true },
+  { label: "中文关键词", text: "关键词：门禁系统；二维码；权限管理", selected: false },
+  { label: "正文标题", text: "第一章 绪论", selected: false },
+  { label: "正文", text: "系统采用分层架构，实验值10，能够支持访客登记、二维码核验和通行记录追溯。", selected: true },
+  { label: "题注", text: "图1-1 系统总体架构", selected: false },
+  { label: "致谢标题", text: "致谢", selected: false },
+  { label: "致谢正文", text: "在论文完成过程中，感谢指导教师在需求分析与论文修改方面给予的帮助。", selected: true },
+  { label: "参考文献标题", text: "参考文献", selected: false },
+  { label: "中文参考文献", text: "[1] 张三. 智能门禁系统设计与实现[J]. 软件工程, 2024.", selected: false },
+  { label: "英文参考文献", text: "[2] Li Ming. Access Control Workflow Design[J]. Systems, 2023.", selected: false },
+  { label: "参考文献后的行内英文摘要", text: "Abstract: This paper designs a QR-code access-control workflow and verifies its traceable permission management.", selected: true },
+  { label: "英文关键词", text: "KeyWords: access control; QR code; permission management", selected: false },
 ];
 
 class ManagedProcess {
@@ -34,16 +65,11 @@ class ManagedProcess {
     this.args = args;
     this.logs = [];
     this.exitCode = null;
-    this.exitSignal = null;
-    this.exited = false;
-    this.spawnError = null;
-    this.stopPromise = null;
     this.process = spawn(command, args, {
       cwd: options.cwd || ROOT_DIR,
       env: { ...process.env, PYTHONIOENCODING: "utf-8", ...(options.env || {}) },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      detached: process.platform !== "win32",
     });
     const append = (stream, chunk) => {
       const text = String(chunk || "");
@@ -52,17 +78,8 @@ class ManagedProcess {
     };
     this.process.stdout?.on("data", (chunk) => append("stdout", chunk));
     this.process.stderr?.on("data", (chunk) => append("stderr", chunk));
-    this.process.on("error", (error) => {
-      this.spawnError = error;
-      append("process", error instanceof Error ? error.message : String(error));
-    });
-    this.exitPromise = new Promise((resolveExit) => {
-      this.process.once("exit", (code, signal) => {
-        this.exitCode = code;
-        this.exitSignal = signal;
-        this.exited = true;
-        resolveExit();
-      });
+    this.process.on("exit", (code) => {
+      this.exitCode = code;
     });
   }
 
@@ -70,26 +87,10 @@ class ManagedProcess {
     return this.logs.join("").slice(-5000);
   }
 
-  async stop() {
-    if (this.stopPromise) return this.stopPromise;
-    this.stopPromise = this.stopProcessTree();
-    return this.stopPromise;
-  }
-
-  async stopProcessTree() {
-    const pid = this.process?.pid;
-    if (!pid) return;
-    if (process.platform === "win32") {
-      await killWindowsProcessTree(pid);
-      return;
-    }
-
-    signalPosixProcessTree(pid, "SIGTERM");
-    await Promise.race([this.exitPromise, wait(1500)]);
-    if (isPosixProcessTreeAlive(pid)) {
-      signalPosixProcessTree(pid, "SIGKILL");
-      await Promise.race([this.exitPromise, wait(1000)]);
-    }
+  stop() {
+    if (!this.process || this.process.killed || this.exitCode !== null) return;
+    this.process.kill("SIGTERM");
+    windowlessKillFallback(this.process);
   }
 }
 
@@ -102,23 +103,15 @@ class CdpClient {
   }
 
   connect() {
-    return withTimeout(new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       this.socket = new WebSocket(this.webSocketUrl);
       this.socket.addEventListener("open", () => resolve());
       this.socket.addEventListener("error", () => reject(new Error("Failed to connect to browser CDP websocket.")), { once: true });
-      this.socket.addEventListener("close", () => {
-        for (const { reject: rejectCallback, timer } of this.callbacks.values()) {
-          clearTimeout(timer);
-          rejectCallback(new Error("Browser CDP socket closed before the command completed."));
-        }
-        this.callbacks.clear();
-      });
       this.socket.addEventListener("message", (event) => {
         const message = JSON.parse(String(event.data || "{}"));
         if (message.id && this.callbacks.has(message.id)) {
-          const { resolve: resolveCallback, reject: rejectCallback, timer } = this.callbacks.get(message.id);
+          const { resolve: resolveCallback, reject: rejectCallback } = this.callbacks.get(message.id);
           this.callbacks.delete(message.id);
-          clearTimeout(timer);
           if (message.error) {
             rejectCallback(new Error(message.error.message || JSON.stringify(message.error)));
           } else {
@@ -131,7 +124,7 @@ class CdpClient {
           handlers.forEach((handler) => handler(message.params || {}));
         }
       });
-    }), boundedTimeout(CDP_COMMAND_TIMEOUT_MS, "browser CDP connection"), "Timed out connecting to browser CDP websocket.");
+    });
   }
 
   on(eventName, handler) {
@@ -140,18 +133,14 @@ class CdpClient {
     this.eventHandlers.set(eventName, handlers);
   }
 
-  send(method, params = {}, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
+  send(method, params = {}) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(`Browser CDP socket is not open for ${method}.`));
     }
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params });
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.callbacks.delete(id);
-        reject(new Error(`Browser CDP command timed out: ${method}`));
-      }, boundedTimeout(timeoutMs, `browser CDP command ${method}`));
-      this.callbacks.set(id, { resolve, reject, timer });
+      this.callbacks.set(id, { resolve, reject });
       this.socket.send(payload);
     });
   }
@@ -165,52 +154,12 @@ class CdpClient {
   }
 }
 
-function signalPosixProcessTree(pid, signal) {
-  try {
-    process.kill(-pid, signal);
-  } catch (error) {
-    if (error?.code !== "ESRCH") {
-      try {
-        process.kill(pid, signal);
-      } catch {
-        // The process already exited between the checks.
-      }
+function windowlessKillFallback(childProcess) {
+  setTimeout(() => {
+    if (!childProcess.killed && childProcess.exitCode === null) {
+      childProcess.kill("SIGKILL");
     }
-  }
-}
-
-function isPosixProcessTreeAlive(pid) {
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
-}
-
-function killWindowsProcessTree(pid) {
-  return new Promise((resolveKill) => {
-    const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    const timer = setTimeout(() => {
-      try {
-        killer.kill();
-      } catch {
-        // Ignore cleanup races.
-      }
-      resolveKill();
-    }, 5000);
-    killer.once("error", () => {
-      clearTimeout(timer);
-      resolveKill();
-    });
-    killer.once("exit", () => {
-      clearTimeout(timer);
-      resolveKill();
-    });
-  });
+  }, 2500).unref?.();
 }
 
 function npmInvocation(args) {
@@ -223,25 +172,8 @@ function npmInvocation(args) {
   return { command: "npm", args };
 }
 
-function pythonExecutable() {
-  if (process.env.PYTHON) return process.env.PYTHON;
-  const localCandidates = process.platform === "win32"
-    ? [resolve(ROOT_DIR, ".venv", "Scripts", "python.exe")]
-    : [resolve(ROOT_DIR, ".venv", "bin", "python")];
-  return localCandidates.find((candidate) => existsSync(candidate))
-    || (process.platform === "win32" ? "python" : "python3");
-}
-
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function boundedTimeout(timeoutMs, label) {
-  const remaining = smokeDeadline - Date.now();
-  if (remaining <= 0) {
-    throw new Error(`Browser E2E exceeded its ${OVERALL_TIMEOUT_MS}ms internal budget while waiting for ${label}.`);
-  }
-  return Math.max(1, Math.min(timeoutMs, remaining));
 }
 
 function withTimeout(promise, timeoutMs, message) {
@@ -254,7 +186,7 @@ function withTimeout(promise, timeoutMs, message) {
 
 async function requestOk(url, timeoutMs = 8000) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), boundedTimeout(timeoutMs, `HTTP request ${url}`));
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { signal: controller.signal });
     return response.ok;
@@ -267,16 +199,11 @@ async function requestOk(url, timeoutMs = 8000) {
 
 async function waitForHttp(url, timeoutMs, label, managedProcess = null) {
   const started = Date.now();
-  const effectiveTimeout = boundedTimeout(timeoutMs, label);
-  while (Date.now() - started < effectiveTimeout) {
-    if (managedProcess?.spawnError) {
-      throw new Error(`${label} failed to start: ${managedProcess.spawnError.message}\n${managedProcess.tail()}`);
+  while (Date.now() - started < timeoutMs) {
+    if (managedProcess?.exitCode !== null) {
+      throw new Error(`${label} exited early with code ${managedProcess.exitCode}.\n${managedProcess.tail()}`);
     }
-    if (managedProcess?.exited) {
-      const status = managedProcess.exitSignal ? `signal ${managedProcess.exitSignal}` : `code ${managedProcess.exitCode}`;
-      throw new Error(`${label} exited early with ${status}.\n${managedProcess.tail()}`);
-    }
-    if (await requestOk(url, Math.min(2000, effectiveTimeout))) {
+    if (await requestOk(url)) {
       return;
     }
     await wait(500);
@@ -308,7 +235,6 @@ function getBrowserCandidates() {
     );
   } else {
     candidates.push(
-      "/snap/bin/chromium",
       "/usr/bin/google-chrome",
       "/usr/bin/google-chrome-stable",
       "/usr/bin/chromium",
@@ -328,54 +254,28 @@ function findBrowserExecutable() {
   return browser;
 }
 
-async function getFreePort(excludedPorts = new Set()) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const port = await new Promise((resolvePort, rejectPort) => {
-      const server = net.createServer();
-      server.unref();
-      server.on("error", rejectPort);
-      server.listen(0, "127.0.0.1", () => {
-        const address = server.address();
-        const candidate = typeof address === "object" && address ? address.port : 0;
-        server.close(() => resolvePort(candidate));
-      });
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => resolve(port));
     });
-    if (port > 0 && !excludedPorts.has(port)) return port;
-  }
-  throw new Error("Unable to allocate distinct local ports for browser E2E.");
-}
-
-function parsePort(value, label) {
-  const port = Number(value);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error(`${label} must be an integer between 1 and 65535.`);
-  }
-  return port;
-}
-
-async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
-  const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    boundedTimeout(timeoutMs, `HTTP request ${url}`),
-  );
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
+  });
 }
 
 async function evaluate(client, expression, timeoutMs = 5000) {
-  const bounded = boundedTimeout(timeoutMs, "Runtime.evaluate");
   const result = await withTimeout(
     client.send("Runtime.evaluate", {
       expression,
       awaitPromise: true,
       returnByValue: true,
-      timeout: bounded,
+      timeout: timeoutMs,
     }),
-    bounded + 1000,
+    timeoutMs + 1000,
     `Runtime.evaluate timed out: ${expression.slice(0, 120)}`,
   );
   if (result.exceptionDetails) {
@@ -386,40 +286,20 @@ async function evaluate(client, expression, timeoutMs = 5000) {
 
 async function waitForText(client, text, timeoutMs = 10_000) {
   const started = Date.now();
-  const effectiveTimeout = boundedTimeout(timeoutMs, `text ${text}`);
-  while (Date.now() - started < effectiveTimeout) {
-    try {
-      const found = await evaluate(client, `document.body?.innerText?.includes(${JSON.stringify(text)}) ?? false`, 3000);
-      if (found) return;
-    } catch {
-      // A navigation can replace the execution context between CDP calls.
-    }
+  while (Date.now() - started < timeoutMs) {
+    const found = await evaluate(client, `document.body?.innerText?.includes(${JSON.stringify(text)}) ?? false`, 3000);
+    if (found) return;
     await wait(250);
   }
-  let diagnostic = null;
-  try {
-    diagnostic = await evaluate(client, `({
-      href: location.href,
-      activeViews: Array.from(document.querySelectorAll('[data-workbench-view][aria-current="page"]'))
-        .map((item) => item.getAttribute('data-workbench-view')),
-      body: document.body?.innerText?.slice(0, 1200) ?? '',
-    })`, 3000);
-  } catch {
-    // Preserve the original timeout when the renderer is unresponsive too.
-  }
-  throw new Error(`Timed out waiting for text: ${text}\nPage: ${diagnostic?.href || "unknown"}\nActive: ${JSON.stringify(diagnostic?.activeViews || [])}\nCurrent page text:\n${diagnostic?.body || ""}`);
+  const body = await evaluate(client, "document.body?.innerText?.slice(0, 1200) ?? ''", 3000);
+  throw new Error(`Timed out waiting for text: ${text}\nCurrent page text:\n${body}`);
 }
 
 async function waitForTextGone(client, text, timeoutMs = 10_000) {
   const started = Date.now();
-  const effectiveTimeout = boundedTimeout(timeoutMs, `text disappearance ${text}`);
-  while (Date.now() - started < effectiveTimeout) {
-    try {
-      const found = await evaluate(client, `document.body?.innerText?.includes(${JSON.stringify(text)}) ?? false`, 3000);
-      if (!found) return;
-    } catch {
-      // Retry while the page swaps execution contexts.
-    }
+  while (Date.now() - started < timeoutMs) {
+    const found = await evaluate(client, `document.body?.innerText?.includes(${JSON.stringify(text)}) ?? false`, 3000);
+    if (!found) return;
     await wait(250);
   }
   throw new Error(`Timed out waiting for text to disappear: ${text}`);
@@ -427,28 +307,19 @@ async function waitForTextGone(client, text, timeoutMs = 10_000) {
 
 async function waitForExpression(client, expression, label, timeoutMs = 10_000) {
   const started = Date.now();
-  const effectiveTimeout = boundedTimeout(timeoutMs, label);
-  while (Date.now() - started < effectiveTimeout) {
-    try {
-      const found = await evaluate(client, expression, 3000);
-      if (found) return;
-    } catch {
-      // Retry transient CDP context loss or a busy page during navigation.
-    }
+  while (Date.now() - started < timeoutMs) {
+    const found = await evaluate(client, expression, 3000);
+    if (found) return;
     await wait(250);
   }
-  let body = "";
-  try {
-    body = await evaluate(client, "document.body?.innerText?.slice(0, 1200) ?? ''", 3000);
-  } catch {
-    // Preserve the original timeout when the renderer is unresponsive too.
-  }
+  const body = await evaluate(client, "document.body?.innerText?.slice(0, 1200) ?? ''", 3000);
   throw new Error(`Timed out waiting for ${label}\nCurrent page text:\n${body}`);
 }
 
-async function findClickablePointByText(client, text) {
+async function clickElementByText(client, text, preferLast = false) {
   return evaluate(client, `(() => {
     const needle = ${JSON.stringify(text)};
+    const preferLast = ${JSON.stringify(preferLast)};
     const selector = 'button,a,[role="button"],summary,label,input,textarea,[tabindex]';
     const isVisible = (element) => {
       const rect = element.getBoundingClientRect();
@@ -456,349 +327,210 @@ async function findClickablePointByText(client, text) {
       return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     };
     const isEnabled = (element) => !element.disabled && element.getAttribute('aria-disabled') !== 'true';
-    const labelOf = (element) => [
-      element.innerText,
-      element.value,
-      element.getAttribute('aria-label'),
-      element.getAttribute('title'),
-      element.textContent,
-    ].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
-    const candidates = Array.from(document.querySelectorAll(selector)).filter((element) => isVisible(element) && isEnabled(element));
-    const exact = candidates.find((element) => labelOf(element) === needle);
-    const partial = candidates.find((element) => labelOf(element).includes(needle));
-    const element = exact || partial;
+    const labelOf = (element) => (
+      element.getAttribute('aria-label')
+      || element.innerText
+      || element.value
+      || element.getAttribute('title')
+      || element.textContent
+      || ''
+    ).replace(/\\s+/g, ' ').trim();
+    const visibleCandidates = Array.from(document.querySelectorAll(selector)).filter((element) => isVisible(element));
+    const pick = (items) => preferLast ? items[items.length - 1] : items[0];
+    const exactVisible = visibleCandidates.filter((element) => labelOf(element) === needle);
+    const exact = exactVisible.filter(isEnabled);
+    if (exactVisible.length && !exact.length) return null;
+    const partial = visibleCandidates.filter((element) => isEnabled(element) && labelOf(element).includes(needle));
+    const element = pick(exact) || pick(partial);
     if (!element) return null;
-    element.scrollIntoView({ block: 'center', inline: 'center' });
-    const rect = element.getBoundingClientRect();
-    return {
-      x: Math.max(1, Math.min(window.innerWidth - 1, rect.left + rect.width / 2)),
-      y: Math.max(1, Math.min(window.innerHeight - 1, rect.top + rect.height / 2)),
-      label: labelOf(element),
-    };
+    element.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+    const label = labelOf(element);
+    element.click();
+    return label;
   })()`);
 }
 
-async function clickByText(client, text, timeoutMs = 10_000) {
+async function clickByText(client, text, timeoutMs = 10_000, preferLast = false) {
   const started = Date.now();
-  const effectiveTimeout = boundedTimeout(timeoutMs, `clickable text ${text}`);
-  let point = null;
-  while (Date.now() - started < effectiveTimeout) {
-    point = await findClickablePointByText(client, text);
-    if (point) break;
+  let label = null;
+  while (Date.now() - started < timeoutMs) {
+    label = await clickElementByText(client, text, preferLast);
+    if (label) break;
     await wait(250);
   }
-  if (!point) {
-    let body = "";
-    try {
-      body = await evaluate(client, "document.body?.innerText?.slice(0, 1200) ?? ''", 3000);
-    } catch {
-      // Preserve the original click failure when the renderer is unresponsive too.
-    }
+  if (!label) {
+    const body = await evaluate(client, "document.body?.innerText?.slice(0, 1200) ?? ''", 3000);
     throw new Error(`Unable to find enabled clickable text: ${text}\nCurrent page text:\n${body}`);
   }
+  await wait(150);
+  return label;
+}
+
+async function clickSelector(client, selector) {
+  const started = Date.now();
+  let point = null;
+  while (Date.now() - started < 3000) {
+    point = await evaluate(client, `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element || element.disabled) return null;
+      element.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+      const rect = element.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || (hit !== element && !element.contains(hit))) return null;
+      return { x, y };
+    })()`);
+    if (point) break;
+    await wait(50);
+  }
+  if (!point) throw new Error(`Unable to click selector: ${selector}`);
   await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
   await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
   await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
   await wait(150);
-  return point;
 }
 
-async function findClickablePointBySelector(client, selector) {
-  return evaluate(client, `(() => {
-    const selector = ${JSON.stringify(selector)};
-    const candidates = Array.from(document.querySelectorAll(selector));
-    for (const element of candidates) {
-      if (!(element instanceof HTMLElement)) continue;
-      const style = window.getComputedStyle(element);
-      const initialRect = element.getBoundingClientRect();
-      if (
-        initialRect.width <= 0
-        || initialRect.height <= 0
-        || style.visibility === 'hidden'
-        || style.display === 'none'
-        || element.hasAttribute('disabled')
-        || element.getAttribute('aria-disabled') === 'true'
-      ) continue;
-      element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      const rect = element.getBoundingClientRect();
-      const x = Math.max(1, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
-      const y = Math.max(1, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
-      const hit = document.elementFromPoint(x, y);
-      if (!hit || (hit !== element && !element.contains(hit))) continue;
-      return { x, y, tag: element.tagName.toLowerCase() };
-    }
-    return null;
-  })()`);
-}
-
-async function clickBySelector(client, selector, timeoutMs = 10_000) {
-  const started = Date.now();
-  const effectiveTimeout = boundedTimeout(timeoutMs, `clickable selector ${selector}`);
-  let point = null;
-  let previousPoint = null;
-  let stableObservations = 0;
-  while (Date.now() - started < effectiveTimeout) {
-    const candidate = await findClickablePointBySelector(client, selector);
-    if (candidate) {
-      const positionStable = previousPoint
-        && Math.abs(candidate.x - previousPoint.x) <= 1
-        && Math.abs(candidate.y - previousPoint.y) <= 1;
-      stableObservations = positionStable ? stableObservations + 1 : 1;
-      previousPoint = candidate;
-      await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: candidate.x, y: candidate.y });
-      // Expanding the desktop sidebar restores group-label height while its
-      // links are still moving. Require three consecutive box observations
-      // before dispatching a trusted click so the checked coordinate cannot
-      // turn into an adjacent label between hit-testing and mousePressed.
-      if (stableObservations < 3) {
-        await wait(80);
-        continue;
-      }
-      const stillTargeted = await evaluate(client, `(() => {
-        const hit = document.elementFromPoint(${JSON.stringify(candidate.x)}, ${JSON.stringify(candidate.y)});
-        return Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
-          .some((element) => hit === element || Boolean(hit && element.contains(hit)));
-      })()`, 3000).catch(() => false);
-      if (stillTargeted) {
-        point = candidate;
-        break;
-      }
-    } else {
-      previousPoint = null;
-      stableObservations = 0;
-    }
-    await wait(80);
-  }
-  if (!point) throw new Error(`Unable to find an unobstructed clickable element: ${selector}`);
-  await evaluate(client, `(() => {
-    window.__fyadrE2eClickProbeController?.abort();
-    const controller = new AbortController();
-    window.__fyadrE2eClickProbeController = controller;
-    window.__fyadrE2eLastPointerClick = null;
-    document.addEventListener('click', (event) => {
-      const path = event.composedPath();
-      const record = {
-        selector: ${JSON.stringify(selector)},
-        trusted: event.isTrusted,
-        matched: path.some((item) => item instanceof Element && item.matches(${JSON.stringify(selector)})),
-        defaultPrevented: event.defaultPrevented,
-        path: path.slice(0, 6).map((item) => item instanceof Element ? {
-          tag: item.tagName.toLowerCase(),
-          id: item.id || '',
-          view: item.getAttribute('data-workbench-view') || '',
-          sidebar: item.getAttribute('data-sidebar') || '',
-        } : String(item)),
-      };
-      window.__fyadrE2eLastPointerClick = record;
-      queueMicrotask(() => { record.defaultPrevented = event.defaultPrevented; });
-    }, { capture: true, once: true, signal: controller.signal });
+async function selectTabByText(client, text) {
+  const selected = await evaluate(client, `(() => {
+    const needle = ${JSON.stringify(text)};
+    const tab = Array.from(document.querySelectorAll('[role="tab"]')).find((element) => (
+      (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim() === needle
+      && !element.disabled
+      && element.getBoundingClientRect().width > 0
+      && element.getBoundingClientRect().height > 0
+    ));
+    if (!tab) return false;
+    tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    tab.click();
     return true;
   })()`, 3000);
-  await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
-  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
-  await wait(150);
-  const clickProbe = await evaluate(client, "window.__fyadrE2eLastPointerClick", 3000).catch(() => null);
-  await evaluate(client, "window.__fyadrE2eClickProbeController?.abort()", 3000).catch(() => undefined);
-  if (!clickProbe?.trusted || !clickProbe?.matched) {
-    throw new Error(`Trusted pointer click did not reach ${selector}: ${JSON.stringify(clickProbe)}`);
-  }
-  return { ...point, clickProbe };
+  if (!selected) throw new Error(`Unable to select tab: ${text}`);
+  await wait(200);
 }
 
-async function clickWorkbenchView(client, view, timeoutMs = 10_000) {
-  return clickBySelector(client, `[data-workbench-view=${JSON.stringify(view)}]`, timeoutMs);
-}
-
-async function clickWorkbenchTab(client, value, label) {
-  const focused = await evaluate(client, `(() => {
-    const target = Array.from(document.querySelectorAll('[role="tab"]'))
-      .find((item) => item.getAttribute('data-value') === ${JSON.stringify(value)} || item.textContent?.trim() === ${JSON.stringify(label)});
-    if (!(target instanceof HTMLElement) || target.getAttribute('aria-disabled') === 'true' || target.hasAttribute('disabled')) return false;
-    target.focus();
-    return true;
-  })()`, 3000);
-  if (!focused) throw new Error(`Unable to focus workbench tab: ${label}`);
-  await pressKey(client, "Enter");
+async function selectReviewDecision(client, text) {
+  const selector = `button[aria-label="${text}"]`;
+  await clickSelector(client, selector);
   await waitForExpression(
     client,
-    `document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim() === ${JSON.stringify(label)}`,
-    `${label} tab activation`,
+    `document.querySelector(${JSON.stringify(selector)})?.getAttribute('data-state') === 'on'`,
+    `review decision ${text}`,
     12_000,
   );
 }
 
-async function pressKey(client, key) {
-  const keyData = {
-    Escape: { code: "Escape", keyCode: 27 },
-    Enter: { code: "Enter", keyCode: 13, text: "\r" },
-    Tab: { code: "Tab", keyCode: 9 },
-    Backspace: { code: "Backspace", keyCode: 8 },
-  }[key] || { code: key, keyCode: 0 };
-  const base = {
-    key,
-    code: keyData.code,
-    windowsVirtualKeyCode: keyData.keyCode,
-    nativeVirtualKeyCode: keyData.keyCode,
-  };
-  if (keyData.text) base.text = keyData.text;
-  await client.send("Input.dispatchKeyEvent", { type: "keyDown", ...base });
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
-  await wait(150);
+async function openReviewParagraphBrowser(client) {
+  const alreadyOpen = await evaluate(client, "Boolean(document.querySelector('[data-review-nav]'))", 3000);
+  if (!alreadyOpen) {
+    await clickSelector(client, '[aria-label="选择段落"]');
+    await waitForExpression(
+      client,
+      "Boolean(document.querySelector('[data-review-nav]'))",
+      "paragraph browser to open",
+      12_000,
+    );
+  }
 }
 
-async function navigateTo(client, url) {
-  await client.send("Page.navigate", { url });
-  await wait(450);
-}
-
-async function reloadPage(client) {
-  const token = `reload-${Date.now()}-${++reloadSequence}`;
-  await evaluate(client, `window.__fyadrE2eReloadToken = ${JSON.stringify(token)}`, 3000);
-  await client.send("Page.reload", { ignoreCache: true });
-  await waitForExpression(
+async function getReviewParagraphIds(client, incompleteOnly = false) {
+  await openReviewParagraphBrowser(client);
+  return evaluate(
     client,
-    `window.__fyadrE2eReloadToken !== ${JSON.stringify(token)} && document.readyState === "complete"`,
-    "browser reload completion",
-    20_000,
+    `Array.from(document.querySelectorAll('[data-review-nav]'))
+      .filter((item) => ${incompleteOnly ? "item.getAttribute('data-review-complete') !== 'true'" : "true"})
+      .map((item) => item.getAttribute('data-review-nav'))
+      .filter(Boolean)`,
+    3000,
   );
 }
 
-async function navigateBrowserHistory(client, offset) {
-  const currentHref = await evaluate(client, "location.href", 3000);
-  let history = null;
-  const syncStarted = Date.now();
-  while (Date.now() - syncStarted < boundedTimeout(5000, "browser history synchronization")) {
-    const candidate = await client.send("Page.getNavigationHistory");
-    const currentEntry = candidate.entries?.[Number(candidate.currentIndex)];
-    if (currentEntry?.url === currentHref) {
-      history = candidate;
-      break;
-    }
-    await wait(100);
-  }
-  if (!history) {
-    throw new Error(`Browser history did not synchronize with the current page: ${currentHref}`);
-  }
-  const currentIndex = Number(history.currentIndex);
-  const targetIndex = currentIndex + offset;
-  const target = history.entries?.[targetIndex];
-  if (target?.id == null) {
-    throw new Error(`Browser history offset ${offset} is unavailable: ${JSON.stringify({ currentIndex, targetIndex, length: history.entries?.length || 0 })}`);
-  }
-  await client.send("Page.navigateToHistoryEntry", { entryId: target.id }, 20_000);
-  let stableObservations = 0;
-  let latest = null;
-  const navigationStarted = Date.now();
-  while (Date.now() - navigationStarted < boundedTimeout(8000, "browser history entry navigation")) {
-    const candidate = await client.send("Page.getNavigationHistory");
-    const candidateIndex = Number(candidate.currentIndex);
-    const candidateEntry = candidate.entries?.[candidateIndex];
-    const href = await evaluate(client, "location.href", 3000).catch(() => "");
-    latest = { candidateIndex, entryId: candidateEntry?.id, entryUrl: candidateEntry?.url, href };
-    if (candidateIndex === targetIndex && candidateEntry?.id === target.id && href === target.url) {
-      stableObservations += 1;
-      if (stableObservations >= 2) return;
-    } else {
-      stableObservations = 0;
-    }
-    await wait(100);
-  }
-  throw new Error(`Browser history entry did not settle: ${JSON.stringify({ offset, currentIndex, targetIndex, target, latest })}`);
+async function chooseReviewParagraph(client, paragraphId) {
+  await openReviewParagraphBrowser(client);
+  const selected = await evaluate(
+    client,
+    `(() => {
+      const paragraphId = ${JSON.stringify(paragraphId)};
+      const item = Array.from(document.querySelectorAll('[data-review-nav]')).find((candidate) =>
+        candidate.getAttribute('data-review-nav') === paragraphId
+      );
+      if (!item) return false;
+      item.click();
+      return true;
+    })()`,
+    3000,
+  );
+  if (!selected) throw new Error(`Unable to choose review paragraph: ${paragraphId}`);
+  await waitForExpression(
+    client,
+    `document.querySelector('[data-review-detail]')?.getAttribute('data-review-paragraph') === ${JSON.stringify(paragraphId)}`,
+    `review paragraph ${paragraphId} to open`,
+    12_000,
+  );
 }
 
-async function getActiveElementSummary(client) {
-  return evaluate(client, `(() => {
-    const element = document.activeElement;
-    if (!(element instanceof HTMLElement)) return { tag: "", id: "", text: "", role: "" };
-    return {
-      tag: element.tagName.toLowerCase(),
-      id: element.id || "",
-      text: (element.innerText || element.getAttribute("aria-label") || "").trim().slice(0, 120),
-      role: element.getAttribute("role") || "",
-      isSidebarTrigger: element.matches('[data-sidebar="trigger"]'),
-    };
-  })()`, 3000);
+async function setControlValue(client, selector, value) {
+  const focused = await evaluate(client, `(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) return false;
+    element.focus();
+    element.select();
+    return true;
+  })()`);
+  if (!focused) throw new Error(`Unable to set control: ${selector}`);
+  await client.send("Input.insertText", { text: value });
+  await wait(100);
 }
 
-async function waitForWorkbenchView(client, testCase, timeoutMs = 20_000) {
-  const routeExpression = testCase.view === "home"
-    ? `!new URLSearchParams(location.search).has("view")`
-    : `new URLSearchParams(location.search).get("view") === ${JSON.stringify(testCase.view)}`;
-  const contentExpression = testCase.selector
-    ? `Boolean(document.querySelector(${JSON.stringify(testCase.selector)}))`
-    : `document.body?.innerText?.includes(${JSON.stringify(testCase.expected)})${testCase.alternate ? ` || document.body?.innerText?.includes(${JSON.stringify(testCase.alternate)})` : ""}`;
-  const snapshotExpression = `(() => {
-    const routeReady = Boolean(${routeExpression});
-    const contentReady = Boolean(${contentExpression});
-    const titleReady = document.title === ${JSON.stringify(`${testCase.label} | FYADR`)};
-    const activeViews = Array.from(document.querySelectorAll('[data-workbench-view][aria-current="page"]'))
-      .map((item) => item.getAttribute('data-workbench-view'));
-    const activeReady = activeViews.length === 1 && activeViews[0] === ${JSON.stringify(testCase.view)};
-    return {
-      ok: routeReady && contentReady && titleReady && activeReady,
-      routeReady,
-      contentReady,
-      titleReady,
-      activeReady,
-      href: location.href,
-      activeViews,
-    };
-  })()`;
-  const started = Date.now();
-  const effectiveTimeout = boundedTimeout(timeoutMs, `${testCase.label} route`);
-  let latestSnapshot = null;
-  while (Date.now() - started < effectiveTimeout) {
-    try {
-      latestSnapshot = await evaluate(client, snapshotExpression, 3000);
-      if (latestSnapshot?.ok) return;
-    } catch {
-      // Retry while navigation replaces the execution context.
-    }
-    await wait(250);
-  }
-  let diagnostic = null;
-  try {
-    diagnostic = await evaluate(client, `({
-      href: location.href,
-      body: document.body?.innerText?.slice(0, 1200) ?? '',
-      readyState: document.readyState,
-    })`, 3000);
-  } catch {
-    // Preserve the route failure when the renderer is unresponsive too.
-  }
-  throw new Error(`${testCase.label} route, content, and active navigation state did not settle: ${JSON.stringify({ latestSnapshot, diagnostic })}`);
-}
-
-async function makePromptDraftDirty(client, suffix) {
-  const result = await evaluate(client, `(() => {
-    const textarea = document.querySelector("textarea");
-    if (!(textarea instanceof HTMLTextAreaElement)) return null;
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-    const nextValue = textarea.value + ${JSON.stringify(suffix)};
-    setter?.call(textarea, nextValue);
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    return nextValue;
-  })()`, 3000);
-  if (typeof result !== "string") throw new Error("Unable to create a dirty prompt draft.");
+async function uploadFile(client, filePath) {
+  await client.send("DOM.enable");
+  const documentNode = await client.send("DOM.getDocument", { depth: 2, pierce: true });
+  const node = await client.send("DOM.querySelector", {
+    nodeId: documentNode.root.nodeId,
+    selector: 'input[type="file"]',
+  });
+  if (!node.nodeId) throw new Error("Document file input was not found.");
+  await client.send("DOM.setFileInputFiles", { nodeId: node.nodeId, files: [filePath] });
   await wait(200);
-  return result;
 }
 
-async function settleVisibleConfirmation(client, label) {
-  const clicked = await evaluate(client, `(() => {
-    const dialog = document.querySelector('[role="alertdialog"]');
-    const button = Array.from(dialog?.querySelectorAll("button") || [])
-      .find((item) => item.textContent?.trim() === ${JSON.stringify(label)});
-    button?.click();
-    return Boolean(button);
+async function pressKey(client, key) {
+  const keyCode = key === "Escape" ? 27 : 0;
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode });
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode });
+  await wait(150);
+}
+
+async function setSliderValue(client, selector, value) {
+  const limits = await evaluate(client, `(() => {
+    const slider = document.querySelector(${JSON.stringify(selector)});
+    if (!slider || slider.getAttribute('role') !== 'slider') return null;
+    slider.focus();
+    return {
+      min: Number(slider.getAttribute('aria-valuemin')),
+      max: Number(slider.getAttribute('aria-valuemax')),
+    };
   })()`, 3000);
-  if (!clicked) throw new Error(`Visible confirmation is missing action: ${label}`);
-  await waitForTextGone(client, "放弃未保存的修改？", 12_000);
+  if (!limits || value < limits.min || value > limits.max) {
+    throw new Error(`Unable to set slider ${selector} to ${value}.`);
+  }
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Home", code: "Home", windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36 });
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Home", code: "Home", windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36 });
+  for (let current = limits.min; current < value; current += 1) {
+    await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 });
+    await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 });
+  }
+  await waitForExpression(
+    client,
+    `document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-valuenow') === ${JSON.stringify(String(value))}`,
+    `slider ${selector} to become ${value}`,
+    3000,
+  );
 }
 
 async function captureScreenshot(client, path) {
   try {
-    const result = await client.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true }, 5000);
+    const result = await client.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
     if (result.data) {
       writeFileSync(path, Buffer.from(result.data, "base64"));
     }
@@ -808,9 +540,7 @@ async function captureScreenshot(client, path) {
 }
 
 async function getPageWebSocket(debugPort, targetUrl) {
-  const response = await fetchWithTimeout(`http://127.0.0.1:${debugPort}/json/list`);
-  if (!response.ok) throw new Error(`Unable to list browser page targets: ${response.status}`);
-  const list = await response.json();
+  const list = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((response) => response.json());
   const page = list.find((item) => item.type === "page" && String(item.url || "").startsWith(targetUrl))
     || list.find((item) => item.type === "page");
   if (!page?.webSocketDebuggerUrl) {
@@ -819,192 +549,98 @@ async function getPageWebSocket(debugPort, targetUrl) {
   return page.webSocketDebuggerUrl;
 }
 
-async function createFreshPageClient(debugPort, url) {
-  const response = await fetchWithTimeout(
-    `http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(url)}`,
-    { method: "PUT" },
-  );
-  if (!response.ok) throw new Error(`Unable to create a fresh browser page target: ${response.status}`);
-  const target = await response.json();
-  if (!target.webSocketDebuggerUrl) throw new Error("Fresh browser page target did not expose a websocket.");
-  const client = new CdpClient(target.webSocketDebuggerUrl);
-  await client.connect();
-  await client.send("Page.enable");
-  await client.send("Runtime.enable");
-  await client.send("Log.enable").catch(() => undefined);
-  return client;
-}
-
-async function closePageTarget(debugPort, client) {
-  const targetId = String(client?.webSocketUrl || "").split("/").filter(Boolean).at(-1);
-  client?.close();
-  if (!targetId) throw new Error("Unable to determine the old browser target ID.");
-  const response = await fetchWithTimeout(
-    `http://127.0.0.1:${debugPort}/json/close/${encodeURIComponent(targetId)}`,
-  );
-  if (!response.ok) throw new Error(`Unable to close the old browser page target: ${response.status}`);
-}
-
-async function resetBrowserPage(client, url) {
-  await client.send("Page.stopLoading").catch(() => undefined);
-  await client.send("Page.navigate", { url: "about:blank" }).catch(() => undefined);
-  await wait(700);
-  await client.send("Page.navigate", { url });
-  await wait(700);
-}
-
-async function verifyWorkbenchDeepLink(client, frontendUrl, testCase) {
-  const directUrl = new URL(frontendUrl);
-  directUrl.searchParams.set("source", "sidebar-e2e");
-  if (testCase.view !== "home") directUrl.searchParams.set("view", testCase.view);
-  directUrl.hash = `view-${testCase.view}`;
-  let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      await navigateTo(client, directUrl.href);
-      await waitForWorkbenchView(client, testCase, ROUTE_TIMEOUT_MS);
-      const directState = await evaluate(client, `({
-        source: new URLSearchParams(location.search).get("source"),
-        hash: location.hash,
-        hrefState: (() => {
-          const href = document.querySelector('[data-workbench-view=${JSON.stringify(testCase.view)}]')?.getAttribute("href") || "";
-          if (!href) return null;
-          const url = new URL(href, location.href);
-          return {
-            href,
-            source: url.searchParams.get("source"),
-            view: url.searchParams.get("view"),
-            hash: url.hash,
-          };
-        })(),
-      })`, 3000);
-      const expectedHrefView = testCase.view === "home" ? null : testCase.view;
-      if (
-        directState?.source !== "sidebar-e2e"
-        || directState?.hash !== `#view-${testCase.view}`
-        || !directState?.hrefState?.href
-        || directState.hrefState.source !== "sidebar-e2e"
-        || directState.hrefState.view !== expectedHrefView
-        || directState.hrefState.hash !== `#view-${testCase.view}`
-      ) {
-        throw new Error(`${testCase.label} deep link did not preserve URL state or expose a native href: ${JSON.stringify(directState)}`);
-      }
-      await evaluate(client, `window.__fyadrE2eReloadSentinel = ${JSON.stringify(testCase.view)}`, 3000);
-      await reloadPage(client);
-      await waitForWorkbenchView(client, testCase, ROUTE_TIMEOUT_MS);
-      const reloadState = await evaluate(client, `({
-        sentinelCleared: typeof window.__fyadrE2eReloadSentinel === "undefined",
-        source: new URLSearchParams(location.search).get("source"),
-        hash: location.hash,
-      })`, 3000);
-      if (!reloadState?.sentinelCleared || reloadState?.source !== "sidebar-e2e" || reloadState?.hash !== `#view-${testCase.view}`) {
-        throw new Error(`${testCase.label} reload did not recover the deep-linked view: ${JSON.stringify(reloadState)}`);
-      }
-      return;
-    } catch (error) {
-      lastError = error;
-      if (attempt === 0) {
-        await resetBrowserPage(client, directUrl.href).catch(() => undefined);
-      }
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(`${testCase.label} deep-link verification failed.`);
-}
-
 async function runSmoke() {
   const started = Date.now();
-  smokeDeadline = started + OVERALL_TIMEOUT_MS;
-  rmSync(SCREENSHOT_PATH, { force: true });
   const checks = [];
   const warnings = [];
   const managedProcesses = [];
   let browserClient = null;
   let browserProcess = null;
   let userDataDir = "";
-  let backendConfigDir = "";
-  let backendStartedBySmoke = false;
-  const mobileOnly = process.env.FYADR_E2E_MOBILE_ONLY === "1";
+  let backendDataDir = "";
+  let fixtureDir = "";
   const browserExecutable = findBrowserExecutable();
-  const configuredBackendUrl = process.env.FYADR_E2E_BACKEND_URL?.trim();
-  const allocatedPorts = new Set();
-  const backendPortForDefault = configuredBackendUrl ? null : await getFreePort(allocatedPorts);
-  if (backendPortForDefault) allocatedPorts.add(backendPortForDefault);
-  const backendUrl = configuredBackendUrl || `http://127.0.0.1:${backendPortForDefault}`;
-  const backendAddress = new URL(backendUrl);
-  const configuredBackendPort = backendAddress.port || (backendAddress.protocol === "https:" ? "443" : "80");
-  if (configuredBackendUrl) allocatedPorts.add(parsePort(configuredBackendPort, "backend port"));
-  const frontendPort = process.env.FYADR_E2E_FRONTEND_PORT
-    ? parsePort(process.env.FYADR_E2E_FRONTEND_PORT, "FYADR_E2E_FRONTEND_PORT")
-    : await getFreePort(allocatedPorts);
-  allocatedPorts.add(frontendPort);
-  const debugPort = process.env.FYADR_E2E_DEBUG_PORT
-    ? parsePort(process.env.FYADR_E2E_DEBUG_PORT, "FYADR_E2E_DEBUG_PORT")
-    : await getFreePort(allocatedPorts);
-  allocatedPorts.add(debugPort);
+  const mockPort = Number(process.env.FYADR_E2E_MOCK_PORT || await getFreePort());
+  const mockUrl = `http://127.0.0.1:${mockPort}`;
+  const externalBackendUrl = process.env.FYADR_E2E_BACKEND_URL || "";
+  const backendPort = Number(process.env.FYADR_E2E_BACKEND_PORT || await getFreePort());
+  const backendUrl = externalBackendUrl || `http://127.0.0.1:${backendPort}`;
+  const frontendPort = Number(process.env.FYADR_E2E_FRONTEND_PORT || await getFreePort());
+  const debugPort = Number(process.env.FYADR_E2E_DEBUG_PORT || await getFreePort());
   const frontendUrl = process.env.FYADR_E2E_URL || `http://127.0.0.1:${frontendPort}`;
   const backendHealthUrl = `${backendUrl}/api/ping`;
 
   try {
-    if (!(await requestOk(backendHealthUrl, 2000))) {
-      if (configuredBackendUrl && process.env.FYADR_E2E_START_BACKEND !== "1") {
-        throw new Error(`Configured E2E backend is unreachable: ${backendUrl}`);
-      }
-      if (!["127.0.0.1", "localhost"].includes(backendAddress.hostname)) {
-        throw new Error(`Refusing to start a managed E2E backend on a non-local host: ${backendAddress.hostname}`);
-      }
-      backendConfigDir = mkdtempSync(join(tmpdir(), "fyadr-e2e-config-"));
-      const backend = new ManagedProcess("backend", pythonExecutable(), ["scripts/web_app.py"], {
+    fixtureDir = mkdtempSync(join(tmpdir(), "fyadr-e2e-fixtures-"));
+    const docxFixturePath = join(fixtureDir, "示例文档.docx");
+    const docxFixtureXmlPath = join(fixtureDir, "示例文档-document.xml");
+    const txtFixturePath = join(fixtureDir, "示例文档.txt");
+    const downloadDir = join(fixtureDir, "downloads");
+    mkdirSync(downloadDir, { recursive: true });
+    writeFileSync(docxFixtureXmlPath, SCOPE_FIXTURE_DOCUMENT_XML, "utf-8");
+    writeFileSync(txtFixturePath, "TXT 实验值为 10。", "utf-8");
+    const fixtureResult = spawnSync(
+      process.env.PYTHON || "python",
+      [
+        "-c",
+        "import pathlib,sys; sys.path.insert(0, 'scripts'); from core_docx_regression import fixture_docx; pathlib.Path(sys.argv[2]).write_bytes(fixture_docx(pathlib.Path(sys.argv[1]).read_bytes()))",
+        docxFixtureXmlPath,
+        docxFixturePath,
+      ],
+      { cwd: ROOT_DIR, encoding: "utf-8", windowsHide: true },
+    );
+    if (fixtureResult.status !== 0) {
+      throw new Error(`Unable to create DOCX fixture.\n${fixtureResult.stderr || fixtureResult.stdout || ""}`);
+    }
+
+    const provider = new ManagedProcess("mock-provider", process.env.PYTHON || "python", ["scripts/e2e_mock_provider.py"], {
+      cwd: ROOT_DIR,
+      env: { FYADR_MOCK_PORT: String(mockPort) },
+    });
+    managedProcesses.push(provider);
+    await waitForHttp(`${mockUrl}/health`, DEFAULT_TIMEOUT_MS, "mock model provider", provider);
+    checks.push("isolated streaming model provider ready");
+
+    if (!externalBackendUrl) {
+      backendDataDir = mkdtempSync(join(tmpdir(), "fyadr-e2e-backend-"));
+      const backend = new ManagedProcess("backend", process.env.PYTHON || "python", ["scripts/web_app.py"], {
         cwd: ROOT_DIR,
         env: {
-          WEB_HOST: backendAddress.hostname,
-          WEB_PORT: configuredBackendPort,
-          FYADR_APP_CONFIG_DIR: backendConfigDir,
-          FYADR_API_KEY: "",
-          OPENAI_API_KEY: "",
-          FYADR_BASE_URL: "",
-          OPENAI_BASE_URL: "",
-          FYADR_MODEL: "",
+          FYADR_CONFIG_DIR: join(backendDataDir, "config"),
+          FYADR_DATA_DIR: join(backendDataDir, "data"),
+          FYADR_PORT: String(backendPort),
         },
       });
       managedProcesses.push(backend);
       await waitForHttp(backendHealthUrl, DEFAULT_TIMEOUT_MS, "backend", backend);
-      backendStartedBySmoke = true;
       checks.push("backend started or became reachable");
-    } else {
+    } else if (await requestOk(backendHealthUrl, 2000)) {
       checks.push("backend already reachable");
+    } else {
+      throw new Error(`External backend is not reachable: ${backendHealthUrl}`);
     }
 
-    const npmDev = npmInvocation(["run", "dev", "--", "--host", "127.0.0.1", "--port", String(frontendPort), "--strictPort"]);
+    const npmDev = npmInvocation(["run", "dev", "--", "--host", "127.0.0.1", "--port", String(frontendPort), "--strictPort", "--force"]);
     const frontend = new ManagedProcess("vite", npmDev.command, npmDev.args, {
       cwd: APP_DIR,
-      env: { FYADR_E2E_BACKEND_URL: backendUrl },
+      env: { FYADR_BACKEND_URL: backendUrl },
     });
     managedProcesses.push(frontend);
     await waitForHttp(frontendUrl, DEFAULT_TIMEOUT_MS, "frontend", frontend);
     checks.push("frontend dev server reachable");
 
     userDataDir = mkdtempSync(join(tmpdir(), "fyadr-e2e-"));
-    const browserArgs = [
+    browserProcess = new ManagedProcess("browser", browserExecutable, [
       "--headless=new",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${userDataDir}`,
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-networking",
-      "--disable-component-update",
-      "--disable-default-apps",
-      "--disable-extensions",
-      "--disable-features=Translate,MediaRouter,OptimizationHints",
       "--disable-gpu",
-      "--disable-sync",
-      "--metrics-recording-only",
       "--window-size=1440,1000",
       frontendUrl,
-    ];
-    if (typeof process.getuid === "function" && process.getuid() === 0) {
-      browserArgs.unshift("--no-sandbox");
-    }
-    browserProcess = new ManagedProcess("browser", browserExecutable, browserArgs);
+    ]);
     managedProcesses.push(browserProcess);
     await waitForHttp(`http://127.0.0.1:${debugPort}/json/version`, DEFAULT_TIMEOUT_MS, "browser CDP", browserProcess);
 
@@ -1014,472 +650,1070 @@ async function runSmoke() {
     await browserClient.send("Page.enable");
     await browserClient.send("Runtime.enable");
     await browserClient.send("Log.enable").catch(() => undefined);
-    await waitForText(browserClient, "当前文件", DEFAULT_TIMEOUT_MS);
-    await waitForText(browserClient, "文档入口", DEFAULT_TIMEOUT_MS);
-    await waitForText(browserClient, "上传文档", DEFAULT_TIMEOUT_MS);
-    checks.push("home page renders with global task dashboard and card controls");
+    await browserClient.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `
+        localStorage.setItem('fyadr.themeMode', 'light');
+        localStorage.setItem('fyadr.themeMode.defaultDarkMigrated', '1');
+      `,
+    });
+    await browserClient.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloadDir }).catch(() => undefined);
+    await browserClient.send("Page.navigate", { url: frontendUrl });
+    await waitForText(browserClient, "选择文件", DEFAULT_TIMEOUT_MS);
+    checks.push("focused rewrite home renders");
 
-    if (!mobileOnly) {
-    for (const [index, testCase] of WORKBENCH_VIEW_CASES.entries()) {
-      if (index > 0) {
-        const previousRouteClient = browserClient;
-        browserClient = await createFreshPageClient(debugPort, "about:blank");
-        await closePageTarget(debugPort, previousRouteClient).catch((error) => {
-          warnings.push(`old ${WORKBENCH_VIEW_CASES[index - 1].view} route target cleanup skipped: ${error instanceof Error ? error.message : String(error)}`);
+    await clickByText(browserClient, "模型连接");
+    await waitForText(browserClient, "DeepSeek 官方", 12_000);
+    await waitForExpression(browserClient, "Boolean(document.querySelector('#base-url'))", "model profile editor", 12_000);
+    const officialDeepSeek = await evaluate(
+      browserClient,
+      `(() => {
+        const editor = document.querySelector('[data-testid="model-profile-editor"]');
+        const connectionList = document.querySelector('[data-testid="model-profile-list"]');
+        const form = editor?.querySelector('[data-testid="model-profile-form"]');
+        const baseUrl = editor?.querySelector('#base-url');
+        const defaultSwitch = editor?.querySelector('#make-default');
+        const newConnectionButton = Array.from(connectionList?.querySelectorAll('button') || [])
+          .find((item) => (item.innerText || '').includes('新建连接'));
+        const firstProfileButton = Array.from(connectionList?.querySelectorAll('button') || [])
+          .find((item) => !(item.innerText || '').includes('新建连接'));
+        const protocolLabels = Array.from(editor?.querySelectorAll('button[aria-label]') || []).map((item) => item.getAttribute('aria-label'));
+        const buttons = Array.from(editor?.querySelectorAll('button') || []).map((item) => (item.innerText || '').trim());
+        return {
+          found: Boolean(editor),
+          officialTitle: editor?.innerText.includes('DeepSeek 官方') || false,
+          officialUrl: baseUrl?.value || '',
+          officialUrlLocked: Boolean(baseUrl?.readOnly),
+          hasChat: protocolLabels.includes('使用 Chat Completions'),
+          hasResponses: protocolLabels.includes('使用 Responses'),
+          hasReasoningChoices: ['关闭', '低', '高', '最大'].every((label) => buttons.includes(label)),
+          hasModelDiscovery: Boolean(editor?.querySelector('button[aria-label="获取模型"]')),
+          hasHardcodedModel: editor?.innerText.includes('deepseek-flash') || editor?.innerText.includes('deepseek-v4-pro') || false,
+          hasDeleteAction: Boolean(editor?.querySelector('[aria-label="删除连接"]')),
+          defaultControlInHeader: Boolean(defaultSwitch && form && !form.contains(defaultSwitch)),
+          createActionBeforeProfiles: Boolean(
+            newConnectionButton
+            && firstProfileButton
+            && (newConnectionButton.compareDocumentPosition(firstProfileButton) & Node.DOCUMENT_POSITION_FOLLOWING)
+          ),
+          pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+        };
+      })()`,
+      3000,
+    );
+    if (
+      !officialDeepSeek.found
+      || !officialDeepSeek.officialTitle
+      || officialDeepSeek.officialUrl !== "https://api.deepseek.com"
+      || !officialDeepSeek.officialUrlLocked
+      || !officialDeepSeek.hasChat
+      || !officialDeepSeek.hasResponses
+      || !officialDeepSeek.hasReasoningChoices
+      || !officialDeepSeek.hasModelDiscovery
+      || officialDeepSeek.hasHardcodedModel
+      || officialDeepSeek.hasDeleteAction
+      || !officialDeepSeek.defaultControlInHeader
+      || !officialDeepSeek.createActionBeforeProfiles
+      || officialDeepSeek.pageOverflow
+    ) {
+      throw new Error(`Official DeepSeek preset is incomplete or editable: ${JSON.stringify(officialDeepSeek)}`);
+    }
+    await clickSelector(browserClient, 'button[aria-label="使用 Responses"]');
+    await waitForExpression(
+      browserClient,
+      `document.querySelector('button[aria-label="使用 Responses"]')?.getAttribute('data-state') === 'on'`,
+      "DeepSeek Responses protocol selection",
+      3000,
+    );
+    await clickByText(browserClient, "最大");
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('#profile-temperature')?.disabled)",
+      "DeepSeek reasoning disables temperature",
+      3000,
+    );
+    await captureScreenshot(browserClient, MODEL_OFFICIAL_SCREENSHOT_PATH);
+    checks.push("official DeepSeek preset locks its endpoint, supports both protocols and exposes official reasoning levels without a delete action");
+
+    await clickByText(browserClient, "新建连接");
+    await waitForExpression(browserClient, "Boolean(document.querySelector('#profile-name'))", "custom connection editor", 12_000);
+    const blankConnectionActions = await evaluate(
+      browserClient,
+      `(() => {
+        const actions = document.querySelector('[data-testid="model-profile-actions"]');
+        const buttons = Array.from(actions?.querySelectorAll('button') || []);
+        const validate = buttons.find((button) => button.innerText.includes('验证连接'));
+        const save = buttons.find((button) => button.innerText.trim() === '保存');
+        return {
+          validateEnabled: Boolean(validate && !validate.disabled),
+          saveEnabled: Boolean(save && !save.disabled),
+        };
+      })()`,
+      3000,
+    );
+    if (!blankConnectionActions.validateEnabled || !blankConnectionActions.saveEnabled) {
+      throw new Error(`Incomplete connection actions are silently disabled: ${JSON.stringify(blankConnectionActions)}`);
+    }
+    await clickByText(browserClient, "获取模型");
+    await waitForText(browserClient, "无法获取模型", 3000);
+    await clickByText(browserClient, "验证连接");
+    await waitForText(browserClient, "无法验证连接", 3000);
+    await clickByText(browserClient, "保存");
+    await waitForText(browserClient, "无法保存", 3000);
+    await setControlValue(browserClient, "#profile-name", "本地连接一");
+    await setControlValue(browserClient, "#base-url", `${mockUrl}/v1`);
+    await setControlValue(browserClient, "#api-key", "e2e-local-key");
+    await clickByText(browserClient, "获取模型");
+    const actionsDuringModelLoad = await evaluate(
+      browserClient,
+      `(() => {
+        const actions = document.querySelector('[data-testid="model-profile-actions"]');
+        const buttons = Array.from(actions?.querySelectorAll('button') || []);
+        const validate = buttons.find((button) => button.innerText.includes('验证连接'));
+        const save = buttons.find((button) => button.innerText.trim() === '保存');
+        return {
+          validateEnabled: Boolean(validate && !validate.disabled),
+          saveEnabled: Boolean(save && !save.disabled),
+        };
+      })()`,
+      3000,
+    );
+    if (!actionsDuringModelLoad.validateEnabled || !actionsDuringModelLoad.saveEnabled) {
+      throw new Error(`Model discovery incorrectly locks unrelated actions: ${JSON.stringify(actionsDuringModelLoad)}`);
+    }
+    checks.push("model validation and save remain actionable during incomplete input and model discovery");
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('[data-testid=\"model-profile-form\"]')?.innerText.includes('fixture-model'))",
+      "discovered model to populate the model selector",
+      12_000,
+    );
+    await clickByText(browserClient, "验证连接");
+    await waitForText(browserClient, "连接正常", 12_000);
+    await clickByText(browserClient, "保存");
+    await waitForText(browserClient, "已保存", 12_000);
+    await clickSelector(browserClient, "#make-default");
+    await waitForExpression(
+      browserClient,
+      "document.querySelector('#make-default')?.getAttribute('data-state') === 'checked'",
+      "default connection switch to turn on",
+      3000,
+    );
+    await clickByText(browserClient, "保存");
+    await waitForExpression(
+      browserClient,
+      `(async () => {
+        const settings = await fetch('/api/settings').then((response) => response.json());
+        const profile = settings.modelProfiles.find((item) => item.name === '本地连接一');
+        return Boolean(profile && settings.defaultModelProfileId === profile.id);
+      })()`,
+      "default connection to persist",
+      12_000,
+    );
+    await clickSelector(browserClient, "#make-default");
+    await waitForExpression(
+      browserClient,
+      "document.querySelector('#make-default')?.getAttribute('data-state') === 'unchecked'",
+      "default connection switch to turn off",
+      3000,
+    );
+    await clickByText(browserClient, "保存");
+    await waitForExpression(
+      browserClient,
+      `(async () => {
+        const settings = await fetch('/api/settings').then((response) => response.json());
+        return settings.defaultModelProfileId === '';
+      })()`,
+      "default connection to clear",
+      12_000,
+    );
+    checks.push("connection creation stays beside the list and the default connection can be selected and cleared");
+    const toastOnlyFeedback = await evaluate(
+      browserClient,
+      `(() => {
+        const form = document.querySelector('[data-testid="model-profile-form"]');
+        return {
+          hasNotificationCenter: Boolean(document.querySelector('[data-testid="notification-center"]')),
+          hasNotificationTrigger: Array.from(document.querySelectorAll('button')).some((item) =>
+            (item.getAttribute('aria-label') || '').includes('通知')
+          ),
+          feedbackStillOccupiesForm: Boolean(form?.innerText.includes('连接正常') || form?.innerText.includes('连接已保存')),
+          persistsHistory: localStorage.getItem('fyadr.notificationHistory') !== null,
+        };
+      })()`,
+      3000,
+    );
+    if (
+      toastOnlyFeedback.hasNotificationCenter
+      || toastOnlyFeedback.hasNotificationTrigger
+      || toastOnlyFeedback.feedbackStillOccupiesForm
+      || toastOnlyFeedback.persistsHistory
+    ) {
+      throw new Error(`Operation feedback still duplicates or persists notifications: ${JSON.stringify(toastOnlyFeedback)}`);
+    }
+    checks.push("operation feedback stays in transient toasts without a duplicate notification center or stored history");
+    const savedKeyEditor = await evaluate(
+      browserClient,
+      `(() => {
+        const input = document.querySelector('#api-key');
+        return input ? { value: input.value, placeholder: input.getAttribute('placeholder') || '' } : null;
+      })()`,
+      3000,
+    );
+    if (!savedKeyEditor || savedKeyEditor.value !== "" || !savedKeyEditor.placeholder.includes("留空不变")) {
+      throw new Error(`Saved API key editor has ambiguous keep/replace semantics: ${JSON.stringify(savedKeyEditor)}`);
+    }
+    await clickByText(browserClient, "验证连接");
+    await waitForText(browserClient, "连接正常", 12_000);
+    await clickByText(browserClient, "新建连接");
+    await waitForExpression(browserClient, "document.querySelector('#profile-name')?.value === ''", "blank OpenAI-compatible channel editor", 3000);
+    await setControlValue(browserClient, "#profile-name", "本地连接二");
+    await setControlValue(browserClient, "#base-url", `${mockUrl}/v1`);
+    await setControlValue(browserClient, "#api-key", "e2e-second-key");
+    await setControlValue(browserClient, "#profile-model", "fixture-model");
+    await clickByText(browserClient, "保存");
+    await waitForText(browserClient, "已保存", 12_000);
+    await waitForExpression(
+      browserClient,
+      `(async () => {
+        const settings = await fetch('/api/settings').then((response) => response.json());
+        return settings.modelProfiles.filter((profile) => profile.provider !== 'deepseek').length === 2;
+      })()`,
+      "two saved OpenAI-compatible connections",
+      12_000,
+    );
+    checks.push("OpenAI-compatible channels can be created more than once, save secrets locally, and preserve an existing key when its editor is blank");
+    await captureScreenshot(browserClient, MODEL_SCREENSHOT_PATH);
+
+    await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false });
+    await wait(300);
+    const compactModelLayout = await evaluate(
+      browserClient,
+      `(() => {
+        const workspace = document.querySelector('[data-slot="resizable-panel-group"]:has([data-testid="model-profile-editor"])');
+        const editor = document.querySelector('[data-testid="model-profile-editor"]');
+        const form = document.querySelector('[data-testid="model-profile-form"]');
+        const actions = document.querySelector('[data-testid="model-profile-actions"]');
+        const connectionList = document.querySelector('[data-testid="model-profile-list"]');
+        const sidebar = document.querySelector('[data-state][data-collapsible][data-variant][data-side]');
+        if (!workspace || !editor || !form || !actions || !connectionList) return {
+          found: false,
+          workspace: Boolean(workspace),
+          editor: Boolean(editor),
+          form: Boolean(form),
+          actions: Boolean(actions),
+          connectionList: Boolean(connectionList),
+          sidebar: Boolean(sidebar),
+        };
+        const editorRect = editor.getBoundingClientRect();
+        const listRect = connectionList.getBoundingClientRect();
+        const actionsRect = actions.getBoundingClientRect();
+        return {
+          found: true,
+          editorWidth: Math.round(editorRect.width),
+          listIsLeft: listRect.right <= editorRect.left,
+          navigationState: sidebar?.getAttribute('data-state') || '',
+          pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+          actionsVisible: actionsRect.top >= 0 && actionsRect.bottom <= window.innerHeight + 1,
+          connectionCount: connectionList.querySelectorAll('button').length,
+          hasFormContent: form.scrollHeight > 0,
+        };
+      })()`,
+      3000,
+    );
+    if (
+      !compactModelLayout.found
+      || compactModelLayout.navigationState !== "collapsed"
+      || compactModelLayout.pageOverflow
+      || !compactModelLayout.listIsLeft
+      || compactModelLayout.editorWidth < 560
+      || !compactModelLayout.actionsVisible
+      || compactModelLayout.connectionCount < 3
+      || !compactModelLayout.hasFormContent
+    ) {
+      throw new Error(`Medium-width model settings layout is cramped or overflowing: ${JSON.stringify(compactModelLayout)}`);
+    }
+    await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await wait(300);
+    const mobileModelLayout = await evaluate(
+      browserClient,
+      `(() => {
+        const workspace = document.querySelector('[data-testid="model-profile-workspace"]')
+          || document.querySelector('[data-slot="resizable-panel-group"]:has([data-testid="model-profile-editor"])');
+        const editor = document.querySelector('[data-testid="model-profile-editor"]');
+        const footer = editor?.querySelector('[data-testid="model-profile-actions"]');
+        const controls = Array.from(editor?.querySelectorAll('input, button') || []).filter((item) => {
+          const rect = item.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
         });
-      }
-      await verifyWorkbenchDeepLink(browserClient, frontendUrl, testCase);
+        return {
+          found: Boolean(workspace && editor),
+          pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+          clippedControls: controls.filter((item) => {
+            const rect = item.getBoundingClientRect();
+            return rect.left < -1 || rect.right > window.innerWidth + 1;
+          }).length,
+          actionsVisible: footer ? (() => {
+            const rect = footer.getBoundingClientRect();
+            return rect.top >= 0 && rect.bottom <= window.innerHeight + 1;
+          })() : false,
+        };
+      })()`,
+      3000,
+    );
+    if (!mobileModelLayout.found || mobileModelLayout.pageOverflow || mobileModelLayout.clippedControls || !mobileModelLayout.actionsVisible) {
+      throw new Error(`Mobile model settings layout clips controls or overflows: ${JSON.stringify(mobileModelLayout)}`);
     }
-    checks.push("all seven sidebar views support direct deep links, native hrefs, active state, and reload recovery");
+    await captureScreenshot(browserClient, MODEL_MOBILE_SCREENSHOT_PATH);
+    await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await wait(300);
+    checks.push("model settings stack into readable list and editor regions at tablet and mobile widths without horizontal overflow");
 
-    const invalidUrl = new URL(frontendUrl);
-    invalidUrl.searchParams.set("source", "sidebar-invalid");
-    invalidUrl.searchParams.set("view", "not-a-view");
-    invalidUrl.hash = "invalid-view";
-    // Validate invalid-route normalization in a clean target. The route
-    // matrix intentionally performs many reloads and can leave a Chromium
-    // renderer under transient pressure; that must not change this assertion.
-    const matrixClient = browserClient;
-    browserClient = await createFreshPageClient(debugPort, invalidUrl.href);
-    await closePageTarget(debugPort, matrixClient).catch((error) => {
-      warnings.push(`old browser matrix target cleanup skipped: ${error instanceof Error ? error.message : String(error)}`);
-    });
-    await waitForText(browserClient, "当前文件", DEFAULT_TIMEOUT_MS);
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES[0], ROUTE_TIMEOUT_MS);
-    const normalizedInvalidRoute = await evaluate(browserClient, `({ search: location.search, hash: location.hash })`, 3000);
-    if (normalizedInvalidRoute?.search !== "?source=sidebar-invalid" || normalizedInvalidRoute?.hash !== "#invalid-view") {
-      throw new Error(`Invalid workbench route was not normalized while preserving unrelated URL state: ${JSON.stringify(normalizedInvalidRoute)}`);
-    }
-    checks.push("invalid view values normalize to home without losing unrelated query or hash state");
-
-    // Route-matrix navigations intentionally create many document history
-    // entries. Start the interaction checks in a fresh target so Back/Forward
-    // assertions exercise the product's own entries, not the matrix history.
-    const invalidRouteClient = browserClient;
-    browserClient = await createFreshPageClient(debugPort, frontendUrl);
-    await closePageTarget(debugPort, invalidRouteClient).catch((error) => {
-      warnings.push(`old browser invalid-route target cleanup skipped: ${error instanceof Error ? error.message : String(error)}`);
-    });
-    await waitForText(browserClient, "当前文件", DEFAULT_TIMEOUT_MS);
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES[0]);
-
-    const initialRoute = await evaluate(browserClient, "location.search", 3000);
-    if (initialRoute && !initialRoute.includes("view=home")) {
-      throw new Error(`Initial workbench route was not canonicalized: ${initialRoute}`);
-    }
-    await clickWorkbenchView(browserClient, "model");
-    await waitForText(browserClient, "默认连接", 12_000);
-    const modelRoute = await evaluate(browserClient, "location.search", 3000);
-    if (!modelRoute.includes("view=model")) throw new Error(`Model navigation did not update the URL: ${modelRoute}`);
-    await navigateBrowserHistory(browserClient, -1);
-    await waitForExpression(browserClient, "!location.search.includes('view=model')", "browser Back URL transition", 12_000);
-    await waitForText(browserClient, "改写对照", 12_000);
-    const backRoute = await evaluate(browserClient, "location.search", 3000);
-    if (backRoute.includes("view=model")) throw new Error(`Back navigation did not restore the home route: ${backRoute}`);
-    checks.push("browser Back restores the home route and active workspace");
-    await navigateBrowserHistory(browserClient, 1);
-    await waitForText(browserClient, "默认连接", 12_000);
-    const forwardRoute = await evaluate(browserClient, "location.search", 3000);
-    if (!forwardRoute.includes("view=model")) throw new Error(`Forward navigation did not restore the model route: ${forwardRoute}`);
-    checks.push("browser Forward restores the model route and active workspace");
-    await reloadPage(browserClient);
-    await waitForText(browserClient, "默认连接", 12_000);
-    const reloadRoute = await evaluate(browserClient, "location.search", 3000);
-    if (!reloadRoute.includes("view=model")) throw new Error(`Reload lost the deep-linked view: ${reloadRoute}`);
-    checks.push("model deep link survives a fully synchronized browser reload");
-    const desktopSidebarSemantics = await evaluate(browserClient, `(() => {
-      const rail = document.querySelector('[data-sidebar="rail"]');
-      const railHost = rail?.closest('[data-side="left"]');
-      const trigger = document.querySelector('[data-sidebar="trigger"]');
-      const navigation = document.querySelector('[role="navigation"][aria-label="工作台主导航"]');
-      return {
-        rail: Boolean(rail),
-        railNested: Boolean(railHost),
-        trigger: Boolean(trigger),
-        controls: trigger?.getAttribute('aria-controls') || '',
-        expanded: trigger?.getAttribute('aria-expanded') || '',
-        navigation: Boolean(navigation),
-      };
-    })()`, 3000);
-    if (!desktopSidebarSemantics?.rail || !desktopSidebarSemantics.railNested || !desktopSidebarSemantics.controls || !desktopSidebarSemantics.expanded || !desktopSidebarSemantics.navigation) {
-      throw new Error(`Desktop sidebar rail or accessibility semantics are incomplete: ${JSON.stringify(desktopSidebarSemantics)}`);
-    }
-    await evaluate(browserClient, `document.querySelector('[data-sidebar="trigger"]')?.click()`, 3000);
-    await wait(250);
-    const collapsedSidebar = await evaluate(browserClient, `(() => {
-      const sidebar = document.querySelector('[data-side="left"]');
-      return { state: sidebar?.getAttribute('data-state'), cookie: document.cookie };
-    })()`, 3000);
-    if (collapsedSidebar?.state !== "collapsed" || !collapsedSidebar.cookie.includes("sidebar_state=false")) {
-      throw new Error(`Sidebar collapse did not persist: ${JSON.stringify(collapsedSidebar)}`);
-    }
-    await reloadPage(browserClient);
-    await waitForText(browserClient, "默认连接", 12_000);
-    const restoredSidebarState = await evaluate(browserClient, "document.querySelector('[data-side=\"left\"]')?.getAttribute('data-state')", 3000);
-    if (restoredSidebarState !== "collapsed") throw new Error(`Sidebar cookie was not restored after reload: ${restoredSidebarState}`);
-    checks.push("collapsed sidebar state survives a fully synchronized browser reload");
-    await evaluate(browserClient, "document.querySelector('[data-sidebar=\"trigger\"]')?.click()", 3000);
-    await wait(250);
-    const expandedSidebarHomeClick = await clickWorkbenchView(browserClient, "home");
-    try {
-      await waitForText(browserClient, "改写对照", 12_000);
-    } catch (error) {
-      const postClickState = await evaluate(browserClient, `({
-        href: location.href,
-        historyState: history.state,
-        sidebarState: document.querySelector('[data-side="left"]')?.getAttribute('data-state') || '',
-        activeViews: Array.from(document.querySelectorAll('[data-workbench-view][aria-current="page"]'))
-          .map((item) => item.getAttribute('data-workbench-view')),
-      })`, 3000).catch(() => null);
-      throw new Error(`Expanded sidebar home navigation did not commit: ${error instanceof Error ? error.message : String(error)}\nClick: ${JSON.stringify(expandedSidebarHomeClick)}\nState: ${JSON.stringify(postClickState)}`);
-    }
-    checks.push("URL deep-link, Back/Forward, reload recovery, sidebar cookie, rail, and ARIA semantics work in a real browser");
-
-    let fileChooserIntercepted = false;
-    try {
-      await browserClient.send("Page.setInterceptFileChooserDialog", { enabled: true, cancel: true });
-      fileChooserIntercepted = true;
-    } catch (error) {
-      warnings.push(`file chooser cancel smoke skipped: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    if (fileChooserIntercepted && backendStartedBySmoke) {
-      const hasRestoredDocument = await evaluate(browserClient, `document.body?.innerText?.includes("源文档 ·") ?? false`, 3000);
-      if (!hasRestoredDocument && await findClickablePointByText(browserClient, "上传文档")) {
-        await clickByText(browserClient, "上传文档");
-        await wait(750);
-        const cancelNoticeVisible = await evaluate(browserClient, `document.body?.innerText?.includes("已取消选择文档") ?? false`, 3000);
-        if (!cancelNoticeVisible) {
-          warnings.push("browser canceled the intercepted file chooser without dispatching a page-level cancel event");
-        }
-        await clickWorkbenchView(browserClient, "model");
-        await waitForText(browserClient, "默认连接", 12_000);
-        await clickWorkbenchView(browserClient, "home");
-        await waitForText(browserClient, "改写对照", 12_000);
-        checks.push("document picker cancel releases UI and navigation remains clickable");
-      } else {
-        warnings.push("file chooser cancel smoke skipped because an existing document is already restored in the local backend state");
-        await clickWorkbenchView(browserClient, "model");
-        await waitForText(browserClient, "默认连接", 12_000);
-        await clickWorkbenchView(browserClient, "home");
-        await waitForText(browserClient, "改写对照", 12_000);
-        checks.push("existing document state still allows sidebar navigation");
-      }
-    } else if (fileChooserIntercepted) {
-      warnings.push("file chooser cancel smoke skipped because an already-running local backend may carry user document state");
-      await clickWorkbenchView(browserClient, "model");
-      await waitForText(browserClient, "默认连接", 12_000);
-      await clickWorkbenchView(browserClient, "home");
-      await waitForText(browserClient, "改写对照", 12_000);
-      checks.push("existing local backend state still allows sidebar navigation");
-    }
-
-    await waitForText(browserClient, "改写对照", 10_000);
-    await waitForText(browserClient, "文档入口", 10_000);
-    checks.push("inline Diff workbench is visible inside the home canvas");
-
-    await clickWorkbenchView(browserClient, "home");
-    await waitForText(browserClient, "改写对照", 10_000);
-    checks.push("home controls remain visible beside inline Diff workbench");
-
-    await clickWorkbenchView(browserClient, "history");
-    await waitForText(browserClient, "继续处理与导出", 12_000);
-    await clickWorkbenchView(browserClient, "diagnostics");
-    await waitForText(browserClient, "重新自检", 12_000);
-    await clickWorkbenchView(browserClient, "prompts");
+    await clickByText(browserClient, "提示词方案");
+    await waitForText(browserClient, "提示词", 12_000);
     await waitForExpression(browserClient, "Boolean(document.querySelector('textarea'))", "prompt editor textarea", 12_000);
+    await clickByText(browserClient, "新建", 12_000);
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('#template-name') && !document.querySelector('#template-name').disabled)",
+      "new prompt template editor",
+      12_000,
+    );
+    await setControlValue(browserClient, "#template-name", "浏览器测试提示词");
+    await setControlValue(browserClient, "#template-content", "请保持事实并改写以下内容：\n\n{{text}}");
+    await clickByText(browserClient, "保存", 12_000);
+    await waitForText(browserClient, "提示词已保存", 12_000);
+    checks.push("a new prompt template opens an editable form and can be saved");
+    await captureScreenshot(browserClient, PROMPT_SCREENSHOT_PATH);
     const promptPageUsesFixedBoundary = await evaluate(browserClient, "Boolean(document.querySelector('textarea') && getComputedStyle(document.documentElement).overflow === 'hidden' && getComputedStyle(document.body).overflow === 'hidden')", 3000);
     if (!promptPageUsesFixedBoundary) {
       throw new Error("Prompt workspace did not render inside the fixed page boundary.");
     }
-    await clickWorkbenchTab(browserClient, "workflows", "流程模板");
-    await waitForText(browserClient, "保存流程", 12_000);
-    const workflowEditorState = await evaluate(browserClient, `(() => ({
-      tab: document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim() || "",
-      nameInput: Array.from(document.querySelectorAll('input')).some((item) => item.getBoundingClientRect().width > 0 && item.getAttribute('type') !== 'hidden'),
-      numberInputs: Array.from(document.querySelectorAll('input[type="number"]')).filter((item) => item.getBoundingClientRect().width > 0).length,
-      save: Array.from(document.querySelectorAll('button')).some((item) => item.textContent?.trim() === '保存流程' && item.getBoundingClientRect().width > 0),
-    }))()`, 3000);
-    if (workflowEditorState?.tab !== "流程模板" || !workflowEditorState.nameInput || workflowEditorState.numberInputs < 2 || !workflowEditorState.save) {
-      throw new Error(`Workflow editor did not render its real controls: ${JSON.stringify(workflowEditorState)}`);
+    await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false });
+    await wait(300);
+    const compactPromptLayout = await evaluate(
+      browserClient,
+      `(() => {
+        const workspace = document.querySelector('[data-testid="prompt-workspace"]');
+        const editor = document.querySelector('#template-content');
+        if (!workspace || !editor) return { found: false };
+        editor.scrollIntoView({ block: 'center' });
+        const rect = editor.getBoundingClientRect();
+        return {
+          found: true,
+          editorVisible: rect.width > 0 && rect.height > 0 && rect.right <= window.innerWidth + 1,
+          pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+          workspaceContained: workspace.getBoundingClientRect().bottom <= window.innerHeight + 1,
+        };
+      })()`,
+      3000,
+    );
+    if (!compactPromptLayout.found || !compactPromptLayout.editorVisible || compactPromptLayout.pageOverflow || !compactPromptLayout.workspaceContained) {
+      throw new Error(`Compact prompt workspace clipped its editor: ${JSON.stringify(compactPromptLayout)}`);
     }
-    const expandedWorkflowDraft = await evaluate(browserClient, `(() => {
-      const label = Array.from(document.querySelectorAll('label'))
-        .find((item) => item.textContent?.trim() === '默认编排上限');
-      const input = label?.htmlFor ? document.getElementById(label.htmlFor) : null;
-      if (!(input instanceof HTMLInputElement)) return false;
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      setter?.call(input, '4');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()`, 3000);
-    if (!expandedWorkflowDraft) throw new Error("Workflow sequence-limit input is unavailable.");
-    await waitForExpression(browserClient, `Array.from(document.querySelectorAll('button')).some((item) => item.textContent?.trim() === '添加一轮' && !item.disabled)`, "four-round workflow add action", 12_000);
-    const addWorkflowRoundFocused = await evaluate(browserClient, `(() => {
-      const button = Array.from(document.querySelectorAll('button'))
-        .find((item) => item.textContent?.trim() === '添加一轮' && !item.disabled);
-      if (!(button instanceof HTMLButtonElement)) return false;
-      button.focus();
-      return document.activeElement === button;
-    })()`, 3000);
-    if (!addWorkflowRoundFocused) throw new Error("Workflow add action could not receive keyboard focus.");
-    await pressKey(browserClient, "Enter");
-    await waitForExpression(browserClient, `Boolean(document.querySelector('button[aria-label="第 4 轮：移除"]'))`, "four-round workflow draft", 12_000);
-    const reorderedFocus = await evaluate(browserClient, `(() => {
-      const button = document.querySelector('button[aria-label="第 1 轮：下移"]');
-      if (!(button instanceof HTMLElement)) return false;
-      button.focus();
-      button.click();
-      return true;
-    })()`, 3000);
-    if (!reorderedFocus) throw new Error("Workflow sequence reorder control is unavailable.");
-    await waitForExpression(browserClient, `document.activeElement?.getAttribute("aria-label") === "第 2 轮：下移"`, "workflow reorder focus retention", 12_000);
-    const resetWorkflowFocused = await evaluate(browserClient, `(() => {
-      const button = Array.from(document.querySelectorAll('button'))
-        .find((item) => item.textContent?.trim() === '还原' && !item.disabled);
-      if (!(button instanceof HTMLElement)) return false;
-      button.focus();
-      return true;
-    })()`, 3000);
-    if (!resetWorkflowFocused) throw new Error("Workflow reset action is unavailable after reordering.");
-    await pressKey(browserClient, "Enter");
-    await waitForExpression(browserClient, `document.querySelector('button') && Array.from(document.querySelectorAll('button')).some((item) => item.textContent?.trim() === '保存流程' && item.disabled)`, "workflow draft reset", 12_000);
-    await clickWorkbenchTab(browserClient, "prompts", "提示词库");
-    await waitForExpression(browserClient, "Boolean(document.querySelector('textarea'))", "prompt editor after workflow tab", 12_000);
-    checks.push("prompt workspace edits a four-round workflow draft, preserves reorder focus, resets, and returns to prompt editing");
-    checks.push("primary sidebar navigation remains responsive");
+    await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await wait(300);
+    checks.push("prompt library stacks into a scrollable editor instead of clipping at medium widths");
+    await selectTabByText(browserClient, "方案");
+    await waitForText(browserClient, "执行步骤", 12_000);
+    await clickByText(browserClient, "新建", 12_000);
+    await setControlValue(browserClient, "#plan-name", "浏览器测试方案");
+    await clickByText(browserClient, "添加步骤", 12_000);
+    await clickByText(browserClient, "保存", 12_000);
+    await waitForText(browserClient, "方案已保存", 12_000);
+    checks.push("a custom prompt plan can be created from the UI with an ordered first step");
+    await clickByText(browserClient, "最近文档");
+    await waitForText(browserClient, "还没有文档", 12_000);
+    await captureScreenshot(browserClient, RECENT_SCREENSHOT_PATH);
+    await clickByText(browserClient, "开始改写");
+    await waitForText(browserClient, "选择文件", 12_000);
+    await captureScreenshot(browserClient, HOME_SCREENSHOT_PATH);
+    const desktopRewriteLayout = await evaluate(
+      browserClient,
+      `(() => {
+        const empty = Array.from(document.querySelectorAll('[data-slot="empty"]')).find((item) =>
+          (item.innerText || '').includes('选择文档')
+        );
+        const main = document.querySelector('main');
+        if (!empty || !main) return { found: false };
+        const emptyRect = empty.getBoundingClientRect();
+        const mainRect = main.getBoundingClientRect();
+        return {
+          found: true,
+          contained: emptyRect.top >= mainRect.top - 1
+            && emptyRect.left >= mainRect.left - 1
+            && emptyRect.right <= mainRect.right + 1
+            && emptyRect.bottom <= mainRect.bottom + 1,
+          pageVerticalOverflow: document.documentElement.scrollHeight > window.innerHeight + 1,
+          pageHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+          taskPanelAbsent: !document.querySelector('[data-testid="rewrite-task-panel"]'),
+        };
+      })()`,
+      3000,
+    );
+    if (
+      !desktopRewriteLayout.found
+      || !desktopRewriteLayout.contained
+      || desktopRewriteLayout.pageVerticalOverflow
+      || desktopRewriteLayout.pageHorizontalOverflow
+      || !desktopRewriteLayout.taskPanelAbsent
+    ) {
+      throw new Error(`Empty rewrite workspace escaped its fixed boundary: ${JSON.stringify(desktopRewriteLayout)}`);
+    }
+    checks.push("empty rewrite workspace stays focused and contained without a redundant task panel");
 
-    await clickWorkbenchView(browserClient, "home");
-    await waitForText(browserClient, "改写对照", 12_000);
-    await clickWorkbenchView(browserClient, "quality");
+    await uploadFile(browserClient, docxFixturePath);
+    await waitForText(browserClient, "文档已读取", 12_000);
+    await waitForText(browserClient, "保存正文范围", 12_000);
+    await clickByText(browserClient, "保存正文范围", 12_000, true);
+    await waitForText(browserClient, "开始改写", 12_000);
     await waitForExpression(
       browserClient,
-      `document.body?.innerText?.includes("降检诊断") || document.body?.innerText?.includes("尚未载入论文")`,
-      "rate-audit report or honest empty state",
+      "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))",
+      "rewrite settings sheet after scope confirmation",
+      12_000,
+    );
+    await wait(500);
+    const uploadedDesktopLayout = await evaluate(
+      browserClient,
+      `(() => {
+        const main = document.querySelector('[data-testid="rewrite-main-panel"]');
+        const workspace = document.querySelector('[data-testid="rewrite-workspace-grid"]');
+        const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
+        if (!main || !workspace || !task) return { found: false };
+        const mainRect = main.getBoundingClientRect();
+        const workspaceRect = workspace.getBoundingClientRect();
+        const taskRect = task.getBoundingClientRect();
+        return {
+          found: true,
+          mainWidth: Math.round(mainRect.width),
+          taskWidth: Math.round(taskRect.width),
+          manuscriptUsesWorkspace: Math.abs(mainRect.width - workspaceRect.width) <= 2,
+          taskFitsViewport: taskRect.left >= -1 && taskRect.right <= window.innerWidth + 1,
+          taskContainsPlan: task.innerText.includes('模型连接') && task.innerText.includes('提示词方案'),
+          permanentTaskPanelAbsent: !document.querySelector('[data-testid="rewrite-task-panel"]'),
+          pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+        };
+      })()`,
+      3000,
+    );
+    if (
+      !uploadedDesktopLayout.found
+      || !uploadedDesktopLayout.manuscriptUsesWorkspace
+      || !uploadedDesktopLayout.taskFitsViewport
+      || !uploadedDesktopLayout.taskContainsPlan
+      || !uploadedDesktopLayout.permanentTaskPanelAbsent
+      || uploadedDesktopLayout.pageOverflow
+    ) {
+      throw new Error(`Uploaded rewrite workspace did not keep settings separate from the manuscript: ${JSON.stringify(uploadedDesktopLayout)}`);
+    }
+    await pressKey(browserClient, "Escape");
+    await waitForExpression(browserClient, "!document.querySelector('[data-testid=\"rewrite-task-sheet\"]')", "desktop rewrite settings sheet to close", 12_000);
+    checks.push("uploaded desktop workspace gives the manuscript full width and opens settings only in a temporary sheet");
+
+    await clickSelector(browserClient, 'button[aria-label="文档操作"]');
+    await clickByText(browserClient, "保护区地图", 12_000);
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('[data-testid=\"protection-map-workspace\"] [id^=\"scope-unit-\"]'))",
+      "protection range list",
+      12_000,
+    );
+    const scopeSelectionSnapshot = await evaluate(
+      browserClient,
+      `(() => {
+        const expected = ${JSON.stringify(SCOPE_FIXTURE_EXPECTATIONS)};
+        const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+        const units = Array.from(document.querySelectorAll('[id^="scope-unit-"]'));
+        return expected.map((item) => {
+          const unit = units.find((candidate) => {
+            const description = candidate.querySelector('[data-slot="item-description"]');
+            return description
+              ? normalize(description.textContent) === normalize(item.text)
+              : normalize(candidate.textContent).includes(normalize(item.text));
+          });
+          const checkbox = unit?.querySelector('[role="checkbox"],input[type="checkbox"]');
+          return {
+            ...item,
+            found: Boolean(unit),
+            hasCheckbox: Boolean(checkbox),
+            actualSelected: Boolean(checkbox?.checked)
+              || checkbox?.getAttribute('data-state') === 'checked'
+              || checkbox?.getAttribute('aria-checked') === 'true',
+          };
+        });
+      })()`,
+      3000,
+    );
+    const incorrectScopeSelections = scopeSelectionSnapshot.filter((item) => (
+      !item.found || !item.hasCheckbox || item.actualSelected !== item.selected
+    ));
+    if (incorrectScopeSelections.length) {
+      throw new Error(`Suggested body scope omitted prose or included structural text: ${JSON.stringify(incorrectScopeSelections)}`);
+    }
+    const selectedFixtureParagraphCount = scopeSelectionSnapshot.filter((item) => item.actualSelected).length;
+    if (selectedFixtureParagraphCount !== 4) {
+      throw new Error(`Expected exactly four prose paragraphs in the suggested body scope, found ${selectedFixtureParagraphCount}.`);
+    }
+
+    const protectionWorkspace = await evaluate(
+      browserClient,
+      `(() => {
+        const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+        const workspace = document.querySelector('[data-testid="protection-map-workspace"]');
+        const main = workspace?.closest('main');
+        const firstUnit = workspace?.querySelector('[id^="scope-unit-"]');
+        const viewport = firstUnit?.closest('[data-radix-scroll-area-viewport]');
+        const returnButton = Array.from(workspace?.querySelectorAll('button') || []).find((item) =>
+          normalize(item.innerText) === '返回改写工作台'
+        );
+        if (!workspace || !main || !viewport || !returnButton) return { found: false };
+        const workspaceRect = workspace.getBoundingClientRect();
+        const mainRect = main.getBoundingClientRect();
+        const footerTopBefore = returnButton.getBoundingClientRect().top;
+        const pageScrollBefore = window.scrollY;
+        const maximumScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+        viewport.scrollTop = maximumScrollTop;
+        const internalScrollTop = viewport.scrollTop;
+        const footerTopAfter = returnButton.getBoundingClientRect().top;
+        const pageScrollAfter = window.scrollY;
+        viewport.scrollTop = 0;
+        const exposesLegacyFillAllText = (workspace.innerText || '').includes('选择全部可回填段落');
+        const hasStructureNavigation = (workspace.innerText || '').includes('文档结构');
+        const exposesInternalStyleNames = /\bheading\s*\d*\b/i.test(workspace.innerText || '');
+        const hasCompactFilter = Boolean(workspace.querySelector('button[aria-label="筛选正文范围"]'));
+        const scopeLists = workspace.querySelectorAll('[id^="scope-unit-"]');
+        return {
+          found: true,
+          htmlOverflow: getComputedStyle(document.documentElement).overflow,
+          bodyOverflow: getComputedStyle(document.body).overflow,
+          mainOverflow: getComputedStyle(main).overflow,
+          workspaceContained: workspaceRect.top >= mainRect.top - 1
+            && workspaceRect.left >= mainRect.left - 1
+            && workspaceRect.right <= mainRect.right + 1
+            && workspaceRect.bottom <= mainRect.bottom + 1,
+          footerVisible: footerTopBefore >= mainRect.top && footerTopBefore < mainRect.bottom,
+          internalOverflow: maximumScrollTop > 1,
+          internalHorizontalOverflow: viewport.scrollWidth > viewport.clientWidth + 1,
+          internalScrollTop,
+          footerStayedFixed: Math.abs(footerTopAfter - footerTopBefore) < 1,
+          pageStayedFixed: pageScrollBefore === pageScrollAfter,
+          pageVerticalOverflow: document.documentElement.scrollHeight > window.innerHeight + 1,
+          pageHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+          hasStructureNavigation,
+          exposesLegacyFillAllText,
+          exposesInternalStyleNames,
+          hasCompactFilter,
+          scopeUnitCount: scopeLists.length,
+        };
+      })()`,
+      3000,
+    );
+    if (
+      !protectionWorkspace.found
+      || !["hidden", "clip"].includes(protectionWorkspace.htmlOverflow)
+      || !["hidden", "clip"].includes(protectionWorkspace.bodyOverflow)
+      || !["hidden", "clip"].includes(protectionWorkspace.mainOverflow)
+      || !protectionWorkspace.workspaceContained
+      || !protectionWorkspace.footerVisible
+      || !protectionWorkspace.internalOverflow
+      || protectionWorkspace.internalHorizontalOverflow
+      || protectionWorkspace.internalScrollTop <= 0
+      || !protectionWorkspace.footerStayedFixed
+      || !protectionWorkspace.pageStayedFixed
+      || protectionWorkspace.pageVerticalOverflow
+      || protectionWorkspace.pageHorizontalOverflow
+      || protectionWorkspace.hasStructureNavigation
+      || protectionWorkspace.exposesLegacyFillAllText
+      || protectionWorkspace.exposesInternalStyleNames
+      || !protectionWorkspace.hasCompactFilter
+      || protectionWorkspace.scopeUnitCount < SCOPE_FIXTURE_EXPECTATIONS.length
+    ) {
+      throw new Error(`Protection map did not stay inside a fixed, internally scrollable workspace: ${JSON.stringify(protectionWorkspace)}`);
+    }
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "scope notification to clear before documentation capture",
+      12_000,
+    );
+    await captureScreenshot(browserClient, PROTECTION_SCREENSHOT_PATH);
+    const selectedBeforeCancel = await evaluate(browserClient, "document.querySelectorAll('[role=\"checkbox\"][data-state=\"checked\"]').length", 3000);
+    await clickSelector(browserClient, 'button[aria-label="范围操作"]');
+    await clickByText(browserClient, "清空改写范围", 12_000);
+    await clickByText(browserClient, "返回改写工作台", 12_000);
+    await waitForText(browserClient, "开始改写", 12_000);
+    await clickSelector(browserClient, 'button[aria-label="文档操作"]');
+    await clickByText(browserClient, "保护区地图", 12_000);
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('[data-testid=\"protection-map-workspace\"] [id^=\"scope-unit-\"]'))",
+      "protection range list to reopen",
+      12_000,
+    );
+    const selectedAfterCancel = await evaluate(browserClient, "document.querySelectorAll('[role=\"checkbox\"][data-state=\"checked\"]').length", 3000);
+    if (selectedBeforeCancel !== selectedAfterCancel || selectedAfterCancel === 0) {
+      throw new Error(`Leaving the boundary editor did not discard its unsaved selection (${selectedBeforeCancel} -> ${selectedAfterCancel}).`);
+    }
+    await clickByText(browserClient, "返回改写工作台", 12_000);
+    checks.push("inline Chinese and post-reference English abstracts, body prose, and acknowledgements stay in the suggested scope while headings, captions, keywords, and references stay out");
+    checks.push("protection map uses one fixed, internally scrollable range list without duplicate structure panels or internal style labels");
+
+    await clickByText(browserClient, "改写设置", 12_000);
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))",
+      "rewrite settings sheet to reopen",
+      12_000,
+    );
+    await wait(500);
+    const taskPlanControls = await evaluate(
+      browserClient,
+      `(() => {
+        const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
+        if (!task) return { found: false };
+        const visibleComboboxes = Array.from(task.querySelectorAll('[role="combobox"]')).filter((control) => {
+          const rect = control.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && !control.disabled;
+        });
+        const text = task.innerText || '';
+        return {
+          found: true,
+          visibleComboboxes: visibleComboboxes.length,
+          hasModel: text.includes('模型连接'),
+          hasPrompt: text.includes('提示词方案'),
+        };
+      })()`,
+      3000,
+    );
+    await selectTabByText(browserClient, "处理");
+    const taskProcessingControls = await evaluate(
+      browserClient,
+      `(() => {
+        const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
+        const text = task?.innerText || '';
+        const concurrency = task?.querySelector('[data-testid="rewrite-concurrency"] [role="slider"]');
+        return {
+          found: Boolean(task),
+          hasChunking: text.includes('段内分块'),
+          hasRounds: text.includes('轮数'),
+          hasConcurrency: text.includes('同时处理'),
+          concurrencyMin: concurrency?.getAttribute('aria-valuemin'),
+          concurrencyMax: concurrency?.getAttribute('aria-valuemax'),
+        };
+      })()`,
+      3000,
+    );
+    if (
+      !taskPlanControls.found
+      || taskPlanControls.visibleComboboxes < 2
+      || !taskPlanControls.hasModel
+      || !taskPlanControls.hasPrompt
+      || !taskProcessingControls.found
+      || !taskProcessingControls.hasChunking
+      || !taskProcessingControls.hasRounds
+      || !taskProcessingControls.hasConcurrency
+      || taskProcessingControls.concurrencyMin !== "1"
+      || taskProcessingControls.concurrencyMax !== "16"
+    ) {
+      throw new Error(`Uploaded document settings sheet is not configurable: ${JSON.stringify({ taskPlanControls, taskProcessingControls })}`);
+    }
+    await setSliderValue(browserClient, '[data-testid="rewrite-concurrency"] [role="slider"]', 8);
+    checks.push("rewrite settings expose model, prompt, practiced chunking, rounds, and real 1–16 concurrency in a temporary sheet");
+
+    await clickByText(browserClient, "开始改写", 12_000, true);
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('[data-testid=\"rewrite-run-progress\"]'))",
+      "overall rewrite progress to appear",
+      15_000,
+    );
+    await wait(700);
+    const runningWorkspace = await evaluate(
+      browserClient,
+      `(() => {
+        const progress = document.querySelector('[data-testid="rewrite-run-progress"]');
+        const progressText = progress?.innerText || '';
+        return {
+          found: Boolean(progress),
+          hasProgressBar: Boolean(progress?.querySelector('[role="progressbar"]')),
+          showsParagraphProgress: progressText.includes('/') && progressText.includes('段'),
+          manuscriptVisible: Boolean(progress?.querySelector('[data-testid="rewrite-manuscript-preview"]')),
+          reviewHidden: !document.querySelector('[data-review-detail]'),
+          chunkTrackHidden: !document.querySelector('[data-chunk-track], [data-review-chunk], [data-chunk-detail]'),
+          liveTextHidden: !document.querySelector('[data-live-text], [data-live-chunk-text]'),
+          taskSheetClosed: !document.querySelector('[data-testid="rewrite-task-sheet"]'),
+          progressHidesChunkDetails: !progressText.includes('块'),
+        };
+      })()`,
+      3000,
+    );
+    if (
+      !runningWorkspace.found
+      || !runningWorkspace.hasProgressBar
+      || !runningWorkspace.showsParagraphProgress
+      || !runningWorkspace.manuscriptVisible
+      || !runningWorkspace.reviewHidden
+      || !runningWorkspace.chunkTrackHidden
+      || !runningWorkspace.liveTextHidden
+      || !runningWorkspace.taskSheetClosed
+      || !runningWorkspace.progressHidesChunkDetails
+    ) {
+      throw new Error(`Running workspace still exposes internal chunk processing: ${JSON.stringify(runningWorkspace)}`);
+    }
+    await captureScreenshot(browserClient, RUNNING_SCREENSHOT_PATH);
+    checks.push("running tasks show only overall paragraph progress while chunk streaming and concurrency stay internal");
+    await clickByText(browserClient, "停止", 12_000);
+    await waitForText(browserClient, "继续", 15_000);
+    await waitForExpression(browserClient, "Boolean(document.querySelector('[data-review-detail]'))", "review after stopping", 12_000);
+    const incompleteReviewIds = await getReviewParagraphIds(browserClient, true);
+    if (!incompleteReviewIds.length) {
+      throw new Error("Stopping the streaming task did not leave any incomplete paragraph to review.");
+    }
+    await chooseReviewParagraph(browserClient, incompleteReviewIds[0]);
+    await clickByText(browserClient, "手动编辑", 3000);
+    await waitForExpression(browserClient, "Boolean(document.querySelector('textarea[id^=\"manual-\"]'))", "manual editor for an incomplete paragraph", 12_000);
+    await setControlValue(browserClient, 'textarea[id^="manual-"]', "模型中断后由用户手动补写的正文。");
+    await clickByText(browserClient, "保存", 12_000);
+    await waitForExpression(
+      browserClient,
+      `Boolean(
+        document.querySelector('[data-review-detail]')?.innerText.includes('模型中断后由用户手动补写的正文。')
+        && !document.querySelector('textarea[id^="manual-"]')
+      )`,
+      "saved manual content to remain visible",
+      12_000,
+    );
+
+    for (const paragraphId of incompleteReviewIds.slice(1)) {
+      await chooseReviewParagraph(browserClient, paragraphId);
+      await selectReviewDecision(browserClient, "保留原文");
+    }
+    await clickByText(browserClient, "继续", 12_000);
+    await waitForText(browserClient, "继续未完成内容", 12_000);
+    await waitForExpression(
+      browserClient,
+      `(() => {
+        const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
+        const exportButton = Array.from(document.querySelectorAll('button')).find((item) =>
+          task?.contains(item) && (item.innerText || '').trim() === 'Word'
+        );
+        return Boolean(task && exportButton && !exportButton.disabled);
+      })()`,
+      "DOCX export to become available after every incomplete paragraph is manually resolved or kept original",
+      12_000,
+    );
+    checks.push("manual text or an explicit keep-original decision resolves incomplete paragraphs without a mechanical run-status gate");
+    await clickByText(browserClient, "继续未完成内容", 12_000);
+    await waitForExpression(
+      browserClient,
+      `Boolean(document.querySelector('[data-review-detail]'))
+        && Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '导出')`,
+      "completed review workspace",
+      35_000,
+    );
+    await waitForExpression(browserClient, "Boolean(document.querySelector('[data-review-detail]'))", "completed review", 12_000);
+    const completedReviewIds = await getReviewParagraphIds(browserClient);
+    const warningParagraphId = completedReviewIds[1] || completedReviewIds[0];
+    await chooseReviewParagraph(browserClient, warningParagraphId);
+    await selectReviewDecision(browserClient, "采用改写");
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('button[aria-label$=\"项提醒\"]'))",
+      "rewrite warning reminder",
+      12_000,
+    );
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('[data-text-diff] [data-diff-added]') && document.querySelector('[data-text-diff] [data-diff-removed]'))",
+      "real added and removed diff markers to render",
+      12_000,
+    );
+    const hasFixtureAnnotations = await evaluate(
+      browserClient,
+      `Array.from(document.querySelectorAll('[data-review-paragraph]')).some((item) =>
+        (item.innerText || '').includes('（改写）')
+      )`,
+      3000,
+    );
+    if (hasFixtureAnnotations) {
+      throw new Error("Model output contains a synthetic rewrite annotation from the test provider.");
+    }
+    await clickByText(browserClient, "导出", 12_000);
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))",
+      "completed task actions sheet",
+      12_000,
+    );
+    const compactRunSnapshot = await evaluate(
+      browserClient,
+      `(() => {
+        const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
+        if (!task) return false;
+        const visibleCombobox = Array.from(task.querySelectorAll('[role="combobox"]')).some((control) => {
+          const rect = control.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+        const text = task.innerText || '';
+        return text.includes('改写完成')
+          && text.includes('本地连接一')
+          && text.includes('经典改写')
+          && !text.includes('段内分块')
+          && !text.includes('保护词')
+          && !visibleCombobox;
+      })()`,
+      3000,
+    );
+    if (!compactRunSnapshot) {
+      throw new Error("Completed task sheet still exposes editable configuration forms instead of a compact snapshot.");
+    }
+    await pressKey(browserClient, "Escape");
+    await waitForExpression(browserClient, "!document.querySelector('[data-testid=\"rewrite-task-sheet\"]')", "completed task sheet to close", 12_000);
+    await waitForExpression(
+      browserClient,
+      `Boolean(
+        document.querySelector('[data-text-diff] [data-diff-side="original"]')
+        && document.querySelector('[data-text-diff] [data-diff-side="rewritten"]')
+        && document.querySelector('[data-review-text]')
+      )`,
+      "original and rewritten versions to remain visible together",
+      12_000,
+    );
+    await captureScreenshot(browserClient, RESULTS_SCREENSHOT_PATH);
+    const longReviewContainment = await evaluate(
+      browserClient,
+      `(() => {
+        const panel = document.querySelector('[data-testid="rewrite-main-panel"]');
+        const root = document.querySelector('[data-testid="rewrite-results-scroll"]');
+        const review = document.querySelector('[data-review-paragraph]');
+        const viewport = review?.querySelector('[data-review-scroll] [data-radix-scroll-area-viewport]');
+        const host = viewport?.firstElementChild;
+        if (!panel || !root || !review || !viewport || !host) return { found: false };
+        const sentinel = document.createElement('div');
+        sentinel.setAttribute('data-layout-sentinel', 'true');
+        sentinel.style.height = '2000px';
+        host.appendChild(sentinel);
+        const panelRect = panel.getBoundingClientRect();
+        const rootRect = root.getBoundingClientRect();
+        const result = {
+          found: true,
+          pageOverflow: document.documentElement.scrollHeight > window.innerHeight + 1,
+          rootContained: rootRect.top >= panelRect.top - 1 && rootRect.bottom <= panelRect.bottom + 1,
+          internalOverflow: viewport.scrollHeight > viewport.clientHeight + 1,
+          viewportHeight: viewport.clientHeight,
+          contentHeight: viewport.scrollHeight,
+        };
+        sentinel.remove();
+        return result;
+      })()`,
+      3000,
+    );
+    if (!longReviewContainment.found || longReviewContainment.pageOverflow || !longReviewContainment.rootContained || !longReviewContainment.internalOverflow) {
+      throw new Error(`Long review content escaped the fixed-height workspace: ${JSON.stringify(longReviewContainment)}`);
+    }
+    checks.push("DOCX runs hidden chunk streams, stops, resumes unfinished chunks, then renders paragraph-level diffs and warnings");
+    checks.push("multi-round output contains no synthetic rewrite labels and long reviews scroll inside the workspace");
+    checks.push("completed task actions open as a compact immutable sheet instead of a permanent sidebar");
+    checks.push("review shows the complete original and rewritten versions together with separate diff markers");
+
+    await selectReviewDecision(browserClient, "保留原文");
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('button[aria-label$=\"项提醒\"]')",
+      "warning to clear for the paragraph kept as original",
+      12_000,
+    );
+    checks.push("keeping original clears that paragraph's advisory warning without changing other results");
+
+    await selectReviewDecision(browserClient, "采用改写");
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('button[aria-label$=\"项提醒\"]'))",
+      "warning to follow the restored rewrite decision",
+      12_000,
+    );
+
+    await clickByText(browserClient, "导出", 12_000);
+    await waitForExpression(browserClient, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "export sheet", 12_000);
+    await clickByText(browserClient, "Word", 12_000);
+    await waitForText(browserClient, "导出前确认", 12_000);
+    await clickByText(browserClient, "继续导出 Word", 12_000, true);
+    await waitForText(browserClient, "文件已导出", 20_000);
+    await waitForTextGone(browserClient, "导出前确认", 12_000);
+    await pressKey(browserClient, "Escape");
+    await waitForExpression(browserClient, "!document.querySelector('[data-testid=\"rewrite-task-sheet\"]')", "export sheet to close", 12_000);
+    checks.push("warning confirmation exports a format-audited DOCX");
+
+    await wait(500);
+    await clickByText(browserClient, "手动编辑", 12_000);
+    await waitForExpression(browserClient, "Boolean(document.querySelector('textarea[id^=\"manual-\"]'))", "manual review editor", 12_000);
+    await setControlValue(browserClient, 'textarea[id^="manual-"]', "手动审阅后的正文保留数字 10。");
+    const exportDisabledWhileEditing = await evaluate(
+      browserClient,
+      `Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '导出' && item.disabled)`,
+      3000,
+    );
+    if (!exportDisabledWhileEditing) {
+      throw new Error("Export stayed enabled while manual review text was unsaved.");
+    }
+    await clickByText(browserClient, "保存", 12_000);
+    checks.push("manual review must be saved before export and can then be stored");
+
+    await clickByText(browserClient, "最近文档");
+    await waitForText(browserClient, "示例文档.docx", 12_000);
+    await clickByText(browserClient, "打开", 12_000);
+    await waitForText(browserClient, "示例文档.docx", 12_000);
+    checks.push("recent DOCX can be reopened");
+
+    await browserClient.send("Page.reload", { ignoreCache: true });
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('[data-testid=\"rewrite-main-panel\"]') && document.querySelector('[data-review-detail]'))",
+      "restored review workspace",
       20_000,
     );
-    const hasRateAudit = await evaluate(browserClient, `document.body?.innerText?.includes("降检诊断") ?? false`, 3000);
-    if (hasRateAudit) {
-      await waitForText(browserClient, "降检策略 × 正文与格式硬约束", 12_000);
-      await waitForText(browserClient, "正文范围与格式锁", 12_000);
-      checks.push("rate-audit report renders the dual strategy/content contract gate");
-    } else {
-      checks.push("rate-audit report renders an honest empty state without a selected document");
-    }
-    await clickWorkbenchView(browserClient, "home");
-    await waitForText(browserClient, "改写对照", 12_000);
+    await waitForText(browserClient, "示例文档.docx", 20_000);
+    await waitForExpression(
+      browserClient,
+      `Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '导出' && !item.disabled)`,
+      "restored export action",
+      20_000,
+    );
+    checks.push("page refresh restores the active document and its persisted review task");
 
-    await clickWorkbenchView(browserClient, "prompts");
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
-    const desktopDraft = await makePromptDraftDirty(browserClient, " desktop-navigation-guard");
-    await clickWorkbenchView(browserClient, "home");
-    await waitForText(browserClient, "放弃未保存的修改？", 12_000);
-    await settleVisibleConfirmation(browserClient, "取消");
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
-    const desktopCancelState = await evaluate(browserClient, `({
-      value: document.querySelector("textarea")?.value || "",
-      route: new URLSearchParams(location.search).get("view"),
-    })`, 3000);
-    if (desktopCancelState?.route !== "prompts" || desktopCancelState?.value !== desktopDraft) {
-      throw new Error(`Desktop dirty-navigation cancel lost the route or draft: ${JSON.stringify(desktopCancelState)}`);
-    }
-    await clickWorkbenchView(browserClient, "home");
-    await waitForText(browserClient, "放弃未保存的修改？", 12_000);
-    await settleVisibleConfirmation(browserClient, "放弃修改");
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES[0]);
-    checks.push("desktop dirty sidebar navigation preserves drafts on cancel and leaves only after confirmation");
-
-    await clickWorkbenchView(browserClient, "model");
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "model"));
-    await clickWorkbenchView(browserClient, "prompts");
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
-    const historyDraft = await makePromptDraftDirty(browserClient, " history-traversal-guard");
-    await navigateBrowserHistory(browserClient, -2);
-    await waitForText(browserClient, "放弃未保存的修改？", 12_000);
-    await settleVisibleConfirmation(browserClient, "取消");
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
-    const restoredHistoryDraft = await evaluate(browserClient, `document.querySelector("textarea")?.value || ""`, 3000);
-    if (restoredHistoryDraft !== historyDraft) {
-      throw new Error("Cancelled multi-entry Back traversal did not preserve the prompt draft.");
-    }
-    await navigateBrowserHistory(browserClient, -2);
-    await waitForText(browserClient, "放弃未保存的修改？", 12_000);
-    await settleVisibleConfirmation(browserClient, "放弃修改");
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES[0]);
-    await navigateBrowserHistory(browserClient, 1);
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "model"));
-    await navigateBrowserHistory(browserClient, 1);
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
-    checks.push("dirty multi-entry Back cancellation/restoration, confirmation, and subsequent Forward traversal work in a real browser");
-
-    const staleTraversalDraft = await makePromptDraftDirty(browserClient, " stale-history-confirmation");
-    await navigateBrowserHistory(browserClient, -2);
-    await waitForText(browserClient, "放弃未保存的修改？", 12_000);
-    await navigateBrowserHistory(browserClient, 2);
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
-    await waitForTextGone(browserClient, "放弃未保存的修改？", 12_000);
-    const staleTraversalState = await evaluate(browserClient, `({
-      value: document.querySelector("textarea")?.value || "",
-      route: new URLSearchParams(location.search).get("view"),
-    })`, 3000);
-    if (staleTraversalState?.route !== "prompts" || staleTraversalState?.value !== staleTraversalDraft) {
-      throw new Error(`Stale history confirmation cleared or navigated the current prompt draft: ${JSON.stringify(staleTraversalState)}`);
-    }
-    await clickWorkbenchView(browserClient, "home");
-    await waitForText(browserClient, "放弃未保存的修改？", 12_000);
-    await settleVisibleConfirmation(browserClient, "取消");
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES.find((item) => item.view === "prompts"));
-    const guardedAfterStaleConfirmation = await evaluate(browserClient, `document.querySelector("textarea")?.value || ""`, 3000);
-    if (guardedAfterStaleConfirmation !== staleTraversalDraft) {
-      throw new Error("A stale history confirmation disabled the live prompt draft guard.");
-    }
-    await clickWorkbenchView(browserClient, "home");
-    await waitForText(browserClient, "放弃未保存的修改？", 12_000);
-    await settleVisibleConfirmation(browserClient, "放弃修改");
-    await waitForWorkbenchView(browserClient, WORKBENCH_VIEW_CASES[0]);
-    checks.push("rapid Back/Forward invalidates stale discard confirmations without clearing the live prompt draft guard");
-
-    await clickByText(browserClient, "打开通知与任务中心");
-    await waitForText(browserClient, "通知与任务中心", 12_000);
-    const notificationCenterIsDialog = await evaluate(browserClient, "Boolean(document.querySelector('[role=\"dialog\"][aria-modal=\"true\"]'))", 3000);
-    if (!notificationCenterIsDialog) {
-      throw new Error("Notification center drawer is missing dialog accessibility attributes.");
-    }
+    await clickByText(browserClient, "导出", 12_000);
+    await waitForText(browserClient, "改写完成", 12_000);
+    await clickByText(browserClient, "新建改写任务", 12_000);
+    await browserClient.send("Page.reload", { ignoreCache: true });
+    await waitForText(browserClient, "示例文档.docx", 20_000);
+    await waitForText(browserClient, "改写设置", 20_000);
+    checks.push("starting a new task remains intentional after refresh instead of reopening the old run");
+    await clickSelector(browserClient, 'button[aria-label="文档操作"]');
+    await clickByText(browserClient, "更换文档", 12_000);
+    await uploadFile(browserClient, txtFixturePath);
+    await waitForText(browserClient, "保存正文范围", 12_000);
+    await clickByText(browserClient, "保存正文范围", 12_000, true);
+    await waitForText(browserClient, "开始改写", 12_000);
+    await clickByText(browserClient, "开始改写", 12_000, true);
+    await waitForExpression(
+      browserClient,
+      `Boolean(document.querySelector('[data-review-detail]'))
+        && Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '导出')`,
+      "completed TXT review workspace",
+      25_000,
+    );
+    await clickByText(browserClient, "导出", 12_000);
+    await clickByText(browserClient, "TXT", 12_000);
+    await waitForText(browserClient, "导出前确认", 12_000);
+    await clickByText(browserClient, "继续导出 TXT", 12_000, true);
+    await waitForText(browserClient, "文件已导出", 20_000);
+    await waitForTextGone(browserClient, "导出前确认", 12_000);
     await pressKey(browserClient, "Escape");
-    await waitForTextGone(browserClient, "通知与任务中心", 12_000);
-    checks.push("prompt workspace renders and notification center opens/closes with Escape");
-    }
+    await waitForExpression(browserClient, "!document.querySelector('[data-testid=\"rewrite-task-sheet\"]')", "TXT export sheet to close", 12_000);
+    checks.push("TXT simplified workflow rewrites and exports");
 
-    await browserClient.send("Emulation.setDeviceMetricsOverride", {
-      width: 720,
-      height: 900,
-      deviceScaleFactor: 1,
-      mobile: true,
-      screenWidth: 720,
-      screenHeight: 900,
-    });
-    await wait(350);
-    await evaluate(browserClient, "document.querySelector('[data-sidebar=\"trigger\"]')?.click()", 3000);
-    await waitForText(browserClient, "工作台导航", 12_000);
-    const tabletRailVisible = await evaluate(browserClient, `(() => {
-      const rail = document.querySelector('[data-sidebar="rail"]');
-      if (!(rail instanceof HTMLElement)) return false;
-      const style = getComputedStyle(rail);
-      const rect = rail.getBoundingClientRect();
-      return style.display !== "none" && rect.width > 0 && rect.height > 0;
-    })()`, 3000);
-    if (tabletRailVisible) {
-      throw new Error("Desktop sidebar rail is visible inside the 720px mobile drawer.");
-    }
-    await pressKey(browserClient, "Escape");
-    await waitForExpression(browserClient, `!document.querySelector('[data-sidebar="sidebar"][data-mobile="true"]')`, "tablet sidebar Escape close", 12_000);
-    checks.push("640–767px mobile drawer hides the desktop sidebar rail");
+    await clickByText(browserClient, "最近文档");
+    await waitForText(browserClient, "示例文档.txt", 12_000);
+    await captureScreenshot(browserClient, RECENT_SCREENSHOT_PATH);
+    await clickByText(browserClient, "打开", 12_000);
+    await waitForText(browserClient, "示例文档.txt", 12_000);
 
-    await browserClient.send("Emulation.setDeviceMetricsOverride", {
-      width: 390,
-      height: 844,
-      deviceScaleFactor: 1,
-      mobile: true,
-      screenWidth: 390,
-      screenHeight: 844,
-    });
-    await wait(350);
-    const mobileHeaderState = await evaluate(browserClient, `(() => {
-      const notification = document.querySelector('button[aria-label="打开通知与任务中心"]');
-      const subbar = document.querySelector('.vercel-subbar');
-      const activeTitle = document.querySelector('#fyadr-active-view-title');
-      if (!notification || !subbar || !activeTitle) return null;
-      const rect = notification.getBoundingClientRect();
-      const titleRect = activeTitle.getBoundingClientRect();
-      return {
-        notificationVisible: rect.left >= 0 && rect.right <= window.innerWidth && rect.width >= 32,
-        activeTitleVisible: titleRect.left >= 0 && titleRect.right <= window.innerWidth && titleRect.width > 0,
-        subbarFits: subbar.scrollWidth <= subbar.clientWidth + 2,
-        documentFits: document.documentElement.scrollWidth <= window.innerWidth + 2,
-      };
-    })()`, 3000);
-    if (!mobileHeaderState?.notificationVisible || !mobileHeaderState?.activeTitleVisible || !mobileHeaderState?.subbarFits || !mobileHeaderState?.documentFits) {
-      throw new Error(`Mobile workspace header controls are clipped: ${JSON.stringify(mobileHeaderState)}`);
+    await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false });
+    await wait(500);
+    const tabletLayout = await evaluate(
+      browserClient,
+      `(() => {
+        const workspace = document.querySelector('[data-testid="rewrite-workspace-grid"]');
+        const main = document.querySelector('[data-testid="rewrite-main-panel"]');
+        const actionButton = Array.from(workspace?.querySelectorAll('button') || []).find((button) =>
+          ['改写设置', '继续', '导出'].includes((button.innerText || '').trim())
+        );
+        if (!workspace || !main) return { found: false };
+        return {
+          found: true,
+          mainVisible: getComputedStyle(main).display !== 'none',
+          taskAbsent: !document.querySelector('[data-testid="rewrite-task-panel"]'),
+          actionButtonVisible: Boolean(actionButton && actionButton.getBoundingClientRect().width > 0),
+          pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+        };
+      })()`,
+      3000,
+    );
+    if (!tabletLayout.found || !tabletLayout.mainVisible || !tabletLayout.taskAbsent || !tabletLayout.actionButtonVisible || tabletLayout.pageOverflow) {
+      throw new Error(`Medium-width workspace is cramped or overflowing: ${JSON.stringify(tabletLayout)}`);
     }
-    await clickByText(browserClient, "打开通知与任务中心");
-    await waitForText(browserClient, "通知与任务中心", 12_000);
-    await pressKey(browserClient, "Escape");
-    await waitForTextGone(browserClient, "通知与任务中心", 12_000);
+    await clickByText(browserClient, "导出", 12_000);
+    await waitForExpression(browserClient, "Boolean(document.querySelector('[data-testid=\\\"rewrite-task-sheet\\\"]'))", "tablet task sheet", 12_000);
+    await wait(500);
+    const tabletTaskVisible = await evaluate(
+      browserClient,
+      `(() => {
+        const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
+        if (!task) return false;
+        const rect = task.getBoundingClientRect();
+        return rect.left >= -1 && rect.right <= window.innerWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1;
+      })()`,
+      3000,
+    );
+    if (!tabletTaskVisible) throw new Error("Medium-width task sheet is not usable.");
+    await browserClient.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+    await browserClient.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+    await waitForExpression(browserClient, "!document.querySelector('[data-testid=\\\"rewrite-task-sheet\\\"]')", "tablet task sheet to close", 12_000);
+    await captureScreenshot(browserClient, TABLET_SCREENSHOT_PATH);
+    checks.push("1024px manuscript workspace keeps task actions in a sheet instead of forcing a cramped sidebar");
 
-    const mobileTriggerFocused = await evaluate(browserClient, `(() => {
-      const trigger = document.querySelector('[data-sidebar="trigger"]');
-      if (!(trigger instanceof HTMLElement)) return false;
-      trigger.focus();
-      return true;
-    })()`, 3000);
-    if (!mobileTriggerFocused) {
-      throw new Error("Mobile sidebar trigger is unavailable.");
+    await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 768, height: 900, deviceScaleFactor: 1, mobile: false });
+    await wait(500);
+    const narrowTabletLayout = await evaluate(
+      browserClient,
+      `(() => {
+        const workspace = document.querySelector('[data-testid="rewrite-workspace-grid"]');
+        const main = document.querySelector('[data-testid="rewrite-main-panel"]');
+        if (!workspace || !main) return { found: false };
+        return {
+          found: true,
+          mainVisible: getComputedStyle(main).display !== 'none',
+          taskAbsent: !document.querySelector('[data-testid="rewrite-task-panel"]'),
+          pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+        };
+      })()`,
+      3000,
+    );
+    if (!narrowTabletLayout.found || !narrowTabletLayout.mainVisible || !narrowTabletLayout.taskAbsent || narrowTabletLayout.pageOverflow) {
+      throw new Error(`768px workbench is cramped or overflowing: ${JSON.stringify(narrowTabletLayout)}`);
     }
-    await pressKey(browserClient, "Enter");
-    await waitForText(browserClient, "工作台导航", 12_000);
-    await pressKey(browserClient, "Escape");
-    await waitForExpression(browserClient, `!document.querySelector('[data-sidebar="sidebar"][data-mobile="true"]')`, "mobile sidebar Escape close", 12_000);
-    const escapeFocus = await getActiveElementSummary(browserClient);
-    if (!escapeFocus?.isSidebarTrigger || escapeFocus?.text !== "切换侧边栏") {
-      throw new Error(`Escape did not restore focus to the mobile sidebar trigger: ${JSON.stringify(escapeFocus)}`);
-    }
+    checks.push("768px workbench keeps the manuscript canvas visible without horizontal overflow");
 
-    await pressKey(browserClient, "Enter");
-    await waitForText(browserClient, "工作台导航", 12_000);
-    const mobilePromptNavigationFocused = await evaluate(browserClient, `(() => {
-      const link = Array.from(document.querySelectorAll('[data-workbench-view="prompts"]'))
-        .find((item) => item instanceof HTMLElement && item.getBoundingClientRect().width > 0);
-      if (!(link instanceof HTMLElement)) return false;
-      link.focus();
-      return true;
-    })()`, 3000);
-    if (!mobilePromptNavigationFocused) {
-      throw new Error("Prompt navigation item is unavailable in the mobile sidebar.");
+    await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await wait(500);
+    await clickByText(browserClient, "导出", 12_000);
+    await waitForExpression(browserClient, "Boolean(document.querySelector('[data-testid=\\\"rewrite-task-sheet\\\"]'))", "mobile task sheet", 12_000);
+    await wait(500);
+    const hasHorizontalOverflow = await evaluate(browserClient, "document.documentElement.scrollWidth > window.innerWidth + 1", 3000);
+    if (hasHorizontalOverflow) {
+      throw new Error("Mobile workbench has horizontal page overflow.");
     }
-    await pressKey(browserClient, "Enter");
-    await waitForExpression(browserClient, "Boolean(document.querySelector('textarea'))", "mobile prompt editor textarea", 12_000);
-    await waitForExpression(browserClient, "document.activeElement?.id === 'fyadr-main-content'", "mobile navigation focus transfer to main content", 12_000);
-    checks.push("mobile keyboard Enter/Escape and close-reason focus restoration work end to end");
-    const mobilePromptEditorReachable = await evaluate(browserClient, `(() => {
-      const textarea = document.querySelector('textarea');
-      if (!textarea) return false;
-      textarea.scrollIntoView({ block: 'center' });
-      const rect = textarea.getBoundingClientRect();
-      return rect.height >= 80 && rect.bottom > 0 && rect.top < window.innerHeight;
-    })()`, 3000);
-    if (!mobilePromptEditorReachable) {
-      throw new Error("Prompt editor is not reachable in the 390x844 mobile viewport.");
-    }
-    checks.push("390px mobile workspace header, page width, and prompt editor remain reachable");
+    await browserClient.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+    await browserClient.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+    await waitForExpression(browserClient, "!document.querySelector('[data-testid=\\\"rewrite-task-sheet\\\"]')", "mobile task sheet to close", 12_000);
+    await captureScreenshot(browserClient, MOBILE_SCREENSHOT_PATH);
+    checks.push("four primary pages and accessible editors remain responsive");
+    checks.push("mobile workbench stays within the viewport");
 
-    await makePromptDraftDirty(browserClient, " mobile-navigation-guard");
-    await evaluate(browserClient, "document.querySelector('[data-sidebar=\"trigger\"]')?.click()", 3000);
-    await waitForText(browserClient, "工作台导航", 12_000);
-    const dirtyNavigationClicked = await evaluate(browserClient, `(() => {
-      const link = Array.from(document.querySelectorAll('[data-workbench-view="home"]'))
-        .find((item) => item instanceof HTMLElement && item.getBoundingClientRect().width > 0);
-      link?.click();
-      return Boolean(link);
-    })()`, 3000);
-    if (!dirtyNavigationClicked) throw new Error("Unable to request mobile navigation away from the dirty prompt.");
-    await waitForText(browserClient, "放弃未保存的修改？", 12_000);
-    const dirtyCancelClicked = await evaluate(browserClient, `(() => {
-      const dialog = document.querySelector('[role="alertdialog"]');
-      const button = Array.from(dialog?.querySelectorAll('button') || []).find((item) => item.textContent?.trim() === '取消');
-      button?.click();
-      return Boolean(button);
-    })()`, 3000);
-    if (!dirtyCancelClicked) throw new Error("Dirty prompt confirmation is missing its cancel action.");
-    await waitForTextGone(browserClient, "放弃未保存的修改？", 12_000);
-    const mobileDirtyCancelState = await evaluate(browserClient, `(() => {
-      const sheet = document.querySelector('[data-sidebar="sidebar"][data-mobile="true"]');
-      const rect = sheet?.getBoundingClientRect();
-      return { route: location.search, drawerVisible: Boolean(sheet && rect && rect.width > 0 && rect.height > 0) };
-    })()`, 3000);
-    if (!mobileDirtyCancelState.route.includes("view=prompts") || !mobileDirtyCancelState.drawerVisible) {
-      throw new Error(`Mobile dirty-cancel did not keep the route/drawer intact: ${JSON.stringify(mobileDirtyCancelState)}`);
-    }
-    checks.push("mobile dirty prompt cancellation keeps the drawer open and preserves the current route");
+    await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await browserClient.send("Page.reload", { ignoreCache: true });
+    await waitForText(browserClient, "示例文档.txt", 20_000);
+    await clickByText(browserClient, "最近文档", 12_000);
+    await waitForText(browserClient, "示例文档.txt", 12_000);
+    await clickByText(browserClient, "删除 示例文档.txt", 12_000);
+    await waitForText(browserClient, "删除这篇文档", 12_000);
+    await clickByText(browserClient, "确认删除", 12_000);
+    await waitForTextGone(browserClient, "示例文档.txt", 12_000);
+    await clickByText(browserClient, "开始改写", 12_000);
+    await waitForText(browserClient, "选择文件", 12_000);
+    await browserClient.send("Page.reload", { ignoreCache: true });
+    await waitForText(browserClient, "选择文件", 20_000);
+    checks.push("deleting the active recent document clears the workspace and its refresh pointer");
 
     return {
       ok: true,
@@ -1489,6 +1723,19 @@ async function runSmoke() {
       frontendUrl,
       backendUrl,
       browserExecutable,
+      screenshots: {
+        home: HOME_SCREENSHOT_PATH,
+        running: RUNNING_SCREENSHOT_PATH,
+        results: RESULTS_SCREENSHOT_PATH,
+        model: MODEL_SCREENSHOT_PATH,
+        modelOfficial: MODEL_OFFICIAL_SCREENSHOT_PATH,
+        modelMobile: MODEL_MOBILE_SCREENSHOT_PATH,
+        prompt: PROMPT_SCREENSHOT_PATH,
+        protection: PROTECTION_SCREENSHOT_PATH,
+        recent: RECENT_SCREENSHOT_PATH,
+        tablet: TABLET_SCREENSHOT_PATH,
+        mobile: MOBILE_SCREENSHOT_PATH,
+      },
       checks,
       warnings,
     };
@@ -1512,24 +1759,35 @@ async function runSmoke() {
     };
   } finally {
     browserClient?.close();
-    await Promise.all(managedProcesses.reverse().map((managedProcess) => managedProcess.stop()));
+    for (const managedProcess of managedProcesses.reverse()) {
+      managedProcess.stop();
+    }
     if (userDataDir) {
-      await removeTemporaryDirectory(userDataDir);
+      setTimeout(() => {
+        try {
+          rmSync(userDataDir, { recursive: true, force: true });
+        } catch {
+          // Ignore temp cleanup failures on Windows while Chrome exits.
+        }
+      }, 1000).unref?.();
     }
-    if (backendConfigDir) {
-      await removeTemporaryDirectory(backendConfigDir);
+    if (backendDataDir) {
+      setTimeout(() => {
+        try {
+          rmSync(backendDataDir, { recursive: true, force: true });
+        } catch {
+          // Ignore temporary backend cleanup failures while the process exits.
+        }
+      }, 1000).unref?.();
     }
-  }
-}
-
-async function removeTemporaryDirectory(directory) {
-  for (const delay of [0, 250, 750]) {
-    if (delay) await wait(delay);
-    try {
-      rmSync(directory, { recursive: true, force: true });
-      if (!existsSync(directory)) return;
-    } catch {
-      // Retry after platform file-lock races.
+    if (fixtureDir) {
+      setTimeout(() => {
+        try {
+          rmSync(fixtureDir, { recursive: true, force: true });
+        } catch {
+          // Ignore temporary download locks while Chrome exits.
+        }
+      }, 1000).unref?.();
     }
   }
 }

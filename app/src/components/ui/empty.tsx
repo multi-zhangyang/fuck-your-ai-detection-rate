@@ -34,7 +34,7 @@ const emptyMediaVariants = cva(
     variants: {
       variant: {
         default: "bg-transparent",
-        icon: "flex size-11 shrink-0 items-center justify-center rounded-xl border border-border bg-muted text-foreground shadow-sm [&_svg:not([class*='size-'])]:size-5",
+        icon: "bg-muted text-foreground flex size-10 shrink-0 items-center justify-center rounded-lg [&_svg:not([class*='size-'])]:size-6",
       },
     },
     defaultVariants: {
@@ -62,7 +62,7 @@ function EmptyTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="empty-title"
-      className={cn("text-lg font-medium tracking-normal", className)}
+      className={cn("text-lg font-medium tracking-tight", className)}
       {...props}
     />
   )

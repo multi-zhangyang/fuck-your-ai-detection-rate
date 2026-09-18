@@ -1,9 +1,0 @@
-export const PREVIEW_MAX_CHARS = 12000;
-export const ACTIVE_DOCUMENT_KEY = "fyadr.activeDocument";
-export const ACTIVE_PROMPT_PROFILE_KEY = "fyadr.activePromptProfile";
-export const ACTIVE_PROMPT_SEQUENCE_KEY = "fyadr.activePromptSequence";
-export const AUTO_SNAPSHOT_SUPPRESSION_KEY = "fyadr.autoSnapshotSuppression";
-export const BATCH_RERUN_POLL_INTERVAL_MS = 1200;
-export const AUTO_RUN_RETRY_DELAY_SECONDS = 10;
-export const AUTO_RUN_RETRY_MAX_ATTEMPTS = 3;
-export const AUTO_NEXT_ROUND_DELAY_SECONDS = 60;
