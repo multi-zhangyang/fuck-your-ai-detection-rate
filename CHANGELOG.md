@@ -44,3 +44,7 @@
 - API Key 留空时保留已保存密钥，也可以明确替换或清除。
 - 未完成段落可以由用户手动补写或保留原文后继续导出。
 - 模型、提示词、正文范围和逐段审阅页面不再出现横向溢出或无限向下延伸。
+
+### Security
+
+- 升级 Vite、esbuild、PostCSS、Browserslist、Babel 等前端构建依赖，清除当前 12 条 Dependabot 告警。

@@ -96,6 +96,13 @@ class ManagedProcess {
 
   stop() {
     if (!this.process || this.process.killed || this.exitCode !== null) return;
+    if (process.platform === "win32" && this.process.pid) {
+      spawnSync("taskkill.exe", ["/PID", String(this.process.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      return;
+    }
     this.process.kill("SIGTERM");
     windowlessKillFallback(this.process);
   }
