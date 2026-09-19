@@ -4,7 +4,6 @@ import {
   Check,
   Columns2,
   Highlighter,
-  ListFilter,
   PencilLine,
   RefreshCw,
   RotateCcw,
@@ -15,14 +14,6 @@ import {
 import { RewriteDiff, type DiffMode } from "@/components/core/RewriteDiff";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuShortcut,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
@@ -44,7 +35,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { CoreRun, ReviewChoice, RunParagraph } from "@/types/core";
 
-type ParagraphFilter = "all" | "attention" | "complete";
+type ParagraphFilter = "all" | "warnings";
+
+export interface ReviewWarningFocusRequest {
+  revision: number;
+  paragraphIds: string[];
+}
 
 interface Props {
   run: CoreRun;
@@ -52,6 +48,7 @@ interface Props {
   onRetry: (paragraphId: string) => Promise<void>;
   onSaveReview: (paragraphId: string, decision: ReviewChoice, text?: string) => Promise<void>;
   onPendingChange: (pending: boolean) => void;
+  warningFocusRequest?: ReviewWarningFocusRequest | null;
 }
 
 function compactText(value: string, limit = 88): string {
@@ -67,8 +64,9 @@ function statusLabel(paragraph: RunParagraph): string {
   return "未完成";
 }
 
-function needsAttention(paragraph: RunParagraph): boolean {
-  return !paragraph.complete || Boolean(paragraph.warnings.length || paragraph.warningCheckError);
+function hasWarning(paragraph: RunParagraph): boolean {
+  return paragraph.decision.decision !== "original"
+    && Boolean(paragraph.warnings.length || paragraph.warningCheckError);
 }
 
 function paragraphPreview(run: CoreRun, paragraph: RunParagraph): string {
@@ -87,18 +85,13 @@ function paragraphPreview(run: CoreRun, paragraph: RunParagraph): string {
   return partial || paragraph.partialText;
 }
 
-function filterLabel(filter: ParagraphFilter): string {
-  if (filter === "attention") return "待处理";
-  if (filter === "complete") return "已完成";
-  return "全部段落";
-}
-
 export function ReviewWorkspace({
   run,
   running,
   onRetry,
   onSaveReview,
   onPendingChange,
+  warningFocusRequest,
 }: Props) {
   const [activeParagraphId, setActiveParagraphId] = useState("");
   const [paragraphBrowserOpen, setParagraphBrowserOpen] = useState(false);
@@ -127,27 +120,33 @@ export function ReviewWorkspace({
 
   const counts = useMemo(() => ({
     all: run.paragraphs.length,
-    attention: run.paragraphs.filter(needsAttention).length,
-    complete: run.paragraphs.filter((paragraph) => paragraph.complete).length,
+    warnings: run.paragraphs.filter(hasWarning).length,
   }), [run.paragraphs]);
 
   const visibleParagraphs = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return run.paragraphs.filter((paragraph) => {
-      if (filter === "attention" && !needsAttention(paragraph)) return false;
-      if (filter === "complete" && !paragraph.complete) return false;
+      if (filter === "warnings" && !hasWarning(paragraph)) return false;
       if (!needle) return true;
       return [paragraph.originalText, paragraph.rewrittenText, paragraph.partialText]
         .some((text) => text.toLocaleLowerCase().includes(needle));
     });
   }, [filter, query, run.paragraphs]);
 
-  const activeParagraph = run.paragraphs.find((paragraph) => paragraph.paragraphId === activeParagraphId)
-    || run.paragraphs[0];
+  const selectedActiveParagraph = run.paragraphs.find(
+    (paragraph) => paragraph.paragraphId === activeParagraphId,
+  );
+  const activeParagraph = visibleParagraphs.find(
+    (paragraph) => paragraph.paragraphId === activeParagraphId,
+  ) || visibleParagraphs[0] || selectedActiveParagraph || run.paragraphs[0];
   const activeIndex = activeParagraph
     ? run.paragraphs.findIndex((paragraph) => paragraph.paragraphId === activeParagraph.paragraphId)
     : -1;
   const activeSequence = Math.max(1, activeIndex + 1);
+  const navigationIndex = activeParagraph
+    ? visibleParagraphs.findIndex((paragraph) => paragraph.paragraphId === activeParagraph.paragraphId)
+    : -1;
+  const navigationPosition = navigationIndex >= 0 ? navigationIndex + 1 : 0;
   const activeText = activeParagraph ? paragraphPreview(run, activeParagraph) : "";
   const savedManualText = activeParagraph?.decision.decision === "manual" ? activeParagraph.decision.text : "";
   const manualDraft = activeParagraph
@@ -159,13 +158,54 @@ export function ReviewWorkspace({
     onPendingChange(savingIds.size > 0 || dirty);
   }, [dirty, onPendingChange, savingIds]);
 
+  useEffect(() => {
+    if (filter === "warnings" && counts.warnings === 0) {
+      setFilter("all");
+      return;
+    }
+    if (
+      visibleParagraphs.length
+      && !visibleParagraphs.some((paragraph) => paragraph.paragraphId === activeParagraphId)
+    ) {
+      setActiveParagraphId(visibleParagraphs[0].paragraphId);
+      setEditingId("");
+    }
+  }, [activeParagraphId, counts.warnings, filter, visibleParagraphs]);
+
+  useEffect(() => {
+    if (!warningFocusRequest) return;
+    const requestedIds = new Set(warningFocusRequest.paragraphIds);
+    const first = run.paragraphs.find((paragraph) => (
+      hasWarning(paragraph)
+      && (!requestedIds.size || requestedIds.has(paragraph.paragraphId))
+    ));
+    setQuery("");
+    setParagraphBrowserOpen(false);
+    if (first) {
+      setFilter("warnings");
+      setActiveParagraphId(first.paragraphId);
+    } else {
+      setFilter("all");
+    }
+  }, [warningFocusRequest?.revision]);
+
+  const selectFilter = (value: string) => {
+    if (!value) return;
+    const next = value as ParagraphFilter;
+    setFilter(next);
+    if (next === "warnings") {
+      const first = run.paragraphs.find(hasWarning);
+      if (first) setActiveParagraphId(first.paragraphId);
+    }
+  };
+
   const chooseParagraph = (paragraphId: string, closeBrowser = false) => {
     setActiveParagraphId(paragraphId);
     if (closeBrowser) setParagraphBrowserOpen(false);
   };
 
   const moveParagraph = (offset: number) => {
-    const next = run.paragraphs[activeIndex + offset];
+    const next = visibleParagraphs[navigationIndex + offset];
     if (next) chooseParagraph(next.paragraphId);
   };
 
@@ -222,7 +262,7 @@ export function ReviewWorkspace({
 
   const paragraphBrowser = (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-2 px-4 pb-4">
+      <div className="flex shrink-0 flex-col gap-2 px-4 pb-4">
         <InputGroup className="min-w-0 flex-1">
           <InputGroupAddon><Search /></InputGroupAddon>
           <InputGroupInput
@@ -232,29 +272,21 @@ export function ReviewWorkspace({
             aria-label="搜索段落"
           />
         </InputGroup>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="icon" aria-label={`筛选：${filterLabel(filter)}`}>
-              <ListFilter />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-44">
-            <DropdownMenuRadioGroup value={filter} onValueChange={(value) => setFilter(value as ParagraphFilter)}>
-              <DropdownMenuRadioItem value="all">
-                全部段落
-                <DropdownMenuShortcut>{counts.all}</DropdownMenuShortcut>
-              </DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="attention">
-                待处理
-                <DropdownMenuShortcut>{counts.attention}</DropdownMenuShortcut>
-              </DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="complete">
-                已完成
-                <DropdownMenuShortcut>{counts.complete}</DropdownMenuShortcut>
-              </DropdownMenuRadioItem>
-            </DropdownMenuRadioGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={filter}
+          onValueChange={selectFilter}
+          className="w-full"
+          data-testid="review-browser-filter"
+          aria-label="筛选审阅段落"
+        >
+          <ToggleGroupItem value="all" className="flex-1">全部 {counts.all}</ToggleGroupItem>
+          <ToggleGroupItem value="warnings" className="flex-1" disabled={!counts.warnings}>
+            有提醒 {counts.warnings}
+          </ToggleGroupItem>
+        </ToggleGroup>
       </div>
       <Separator />
       <ScrollArea className="min-h-0 flex-1">
@@ -263,8 +295,7 @@ export function ReviewWorkspace({
             {visibleParagraphs.map((paragraph) => {
               const selected = paragraph.paragraphId === activeParagraph?.paragraphId;
               const sequence = run.paragraphs.findIndex((item) => item.paragraphId === paragraph.paragraphId) + 1;
-              const hasWarning = paragraph.decision.decision !== "original"
-                && Boolean(paragraph.warnings.length || paragraph.warningCheckError);
+              const paragraphHasWarning = hasWarning(paragraph);
               return (
                 <Item
                   key={paragraph.paragraphId}
@@ -274,12 +305,13 @@ export function ReviewWorkspace({
                   className="w-full flex-nowrap text-left"
                   data-review-nav={paragraph.paragraphId}
                   data-review-complete={paragraph.complete ? "true" : "false"}
+                  data-review-warning={paragraphHasWarning ? "true" : "false"}
                 >
                   <button type="button" onClick={() => chooseParagraph(paragraph.paragraphId, true)}>
                     <ItemContent className="min-w-0">
                       <ItemTitle className="w-full justify-between">
                         <span>第 {sequence} 段</span>
-                        <span className="shrink-0 text-muted-foreground">{hasWarning ? "需核对" : statusLabel(paragraph)}</span>
+                        <span className="shrink-0 text-muted-foreground">{paragraphHasWarning ? "需核对" : statusLabel(paragraph)}</span>
                       </ItemTitle>
                       <ItemDescription>{compactText(paragraphPreview(run, paragraph) || paragraph.originalText)}</ItemDescription>
                     </ItemContent>
@@ -306,7 +338,28 @@ export function ReviewWorkspace({
       <div className="mx-auto flex h-full min-h-0 w-full max-w-screen-2xl flex-col gap-3">
         <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <CardHeader className="flex shrink-0 flex-row flex-wrap items-center justify-between gap-3 p-3 md:px-5">
-            <CardTitle className="text-base">第 {activeSequence} 段</CardTitle>
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <CardTitle className="text-base">第 {activeSequence} 段</CardTitle>
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                size="sm"
+                value={filter}
+                onValueChange={selectFilter}
+                data-testid="review-warning-filter"
+                aria-label="筛选审阅段落"
+              >
+                <ToggleGroupItem value="all" data-testid="review-filter-all">全部</ToggleGroupItem>
+                <ToggleGroupItem
+                  value="warnings"
+                  disabled={!counts.warnings}
+                  data-testid="review-filter-warnings"
+                >
+                  <AlertTriangle />
+                  有提醒 {counts.warnings}
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </div>
             <div className="flex items-center gap-2">
               {activeText && editingId !== activeParagraph.paragraphId ? (
                 <ToggleGroup
@@ -491,8 +544,8 @@ export function ReviewWorkspace({
                 href="#"
                 text="上一段"
                 aria-label="上一段"
-                aria-disabled={activeIndex <= 0}
-                className={cn(activeIndex <= 0 && "pointer-events-none opacity-50")}
+                aria-disabled={navigationIndex <= 0}
+                className={cn(navigationIndex <= 0 && "pointer-events-none opacity-50")}
                 onClick={(event) => {
                   event.preventDefault();
                   moveParagraph(-1);
@@ -505,13 +558,14 @@ export function ReviewWorkspace({
                 size="default"
                 isActive
                 aria-label="选择段落"
+                data-testid="review-pagination-status"
                 onClick={(event) => {
                   event.preventDefault();
                   setParagraphBrowserOpen(true);
                 }}
               >
                 <Rows3 data-icon="inline-start" />
-                {activeSequence} / {run.paragraphs.length}
+                {navigationPosition} / {visibleParagraphs.length}
               </PaginationLink>
             </PaginationItem>
             <PaginationItem>
@@ -519,8 +573,11 @@ export function ReviewWorkspace({
                 href="#"
                 text="下一段"
                 aria-label="下一段"
-                aria-disabled={activeIndex >= run.paragraphs.length - 1}
-                className={cn(activeIndex >= run.paragraphs.length - 1 && "pointer-events-none opacity-50")}
+                aria-disabled={navigationIndex < 0 || navigationIndex >= visibleParagraphs.length - 1}
+                className={cn(
+                  (navigationIndex < 0 || navigationIndex >= visibleParagraphs.length - 1)
+                  && "pointer-events-none opacity-50",
+                )}
                 onClick={(event) => {
                   event.preventDefault();
                   moveParagraph(1);

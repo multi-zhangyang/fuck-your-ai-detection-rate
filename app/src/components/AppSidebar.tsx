@@ -21,7 +21,7 @@ export type WorkbenchPage = "rewrite" | "models" | "prompts" | "protection" | "r
 export const WORKBENCH_NAV_ITEMS = [
   { id: "rewrite", label: "开始改写", icon: Home },
   { id: "models", label: "模型连接", icon: Settings2 },
-  { id: "prompts", label: "提示词方案", icon: FilePenLine },
+  { id: "prompts", label: "提示词", icon: FilePenLine },
   { id: "protection", label: "保护区地图", icon: ShieldCheck },
   { id: "recent", label: "最近文档", icon: FileClock },
 ] satisfies Array<{ id: WorkbenchPage; label: string; icon: typeof Home }>;
@@ -31,9 +31,10 @@ interface Props {
   onPageChange: (page: WorkbenchPage) => void;
   runtimeStatus: string;
   progressPercent: number;
+  activityRevision: number;
 }
 
-export function AppSidebar({ activePage, onPageChange, runtimeStatus, progressPercent }: Props) {
+export function AppSidebar({ activePage, onPageChange, runtimeStatus, progressPercent, activityRevision }: Props) {
   const { isMobile, setOpenMobile, state } = useSidebar();
   const progress = Math.max(0, Math.min(100, Math.round(progressPercent)));
 
@@ -83,8 +84,8 @@ export function AppSidebar({ activePage, onPageChange, runtimeStatus, progressPe
         </SidebarGroup>
       </SidebarContent>
 
-      {activePage !== "rewrite" && progress > 0 ? (
-        <SidebarFooter>
+      {activePage !== "rewrite" && runtimeStatus !== "就绪" ? (
+        <SidebarFooter data-testid="active-run-sidebar" data-run-revision={activityRevision}>
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton tooltip={`${runtimeStatus} · ${progress}%`}>

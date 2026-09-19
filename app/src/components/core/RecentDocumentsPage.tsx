@@ -61,6 +61,8 @@ import { ApiError, coreService } from "@/lib/coreService";
 import type { CoreDocument, CoreRun, RecentDocument, WarningSummary } from "@/types/core";
 
 interface Props {
+  activeDocument: CoreDocument | null;
+  activeRun: CoreRun | null;
   onOpen: (document: CoreDocument, run: CoreRun | null) => void;
   onDeleted: (documentId: string) => void;
 }
@@ -89,7 +91,7 @@ function runStatusLabel(status: RecentDocument["latestRunStatus"]): string {
   return labels[status || ""] || "未开始";
 }
 
-export function RecentDocumentsPage({ onOpen, onDeleted }: Props) {
+export function RecentDocumentsPage({ activeDocument, activeRun, onOpen, onDeleted }: Props) {
   const isMobile = useIsMobile();
   const { notify } = useAppNotifications();
   const [items, setItems] = useState<RecentDocument[]>([]);
@@ -115,6 +117,69 @@ export function RecentDocumentsPage({ onOpen, onDeleted }: Props) {
   };
 
   useEffect(() => { void refresh(); }, []);
+
+  useEffect(() => {
+    if (!activeDocument) return;
+    const matchingRun = activeRun?.documentId === activeDocument.id ? activeRun : null;
+    const liveItem: RecentDocument = {
+      id: activeDocument.id,
+      name: activeDocument.name,
+      kind: activeDocument.kind,
+      latestRunId: matchingRun?.id || activeDocument.latestRunId,
+      latestRunStatus: matchingRun?.status || "",
+      latestRunProgress: matchingRun
+        ? { completed: matchingRun.progress.completed, total: matchingRun.progress.total }
+        : { completed: 0, total: 0 },
+      canResume: Boolean(
+        matchingRun
+        && ["paused", "cancelled"].includes(matchingRun.status)
+        && matchingRun.progress.completed < matchingRun.progress.total
+      ),
+      canExport: Boolean(
+        matchingRun
+        && !["queued", "running", "cancelling"].includes(matchingRun.status)
+        && matchingRun.paragraphs.length
+      ),
+      selectedCount: activeDocument.selectedCount,
+      safeCount: activeDocument.safeCount,
+      excludedCount: activeDocument.excludedCount,
+      createdAt: activeDocument.createdAt,
+      updatedAt: matchingRun?.updatedAt || activeDocument.updatedAt,
+    };
+    setItems((current) => {
+      const existing = current.find((item) => item.id === activeDocument.id);
+      if (!existing) return [liveItem, ...current].slice(0, 20);
+      return current.map((item) => item.id === activeDocument.id
+        ? {
+            ...item,
+            ...liveItem,
+            latestRunId: matchingRun ? liveItem.latestRunId : activeDocument.latestRunId || item.latestRunId,
+            latestRunStatus: matchingRun ? liveItem.latestRunStatus : item.latestRunStatus,
+            latestRunProgress: matchingRun ? liveItem.latestRunProgress : item.latestRunProgress,
+            canResume: matchingRun ? liveItem.canResume : item.canResume,
+            canExport: matchingRun ? liveItem.canExport : item.canExport,
+            lastExportAt: item.lastExportAt,
+          }
+        : item);
+    });
+  }, [
+    activeDocument?.id,
+    activeDocument?.name,
+    activeDocument?.kind,
+    activeDocument?.latestRunId,
+    activeDocument?.selectedCount,
+    activeDocument?.safeCount,
+    activeDocument?.excludedCount,
+    activeDocument?.createdAt,
+    activeDocument?.updatedAt,
+    activeRun?.id,
+    activeRun?.documentId,
+    activeRun?.status,
+    activeRun?.progress.completed,
+    activeRun?.progress.total,
+    activeRun?.paragraphs.length,
+    activeRun?.updatedAt,
+  ]);
 
   useEffect(() => {
     if (items.some((item) => item.id === activeId)) return;
@@ -143,7 +208,7 @@ export function RecentDocumentsPage({ onOpen, onDeleted }: Props) {
       const document = await coreService.getDocument(item.id);
       let run: CoreRun | null = item.latestRunId ? await coreService.getRun(item.latestRunId) : null;
       if (resume && run && ["paused", "cancelled"].includes(run.status)) {
-        run = await coreService.resumeRun(run.id, run.snapshot.concurrency);
+        run = await coreService.resumeRun(run.id);
       }
       onOpen(document, run);
       notify({ kind: "success", title: resume ? "任务已继续" : "文档已打开", text: item.name });

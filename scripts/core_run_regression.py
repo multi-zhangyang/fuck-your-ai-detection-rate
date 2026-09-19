@@ -10,7 +10,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core_config import BUILTIN_PLAN_ID, upsert_plan, upsert_profile, upsert_template
+from core_config import (
+    BUILTIN_TEMPLATE_ID,
+    PROGRAM_APPENDED_TEMPLATE_SUFFIX,
+    upsert_profile,
+    upsert_template,
+)
 from core_documents import (
     CHUNK_PRESETS,
     SCOPE_CLASSIFIER_VERSION,
@@ -23,12 +28,23 @@ from core_documents import (
 )
 from core_llm import StreamRequestError
 from core_docx_regression import fixture_docx, fixture_with_digital_signature
-from core_runs import RunError, RunManager, WarningAcknowledgementRequired, run_path
+from core_runs import (
+    ENGLISH_OUTPUT_REMINDER,
+    RunError,
+    RunManager,
+    WarningAcknowledgementRequired,
+    build_rewrite_prompt,
+    run_path,
+)
+
+
+def prompt_source(prompt: str) -> str:
+    return prompt.rsplit("\n\n", 1)[-1]
 
 
 class RewriteClient:
-    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None):
-        source = prompt.rsplit("待改写内容：\n", 1)[-1]
+    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
+        source = prompt_source(prompt)
         result = source.replace("10", "11").replace("[1]", "[2]") + "（已改写）"
         midpoint = max(1, len(result) // 2)
         await on_delta(result[:midpoint])
@@ -38,13 +54,13 @@ class RewriteClient:
 
 
 class EmptyClient:
-    async def stream_completion(self, _profile, _prompt, _on_delta, _on_attempt=None):
+    async def stream_completion(self, _profile, _prompt, _on_delta, _on_attempt=None, *, system_prompt=""):
         return ""
 
 
 class DelayedClient:
-    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None):
-        source = prompt.rsplit("待改写内容：\n", 1)[-1]
+    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
+        source = prompt_source(prompt)
         delay = {"第一段": 0.06, "第二段": 0.03, "第三段": 0.01}.get(source, 0)
         await asyncio.sleep(delay)
         result = f"{source}-完成"
@@ -58,8 +74,8 @@ class WorkerProbeClient:
         self.max_active = 0
         self.started = 0
 
-    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None):
-        source = prompt.rsplit("待改写内容：\n", 1)[-1]
+    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
+        source = prompt_source(prompt)
         self.started += 1
         self.active += 1
         self.max_active = max(self.max_active, self.active)
@@ -75,10 +91,12 @@ class WorkerProbeClient:
 class ProfileProbeClient:
     def __init__(self) -> None:
         self.profiles: list[dict] = []
+        self.prompts: list[str] = []
 
-    async def stream_completion(self, profile, prompt, on_delta, _on_attempt=None):
+    async def stream_completion(self, profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
         self.profiles.append(dict(profile))
-        source = prompt.rsplit("待改写内容：\n", 1)[-1]
+        self.prompts.append(prompt)
+        source = prompt_source(prompt)
         await on_delta(source)
         return source
 
@@ -88,7 +106,7 @@ class QueueCancelClient:
         self.started = 0
         self.cancelled = 0
 
-    async def stream_completion(self, _profile, _prompt, _on_delta, _on_attempt=None):
+    async def stream_completion(self, _profile, _prompt, _on_delta, _on_attempt=None, *, system_prompt=""):
         self.started += 1
         try:
             await asyncio.sleep(30)
@@ -103,7 +121,7 @@ class CancellableClient:
         self.started = False
         self.cancelled = False
 
-    async def stream_completion(self, _profile, _prompt, _on_delta, _on_attempt=None):
+    async def stream_completion(self, _profile, _prompt, _on_delta, _on_attempt=None, *, system_prompt=""):
         self.started = True
         try:
             await asyncio.sleep(30)
@@ -117,10 +135,22 @@ class PromptSequenceClient:
     def __init__(self) -> None:
         self.prompts: list[str] = []
 
-    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None):
+    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
         self.prompts.append(prompt)
-        marker, source = prompt.split("\n", 1)
+        marker, source = prompt.split("\n\n", 1)
         result = f"{source}-{'一' if marker == 'STEP1' else '二'}"
+        await on_delta(result)
+        return result
+
+
+class ExactRoundSequenceClient:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
+        self.prompts.append(prompt)
+        marker, source = prompt.split("\n\n", 1)
+        result = f"{source}|{marker}"
         await on_delta(result)
         return result
 
@@ -129,13 +159,13 @@ class ContinueConfigurationClient:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def stream_completion(self, profile, prompt, on_delta, _on_attempt=None):
+    async def stream_completion(self, profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
         self.calls.append({"profile": dict(profile), "prompt": prompt})
-        if prompt.startswith("NEXT-B\n"):
-            source = prompt.split("\n", 1)[1]
+        if prompt.startswith("NEXT-B\n\n"):
+            source = prompt.split("\n\n", 1)[1]
             result = f"{source}-B"
         else:
-            source = prompt.rsplit("待改写内容：\n", 1)[-1]
+            source = prompt_source(prompt)
             result = f"{source}-A"
         await on_delta(result)
         return result
@@ -145,8 +175,8 @@ class FailOnceClient:
     def __init__(self) -> None:
         self.calls: dict[str, int] = {}
 
-    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None):
-        source = prompt.rsplit("待改写内容：\n", 1)[-1]
+    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
+        source = prompt_source(prompt)
         self.calls[source] = self.calls.get(source, 0) + 1
         if source == "第二段" and self.calls[source] == 1:
             await on_delta("部分输出")
@@ -157,8 +187,8 @@ class FailOnceClient:
 
 
 class FailOneDocxParagraphClient:
-    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None):
-        source = prompt.rsplit("待改写内容：\n", 1)[-1]
+    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
+        source = prompt_source(prompt)
         if "跨页前正文" in source:
             raise StreamRequestError("此段暂时无法完成", category="provider")
         result = f"{source}（已改写）"
@@ -170,8 +200,9 @@ class LongMultiStepFailOnceClient:
     def __init__(self) -> None:
         self.calls: dict[tuple[str, str], int] = {}
 
-    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None):
-        marker, source = prompt.split("\n", 1)
+    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None, *, system_prompt=""):
+        marker = prompt.split("\n\n", 1)[0]
+        source = prompt.rsplit("\n\n", 1)[-1]
         key = (marker, source)
         self.calls[key] = self.calls.get(key, 0) + 1
         if marker == "STEP2" and "FAILONCE" in source and self.calls[key] == 1:
@@ -228,7 +259,7 @@ class CoreRunRegression(unittest.TestCase):
         document = self.document("第一段有数字10。\n\n第二段引用[1]。")
         manager = RunManager(RewriteClient())
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, concurrency=2, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID], concurrency=2
         )
         result = self.wait(manager, created["id"])
         self.assertEqual(result["status"], "completed")
@@ -237,12 +268,13 @@ class CoreRunRegression(unittest.TestCase):
         self.assertNotEqual(result["paragraphs"][0]["rewrittenText"], result["paragraphs"][0]["originalText"])
         self.assertTrue(result["paragraphs"][0]["warnings"])
         self.assertEqual(result["paragraphs"][0]["decision"]["decision"], "rewrite")
+        self.assertEqual(result["execution"]["requestsStarted"], 2)
 
     def test_empty_output_pauses_and_never_writes_original_as_result(self) -> None:
         document = self.document("不能静默回退的原文。")
         manager = RunManager(EmptyClient())
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID]
         )
         result = self.wait(manager, created["id"])
         self.assertEqual(result["status"], "paused")
@@ -259,9 +291,8 @@ class CoreRunRegression(unittest.TestCase):
                 created = manager.create_run(
                     document["id"],
                     self.profile["id"],
-                    BUILTIN_PLAN_ID,
+                    [BUILTIN_TEMPLATE_ID],
                     concurrency=concurrency,
-                    repeat_count=1,
                 )
                 result = self.wait(manager, created["id"])
                 self.assertEqual(result["status"], "completed")
@@ -330,10 +361,9 @@ class CoreRunRegression(unittest.TestCase):
             text,
         )
 
-    def test_parallel_long_paragraph_multistep_resume_keeps_completed_parts_and_word_boundaries(self) -> None:
-        first = upsert_template({"name": "长段第一步", "content": "STEP1\n{{text}}"})
-        second = upsert_template({"name": "长段第二步", "content": "STEP2\n{{text}}"})
-        plan = upsert_plan({"name": "长段两步方案", "templateIds": [first["id"], second["id"]]})
+    def test_parallel_long_paragraph_multiround_resume_keeps_completed_parts_and_word_boundaries(self) -> None:
+        first = upsert_template({"name": "长段第一步", "content": "STEP1"})
+        second = upsert_template({"name": "长段第二步", "content": "STEP2"})
         words = [f"alpha{index:04d}" for index in range(520)]
         words[245] = "FAILONCE"
         original = " ".join(words)
@@ -342,7 +372,7 @@ class CoreRunRegression(unittest.TestCase):
         client = LongMultiStepFailOnceClient()
         manager = RunManager(client)
         created = manager.create_run(
-            document["id"], self.profile["id"], plan["id"], concurrency=3
+            document["id"], self.profile["id"], [first["id"], second["id"]], concurrency=3
         )
         self.assertGreater(len(manifest), 2)
         self.assertNotIn("chunkManifest", created["snapshot"])
@@ -380,7 +410,7 @@ class CoreRunRegression(unittest.TestCase):
         client = WorkerProbeClient()
         manager = RunManager(client)
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, concurrency=16, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID], concurrency=16
         )
         deadline = time.monotonic() + 2
         worker_task_count = 0
@@ -404,7 +434,7 @@ class CoreRunRegression(unittest.TestCase):
         document = self.document("甲" * 2200)
         manager = RunManager(DelayedClient())
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID]
         )
         result = self.wait(manager, created["id"])
         self.assertEqual(result["status"], "completed")
@@ -416,36 +446,71 @@ class CoreRunRegression(unittest.TestCase):
         )
         self.assertEqual(result["snapshot"]["chunking"]["preset"], "standard")
 
-    def test_multistep_plan_reuses_manifest_and_feeds_previous_output_forward(self) -> None:
-        first = upsert_template({"name": "第一步", "content": "STEP1\n{{text}}"})
-        second = upsert_template({"name": "第二步", "content": "STEP2\n{{text}}"})
-        plan = upsert_plan(
-            {"name": "两步方案", "templateIds": [first["id"], second["id"]]}
-        )
+    def test_two_rounds_reuse_manifest_and_feed_previous_output_forward(self) -> None:
+        first = upsert_template({"name": "第一步", "content": "STEP1"})
+        second = upsert_template({"name": "第二步", "content": "STEP2"})
         document = self.document("同一个分块")
         client = PromptSequenceClient()
         manager = RunManager(client)
         created = manager.create_run(
-            document["id"], self.profile["id"], plan["id"], repeat_count=3
+            document["id"], self.profile["id"], [first["id"], second["id"]]
         )
         manifest_ids = [item["id"] for item in created["chunks"]]
         result = self.wait(manager, created["id"])
         self.assertEqual(result["status"], "completed")
         self.assertEqual([item["id"] for item in result["chunks"]], manifest_ids)
-        self.assertEqual(client.prompts, ["STEP1\n同一个分块", "STEP2\n同一个分块-一"])
+        self.assertEqual(
+            client.prompts,
+            [
+                "STEP1\n\n同一个分块",
+                "STEP2\n\n同一个分块-一",
+            ],
+        )
         self.assertEqual(result["paragraphs"][0]["rewrittenText"], "同一个分块-一-二")
-        self.assertEqual(result["snapshot"]["repeatCount"], 1)
+        self.assertEqual(result["execution"]["requestsStarted"], 2)
+        self.assertEqual(
+            [item["templateId"] for item in result["snapshot"]["rounds"]],
+            [first["id"], second["id"]],
+        )
+
+    def test_three_rounds_make_exactly_three_chained_requests(self) -> None:
+        templates = [
+            upsert_template({"name": f"第 {index} 轮", "content": f"R{index}"})
+            for index in (1, 2, 3)
+        ]
+        document = self.document("三轮原文")
+        client = ExactRoundSequenceClient()
+        manager = RunManager(client)
+        created = manager.create_run(
+            document["id"],
+            self.profile["id"],
+            [template["id"] for template in templates],
+        )
+        result = self.wait(manager, created["id"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(
+            client.prompts,
+            [
+                "R1\n\n三轮原文",
+                "R2\n\n三轮原文|R1",
+                "R3\n\n三轮原文|R1|R2",
+            ],
+        )
+        self.assertEqual(result["execution"]["requestsStarted"], 3)
+        self.assertEqual(result["paragraphs"][0]["rewrittenText"], "三轮原文|R1|R2|R3")
 
     def test_single_template_defaults_to_two_rounds_with_fixed_chunk_ids(self) -> None:
         document = self.document("默认执行两轮")
         client = DelayedClient()
         manager = RunManager(client)
-        created = manager.create_run(document["id"], self.profile["id"], BUILTIN_PLAN_ID)
+        created = manager.create_run(document["id"], self.profile["id"])
         chunk_ids = [item["id"] for item in created["chunks"]]
         result = self.wait(manager, created["id"])
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["snapshot"]["repeatCount"], 2)
-        self.assertEqual(len(result["snapshot"]["promptPlan"]["steps"]), 2)
+        self.assertEqual(
+            [item["templateId"] for item in result["snapshot"]["rounds"]],
+            [BUILTIN_TEMPLATE_ID, BUILTIN_TEMPLATE_ID],
+        )
         self.assertEqual([item["id"] for item in result["chunks"]], chunk_ids)
         self.assertEqual(result["chunks"][0]["originalText"], "默认执行两轮")
         self.assertEqual(result["chunks"][0]["finalText"], "默认执行两轮-完成-完成")
@@ -458,7 +523,7 @@ class CoreRunRegression(unittest.TestCase):
         manager = RunManager(RewriteClient())
         with patch("core_runs.generate_rewrite_warnings", side_effect=RuntimeError("检查器异常")):
             created = manager.create_run(
-                document["id"], self.profile["id"], BUILTIN_PLAN_ID, repeat_count=1
+                document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID]
             )
             result = self.wait(manager, created["id"])
             self.assertEqual(result["status"], "completed")
@@ -474,7 +539,7 @@ class CoreRunRegression(unittest.TestCase):
         client = FailOnceClient()
         manager = RunManager(client)
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, concurrency=2, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID], concurrency=2
         )
         paused = self.wait(manager, created["id"])
         self.assertEqual(paused["status"], "paused")
@@ -482,9 +547,9 @@ class CoreRunRegression(unittest.TestCase):
         self.assertFalse(paused["paragraphs"][1]["complete"])
         self.assertEqual(paused["paragraphs"][1]["rewrittenText"], "")
 
-        resumed = manager.resume(created["id"], concurrency=8)
-        self.assertEqual(resumed["snapshot"]["concurrency"], 8)
-        self.assertEqual(resumed["execution"]["configuredConcurrency"], 8)
+        resumed = manager.resume(created["id"])
+        self.assertEqual(resumed["snapshot"]["concurrency"], 2)
+        self.assertEqual(resumed["execution"]["configuredConcurrency"], 2)
         completed = self.wait(manager, resumed["id"])
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(client.calls, {"第一段": 1, "第二段": 2})
@@ -493,38 +558,49 @@ class CoreRunRegression(unittest.TestCase):
             ["第一段-完成", "第二段-完成"],
         )
 
-    def test_english_source_uses_protocol_level_english_rewrite_instruction(self) -> None:
+    def test_prompt_and_chunk_are_sent_without_hidden_language_instruction(self) -> None:
         english = (
             "Facility agriculture supports stable vegetable production, while intelligent control "
             "improves water use efficiency and reduces repetitive manual work in greenhouses."
         )
-        chinese = "设施农业能够保障蔬菜稳定生产，并提高温室水分利用效率。"
+        template = upsert_template({"name": "原样请求", "content": "用户选择的提示词"})
         client = ProfileProbeClient()
         manager = RunManager(client)
         english_run = manager.create_run(
             self.document(english)["id"],
             self.profile["id"],
-            BUILTIN_PLAN_ID,
-            repeat_count=1,
+            [template["id"]],
         )
         self.assertEqual(self.wait(manager, english_run["id"])["status"], "completed")
-        self.assertIn("_requestInstructions", client.profiles[-1])
-        self.assertIn("entire response in fluent academic English", client.profiles[-1]["_requestInstructions"])
-
-        chinese_run = manager.create_run(
-            self.document(chinese)["id"],
-            self.profile["id"],
-            BUILTIN_PLAN_ID,
-            repeat_count=1,
-        )
-        self.assertEqual(self.wait(manager, chinese_run["id"])["status"], "completed")
         self.assertNotIn("_requestInstructions", client.profiles[-1])
+        self.assertEqual(
+            client.prompts[-1],
+            f"用户选择的提示词\n\n{ENGLISH_OUTPUT_REMINDER}\n\n{english}",
+        )
+
+    def test_user_prompt_is_template_plus_full_chunk_without_hidden_label(self) -> None:
+        source = "第一行\n第二行，数字 123 与引用[4]必须完整进入请求。"
+        self.assertEqual(
+            build_rewrite_prompt("保持身份与规则", source),
+            f"保持身份与规则\n\n{source}",
+        )
+        self.assertNotIn("待改写内容：", build_rewrite_prompt("保持身份与规则", source))
+
+    def test_english_chunk_gets_only_the_minimal_language_reminder(self) -> None:
+        source = "Facility agriculture improves production stability and resource efficiency."
+        prompt = build_rewrite_prompt("用户提示词", source, language="en")
+        self.assertEqual(
+            prompt,
+            f"用户提示词\n\n{ENGLISH_OUTPUT_REMINDER}\n\n{source}",
+        )
+        self.assertNotIn("system", prompt.casefold())
+        self.assertNotIn("max_tokens", prompt)
 
     def test_application_restart_recovers_active_run_as_paused_without_filling_original(self) -> None:
         document = self.document("重启时不能拿原文冒充结果。")
         manager = RunManager(EmptyClient())
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID]
         )
         paused = self.wait(manager, created["id"])
         self.assertEqual(paused["status"], "paused")
@@ -544,11 +620,30 @@ class CoreRunRegression(unittest.TestCase):
         self.assertEqual(recovered["paragraphs"][0]["rewrittenText"], "")
         self.assertIn("可以继续改写", recovered["message"])
 
+    def test_existing_run_snapshot_drops_historical_program_suffix(self) -> None:
+        document = self.document("旧任务正文")
+        manager = RunManager(EmptyClient())
+        created = manager.create_run(
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID]
+        )
+        self.wait(manager, created["id"])
+        path = run_path(created["id"])
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+        persisted["snapshot"]["rounds"][0]["content"] = (
+            f"用户旧提示词{PROGRAM_APPENDED_TEMPLATE_SUFFIX}"
+        )
+        path.write_text(json.dumps(persisted, ensure_ascii=False), encoding="utf-8")
+
+        restarted = RunManager(EmptyClient())
+        restarted.public_run(created["id"])
+        upgraded = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(upgraded["snapshot"]["rounds"][0]["content"], "用户旧提示词")
+
     def test_export_warning_is_one_time_confirmation_and_respects_review_choice(self) -> None:
         document = self.document("实验值为 10，引用见[1]。")
         manager = RunManager(RewriteClient())
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID]
         )
         completed = self.wait(manager, created["id"])
         paragraph_id = completed["paragraphs"][0]["paragraphId"]
@@ -589,7 +684,7 @@ class CoreRunRegression(unittest.TestCase):
         document = self.document("第一段\n\n第二段")
         manager = RunManager(DelayedClient())
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, concurrency=2, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID], concurrency=2
         )
         completed = self.wait(manager, created["id"])
         self.assertEqual(completed["status"], "completed")
@@ -614,7 +709,7 @@ class CoreRunRegression(unittest.TestCase):
         self.assertEqual(preserved["paragraphs"][1]["decision"]["decision"], "original")
         self.assertEqual(load_document(document["id"])["latestRunId"], continued["id"])
 
-    def test_completed_run_applies_new_model_plan_chunking_rounds_and_terms(self) -> None:
+    def test_completed_run_applies_new_model_round_prompts_chunking_and_terms(self) -> None:
         second_profile = upsert_profile(
             {
                 "name": "第二连接",
@@ -625,16 +720,13 @@ class CoreRunRegression(unittest.TestCase):
             }
         )
         next_template = upsert_template(
-            {"name": "下一轮提示词", "content": "NEXT-B\n{{text}}"}
-        )
-        next_plan = upsert_plan(
-            {"name": "下一轮方案", "templateIds": [next_template["id"]]}
+            {"name": "下一轮提示词", "content": "NEXT-B"}
         )
         document = self.document("第一段\n\n第二段")
         client = ContinueConfigurationClient()
         manager = RunManager(client)
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID]
         )
         completed = self.wait(manager, created["id"])
         first, second = completed["paragraphs"]
@@ -645,18 +737,19 @@ class CoreRunRegression(unittest.TestCase):
         continued = manager.continue_run(
             created["id"],
             model_profile_id=second_profile["id"],
-            prompt_plan_id=next_plan["id"],
+            round_template_ids=[next_template["id"], next_template["id"]],
             concurrency=4,
             protected_terms=["保护词B"],
             chunk_preset="long",
-            repeat_count=2,
         )
         snapshot = continued["snapshot"]
         self.assertEqual(snapshot["credentialProfileId"], second_profile["id"])
         self.assertEqual(snapshot["modelProfile"]["model"], "second-model")
-        self.assertEqual(snapshot["promptPlan"]["id"], next_plan["id"])
+        self.assertEqual(
+            [item["templateId"] for item in snapshot["rounds"]],
+            [next_template["id"], next_template["id"]],
+        )
         self.assertEqual(snapshot["chunking"]["preset"], "long")
-        self.assertEqual(snapshot["repeatCount"], 2)
         self.assertEqual(snapshot["concurrency"], 4)
         self.assertEqual(snapshot["protectedTerms"], ["保护词B"])
 
@@ -669,9 +762,9 @@ class CoreRunRegression(unittest.TestCase):
         self.assertTrue(
             all(call["profile"]["apiKey"] == "second-key" for call in client.calls)
         )
-        self.assertTrue(all(call["prompt"].startswith("NEXT-B\n") for call in client.calls))
-        self.assertIn("NEXT-B\n第一段手动稿", [call["prompt"] for call in client.calls])
-        self.assertIn("NEXT-B\n第二段", [call["prompt"] for call in client.calls])
+        self.assertTrue(all(call["prompt"].startswith("NEXT-B\n\n") for call in client.calls))
+        self.assertIn("NEXT-B\n\n第一段手动稿", [call["prompt"] for call in client.calls])
+        self.assertIn("NEXT-B\n\n第二段", [call["prompt"] for call in client.calls])
         self.assertEqual(
             [item["rewrittenText"] for item in next_completed["paragraphs"]],
             ["第一段手动稿-B-B", "第二段-B-B"],
@@ -681,7 +774,7 @@ class CoreRunRegression(unittest.TestCase):
         document = self.document("第一段\n\n第二段")
         manager = RunManager(DelayedClient())
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, concurrency=2, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID], concurrency=2
         )
         completed = self.wait(manager, created["id"])
         self.assertEqual(completed["status"], "completed")
@@ -708,7 +801,7 @@ class CoreRunRegression(unittest.TestCase):
         update_scope(document["id"], selected)
         manager = RunManager(FailOneDocxParagraphClient())
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, concurrency=2, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID], concurrency=2
         )
         paused = self.wait(manager, created["id"])
         self.assertEqual(paused["status"], "paused")
@@ -754,7 +847,7 @@ class CoreRunRegression(unittest.TestCase):
         update_scope(document["id"], [body["id"]])
         manager = RunManager(DelayedClient())
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID]
         )
         completed = self.wait(manager, created["id"])
         self.assertEqual(completed["status"], "completed")
@@ -777,7 +870,7 @@ class CoreRunRegression(unittest.TestCase):
         client = CancellableClient()
         manager = RunManager(client)
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID]
         )
         deadline = time.monotonic() + 2
         while not client.started and time.monotonic() < deadline:
@@ -793,7 +886,7 @@ class CoreRunRegression(unittest.TestCase):
         client = QueueCancelClient()
         manager = RunManager(client)
         created = manager.create_run(
-            document["id"], self.profile["id"], BUILTIN_PLAN_ID, concurrency=2, repeat_count=1
+            document["id"], self.profile["id"], [BUILTIN_TEMPLATE_ID], concurrency=2
         )
         deadline = time.monotonic() + 2
         while client.started < 2 and time.monotonic() < deadline:

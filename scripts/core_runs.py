@@ -12,7 +12,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from core_config import find_profile, get_data_dir, load_config
+from core_config import (
+    find_profile,
+    get_data_dir,
+    load_config,
+    remove_program_appended_template_suffix,
+)
 from core_documents import (
     CHUNK_PRESETS,
     DEFAULT_CHUNK_PRESET,
@@ -25,25 +30,26 @@ from core_documents import (
     set_latest_run,
 )
 from core_llm import StreamRequestError, StreamingLLMClient
-from core_warnings import dominant_language, generate_rewrite_warnings
+from core_warnings import generate_rewrite_warnings
 
 
 class RunError(RuntimeError):
     pass
 
 
-ENGLISH_REWRITE_INSTRUCTION = """The source passage is English. Apply these requirements before all language-specific examples in the selected template:
-- Write the entire response in fluent academic English. Do not translate prose into Chinese or mix Chinese into the response.
-- Paraphrase the wording and sentence structure substantially instead of copying long clauses unchanged.
-- Preserve the original meaning, technical terms, abbreviations, numbers, citations, and logical relationships.
-- Keep Chinese characters only when they already occur in the source and are required as a proper name or quoted identifier.
-- Output only the rewritten English passage, without a heading, note, or explanation."""
+ENGLISH_OUTPUT_REMINDER = (
+    "The source text below is in English. Rewrite it in English and return only "
+    "the rewritten English text."
+)
 
 
-def _request_profile(profile: dict[str, Any], original: str) -> dict[str, Any]:
-    if dominant_language(original, minimum_letters=24) == "英文":
-        return {**profile, "_requestInstructions": ENGLISH_REWRITE_INSTRUCTION}
-    return profile
+def build_rewrite_prompt(template: Any, text: str, *, language: str = "default") -> str:
+    prompt = str(template or "")
+    parts = [prompt] if prompt else []
+    if language == "en":
+        parts.append(ENGLISH_OUTPUT_REMINDER)
+    parts.append(text)
+    return "\n\n".join(parts)
 
 
 class ExportConfirmationRequired(RunError):
@@ -65,6 +71,40 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _upgrade_snapshot_rounds(snapshot: dict[str, Any]) -> bool:
+    rounds = snapshot.get("rounds")
+    changed = False
+    if not isinstance(rounds, list) or not rounds:
+        legacy_steps = snapshot.get("promptPlan", {}).get("steps", [])
+        if isinstance(legacy_steps, list) and legacy_steps:
+            snapshot["rounds"] = [
+                {
+                    "roundNumber": index + 1,
+                    "templateId": str(step.get("templateId") or ""),
+                    "name": str(step.get("name") or f"第 {index + 1} 轮"),
+                    **({"content": step["content"]} if "content" in step else {}),
+                }
+                for index, step in enumerate(legacy_steps[:3])
+                if isinstance(step, dict)
+            ]
+            changed = True
+    if "promptPlan" in snapshot:
+        snapshot.pop("promptPlan", None)
+        changed = True
+    if "repeatCount" in snapshot:
+        snapshot.pop("repeatCount", None)
+        changed = True
+    for round_snapshot in snapshot.get("rounds", []):
+        if not isinstance(round_snapshot, dict) or "content" not in round_snapshot:
+            continue
+        content = str(round_snapshot.get("content") or "")
+        cleaned = remove_program_appended_template_suffix(content)
+        if cleaned != content:
+            round_snapshot["content"] = cleaned
+            changed = True
+    return changed
 
 
 def runs_dir() -> Path:
@@ -110,6 +150,7 @@ class RunManager:
                 raise RunError("改写任务记录已损坏。") from exc
             if not isinstance(value, dict):
                 raise RunError("改写任务记录无效。")
+            snapshot_changed = _upgrade_snapshot_rounds(value.setdefault("snapshot", {}))
             if value.get("status") in {"running", "queued", "cancelling"}:
                 value["status"] = "paused"
                 value["message"] = "应用上次退出时任务尚未完成，可以继续改写。"
@@ -118,6 +159,8 @@ class RunManager:
                     if chunk.get("status") == "running":
                         chunk["status"] = "paused"
                         chunk["error"] = "上次运行已中断"
+                self._save(value)
+            elif snapshot_changed:
                 self._save(value)
             self._runs[run_id] = value
             return value
@@ -201,65 +244,42 @@ class RunManager:
         self,
         document: dict[str, Any],
         model_profile_id: str,
-        prompt_plan_id: str,
+        round_template_ids: list[str] | None,
         *,
         concurrency: int | None,
         protected_terms: list[str] | None,
         chunk_preset: str | None,
-        repeat_count: int | None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         config = load_config()
         profile = find_profile(model_profile_id, config)
         if not profile:
             raise RunError("所选模型连接不存在。")
-        plan = next((item for item in config.get("promptPlans", []) if item.get("id") == prompt_plan_id), None)
-        if not plan:
-            raise RunError("所选提示词方案不存在。")
+        preferences = config.get("preferences", {})
         templates_by_id = {item.get("id"): item for item in config.get("promptTemplates", [])}
-        template_steps = []
-        for template_id in plan.get("templateIds", []):
+        requested_template_ids = (
+            round_template_ids
+            if round_template_ids is not None
+            else preferences.get("roundTemplateIds", [])
+        )
+        normalized_template_ids = [str(item) for item in requested_template_ids if str(item)][:3]
+        if not 1 <= len(normalized_template_ids) <= 3:
+            raise RunError("改写轮数必须为 1–3 轮。")
+        rounds = []
+        for round_index, template_id in enumerate(normalized_template_ids):
             template = templates_by_id.get(template_id)
             if not template:
-                raise RunError("提示词方案包含不存在的步骤。")
-            template_steps.append(
+                raise RunError(f"第 {round_index + 1} 轮选择的提示词不存在。")
+            rounds.append(
                 {
+                    "roundNumber": round_index + 1,
                     "templateId": template["id"],
                     "name": template["name"],
                     "content": template["content"],
                 }
             )
-        if not 1 <= len(template_steps) <= 3:
-            raise RunError("提示词方案必须包含 1–3 个步骤。")
-        preferences = config.get("preferences", {})
         normalized_preset = str(chunk_preset or preferences.get("chunkPreset") or DEFAULT_CHUNK_PRESET)
         if normalized_preset not in CHUNK_PRESETS:
             normalized_preset = DEFAULT_CHUNK_PRESET
-        requested_repeat = repeat_count if repeat_count is not None else preferences.get("singleTemplateRounds", 2)
-        try:
-            requested_repeat = int(requested_repeat)
-        except (TypeError, ValueError):
-            requested_repeat = 2
-        effective_repeat = max(1, min(3, requested_repeat)) if len(template_steps) == 1 else 1
-        if len(template_steps) == 1:
-            steps = [
-                {
-                    **template_steps[0],
-                    "executionId": f"{template_steps[0]['templateId']}:round-{round_index + 1}",
-                    "roundIndex": round_index,
-                    "roundNumber": round_index + 1,
-                }
-                for round_index in range(effective_repeat)
-            ]
-        else:
-            steps = [
-                {
-                    **step,
-                    "executionId": f"{step['templateId']}:step-{step_index + 1}",
-                    "roundIndex": 0,
-                    "roundNumber": 1,
-                }
-                for step_index, step in enumerate(template_steps)
-            ]
         chunk_manifest = build_chunk_manifest(document, preset=normalized_preset)
         if not chunk_manifest:
             raise RunError("当前范围内没有可改写的正文。")
@@ -282,11 +302,7 @@ class RunManager:
             },
             "modelProfile": profile_snapshot,
             "credentialProfileId": profile["id"],
-            "promptPlan": {
-                "id": plan["id"],
-                "name": plan["name"],
-                "steps": steps,
-            },
+            "rounds": rounds,
             "chunking": {
                 "preset": normalized_preset,
                 "limits": {
@@ -299,7 +315,6 @@ class RunManager:
                     for language, values in CHUNK_PRESETS[normalized_preset].items()
                 },
             },
-            "repeatCount": effective_repeat,
             "concurrency": normalized_concurrency,
             "protectedTerms": list(dict.fromkeys(str(item).strip() for item in terms if str(item).strip()))[:200],
             "iteration": 1,
@@ -312,12 +327,11 @@ class RunManager:
         self,
         document_id: str,
         model_profile_id: str,
-        prompt_plan_id: str,
+        round_template_ids: list[str] | None = None,
         *,
         concurrency: int = 1,
         protected_terms: list[str] | None = None,
         chunk_preset: str | None = None,
-        repeat_count: int | None = None,
     ) -> dict[str, Any]:
         document = load_document(document_id)
         if not document.get("scopeConfirmed"):
@@ -325,11 +339,10 @@ class RunManager:
         snapshot, chunk_manifest = self._build_run_snapshot(
             document,
             model_profile_id,
-            prompt_plan_id,
+            round_template_ids,
             concurrency=concurrency,
             protected_terms=protected_terms,
             chunk_preset=chunk_preset,
-            repeat_count=repeat_count,
         )
         return self._register_run(document_id, snapshot, chunk_manifest, message="任务已创建。")
 
@@ -507,16 +520,19 @@ class RunManager:
                 "chunk-status",
                 {"chunkId": chunk["id"], "status": "running", "stepIndex": chunk["stepIndex"]},
             )
-        steps = run["snapshot"]["promptPlan"]["steps"]
+        rounds = run["snapshot"]["rounds"]
         current_input = chunk["stepOutputs"][-1] if chunk.get("stepOutputs") else chunk["originalText"]
         start_index = int(chunk.get("stepIndex", 0))
         try:
-            for step_index in range(start_index, len(steps)):
+            for step_index in range(start_index, len(rounds)):
                 if run.get("cancelRequested"):
                     raise asyncio.CancelledError
-                step = steps[step_index]
-                prompt = str(step["content"]).replace("{{text}}", current_input)
-                request_profile = _request_profile(profile, str(chunk["originalText"]))
+                round_snapshot = rounds[step_index]
+                prompt = build_rewrite_prompt(
+                    round_snapshot["content"],
+                    current_input,
+                    language=str(chunk.get("language") or "default"),
+                )
                 streamed: list[str] = []
                 last_emit = 0.0
 
@@ -549,7 +565,7 @@ class RunManager:
                     )
                     execution["requestsStarted"] = int(execution.get("requestsStarted", 0)) + 1
                 try:
-                    result = await self.llm.stream_completion(request_profile, prompt, on_delta)
+                    result = await self.llm.stream_completion(profile, prompt, on_delta)
                 finally:
                     with self._lock:
                         execution = run.setdefault("execution", {})
@@ -673,7 +689,7 @@ class RunManager:
                 loop.call_soon_threadsafe(task.cancel)
         return self.public_run(run_id)
 
-    def resume(self, run_id: str, *, concurrency: int | None = None) -> dict[str, Any]:
+    def resume(self, run_id: str) -> dict[str, Any]:
         run = self._load(run_id)
         with self._lock:
             if run.get("status") in {"running", "queued", "cancelling"}:
@@ -687,10 +703,6 @@ class RunManager:
                     unfinished = True
             if not unfinished:
                 raise RunError("任务已经完成，无需继续。")
-            if concurrency is not None:
-                normalized_concurrency = max(1, min(16, int(concurrency)))
-                run["snapshot"]["concurrency"] = normalized_concurrency
-                run.setdefault("execution", {})["configuredConcurrency"] = normalized_concurrency
             run["status"] = "queued"
             run["cancelRequested"] = False
             run["message"] = "准备继续未完成的内容。"
@@ -703,11 +715,10 @@ class RunManager:
         run_id: str,
         *,
         model_profile_id: str | None = None,
-        prompt_plan_id: str | None = None,
+        round_template_ids: list[str] | None = None,
         concurrency: int | None = None,
         protected_terms: list[str] | None = None,
         chunk_preset: str | None = None,
-        repeat_count: int | None = None,
     ) -> dict[str, Any]:
         previous = self._load(run_id)
         if previous.get("status") != "completed":
@@ -753,11 +764,15 @@ class RunManager:
             or previous_snapshot.get("modelProfile", {}).get("id")
             or ""
         )
-        inherited_plan_id = str(previous_snapshot.get("promptPlan", {}).get("id") or "")
+        inherited_round_template_ids = [
+            str(item.get("templateId") or "")
+            for item in previous_snapshot.get("rounds", [])
+            if isinstance(item, dict) and str(item.get("templateId") or "")
+        ]
         snapshot, chunk_manifest = self._build_run_snapshot(
             next_document,
             model_profile_id or inherited_profile_id,
-            prompt_plan_id or inherited_plan_id,
+            inherited_round_template_ids if round_template_ids is None else round_template_ids,
             concurrency=previous_snapshot.get("concurrency", 1) if concurrency is None else concurrency,
             protected_terms=(
                 list(previous_snapshot.get("protectedTerms", []))
@@ -768,11 +783,6 @@ class RunManager:
                 str(previous_snapshot.get("chunking", {}).get("preset") or DEFAULT_CHUNK_PRESET)
                 if chunk_preset is None
                 else chunk_preset
-            ),
-            repeat_count=(
-                previous_snapshot.get("repeatCount", 1)
-                if repeat_count is None
-                else repeat_count
             ),
         )
         snapshot["iteration"] = max(1, int(previous_snapshot.get("iteration") or 1)) + 1
@@ -909,8 +919,8 @@ class RunManager:
         with self._lock:
             snapshot = deepcopy(run["snapshot"])
             snapshot.pop("chunkManifest", None)
-            for step in snapshot.get("promptPlan", {}).get("steps", []):
-                step.pop("content", None)
+            for round_snapshot in snapshot.get("rounds", []):
+                round_snapshot.pop("content", None)
             paragraphs = self._paragraph_results(run, document)
             complete_paragraph_ids = {
                 item["paragraphId"] for item in paragraphs if item.get("complete")

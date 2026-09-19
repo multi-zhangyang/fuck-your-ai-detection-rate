@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 
 import { useAppNotifications } from "@/components/AppNotifications";
-import { ReviewWorkspace } from "@/components/core/ReviewWorkspace";
+import { ReviewWorkspace, type ReviewWarningFocusRequest } from "@/components/core/ReviewWorkspace";
 import { ScopeEditor } from "@/components/core/ScopeEditor";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -78,7 +78,6 @@ import type {
   CoreRun,
   CoreSettings,
   ReviewChoice,
-  RunEvent,
   WarningSummary,
 } from "@/types/core";
 
@@ -90,7 +89,6 @@ interface Props {
   onRunChange: (value: CoreRun | null | ((current: CoreRun | null) => CoreRun | null)) => void;
   onSettingsRefresh: () => Promise<void>;
   onNavigate: (page: "models" | "prompts" | "protection") => void;
-  onSetupChange: (value: { modelProfileId: string; promptPlanId: string }) => void;
   scopeRequest: number;
 }
 
@@ -156,6 +154,15 @@ function fileSize(size: number): string {
   return (size / 1024 / 1024).toFixed(1) + " MB";
 }
 
+function initialRoundTemplateIds(settings: CoreSettings): string[] {
+  const available = new Set(settings.promptTemplates.map((template) => template.id));
+  const configured = settings.preferences.roundTemplateIds
+    .filter((templateId) => available.has(templateId))
+    .slice(0, 3);
+  const fallback = settings.promptTemplates[0]?.id || "";
+  return configured.length ? configured : fallback ? [fallback, fallback] : [];
+}
+
 export function RewritePage({
   settings,
   document,
@@ -164,7 +171,6 @@ export function RewritePage({
   onRunChange,
   onSettingsRefresh,
   onNavigate,
-  onSetupChange,
   scopeRequest,
 }: Props) {
   const { notify } = useAppNotifications();
@@ -178,10 +184,9 @@ export function RewritePage({
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [modelProfileId, setModelProfileId] = useState(initialProfile?.id || "");
-  const [promptPlanId, setPromptPlanId] = useState(settings.defaultPromptPlanId || "");
+  const [roundTemplateIds, setRoundTemplateIds] = useState<string[]>(() => initialRoundTemplateIds(settings));
   const [concurrency, setConcurrency] = useState(settings.preferences.rewriteConcurrency || 1);
   const [chunkPreset, setChunkPreset] = useState<ChunkPreset>(settings.preferences.chunkPreset || "standard");
-  const [repeatCount, setRepeatCount] = useState(settings.preferences.singleTemplateRounds || 2);
   const [protectedTerms, setProtectedTerms] = useState(settings.preferences.protectedTerms.join("，"));
   const [busy, setBusy] = useState<"upload" | "scope" | "start" | "cancel" | "resume" | "continue" | "export" | "">("");
   const [scopeOpen, setScopeOpen] = useState(false);
@@ -190,6 +195,7 @@ export function RewritePage({
   const [reviewPending, setReviewPending] = useState(false);
   const [warningSummary, setWarningSummary] = useState<WarningSummary | null>(null);
   const [pendingExport, setPendingExport] = useState<"docx" | "txt" | null>(null);
+  const [reviewWarningFocus, setReviewWarningFocus] = useState<ReviewWarningFocusRequest | null>(null);
 
   useEffect(() => {
     setSelectedIds(new Set(document?.paragraphs.filter((paragraph) => paragraph.selected).map((paragraph) => paragraph.id) || []));
@@ -199,10 +205,13 @@ export function RewritePage({
     if (!run) return;
     setConcurrency(run.snapshot.concurrency);
     setModelProfileId(run.snapshot.credentialProfileId || run.snapshot.modelProfile.id);
-    setPromptPlanId(run.snapshot.promptPlan.id);
+    setRoundTemplateIds(run.snapshot.rounds.map((round) => round.templateId));
     setChunkPreset(run.snapshot.chunking.preset);
-    setRepeatCount(run.snapshot.repeatCount);
     setProtectedTerms(run.snapshot.protectedTerms.join("，"));
+  }, [run?.id]);
+
+  useEffect(() => {
+    setReviewWarningFocus(null);
   }, [run?.id]);
 
   useEffect(() => {
@@ -217,21 +226,26 @@ export function RewritePage({
         || availableModelProfiles[0];
       setModelProfileId(next?.id || "");
     }
-    if (!settings.promptPlans.some((plan) => plan.id === promptPlanId)) {
-      setPromptPlanId(settings.defaultPromptPlanId || settings.promptPlans[0]?.id || "");
-    }
+    const availableTemplateIds = new Set(settings.promptTemplates.map((template) => template.id));
+    const fallbackTemplateId = settings.promptTemplates[0]?.id || "";
+    setRoundTemplateIds((current) => {
+      const source = current.length ? current : initialRoundTemplateIds(settings);
+      const next = source
+        .slice(0, 3)
+        .map((templateId) => availableTemplateIds.has(templateId) ? templateId : fallbackTemplateId)
+        .filter(Boolean);
+      if (next.length === current.length && next.every((templateId, index) => templateId === current[index])) {
+        return current;
+      }
+      return next;
+    });
   }, [
     availableModelProfiles,
     modelProfileId,
-    promptPlanId,
     settings.defaultModelProfileId,
-    settings.defaultPromptPlanId,
-    settings.promptPlans,
+    settings.preferences.roundTemplateIds,
+    settings.promptTemplates,
   ]);
-
-  useEffect(() => {
-    onSetupChange({ modelProfileId, promptPlanId });
-  }, [modelProfileId, onSetupChange, promptPlanId]);
 
   const refreshRun = async (runId: string, reportError = true) => {
     try {
@@ -252,27 +266,10 @@ export function RewritePage({
     }
   };
 
-  useEffect(() => {
-    if (!run || !ACTIVE_STATUSES.has(run.status)) return;
-    const runId = run.id;
-    let disposed = false;
-
-    const close = coreService.streamRun(runId, (event: RunEvent) => {
-      if (!disposed && ["run-status", "chunk-complete", "chunk-paused", "paragraph-warnings"].includes(event.type)) {
-        void refreshRun(runId);
-      }
-    });
-
-    const polling = window.setInterval(() => void refreshRun(runId, false), 4000);
-    return () => {
-      disposed = true;
-      close();
-      window.clearInterval(polling);
-    };
-  }, [run?.id, run?.status]);
-
   const selectedProfile = availableModelProfiles.find((profile) => profile.id === modelProfileId);
-  const selectedPlan = settings.promptPlans.find((plan) => plan.id === promptPlanId);
+  const selectedTemplates = roundTemplateIds.map(
+    (templateId) => settings.promptTemplates.find((template) => template.id === templateId),
+  );
   const scopeChanged = Boolean(
     document
       && (selectedIds.size !== document.selectedCount
@@ -353,8 +350,8 @@ export function RewritePage({
       notify({ kind: "warning", title: "请选择模型连接" });
       return;
     }
-    if (!selectedPlan) {
-      notify({ kind: "warning", title: "请选择提示词方案" });
+    if (!roundTemplateIds.length || selectedTemplates.some((template) => !template)) {
+      notify({ kind: "warning", title: "请为每一轮选择提示词" });
       return;
     }
 
@@ -365,20 +362,22 @@ export function RewritePage({
         rewriteConcurrency: concurrency,
         protectedTerms: terms,
         chunkPreset,
-        singleTemplateRounds: repeatCount,
+        roundTemplateIds,
       });
       const value = await coreService.createRun({
         documentId: document.id,
         modelProfileId,
-        promptPlanId,
+        roundTemplateIds,
         concurrency,
         chunkPreset,
-        repeatCount,
         protectedTerms: terms,
       });
-      if (value.snapshot.concurrency !== concurrency) {
+      if (
+        value.snapshot.concurrency !== concurrency
+        || JSON.stringify(value.snapshot.rounds.map((round) => round.templateId)) !== JSON.stringify(roundTemplateIds)
+      ) {
         await coreService.cancelRun(value.id).catch(() => undefined);
-        throw new Error("同时改写块数未被任务采用，任务已停止。请重试。");
+        throw new Error("改写设置未被任务采用，任务已停止。请重试。");
       }
       onRunChange(value);
       setTaskSheetOpen(false);
@@ -408,18 +407,10 @@ export function RewritePage({
     if (!run) return;
     setBusy("resume");
     try {
-      const preferences = await coreService.savePreferences({
-        rewriteConcurrency: concurrency,
-        protectedTerms: settings.preferences.protectedTerms,
-      });
-      const value = await coreService.resumeRun(run.id, preferences.rewriteConcurrency);
-      if (value.snapshot.concurrency !== preferences.rewriteConcurrency) {
-        throw new Error("同时改写块数未被任务采用，任务没有继续。");
-      }
+      const value = await coreService.resumeRun(run.id);
       onRunChange(value);
       setTaskSheetOpen(false);
-      await onSettingsRefresh();
-      notify({ kind: "success", title: "继续处理未完成内容", text: `最多同时改写 ${value.snapshot.concurrency} 块。` });
+      notify({ kind: "success", title: "继续处理未完成内容" });
     } catch (reason) {
       notify({ kind: "error", title: "无法继续", text: messageOf(reason) });
     } finally {
@@ -437,8 +428,8 @@ export function RewritePage({
       notify({ kind: "warning", title: "请选择模型连接" });
       return;
     }
-    if (!selectedPlan) {
-      notify({ kind: "warning", title: "请选择提示词方案" });
+    if (!roundTemplateIds.length || selectedTemplates.some((template) => !template)) {
+      notify({ kind: "warning", title: "请为每一轮选择提示词" });
       return;
     }
     setBusy("continue");
@@ -448,24 +439,19 @@ export function RewritePage({
         rewriteConcurrency: concurrency,
         protectedTerms: terms,
         chunkPreset,
-        singleTemplateRounds: repeatCount,
+        roundTemplateIds,
       });
       const value = await coreService.continueRun(run.id, {
         modelProfileId,
-        promptPlanId,
+        roundTemplateIds: preferences.roundTemplateIds,
         concurrency: preferences.rewriteConcurrency,
         chunkPreset: preferences.chunkPreset,
-        repeatCount: preferences.singleTemplateRounds,
         protectedTerms: preferences.protectedTerms,
       });
-      const expectedRepeatCount = selectedPlan.templateIds.length === 1
-        ? preferences.singleTemplateRounds
-        : 1;
       const configurationApplied = value.snapshot.concurrency === preferences.rewriteConcurrency
         && value.snapshot.credentialProfileId === modelProfileId
-        && value.snapshot.promptPlan.id === promptPlanId
+        && JSON.stringify(value.snapshot.rounds.map((round) => round.templateId)) === JSON.stringify(preferences.roundTemplateIds)
         && value.snapshot.chunking.preset === preferences.chunkPreset
-        && value.snapshot.repeatCount === expectedRepeatCount
         && JSON.stringify(value.snapshot.protectedTerms) === JSON.stringify(preferences.protectedTerms);
       if (!configurationApplied) {
         await coreService.cancelRun(value.id).catch(() => undefined);
@@ -477,7 +463,7 @@ export function RewritePage({
       notify({
         kind: "success",
         title: "继续改写已开始",
-        text: `${value.snapshot.modelProfile.name} · ${value.snapshot.promptPlan.name}`,
+        text: `${value.snapshot.modelProfile.name} · ${value.snapshot.rounds.length} 轮`,
       });
     } catch (reason) {
       notify({ kind: "error", title: "无法继续改写", text: messageOf(reason) });
@@ -543,14 +529,40 @@ export function RewritePage({
     notify({ kind: "info", title: "可以开始新的改写任务" });
   };
 
+  const returnToWarningReview = () => {
+    const paragraphIds = Array.from(new Set(
+      (warningSummary?.warnings || []).map((warning) => warning.paragraphId).filter(Boolean),
+    ));
+    setWarningSummary(null);
+    setPendingExport(null);
+    setTaskSheetOpen(false);
+    setReviewWarningFocus((current) => ({
+      revision: (current?.revision || 0) + 1,
+      paragraphIds,
+    }));
+  };
+
+  const setRoundCount = (count: number) => {
+    const normalizedCount = Math.max(1, Math.min(3, count));
+    const fallback = roundTemplateIds[roundTemplateIds.length - 1] || settings.promptTemplates[0]?.id || "";
+    setRoundTemplateIds((current) => Array.from(
+      { length: normalizedCount },
+      (_, index) => current[index] || current[current.length - 1] || fallback,
+    ).filter(Boolean));
+  };
+
+  const setRoundTemplate = (index: number, templateId: string) => {
+    setRoundTemplateIds((current) => current.map((value, itemIndex) => itemIndex === index ? templateId : value));
+  };
+
   const taskSettings = !run || run.status === "completed" ? (
-    <Tabs defaultValue="plan" className="flex flex-col gap-4">
+    <Tabs defaultValue="rewrite" className="flex flex-col gap-4">
       <TabsList className="grid w-full grid-cols-2">
-        <TabsTrigger value="plan">方案</TabsTrigger>
+        <TabsTrigger value="rewrite">改写</TabsTrigger>
         <TabsTrigger value="processing">处理</TabsTrigger>
       </TabsList>
 
-      <TabsContent value="plan" className="m-0">
+      <TabsContent value="rewrite" className="m-0">
         <FieldGroup>
           <Field>
             <FieldLabel htmlFor="run-model-profile">模型连接</FieldLabel>
@@ -578,20 +590,48 @@ export function RewritePage({
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="run-prompt-plan">提示词方案</FieldLabel>
-            <Select value={promptPlanId} onValueChange={setPromptPlanId}>
-              <SelectTrigger id="run-prompt-plan" data-testid="rewrite-prompt-plan">
-                <SelectValue placeholder="选择提示词方案" />
-              </SelectTrigger>
-              <SelectContent position="popper">
-                <SelectGroup>
-                  {settings.promptPlans.map((plan) => (
-                    <SelectItem key={plan.id} value={plan.id}>{plan.name}</SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+            <FieldLabel>改写轮数</FieldLabel>
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              value={String(roundTemplateIds.length)}
+              onValueChange={(value) => value && setRoundCount(Number(value))}
+              className="w-full"
+              data-testid="rewrite-round-count"
+            >
+              {[1, 2, 3].map((value) => (
+                <ToggleGroupItem
+                  key={value}
+                  value={String(value)}
+                  className="flex-1"
+                  data-testid={`rewrite-round-${value}`}
+                >
+                  {value} 轮
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
           </Field>
+
+          {roundTemplateIds.map((templateId, index) => (
+            <Field key={index}>
+              <FieldLabel htmlFor={`run-round-template-${index + 1}`}>第 {index + 1} 轮提示词</FieldLabel>
+              <Select value={templateId} onValueChange={(value) => setRoundTemplate(index, value)}>
+                <SelectTrigger
+                  id={`run-round-template-${index + 1}`}
+                  data-testid={`rewrite-round-template-${index + 1}`}
+                >
+                  <SelectValue placeholder="选择提示词" />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  <SelectGroup>
+                    {settings.promptTemplates.map((template) => (
+                      <SelectItem key={template.id} value={template.id}>{template.name}</SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+          ))}
 
           <ButtonGroup className="w-full">
             <Button variant="outline" className="flex-1" onClick={() => onNavigate("models")}>
@@ -623,24 +663,6 @@ export function RewritePage({
               <ToggleGroupItem value="long" className="flex-1" data-testid="rewrite-chunk-long">长段</ToggleGroupItem>
             </ToggleGroup>
           </Field>
-
-          {selectedPlan?.templateIds.length === 1 ? (
-            <Field>
-              <FieldLabel>改写轮数</FieldLabel>
-              <ToggleGroup
-                type="single"
-                variant="outline"
-                value={String(repeatCount)}
-                onValueChange={(value) => value && setRepeatCount(Number(value))}
-                className="w-full"
-                data-testid="rewrite-repeat-count"
-              >
-                {[1, 2, 3].map((value) => (
-                  <ToggleGroupItem key={value} value={String(value)} className="flex-1" data-testid={`rewrite-repeat-${value}`}>{value}</ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </Field>
-          ) : null}
 
           <ConcurrencyField value={concurrency} onChange={setConcurrency} />
 
@@ -699,7 +721,7 @@ export function RewritePage({
                 onClick={() => void exportResult("docx")}
               >
                 <Download data-icon="inline-start" />
-                Word
+                下载 Word
               </Button>
             ) : null}
             <Button
@@ -709,7 +731,7 @@ export function RewritePage({
               onClick={() => void exportResult("txt")}
             >
               <Download data-icon="inline-start" />
-              TXT
+              下载 TXT
             </Button>
           </ButtonGroup>
           <Button variant="ghost" onClick={startFreshRun}>
@@ -786,6 +808,7 @@ export function RewritePage({
             onRetry={retryParagraph}
             onSaveReview={saveReview}
             onPendingChange={setReviewPending}
+            warningFocusRequest={reviewWarningFocus}
           />
         )}
       </div>
@@ -922,14 +945,7 @@ export function RewritePage({
               </ScrollArea>
             </>
           ) : run.status === "paused" || run.status === "cancelled" ? (
-            <>
-              <Separator />
-              <div className="min-h-0 flex-1 p-4">
-                <FieldGroup>
-                  <ConcurrencyField value={concurrency} onChange={setConcurrency} />
-                </FieldGroup>
-              </div>
-            </>
+            <div className="min-h-0 flex-1" />
           ) : (
             <div className="min-h-0 flex-1" />
           )}
@@ -1027,10 +1043,8 @@ export function RewritePage({
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => {
-                setWarningSummary(null);
-                setPendingExport(null);
-              }}
+              onClick={returnToWarningReview}
+              data-testid="export-return-to-review"
             >
               返回审阅
             </Button>

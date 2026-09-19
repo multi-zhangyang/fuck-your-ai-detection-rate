@@ -19,8 +19,8 @@ class ApiRewriteClient:
     async def test_connection(self, _profile):
         return "连接成功"
 
-    async def stream_completion(self, _profile, prompt, on_delta, _on_attempt=None):
-        source = prompt.rsplit("待改写内容：\n", 1)[-1]
+    async def stream_completion(self, _profile, source, on_delta, _on_attempt=None, *, system_prompt=""):
+        source = source.rsplit("\n\n", 1)[-1]
         result = source.replace("10", "11")
         midpoint = max(1, len(result) // 2)
         await on_delta(result[:midpoint])
@@ -68,7 +68,10 @@ class CoreApiRegression(unittest.TestCase):
     def test_complete_txt_api_workflow(self) -> None:
         settings = self.client.get("/api/settings")
         self.assertEqual(settings.status_code, 200)
-        builtin_plan_id = settings.get_json()["defaultPromptPlanId"]
+        settings_payload = settings.get_json()
+        builtin_template_id = settings_payload["preferences"]["roundTemplateIds"][0]
+        self.assertNotIn("promptPlans", settings_payload)
+        self.assertNotIn("defaultPromptPlanId", settings_payload)
 
         profile_response = self.client.post(
             "/api/model-profiles",
@@ -109,10 +112,9 @@ class CoreApiRegression(unittest.TestCase):
             json={
                 "documentId": document["id"],
                 "modelProfileId": profile["id"],
-                "promptPlanId": builtin_plan_id,
+                "roundTemplateIds": [builtin_template_id],
                 "concurrency": 1,
                 "chunkPreset": "standard",
-                "repeatCount": 1,
                 "protectedTerms": [],
             },
         )

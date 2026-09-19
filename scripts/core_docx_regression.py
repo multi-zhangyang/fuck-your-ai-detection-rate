@@ -390,6 +390,34 @@ class CoreDocxRegression(unittest.TestCase):
         ):
             self.assertFalse(by_text[original_text]["selected"], original_text)
 
+    def test_cover_outline_heading_does_not_hide_standalone_abstracts(self) -> None:
+        abstract_document = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="{W_NS}"><w:body>
+  <w:p><w:pPr><w:pStyle w:val="1"/></w:pPr><w:r><w:t>具身智能驱动的农业机器人研究</w:t></w:r></w:p>
+  <w:p><w:r><w:t>摘  要</w:t></w:r></w:p>
+  <w:p><w:r><w:t>本文研究农业作业机器人的感知、规划与控制方法。</w:t></w:r></w:p>
+  <w:p><w:r><w:t>关键词：具身智能；农业机器人</w:t></w:r></w:p>
+  <w:p><w:r><w:t>Abstract</w:t></w:r></w:p>
+  <w:p><w:r><w:t>This study investigates perception, planning, and control for agricultural robots.</w:t></w:r></w:p>
+  <w:p><w:r><w:t>Key words: embodied intelligence; agricultural robots</w:t></w:r></w:p>
+  <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> TOC \\o "1-3" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>目录结果</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+  <w:p><w:pPr><w:pStyle w:val="1"/></w:pPr><w:r><w:t>第一章 绪论</w:t></w:r></w:p>
+  <w:p><w:r><w:t>农业机器人需要适应开放环境中的复杂作业条件。</w:t></w:r></w:p>
+  <w:sectPr/>
+</w:body></w:document>'''.encode()
+        public = import_document(io.BytesIO(fixture_docx(abstract_document)), "封面标题样式摘要.docx")
+
+        by_text = {item["displayText"]: item for item in public["paragraphs"]}
+        self.assertEqual(public["suggestionBasis"], "abstract_heading")
+        self.assertEqual(public["suggestionStartBodyChildIndex"], 1)
+        self.assertFalse(by_text["摘  要"]["selected"])
+        self.assertTrue(by_text["本文研究农业作业机器人的感知、规划与控制方法。"]["selected"])
+        self.assertFalse(by_text["关键词：具身智能；农业机器人"]["selected"])
+        self.assertFalse(by_text["Abstract"]["selected"])
+        self.assertTrue(by_text["This study investigates perception, planning, and control for agricultural robots."]["selected"])
+        self.assertFalse(by_text["Key words: embodied intelligence; agricultural robots"]["selected"])
+        self.assertTrue(by_text["农业机器人需要适应开放环境中的复杂作业条件。"]["selected"])
+
     def test_content_roles_are_suggestions_and_never_lock_writable_text(self) -> None:
         structured_document = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="{W_NS}"><w:body>

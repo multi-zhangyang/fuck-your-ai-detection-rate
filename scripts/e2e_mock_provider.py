@@ -58,6 +58,15 @@ def requested_text() -> str:
     return str(payload.get("input") or "")
 
 
+def requested_system_prompt(payload: dict) -> str:
+    messages = payload.get("messages", [])
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict) and message.get("role") == "system":
+                return str(message.get("content") or "")
+    return str(payload.get("instructions") or "")
+
+
 def rewrite_fixture(source: str) -> str:
     result = source.replace("10", "11")
     if "本文使用" in result:
@@ -79,10 +88,11 @@ def chat_completions() -> Response:
             {
                 "credential": credential_label(),
                 "model": str(payload.get("model") or ""),
+                "systemPrompt": requested_system_prompt(payload),
                 "prompt": prompt,
             }
         )
-    source = prompt.rsplit("待改写内容：\n", 1)[-1]
+    source = prompt.rsplit("\n\n", 1)[-1]
     result = "连接成功" if prompt.strip() == "请只回复：连接成功" else rewrite_fixture(source)
 
     def generate() -> Iterator[str]:

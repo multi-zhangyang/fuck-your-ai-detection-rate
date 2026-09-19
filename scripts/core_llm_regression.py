@@ -122,6 +122,7 @@ class CoreLLMRegression(unittest.IsolatedAsyncioTestCase):
         result = await client_for(handler).stream_completion(profile(), "改写", deltas.append)
         self.assertEqual(result, "你好")
         self.assertEqual(deltas, ["你", "好"])
+        self.assertEqual(captured[0]["messages"], [{"role": "user", "content": "改写"}])
         self.assertNotIn("max_tokens", captured[0])
         self.assertNotIn("max_output_tokens", captured[0])
 
@@ -426,20 +427,30 @@ class CoreLLMRegression(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("max_tokens", payload)
             self.assertNotIn("max_output_tokens", payload)
 
-    def test_request_instructions_use_each_protocols_native_field(self) -> None:
+    def test_payload_ignores_internal_instruction_keys(self) -> None:
         chat = build_payload(profile(_requestInstructions="English only."), "rewrite")
         self.assertEqual(
             chat["messages"],
-            [
-                {"role": "system", "content": "English only."},
-                {"role": "user", "content": "rewrite"},
-            ],
+            [{"role": "user", "content": "rewrite"}],
         )
         responses = build_payload(
             profile(protocol="responses", _requestInstructions="English only."), "rewrite"
         )
-        self.assertEqual(responses["instructions"], "English only.")
+        self.assertNotIn("instructions", responses)
         self.assertEqual(responses["input"], "rewrite")
+
+    def test_combined_prompt_is_only_user_content_for_both_protocols(self) -> None:
+        combined = "用户选择的提示词\n\n完整分块正文"
+        chat = build_payload(profile(), combined)
+        self.assertEqual(
+            chat["messages"],
+            [{"role": "user", "content": combined}],
+        )
+        responses = build_payload(profile(protocol="responses"), combined)
+        self.assertNotIn("instructions", responses)
+        self.assertEqual(responses["input"], combined)
+        self.assertNotIn("max_tokens", responses)
+        self.assertNotIn("max_output_tokens", responses)
 
     def test_openai_compatible_reasoning_uses_each_protocol_shape(self) -> None:
         chat = build_payload(profile(reasoningEffort="medium", temperature=0.8), "hello")
