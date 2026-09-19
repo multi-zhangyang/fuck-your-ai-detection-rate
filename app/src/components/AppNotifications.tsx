@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { Toaster } from "@/components/ui/sonner";
@@ -30,16 +30,6 @@ function showToast(value: NotificationInput) {
 }
 
 export function AppNotificationProvider({ children }: { children: ReactNode }) {
-  const [position, setPosition] = useState<"top-right" | "bottom-center">("top-right");
-
-  useEffect(() => {
-    const media = window.matchMedia("(max-width: 639px)");
-    const sync = () => setPosition(media.matches ? "bottom-center" : "top-right");
-    sync();
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, []);
-
   const notify = useCallback((value: NotificationInput) => {
     const title = value.title.trim();
     if (!title) return;
@@ -51,7 +41,7 @@ export function AppNotificationProvider({ children }: { children: ReactNode }) {
   return (
     <NotificationContext.Provider value={context}>
       {children}
-      <Toaster position={position} />
+      <Toaster position="top-right" />
     </NotificationContext.Provider>
   );
 }

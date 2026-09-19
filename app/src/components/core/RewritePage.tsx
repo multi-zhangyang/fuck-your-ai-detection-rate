@@ -51,6 +51,7 @@ import {
   ItemActions,
   ItemContent,
   ItemDescription,
+  ItemGroup,
   ItemMedia,
   ItemTitle,
 } from "@/components/ui/item";
@@ -58,7 +59,6 @@ import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Slider } from "@/components/ui/slider";
 import {
   Sheet,
   SheetContent,
@@ -95,6 +95,46 @@ interface Props {
 }
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "cancelling"]);
+const CONCURRENCY_OPTIONS = [1, 2, 4, 8, 16] as const;
+
+function ConcurrencyField({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  disabled?: boolean;
+}) {
+  const options = CONCURRENCY_OPTIONS.includes(value as (typeof CONCURRENCY_OPTIONS)[number])
+    ? CONCURRENCY_OPTIONS
+    : [...CONCURRENCY_OPTIONS, value].sort((left, right) => left - right);
+  return (
+    <Field>
+      <FieldLabel>同时改写块数</FieldLabel>
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        value={String(value)}
+        disabled={disabled}
+        onValueChange={(next) => next && onChange(Number(next))}
+        className="w-full"
+        data-testid="rewrite-concurrency"
+      >
+        {options.map((option) => (
+          <ToggleGroupItem
+            key={option}
+            value={String(option)}
+            className="flex-1"
+            data-testid={`rewrite-concurrency-${option}`}
+          >
+            {option} 块
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+    </Field>
+  );
+}
 
 function messageOf(reason: unknown): string {
   return reason instanceof Error ? reason.message : "操作失败，请重试。";
@@ -143,7 +183,7 @@ export function RewritePage({
   const [chunkPreset, setChunkPreset] = useState<ChunkPreset>(settings.preferences.chunkPreset || "standard");
   const [repeatCount, setRepeatCount] = useState(settings.preferences.singleTemplateRounds || 2);
   const [protectedTerms, setProtectedTerms] = useState(settings.preferences.protectedTerms.join("，"));
-  const [busy, setBusy] = useState<"upload" | "scope" | "start" | "cancel" | "resume" | "export" | "">("");
+  const [busy, setBusy] = useState<"upload" | "scope" | "start" | "cancel" | "resume" | "continue" | "export" | "">("");
   const [scopeOpen, setScopeOpen] = useState(false);
   const [taskSheetOpen, setTaskSheetOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -154,6 +194,16 @@ export function RewritePage({
   useEffect(() => {
     setSelectedIds(new Set(document?.paragraphs.filter((paragraph) => paragraph.selected).map((paragraph) => paragraph.id) || []));
   }, [document?.id, document?.updatedAt]);
+
+  useEffect(() => {
+    if (!run) return;
+    setConcurrency(run.snapshot.concurrency);
+    setModelProfileId(run.snapshot.credentialProfileId || run.snapshot.modelProfile.id);
+    setPromptPlanId(run.snapshot.promptPlan.id);
+    setChunkPreset(run.snapshot.chunking.preset);
+    setRepeatCount(run.snapshot.repeatCount);
+    setProtectedTerms(run.snapshot.protectedTerms.join("，"));
+  }, [run?.id]);
 
   useEffect(() => {
     if (!scopeRequest || !document || run) return;
@@ -326,10 +376,14 @@ export function RewritePage({
         repeatCount,
         protectedTerms: terms,
       });
+      if (value.snapshot.concurrency !== concurrency) {
+        await coreService.cancelRun(value.id).catch(() => undefined);
+        throw new Error("同时改写块数未被任务采用，任务已停止。请重试。");
+      }
       onRunChange(value);
       setTaskSheetOpen(false);
       await onSettingsRefresh();
-      notify({ kind: "success", title: "改写已开始" });
+      notify({ kind: "success", title: "改写已开始", text: `最多同时改写 ${value.snapshot.concurrency} 块。` });
     } catch (reason) {
       notify({ kind: "error", title: "任务未能开始", text: messageOf(reason) });
     } finally {
@@ -354,11 +408,79 @@ export function RewritePage({
     if (!run) return;
     setBusy("resume");
     try {
-      onRunChange(await coreService.resumeRun(run.id));
+      const preferences = await coreService.savePreferences({
+        rewriteConcurrency: concurrency,
+        protectedTerms: settings.preferences.protectedTerms,
+      });
+      const value = await coreService.resumeRun(run.id, preferences.rewriteConcurrency);
+      if (value.snapshot.concurrency !== preferences.rewriteConcurrency) {
+        throw new Error("同时改写块数未被任务采用，任务没有继续。");
+      }
+      onRunChange(value);
       setTaskSheetOpen(false);
-      notify({ kind: "success", title: "继续处理未完成内容" });
+      await onSettingsRefresh();
+      notify({ kind: "success", title: "继续处理未完成内容", text: `最多同时改写 ${value.snapshot.concurrency} 块。` });
     } catch (reason) {
       notify({ kind: "error", title: "无法继续", text: messageOf(reason) });
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const continueCompletedRun = async () => {
+    if (!run || run.status !== "completed") return;
+    if (reviewPending) {
+      notify({ kind: "warning", title: "请先保存正在编辑的内容" });
+      return;
+    }
+    if (!selectedProfile) {
+      notify({ kind: "warning", title: "请选择模型连接" });
+      return;
+    }
+    if (!selectedPlan) {
+      notify({ kind: "warning", title: "请选择提示词方案" });
+      return;
+    }
+    setBusy("continue");
+    try {
+      const terms = protectedTerms.split(/[，,\n]/).map((term) => term.trim()).filter(Boolean);
+      const preferences = await coreService.savePreferences({
+        rewriteConcurrency: concurrency,
+        protectedTerms: terms,
+        chunkPreset,
+        singleTemplateRounds: repeatCount,
+      });
+      const value = await coreService.continueRun(run.id, {
+        modelProfileId,
+        promptPlanId,
+        concurrency: preferences.rewriteConcurrency,
+        chunkPreset: preferences.chunkPreset,
+        repeatCount: preferences.singleTemplateRounds,
+        protectedTerms: preferences.protectedTerms,
+      });
+      const expectedRepeatCount = selectedPlan.templateIds.length === 1
+        ? preferences.singleTemplateRounds
+        : 1;
+      const configurationApplied = value.snapshot.concurrency === preferences.rewriteConcurrency
+        && value.snapshot.credentialProfileId === modelProfileId
+        && value.snapshot.promptPlan.id === promptPlanId
+        && value.snapshot.chunking.preset === preferences.chunkPreset
+        && value.snapshot.repeatCount === expectedRepeatCount
+        && JSON.stringify(value.snapshot.protectedTerms) === JSON.stringify(preferences.protectedTerms);
+      if (!configurationApplied) {
+        await coreService.cancelRun(value.id).catch(() => undefined);
+        throw new Error("下一轮设置未被完整采用，任务已停止。请重试。");
+      }
+      onRunChange(value);
+      setTaskSheetOpen(false);
+      await onSettingsRefresh();
+      notify({
+        kind: "success",
+        title: "继续改写已开始",
+        text: `${value.snapshot.modelProfile.name} · ${value.snapshot.promptPlan.name}`,
+      });
+    } catch (reason) {
+      notify({ kind: "error", title: "无法继续改写", text: messageOf(reason) });
     } finally {
       setBusy("");
     }
@@ -421,7 +543,7 @@ export function RewritePage({
     notify({ kind: "info", title: "可以开始新的改写任务" });
   };
 
-  const taskSettings = !run ? (
+  const taskSettings = !run || run.status === "completed" ? (
     <Tabs defaultValue="plan" className="flex flex-col gap-4">
       <TabsList className="grid w-full grid-cols-2">
         <TabsTrigger value="plan">方案</TabsTrigger>
@@ -434,7 +556,7 @@ export function RewritePage({
             <FieldLabel htmlFor="run-model-profile">模型连接</FieldLabel>
             {availableModelProfiles.length ? (
               <Select value={modelProfileId} onValueChange={setModelProfileId}>
-                <SelectTrigger id="run-model-profile">
+                <SelectTrigger id="run-model-profile" data-testid="rewrite-model-profile">
                   <SelectValue placeholder="选择模型连接" />
                 </SelectTrigger>
                 <SelectContent position="popper">
@@ -458,7 +580,7 @@ export function RewritePage({
           <Field>
             <FieldLabel htmlFor="run-prompt-plan">提示词方案</FieldLabel>
             <Select value={promptPlanId} onValueChange={setPromptPlanId}>
-              <SelectTrigger id="run-prompt-plan">
+              <SelectTrigger id="run-prompt-plan" data-testid="rewrite-prompt-plan">
                 <SelectValue placeholder="选择提示词方案" />
               </SelectTrigger>
               <SelectContent position="popper">
@@ -494,10 +616,11 @@ export function RewritePage({
               value={chunkPreset}
               onValueChange={(value) => value && setChunkPreset(value as ChunkPreset)}
               className="w-full"
+              data-testid="rewrite-chunk-preset"
             >
-              <ToggleGroupItem value="fine" className="flex-1">细致</ToggleGroupItem>
-              <ToggleGroupItem value="standard" className="flex-1">标准</ToggleGroupItem>
-              <ToggleGroupItem value="long" className="flex-1">长段</ToggleGroupItem>
+              <ToggleGroupItem value="fine" className="flex-1" data-testid="rewrite-chunk-fine">细致</ToggleGroupItem>
+              <ToggleGroupItem value="standard" className="flex-1" data-testid="rewrite-chunk-standard">标准</ToggleGroupItem>
+              <ToggleGroupItem value="long" className="flex-1" data-testid="rewrite-chunk-long">长段</ToggleGroupItem>
             </ToggleGroup>
           </Field>
 
@@ -510,30 +633,16 @@ export function RewritePage({
                 value={String(repeatCount)}
                 onValueChange={(value) => value && setRepeatCount(Number(value))}
                 className="w-full"
+                data-testid="rewrite-repeat-count"
               >
                 {[1, 2, 3].map((value) => (
-                  <ToggleGroupItem key={value} value={String(value)} className="flex-1">{value}</ToggleGroupItem>
+                  <ToggleGroupItem key={value} value={String(value)} className="flex-1" data-testid={`rewrite-repeat-${value}`}>{value}</ToggleGroupItem>
                 ))}
               </ToggleGroup>
             </Field>
           ) : null}
 
-          <Field>
-            <div className="flex items-center justify-between gap-3">
-              <FieldLabel htmlFor="rewrite-concurrency">同时处理</FieldLabel>
-              <output className="tabular-nums" htmlFor="rewrite-concurrency">{concurrency}</output>
-            </div>
-            <Slider
-              id="rewrite-concurrency"
-              data-testid="rewrite-concurrency"
-              aria-label="同时处理"
-              min={1}
-              max={16}
-              step={1}
-              value={[concurrency]}
-              onValueChange={([value]) => setConcurrency(value)}
-            />
-          </Field>
+          <ConcurrencyField value={concurrency} onChange={setConcurrency} />
 
           <Field>
             <FieldLabel htmlFor="protected-terms">保护词</FieldLabel>
@@ -570,6 +679,15 @@ export function RewritePage({
             <Button disabled={busy === "resume"} onClick={() => void resumeRun()}>
               {busy === "resume" ? <Spinner data-icon="inline-start" /> : <Play data-icon="inline-start" />}
               继续未完成内容
+            </Button>
+          ) : null}
+          {run.status === "completed" ? (
+            <Button
+              disabled={reviewPending || busy === "continue"}
+              onClick={() => void continueCompletedRun()}
+            >
+              {busy === "continue" ? <Spinner data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
+              继续改写
             </Button>
           ) : null}
           <ButtonGroup className="w-full">
@@ -649,7 +767,9 @@ export function RewritePage({
                   <Spinner />
                   <div className="min-w-0">
                     <CardTitle className="text-base">{statusLabel(run.status)}</CardTitle>
-                    <CardDescription>{run.progress.completed} / {run.progress.total} 段</CardDescription>
+                    <CardDescription>
+                      {run.progress.completed} / {run.progress.total} 段
+                    </CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -741,11 +861,12 @@ export function RewritePage({
               ) : (
                 <Button
                   size="sm"
-                  disabled={run.status === "completed" && (reviewPending || busy === "export")}
+                  data-testid="rewrite-open-task-actions"
+                  disabled={run.status === "completed" && (reviewPending || busy === "export" || busy === "continue")}
                   onClick={() => setTaskSheetOpen(true)}
                 >
-                  {run.status === "completed" ? <Download data-icon="inline-start" /> : <Play data-icon="inline-start" />}
-                  {run.status === "completed" ? "导出" : "继续"}
+                  {run.status === "completed" ? <RefreshCw data-icon="inline-start" /> : <Play data-icon="inline-start" />}
+                  {run.status === "completed" ? "继续 / 导出" : "继续"}
                 </Button>
               )}
               <DropdownMenu>
@@ -788,19 +909,26 @@ export function RewritePage({
       <Sheet open={taskSheetOpen && Boolean(document)} onOpenChange={setTaskSheetOpen}>
         <SheetContent data-testid="rewrite-task-sheet" className="flex w-full flex-col sm:max-w-md">
           <SheetHeader>
-            <SheetTitle>{run ? statusLabel(run.status) : "改写设置"}</SheetTitle>
-            <SheetDescription>
-              {run
-                ? `${run.snapshot.modelProfile.name} · ${run.snapshot.promptPlan.name}`
-                : `${selectedIds.size} 个段落`}
+            <SheetTitle>{run?.status === "completed" ? "继续改写" : run ? statusLabel(run.status) : "改写设置"}</SheetTitle>
+            <SheetDescription className="sr-only">
+              {run?.status === "completed" ? "选择下一轮改写设置" : run ? "任务操作" : "选择本次改写设置"}
             </SheetDescription>
           </SheetHeader>
-          {!run ? (
+          {!run || run.status === "completed" ? (
             <>
               <Separator />
               <ScrollArea className="min-h-0 flex-1">
                 <div className="p-4">{taskSettings}</div>
               </ScrollArea>
+            </>
+          ) : run.status === "paused" || run.status === "cancelled" ? (
+            <>
+              <Separator />
+              <div className="min-h-0 flex-1 p-4">
+                <FieldGroup>
+                  <ConcurrencyField value={concurrency} onChange={setConcurrency} />
+                </FieldGroup>
+              </div>
             </>
           ) : (
             <div className="min-h-0 flex-1" />
@@ -846,7 +974,7 @@ export function RewritePage({
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[calc(100svh-1rem)] max-w-2xl overflow-hidden">
           <DialogHeader>
             <DialogTitle>导出前确认</DialogTitle>
             <DialogDescription>{warningSummary?.message}</DialogDescription>
@@ -861,6 +989,30 @@ export function RewritePage({
                 <Badge variant="outline">{warningSummary.incompleteParagraphIds.length} 段未完成</Badge>
               ) : null}
             </div>
+            {warningSummary?.warnings.length ? (
+              <ScrollArea className="h-[min(38svh,20rem)]" data-testid="export-warning-locations">
+                <ItemGroup className="gap-2 pr-3">
+                  {warningSummary.warnings.map((warning, index) => (
+                    <Item key={`${warning.paragraphId}-${warning.category}-${index}`} size="sm" variant="outline">
+                      <ItemMedia>
+                        <Badge variant="outline">第 {warning.paragraphNumber || "?"} 段</Badge>
+                      </ItemMedia>
+                      <ItemContent className="min-w-0">
+                        <ItemTitle>{warning.label}</ItemTitle>
+                        <ItemDescription className="line-clamp-none break-words text-left">
+                          {warning.message}
+                        </ItemDescription>
+                        {warning.paragraphPreview ? (
+                          <ItemDescription className="line-clamp-1 text-left">
+                            {warning.paragraphPreview}
+                          </ItemDescription>
+                        ) : null}
+                      </ItemContent>
+                    </Item>
+                  ))}
+                </ItemGroup>
+              </ScrollArea>
+            ) : null}
             {warningSummary?.requires?.forceFormatRisk || warningSummary?.incompleteParagraphIds?.length ? (
               <Alert>
                 <AlertTriangle />

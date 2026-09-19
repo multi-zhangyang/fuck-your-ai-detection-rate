@@ -33,7 +33,7 @@ W_P = f"{{{W_NS}}}p"
 W_BODY = f"{{{W_NS}}}body"
 XML_SPACE = f"{{{XML_NS}}}space"
 MAX_RECENT_DOCUMENTS = 20
-SCOPE_CLASSIFIER_VERSION = 10
+SCOPE_CLASSIFIER_VERSION = 12
 DEFAULT_CHUNK_PRESET = "standard"
 CHUNK_PRESETS: dict[str, dict[str, tuple[int, int, int, int]]] = {
     "fine": {
@@ -603,6 +603,16 @@ def _is_explicit_section_heading(
     )
 
 
+def _looks_like_equation_number(text: str) -> bool:
+    normalized = _normalize_marker_text(text)
+    return bool(
+        re.fullmatch(
+            r"(?:式)?[（(]\d{1,4}(?:[.．\-—–－]\d{1,4}){1,3}[）)]",
+            normalized,
+        )
+    )
+
+
 def _looks_like_structural_label(text: str) -> bool:
     stripped = (text or "").strip()
     normalized = _normalize_marker_text(stripped)
@@ -610,7 +620,12 @@ def _looks_like_structural_label(text: str) -> bool:
         return False
     if normalized.rstrip("，,:：") in {"式中", "其中", "则"}:
         return True
-    if re.fullmatch(r"[（(](?:[a-z]|\d{1,2}|[ivx]{1,5})[）)]", normalized, flags=re.IGNORECASE):
+    if re.fullmatch(
+        r"(?:式)?[（(](?:[a-z]|[ivx]{1,6}|[一二三四五六七八九十百]+|\d{1,4})"
+        r"(?:[.．\-—–－]\d{1,4}){0,3}[）)]",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
         return True
     if re.fullmatch(r"\d{1,4}", normalized):
         return True
@@ -1043,6 +1058,7 @@ def _upgrade_docx_scope_classification(document: dict[str, Any]) -> dict[str, An
         for item in document.get("paragraphs", [])
         if isinstance(item.get("bodyChildIndex"), int)
     }
+    previous_classifier_version = int(document.get("scopeClassifierVersion") or 0)
     scope_confirmed = bool(document.get("scopeConfirmed"))
     if scope_confirmed:
         # Once the user confirms a range, that choice is authoritative.  A
@@ -1050,12 +1066,21 @@ def _upgrade_docx_scope_classification(document: dict[str, Any]) -> dict[str, An
         # not silently add newly discovered paragraphs to an accepted scope.
         for paragraph in refreshed["paragraphs"]:
             previous = previous_by_index.get(int(paragraph["bodyChildIndex"]))
-            paragraph["selected"] = bool(
+            selected = bool(
                 paragraph.get("safe")
                 and previous is not None
                 and previous.get("safe")
                 and previous.get("selected")
             )
+            if selected and previous is not None:
+                stale_equation_suggestion = bool(
+                    previous_classifier_version <= 11
+                    and paragraph.get("suggestionReason") == "structural_label"
+                    and _looks_like_equation_number(str(paragraph.get("text") or ""))
+                )
+                if stale_equation_suggestion:
+                    selected = False
+            paragraph["selected"] = selected
 
     for key in (
         "paragraphs",
@@ -2048,7 +2073,12 @@ def _audit_docx(source: Path, output: Path, selected_body_indexes: set[int]) -> 
     }
 
 
-def export_docx(document: dict[str, Any], replacements: dict[str, str], run_id: str) -> tuple[Path, dict[str, Any]]:
+def export_docx(
+    document: dict[str, Any],
+    replacements: dict[str, str],
+    run_id: str,
+    paragraph_ids: set[str] | None = None,
+) -> tuple[Path, dict[str, Any]]:
     source = Path(str(document.get("sourcePath") or ""))
     if not source.exists() or _sha256(source) != document.get("sourceHash"):
         raise FormatFidelityError("源文件已变化，无法按原文位置写入。")
@@ -2059,7 +2089,8 @@ def export_docx(document: dict[str, Any], replacements: dict[str, str], run_id: 
     selected_indexes: set[int] = set()
     for paragraph in document.get("paragraphs", []):
         paragraph_id = str(paragraph["id"])
-        if not paragraph.get("selected"):
+        included = paragraph_id in paragraph_ids if paragraph_ids is not None else bool(paragraph.get("selected"))
+        if not included:
             continue
         if paragraph_id not in replacements:
             raise FormatFidelityError("运行结果不完整，无法导出 DOCX。")
@@ -2102,13 +2133,22 @@ def export_docx(document: dict[str, Any], replacements: dict[str, str], run_id: 
     return output, audit
 
 
-def export_txt(document: dict[str, Any], replacements: dict[str, str], run_id: str) -> tuple[Path, dict[str, Any]]:
+def export_txt(
+    document: dict[str, Any],
+    replacements: dict[str, str],
+    run_id: str,
+    paragraph_ids: set[str] | None = None,
+) -> tuple[Path, dict[str, Any]]:
     source = Path(str(document.get("sourcePath") or ""))
     if not source.exists():
         raise DocumentError("源文件不存在。")
     if document.get("kind") == "txt":
         content = _decode_txt(source)
-        selected = [item for item in document["paragraphs"] if item.get("selected")]
+        selected = (
+            [item for item in document["paragraphs"] if str(item.get("id") or "") in paragraph_ids]
+            if paragraph_ids is not None
+            else [item for item in document["paragraphs"] if item.get("selected")]
+        )
         for paragraph in reversed(selected):
             paragraph_id = paragraph["id"]
             if paragraph_id not in replacements:

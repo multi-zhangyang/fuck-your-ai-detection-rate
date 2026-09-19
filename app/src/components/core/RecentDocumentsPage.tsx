@@ -142,7 +142,9 @@ export function RecentDocumentsPage({ onOpen, onDeleted }: Props) {
     try {
       const document = await coreService.getDocument(item.id);
       let run: CoreRun | null = item.latestRunId ? await coreService.getRun(item.latestRunId) : null;
-      if (resume && run && ["paused", "cancelled"].includes(run.status)) run = await coreService.resumeRun(run.id);
+      if (resume && run && ["paused", "cancelled"].includes(run.status)) {
+        run = await coreService.resumeRun(run.id, run.snapshot.concurrency);
+      }
       onOpen(document, run);
       notify({ kind: "success", title: resume ? "任务已继续" : "文档已打开", text: item.name });
     } catch (reason) {
@@ -413,7 +415,7 @@ export function RecentDocumentsPage({ onOpen, onDeleted }: Props) {
       </AlertDialog>
 
       <Dialog open={Boolean(warningExport)} onOpenChange={(open) => !open && setWarningExport(null)}>
-        <DialogContent>
+        <DialogContent className="max-h-[calc(100svh-1rem)] max-w-2xl overflow-hidden">
           <DialogHeader>
             <DialogTitle>导出前确认</DialogTitle>
             <DialogDescription>{warningExport?.summary.message}</DialogDescription>
@@ -423,6 +425,30 @@ export function RecentDocumentsPage({ onOpen, onDeleted }: Props) {
               <Badge key={label} variant="secondary">{label} {count}</Badge>
             ))}
           </div>
+          {warningExport?.summary.warnings.length ? (
+            <ScrollArea className="h-[min(38svh,20rem)]" data-testid="recent-export-warning-locations">
+              <ItemGroup className="gap-2 pr-3">
+                {warningExport.summary.warnings.map((warning, index) => (
+                  <Item key={`${warning.paragraphId}-${warning.category}-${index}`} size="sm" variant="outline">
+                    <ItemMedia>
+                      <Badge variant="outline">第 {warning.paragraphNumber || "?"} 段</Badge>
+                    </ItemMedia>
+                    <ItemContent className="min-w-0">
+                      <ItemTitle>{warning.label}</ItemTitle>
+                      <ItemDescription className="line-clamp-none break-words text-left">
+                        {warning.message}
+                      </ItemDescription>
+                      {warning.paragraphPreview ? (
+                        <ItemDescription className="line-clamp-1 text-left">
+                          {warning.paragraphPreview}
+                        </ItemDescription>
+                      ) : null}
+                    </ItemContent>
+                  </Item>
+                ))}
+              </ItemGroup>
+            </ScrollArea>
+          ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setWarningExport(null)}>返回</Button>
             <Button disabled={!warningExport || busyId === warningExport.item.id} onClick={() => warningExport && void exportLatest(warningExport.item, true)}>

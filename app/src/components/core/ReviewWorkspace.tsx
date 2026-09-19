@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Check,
+  Columns2,
+  Highlighter,
   ListFilter,
   PencilLine,
   RefreshCw,
@@ -10,8 +12,7 @@ import {
   Search,
 } from "lucide-react";
 
-import { RewriteDiff } from "@/components/core/RewriteDiff";
-import { Badge } from "@/components/ui/badge";
+import { RewriteDiff, type DiffMode } from "@/components/core/RewriteDiff";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -23,7 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Field, FieldLabel } from "@/components/ui/field";
-import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupTextarea } from "@/components/ui/input-group";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
 import {
   Pagination,
@@ -39,6 +40,7 @@ import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { CoreRun, ReviewChoice, RunParagraph } from "@/types/core";
 
@@ -106,6 +108,7 @@ export function ReviewWorkspace({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set());
   const [retryingId, setRetryingId] = useState("");
+  const [diffMode, setDiffMode] = useState<DiffMode>("compare");
 
   useEffect(() => {
     const first = run.paragraphs.find((paragraph) => !paragraph.complete) || run.paragraphs[0];
@@ -113,6 +116,7 @@ export function ReviewWorkspace({
     setEditingId("");
     setDrafts({});
     setSavingIds(new Set());
+    setDiffMode("compare");
   }, [run.id]);
 
   useEffect(() => {
@@ -295,15 +299,34 @@ export function ReviewWorkspace({
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col"
+      className="flex h-full min-h-0 flex-col bg-muted/40 p-2 md:p-4"
       data-review-paragraph={activeParagraph.paragraphId}
       data-review-detail
     >
-      <ScrollArea className="min-h-0 flex-1 bg-muted/40" data-review-scroll>
-        <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-3 md:p-6">
-          <Card className="overflow-hidden">
-            <CardHeader className="flex flex-row items-center justify-between gap-3 p-4 md:px-6">
-              <CardTitle className="text-base">第 {activeSequence} 段</CardTitle>
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-screen-2xl flex-col gap-3">
+        <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <CardHeader className="flex shrink-0 flex-row flex-wrap items-center justify-between gap-3 p-3 md:px-5">
+            <CardTitle className="text-base">第 {activeSequence} 段</CardTitle>
+            <div className="flex items-center gap-2">
+              {activeText && editingId !== activeParagraph.paragraphId ? (
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  size="sm"
+                  value={diffMode}
+                  aria-label="审阅视图"
+                  onValueChange={(value) => value && setDiffMode(value as DiffMode)}
+                >
+                  <ToggleGroupItem value="compare" aria-label="对照">
+                    <Columns2 />
+                    对照
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="changes" aria-label="差异">
+                    <Highlighter />
+                    差异
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              ) : null}
               {activeParagraph.decision.decision !== "original"
                 && (activeParagraph.warnings.length || activeParagraph.warningCheckError) ? (
                 <Popover>
@@ -337,42 +360,55 @@ export function ReviewWorkspace({
                   </PopoverContent>
                 </Popover>
               ) : null}
-            </CardHeader>
-            <Separator />
+            </div>
+          </CardHeader>
+          <Separator />
 
-            <CardContent className="p-0">
-              {editingId === activeParagraph.paragraphId ? (
-                <div className="flex flex-col">
-                  <section className="flex flex-col gap-4 p-5 md:p-8">
-                    <Badge variant="outline" className="w-fit">原文</Badge>
-                    <p className="whitespace-pre-wrap break-words text-base leading-8">
+          <CardContent className="min-h-0 flex-1 p-0" data-review-scroll>
+            {editingId === activeParagraph.paragraphId ? (
+              <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:grid-rows-1">
+                <section className="flex min-h-0 flex-col">
+                  <Item size="sm" className="shrink-0 rounded-none px-5">
+                    <ItemContent><ItemTitle>原文</ItemTitle></ItemContent>
+                  </Item>
+                  <Separator />
+                  <ScrollArea className="min-h-0 flex-1">
+                    <p className="whitespace-pre-wrap break-words p-5 text-base leading-8 md:p-7">
                       {activeParagraph.originalText}
                     </p>
-                  </section>
+                  </ScrollArea>
+                </section>
+                <Separator className="lg:hidden" />
+                <Separator orientation="vertical" className="hidden h-auto lg:block" />
+                <section className="flex min-h-0 flex-col">
+                  <Item size="sm" className="shrink-0 rounded-none px-5">
+                    <ItemContent><ItemTitle>编辑</ItemTitle></ItemContent>
+                  </Item>
                   <Separator />
-                  <section className="flex flex-col gap-4 p-5 md:p-8">
-                    <Badge variant="secondary" className="w-fit">手动稿</Badge>
-                    <Field>
+                  <div className="min-h-0 flex-1 p-3 md:p-5">
+                    <Field className="h-full min-h-0">
                       <FieldLabel className="sr-only" htmlFor={`manual-${activeParagraph.paragraphId}`}>手动编辑</FieldLabel>
-                      <InputGroup>
-                        <InputGroupTextarea
-                          id={`manual-${activeParagraph.paragraphId}`}
-                          className="min-h-72"
-                          value={manualDraft}
-                          onChange={(event) => setDrafts((current) => ({
-                            ...current,
-                            [activeParagraph.paragraphId]: event.target.value,
-                          }))}
-                        />
-                      </InputGroup>
+                      <Textarea
+                        id={`manual-${activeParagraph.paragraphId}`}
+                        className="h-full min-h-[16rem] resize-none"
+                        value={manualDraft}
+                        onChange={(event) => setDrafts((current) => ({
+                          ...current,
+                          [activeParagraph.paragraphId]: event.target.value,
+                        }))}
+                      />
                     </Field>
-                  </section>
-                </div>
-              ) : activeText ? (
-                <RewriteDiff original={activeParagraph.originalText} rewritten={activeText} />
-              ) : (
-                <section className="flex flex-col gap-4 p-5 md:p-8">
-                  <Badge variant="outline" className="w-fit">原文</Badge>
+                  </div>
+                </section>
+              </div>
+            ) : activeText ? (
+              <RewriteDiff original={activeParagraph.originalText} rewritten={activeText} mode={diffMode} />
+            ) : (
+              <ScrollArea className="h-full">
+                <section className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-5 md:p-8">
+                  <Item size="sm" className="rounded-none px-0">
+                    <ItemContent><ItemTitle>原文</ItemTitle></ItemContent>
+                  </Item>
                   <p className="whitespace-pre-wrap break-words text-base leading-8">
                     {activeParagraph.originalText}
                   </p>
@@ -380,120 +416,120 @@ export function ReviewWorkspace({
                     <p className="text-sm text-muted-foreground">{activeParagraph.error}</p>
                   ) : null}
                 </section>
-              )}
-            </CardContent>
+              </ScrollArea>
+            )}
+          </CardContent>
 
-            <Separator />
-            <CardFooter className="flex flex-wrap items-center justify-between gap-3 p-4 md:px-6">
-              {editingId === activeParagraph.paragraphId ? (
-                <>
-                  <Button variant="ghost" size="sm" onClick={() => setEditingId("")}>取消</Button>
+          <Separator />
+          <CardFooter className="flex shrink-0 flex-wrap items-center justify-between gap-3 p-3 md:px-5">
+            {editingId === activeParagraph.paragraphId ? (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => setEditingId("")}>取消</Button>
+                <Button
+                  size="sm"
+                  disabled={!manualDraft.trim() || savingIds.has(activeParagraph.paragraphId)}
+                  onClick={() => void saveManual()}
+                >
+                  {savingIds.has(activeParagraph.paragraphId) ? <Spinner data-icon="inline-start" /> : <Check data-icon="inline-start" />}
+                  保存
+                </Button>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-1">
                   <Button
+                    variant="ghost"
                     size="sm"
-                    disabled={!manualDraft.trim() || savingIds.has(activeParagraph.paragraphId)}
-                    onClick={() => void saveManual()}
+                    disabled={running || retryingId === activeParagraph.paragraphId}
+                    onClick={() => void retry()}
                   >
-                    {savingIds.has(activeParagraph.paragraphId) ? <Spinner data-icon="inline-start" /> : <Check data-icon="inline-start" />}
-                    保存
+                    {retryingId === activeParagraph.paragraphId
+                      ? <Spinner data-icon="inline-start" />
+                      : <RefreshCw data-icon="inline-start" />}
+                    重新改写
                   </Button>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={running || retryingId === activeParagraph.paragraphId}
-                      onClick={() => void retry()}
-                    >
-                      {retryingId === activeParagraph.paragraphId
-                        ? <Spinner data-icon="inline-start" />
-                        : <RefreshCw data-icon="inline-start" />}
-                      重新改写
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={savingIds.has(activeParagraph.paragraphId)}
-                      onClick={beginManualEdit}
-                    >
-                      <PencilLine data-icon="inline-start" />
-                      手动编辑
-                    </Button>
-                  </div>
-
-                  <ToggleGroup
-                    type="single"
-                    variant="outline"
+                  <Button
+                    variant="ghost"
                     size="sm"
-                    value={activeParagraph.decision.decision === "manual" ? "" : activeParagraph.decision.decision}
                     disabled={savingIds.has(activeParagraph.paragraphId)}
-                    aria-label="采用方式"
-                    onValueChange={(value) => {
-                      if (value) void saveChoice(value as ReviewChoice);
-                    }}
+                    onClick={beginManualEdit}
                   >
-                    <ToggleGroupItem value="rewrite" aria-label="采用改写" disabled={!activeParagraph.complete}>
-                      {savingIds.has(activeParagraph.paragraphId) ? <Spinner /> : <Check />}
-                      采用改写
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value="original" aria-label="保留原文">
-                      <RotateCcw />
-                      保留原文
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-                </>
-              )}
-            </CardFooter>
-          </Card>
+                    <PencilLine data-icon="inline-start" />
+                    手动编辑
+                  </Button>
+                </div>
 
-          <Pagination>
-            <PaginationContent>
-              <PaginationItem>
-                <PaginationPrevious
-                  href="#"
-                  text="上一段"
-                  aria-label="上一段"
-                  aria-disabled={activeIndex <= 0}
-                  className={cn(activeIndex <= 0 && "pointer-events-none opacity-50")}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    moveParagraph(-1);
-                  }}
-                />
-              </PaginationItem>
-              <PaginationItem>
-                <PaginationLink
-                  href="#"
-                  size="default"
-                  isActive
-                  aria-label="选择段落"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    setParagraphBrowserOpen(true);
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  size="sm"
+                  value={activeParagraph.decision.decision === "manual" ? "" : activeParagraph.decision.decision}
+                  disabled={savingIds.has(activeParagraph.paragraphId)}
+                  aria-label="采用方式"
+                  onValueChange={(value) => {
+                    if (value) void saveChoice(value as ReviewChoice);
                   }}
                 >
-                  <Rows3 data-icon="inline-start" />
-                  {activeSequence} / {run.paragraphs.length}
-                </PaginationLink>
-              </PaginationItem>
-              <PaginationItem>
-                <PaginationNext
-                  href="#"
-                  text="下一段"
-                  aria-label="下一段"
-                  aria-disabled={activeIndex >= run.paragraphs.length - 1}
-                  className={cn(activeIndex >= run.paragraphs.length - 1 && "pointer-events-none opacity-50")}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    moveParagraph(1);
-                  }}
-                />
-              </PaginationItem>
-            </PaginationContent>
-          </Pagination>
-        </div>
-      </ScrollArea>
+                  <ToggleGroupItem value="rewrite" aria-label="采用改写" disabled={!activeParagraph.complete}>
+                    {savingIds.has(activeParagraph.paragraphId) ? <Spinner /> : <Check />}
+                    采用改写
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="original" aria-label="保留原文">
+                    <RotateCcw />
+                    保留原文
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              </>
+            )}
+          </CardFooter>
+        </Card>
+
+        <Pagination className="shrink-0">
+          <PaginationContent>
+            <PaginationItem>
+              <PaginationPrevious
+                href="#"
+                text="上一段"
+                aria-label="上一段"
+                aria-disabled={activeIndex <= 0}
+                className={cn(activeIndex <= 0 && "pointer-events-none opacity-50")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  moveParagraph(-1);
+                }}
+              />
+            </PaginationItem>
+            <PaginationItem>
+              <PaginationLink
+                href="#"
+                size="default"
+                isActive
+                aria-label="选择段落"
+                onClick={(event) => {
+                  event.preventDefault();
+                  setParagraphBrowserOpen(true);
+                }}
+              >
+                <Rows3 data-icon="inline-start" />
+                {activeSequence} / {run.paragraphs.length}
+              </PaginationLink>
+            </PaginationItem>
+            <PaginationItem>
+              <PaginationNext
+                href="#"
+                text="下一段"
+                aria-label="下一段"
+                aria-disabled={activeIndex >= run.paragraphs.length - 1}
+                className={cn(activeIndex >= run.paragraphs.length - 1 && "pointer-events-none opacity-50")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  moveParagraph(1);
+                }}
+              />
+            </PaginationItem>
+          </PaginationContent>
+        </Pagination>
+      </div>
 
       <Sheet open={paragraphBrowserOpen} onOpenChange={setParagraphBrowserOpen}>
         <SheetContent side="left" className="flex w-full flex-col p-0 sm:max-w-md">

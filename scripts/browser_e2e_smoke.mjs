@@ -16,7 +16,15 @@ const MODEL_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser
 const MODEL_OFFICIAL_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_model_deepseek.png");
 const MODEL_MOBILE_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_model_mobile.png");
 const PROMPT_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_prompt.png");
+const PROMPT_PLAN_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_prompt_plan.png");
+const SCOPE_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_scope.png");
 const PROTECTION_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_protection.png");
+const SETTINGS_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_settings.png");
+const MANUAL_REVIEW_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_manual_review.png");
+const DIFF_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_diff.png");
+const COMPLETED_ACTIONS_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_completed_actions.png");
+const CONTINUE_SETTINGS_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_continue_settings.png");
+const EXPORT_WARNING_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_export_warning.png");
 const RECENT_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_recent.png");
 const TABLET_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_tablet.png");
 const MOBILE_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_mobile.png");
@@ -320,7 +328,7 @@ async function clickElementByText(client, text, preferLast = false) {
   return evaluate(client, `(() => {
     const needle = ${JSON.stringify(text)};
     const preferLast = ${JSON.stringify(preferLast)};
-    const selector = 'button,a,[role="button"],summary,label,input,textarea,[tabindex]';
+    const selector = 'button,a,[role="button"],[role="option"],summary,label,input,textarea,[tabindex]';
     const isVisible = (element) => {
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
@@ -499,33 +507,6 @@ async function pressKey(client, key) {
   await client.send("Input.dispatchKeyEvent", { type: "keyDown", key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode });
   await client.send("Input.dispatchKeyEvent", { type: "keyUp", key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode });
   await wait(150);
-}
-
-async function setSliderValue(client, selector, value) {
-  const limits = await evaluate(client, `(() => {
-    const slider = document.querySelector(${JSON.stringify(selector)});
-    if (!slider || slider.getAttribute('role') !== 'slider') return null;
-    slider.focus();
-    return {
-      min: Number(slider.getAttribute('aria-valuemin')),
-      max: Number(slider.getAttribute('aria-valuemax')),
-    };
-  })()`, 3000);
-  if (!limits || value < limits.min || value > limits.max) {
-    throw new Error(`Unable to set slider ${selector} to ${value}.`);
-  }
-  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Home", code: "Home", windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36 });
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Home", code: "Home", windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36 });
-  for (let current = limits.min; current < value; current += 1) {
-    await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 });
-    await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 });
-  }
-  await waitForExpression(
-    client,
-    `document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-valuenow') === ${JSON.stringify(String(value))}`,
-    `slider ${selector} to become ${value}`,
-    3000,
-  );
 }
 
 async function captureScreenshot(client, path) {
@@ -783,7 +764,7 @@ async function runSmoke() {
     checks.push("model validation and save remain actionable during incomplete input and model discovery");
     await waitForExpression(
       browserClient,
-      "Boolean(document.querySelector('[data-testid=\"model-profile-form\"]')?.innerText.includes('fixture-model'))",
+      "Boolean(document.querySelector('[data-testid=\"model-profile-form\"]')?.innerText.includes('example-chat'))",
       "discovered model to populate the model selector",
       12_000,
     );
@@ -869,7 +850,7 @@ async function runSmoke() {
     await setControlValue(browserClient, "#profile-name", "本地连接二");
     await setControlValue(browserClient, "#base-url", `${mockUrl}/v1`);
     await setControlValue(browserClient, "#api-key", "e2e-second-key");
-    await setControlValue(browserClient, "#profile-model", "fixture-model");
+    await setControlValue(browserClient, "#profile-model", "example-chat");
     await clickByText(browserClient, "保存");
     await waitForText(browserClient, "已保存", 12_000);
     await waitForExpression(
@@ -882,6 +863,12 @@ async function runSmoke() {
       12_000,
     );
     checks.push("OpenAI-compatible channels can be created more than once, save secrets locally, and preserve an existing key when its editor is blank");
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "model notification to clear before documentation capture",
+      12_000,
+    );
     await captureScreenshot(browserClient, MODEL_SCREENSHOT_PATH);
 
     await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false });
@@ -978,12 +965,39 @@ async function runSmoke() {
       "new prompt template editor",
       12_000,
     );
-    await setControlValue(browserClient, "#template-name", "浏览器测试提示词");
-    await setControlValue(browserClient, "#template-content", "请保持事实并改写以下内容：\n\n{{text}}");
+    await setControlValue(browserClient, "#template-name", "学术表达优化");
+    await setControlValue(browserClient, "#template-content", "请保持事实并改写以下内容。\n\n待改写内容：\n{{text}}");
     await clickByText(browserClient, "保存", 12_000);
     await waitForText(browserClient, "提示词已保存", 12_000);
     checks.push("a new prompt template opens an editable form and can be saved");
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "prompt notification to clear before documentation capture",
+      12_000,
+    );
     await captureScreenshot(browserClient, PROMPT_SCREENSHOT_PATH);
+    const promptEditorSize = await evaluate(
+      browserClient,
+      `(() => {
+        const workspace = document.querySelector('[data-testid="prompt-workspace"]');
+        const editor = document.querySelector('#template-content');
+        if (!workspace || !editor) return { found: false };
+        const workspaceRect = workspace.getBoundingClientRect();
+        const editorRect = editor.getBoundingClientRect();
+        return {
+          found: true,
+          workspaceHeight: workspaceRect.height,
+          editorHeight: editorRect.height,
+          fillsWorkspace: editorRect.height >= Math.min(480, workspaceRect.height * 0.55),
+        };
+      })()`,
+      3000,
+    );
+    if (!promptEditorSize.found || !promptEditorSize.fillsWorkspace) {
+      throw new Error(`Prompt editor leaves most of the editor panel unused: ${JSON.stringify(promptEditorSize)}`);
+    }
+    checks.push("prompt content editor fills the available editor panel");
     const promptPageUsesFixedBoundary = await evaluate(browserClient, "Boolean(document.querySelector('textarea') && getComputedStyle(document.documentElement).overflow === 'hidden' && getComputedStyle(document.body).overflow === 'hidden')", 3000);
     if (!promptPageUsesFixedBoundary) {
       throw new Error("Prompt workspace did not render inside the fixed page boundary.");
@@ -1016,16 +1030,31 @@ async function runSmoke() {
     await selectTabByText(browserClient, "方案");
     await waitForText(browserClient, "执行步骤", 12_000);
     await clickByText(browserClient, "新建", 12_000);
-    await setControlValue(browserClient, "#plan-name", "浏览器测试方案");
+    await setControlValue(browserClient, "#plan-name", "表达优化方案");
     await clickByText(browserClient, "添加步骤", 12_000);
+    await clickSelector(browserClient, '[data-testid="prompt-plan-step-1"]');
+    await clickByText(browserClient, "学术表达优化", 12_000, true);
     await clickByText(browserClient, "保存", 12_000);
     await waitForText(browserClient, "方案已保存", 12_000);
     checks.push("a custom prompt plan can be created from the UI with an ordered first step");
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "prompt plan notification to clear before documentation capture",
+      12_000,
+    );
+    await captureScreenshot(browserClient, PROMPT_PLAN_SCREENSHOT_PATH);
     await clickByText(browserClient, "最近文档");
     await waitForText(browserClient, "还没有文档", 12_000);
     await captureScreenshot(browserClient, RECENT_SCREENSHOT_PATH);
     await clickByText(browserClient, "开始改写");
     await waitForText(browserClient, "选择文件", 12_000);
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "home notification to clear before documentation capture",
+      12_000,
+    );
     await captureScreenshot(browserClient, HOME_SCREENSHOT_PATH);
     const desktopRewriteLayout = await evaluate(
       browserClient,
@@ -1064,6 +1093,13 @@ async function runSmoke() {
     await uploadFile(browserClient, docxFixturePath);
     await waitForText(browserClient, "文档已读取", 12_000);
     await waitForText(browserClient, "保存正文范围", 12_000);
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "upload notification to clear before scope capture",
+      12_000,
+    );
+    await captureScreenshot(browserClient, SCOPE_SCREENSHOT_PATH);
     await clickByText(browserClient, "保存正文范围", 12_000, true);
     await waitForText(browserClient, "开始改写", 12_000);
     await waitForExpression(
@@ -1164,7 +1200,7 @@ async function runSmoke() {
         const firstUnit = workspace?.querySelector('[id^="scope-unit-"]');
         const viewport = firstUnit?.closest('[data-radix-scroll-area-viewport]');
         const returnButton = Array.from(workspace?.querySelectorAll('button') || []).find((item) =>
-          normalize(item.innerText) === '返回改写工作台'
+          normalize(item.innerText) === '返回开始改写'
         );
         if (!workspace || !main || !viewport || !returnButton) return { found: false };
         const workspaceRect = workspace.getBoundingClientRect();
@@ -1240,7 +1276,7 @@ async function runSmoke() {
     const selectedBeforeCancel = await evaluate(browserClient, "document.querySelectorAll('[role=\"checkbox\"][data-state=\"checked\"]').length", 3000);
     await clickSelector(browserClient, 'button[aria-label="范围操作"]');
     await clickByText(browserClient, "清空改写范围", 12_000);
-    await clickByText(browserClient, "返回改写工作台", 12_000);
+    await clickByText(browserClient, "返回开始改写", 12_000);
     await waitForText(browserClient, "开始改写", 12_000);
     await clickSelector(browserClient, 'button[aria-label="文档操作"]');
     await clickByText(browserClient, "保护区地图", 12_000);
@@ -1254,7 +1290,7 @@ async function runSmoke() {
     if (selectedBeforeCancel !== selectedAfterCancel || selectedAfterCancel === 0) {
       throw new Error(`Leaving the boundary editor did not discard its unsaved selection (${selectedBeforeCancel} -> ${selectedAfterCancel}).`);
     }
-    await clickByText(browserClient, "返回改写工作台", 12_000);
+    await clickByText(browserClient, "返回开始改写", 12_000);
     checks.push("inline Chinese and post-reference English abstracts, body prose, and acknowledgements stay in the suggested scope while headings, captions, keywords, and references stay out");
     checks.push("protection map uses one fixed, internally scrollable range list without duplicate structure panels or internal style labels");
 
@@ -1291,14 +1327,14 @@ async function runSmoke() {
       `(() => {
         const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
         const text = task?.innerText || '';
-        const concurrency = task?.querySelector('[data-testid="rewrite-concurrency"] [role="slider"]');
+        const concurrencyOptions = Array.from(task?.querySelectorAll('[data-testid^="rewrite-concurrency-"]') || [])
+          .map((item) => (item.textContent || '').trim());
         return {
           found: Boolean(task),
           hasChunking: text.includes('段内分块'),
           hasRounds: text.includes('轮数'),
-          hasConcurrency: text.includes('同时处理'),
-          concurrencyMin: concurrency?.getAttribute('aria-valuemin'),
-          concurrencyMax: concurrency?.getAttribute('aria-valuemax'),
+          hasConcurrency: text.includes('同时改写块数'),
+          concurrencyOptions,
         };
       })()`,
       3000,
@@ -1312,12 +1348,14 @@ async function runSmoke() {
       || !taskProcessingControls.hasChunking
       || !taskProcessingControls.hasRounds
       || !taskProcessingControls.hasConcurrency
-      || taskProcessingControls.concurrencyMin !== "1"
-      || taskProcessingControls.concurrencyMax !== "16"
+      || !taskProcessingControls.concurrencyOptions.includes("1 块")
+      || !taskProcessingControls.concurrencyOptions.includes("8 块")
+      || !taskProcessingControls.concurrencyOptions.includes("16 块")
     ) {
       throw new Error(`Uploaded document settings sheet is not configurable: ${JSON.stringify({ taskPlanControls, taskProcessingControls })}`);
     }
-    await setSliderValue(browserClient, '[data-testid="rewrite-concurrency"] [role="slider"]', 8);
+    await clickSelector(browserClient, '[data-testid="rewrite-concurrency-8"]');
+    await captureScreenshot(browserClient, SETTINGS_SCREENSHOT_PATH);
     checks.push("rewrite settings expose model, prompt, practiced chunking, rounds, and real 1–16 concurrency in a temporary sheet");
 
     await clickByText(browserClient, "开始改写", 12_000, true);
@@ -1328,6 +1366,15 @@ async function runSmoke() {
       15_000,
     );
     await wait(700);
+    const runningRecent = await fetch(`${backendUrl}/api/recent-documents`).then((response) => response.json());
+    const runningId = runningRecent.items?.[0]?.latestRunId;
+    const runningSnapshot = runningId
+      ? await fetch(`${backendUrl}/api/runs/${encodeURIComponent(runningId)}`).then((response) => response.json())
+      : null;
+    if (runningSnapshot?.snapshot?.concurrency !== 8) {
+      throw new Error(`Concurrency selected in the UI was not used by the run: ${JSON.stringify(runningSnapshot?.snapshot)}`);
+    }
+    checks.push("selected concurrency is persisted in the backend run snapshot");
     const runningWorkspace = await evaluate(
       browserClient,
       `(() => {
@@ -1360,6 +1407,12 @@ async function runSmoke() {
     ) {
       throw new Error(`Running workspace still exposes internal chunk processing: ${JSON.stringify(runningWorkspace)}`);
     }
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "start notification to clear before running capture",
+      12_000,
+    );
     await captureScreenshot(browserClient, RUNNING_SCREENSHOT_PATH);
     checks.push("running tasks show only overall paragraph progress while chunk streaming and concurrency stay internal");
     await clickByText(browserClient, "停止", 12_000);
@@ -1372,7 +1425,34 @@ async function runSmoke() {
     await chooseReviewParagraph(browserClient, incompleteReviewIds[0]);
     await clickByText(browserClient, "手动编辑", 3000);
     await waitForExpression(browserClient, "Boolean(document.querySelector('textarea[id^=\"manual-\"]'))", "manual editor for an incomplete paragraph", 12_000);
+    const manualEditorSize = await evaluate(
+      browserClient,
+      `(() => {
+        const editor = document.querySelector('textarea[id^="manual-"]');
+        const review = document.querySelector('[data-review-detail]');
+        if (!editor || !review) return { found: false };
+        const editorRect = editor.getBoundingClientRect();
+        const reviewRect = review.getBoundingClientRect();
+        return {
+          found: true,
+          editorHeight: editorRect.height,
+          reviewHeight: reviewRect.height,
+          largeEnough: editorRect.height >= Math.min(320, reviewRect.height * 0.42),
+        };
+      })()`,
+      3000,
+    );
+    if (!manualEditorSize.found || !manualEditorSize.largeEnough) {
+      throw new Error(`Manual editor is too small for paragraph review: ${JSON.stringify(manualEditorSize)}`);
+    }
     await setControlValue(browserClient, 'textarea[id^="manual-"]', "模型中断后由用户手动补写的正文。");
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "stop notification to clear before manual review capture",
+      12_000,
+    );
+    await captureScreenshot(browserClient, MANUAL_REVIEW_SCREENSHOT_PATH);
     await clickByText(browserClient, "保存", 12_000);
     await waitForExpression(
       browserClient,
@@ -1407,7 +1487,7 @@ async function runSmoke() {
     await waitForExpression(
       browserClient,
       `Boolean(document.querySelector('[data-review-detail]'))
-        && Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '导出')`,
+        && Boolean(document.querySelector('[data-testid="rewrite-open-task-actions"]'))`,
       "completed review workspace",
       35_000,
     );
@@ -1422,12 +1502,20 @@ async function runSmoke() {
       "rewrite warning reminder",
       12_000,
     );
+    await clickByText(browserClient, "差异");
+    await waitForExpression(
+      browserClient,
+      "document.querySelector('[data-text-diff]')?.getAttribute('data-diff-mode') === 'changes'",
+      "optional marked diff view",
+      12_000,
+    );
     await waitForExpression(
       browserClient,
       "Boolean(document.querySelector('[data-text-diff] [data-diff-added]') && document.querySelector('[data-text-diff] [data-diff-removed]'))",
       "real added and removed diff markers to render",
       12_000,
     );
+    await captureScreenshot(browserClient, DIFF_SCREENSHOT_PATH);
     const hasFixtureAnnotations = await evaluate(
       browserClient,
       `Array.from(document.querySelectorAll('[data-review-paragraph]')).some((item) =>
@@ -1438,35 +1526,79 @@ async function runSmoke() {
     if (hasFixtureAnnotations) {
       throw new Error("Model output contains a synthetic rewrite annotation from the test provider.");
     }
-    await clickByText(browserClient, "导出", 12_000);
+    await clickByText(browserClient, "对照");
+    await waitForExpression(
+      browserClient,
+      "document.querySelector('[data-text-diff]')?.getAttribute('data-diff-mode') === 'compare'",
+      "clean comparison view",
+      12_000,
+    );
+    await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
     await waitForExpression(
       browserClient,
       "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))",
       "completed task actions sheet",
       12_000,
     );
-    const compactRunSnapshot = await evaluate(
+    const configurableContinuePlan = await evaluate(
       browserClient,
       `(() => {
         const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
-        if (!task) return false;
-        const visibleCombobox = Array.from(task.querySelectorAll('[role="combobox"]')).some((control) => {
+        if (!task) return { found: false };
+        const visibleComboboxes = Array.from(task.querySelectorAll('[role="combobox"]')).filter((control) => {
           const rect = control.getBoundingClientRect();
           return rect.width > 0 && rect.height > 0;
         });
         const text = task.innerText || '';
-        return text.includes('改写完成')
-          && text.includes('本地连接一')
-          && text.includes('经典改写')
-          && !text.includes('段内分块')
-          && !text.includes('保护词')
-          && !visibleCombobox;
+        return {
+          found: true,
+          visibleComboboxes: visibleComboboxes.length,
+          title: task.querySelector('h2')?.textContent?.trim() || '',
+          hasModel: text.includes('模型连接') && text.includes('本地连接一'),
+          hasPlan: text.includes('提示词方案') && text.includes('经典改写'),
+          pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+        };
       })()`,
       3000,
     );
-    if (!compactRunSnapshot) {
-      throw new Error("Completed task sheet still exposes editable configuration forms instead of a compact snapshot.");
+    if (
+      !configurableContinuePlan.found
+      || configurableContinuePlan.title !== "继续改写"
+      || configurableContinuePlan.visibleComboboxes < 2
+      || !configurableContinuePlan.hasModel
+      || !configurableContinuePlan.hasPlan
+      || configurableContinuePlan.pageOverflow
+    ) {
+      throw new Error(`Completed task sheet cannot configure the next pass: ${JSON.stringify(configurableContinuePlan)}`);
     }
+    await selectTabByText(browserClient, "处理");
+    const configurableContinueProcessing = await evaluate(
+      browserClient,
+      `(() => {
+        const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
+        const text = task?.innerText || '';
+        return {
+          found: Boolean(task),
+          hasChunking: text.includes('段内分块'),
+          hasRounds: text.includes('改写轮数'),
+          hasConcurrency: text.includes('同时改写块数'),
+          hasProtectedTerms: text.includes('保护词'),
+        };
+      })()`,
+      3000,
+    );
+    if (
+      !configurableContinueProcessing.found
+      || !configurableContinueProcessing.hasChunking
+      || !configurableContinueProcessing.hasRounds
+      || !configurableContinueProcessing.hasConcurrency
+      || !configurableContinueProcessing.hasProtectedTerms
+    ) {
+      throw new Error(`Completed task sheet is missing next-pass processing settings: ${JSON.stringify(configurableContinueProcessing)}`);
+    }
+    await selectTabByText(browserClient, "方案");
+    await wait(600);
+    await captureScreenshot(browserClient, COMPLETED_ACTIONS_SCREENSHOT_PATH);
     await pressKey(browserClient, "Escape");
     await waitForExpression(browserClient, "!document.querySelector('[data-testid=\"rewrite-task-sheet\"]')", "completed task sheet to close", 12_000);
     await waitForExpression(
@@ -1513,7 +1645,7 @@ async function runSmoke() {
     }
     checks.push("DOCX runs hidden chunk streams, stops, resumes unfinished chunks, then renders paragraph-level diffs and warnings");
     checks.push("multi-round output contains no synthetic rewrite labels and long reviews scroll inside the workspace");
-    checks.push("completed task actions open as a compact immutable sheet instead of a permanent sidebar");
+    checks.push("completed task actions inherit the previous setup and expose a complete next-pass configuration sheet");
     checks.push("review shows the complete original and rewritten versions together with separate diff markers");
 
     await selectReviewDecision(browserClient, "保留原文");
@@ -1533,10 +1665,27 @@ async function runSmoke() {
       12_000,
     );
 
-    await clickByText(browserClient, "导出", 12_000);
+    await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
     await waitForExpression(browserClient, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "export sheet", 12_000);
     await clickByText(browserClient, "Word", 12_000);
     await waitForText(browserClient, "导出前确认", 12_000);
+    const warningLocations = await evaluate(
+      browserClient,
+      `(() => {
+        const list = document.querySelector('[data-testid="export-warning-locations"]');
+        const text = list?.innerText || '';
+        return {
+          found: Boolean(list),
+          hasParagraph: /第\\s*\\d+\\s*段/.test(text),
+          hasDetail: text.includes('数字') || text.includes('引用') || text.includes('URL') || text.includes('保护词'),
+        };
+      })()`,
+      3000,
+    );
+    if (!warningLocations.found || !warningLocations.hasParagraph || !warningLocations.hasDetail) {
+      throw new Error(`Export warning does not identify its paragraph and changed value: ${JSON.stringify(warningLocations)}`);
+    }
+    await captureScreenshot(browserClient, EXPORT_WARNING_SCREENSHOT_PATH);
     await clickByText(browserClient, "继续导出 Word", 12_000, true);
     await waitForText(browserClient, "文件已导出", 20_000);
     await waitForTextGone(browserClient, "导出前确认", 12_000);
@@ -1550,7 +1699,7 @@ async function runSmoke() {
     await setControlValue(browserClient, 'textarea[id^="manual-"]', "手动审阅后的正文保留数字 10。");
     const exportDisabledWhileEditing = await evaluate(
       browserClient,
-      `Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '导出' && item.disabled)`,
+      `Boolean(document.querySelector('[data-testid="rewrite-open-task-actions"]')?.disabled)`,
       3000,
     );
     if (!exportDisabledWhileEditing) {
@@ -1558,6 +1707,84 @@ async function runSmoke() {
     }
     await clickByText(browserClient, "保存", 12_000);
     checks.push("manual review must be saved before export and can then be stored");
+
+    const previousRunId = (await fetch(`${backendUrl}/api/recent-documents`).then((response) => response.json())).items?.[0]?.latestRunId;
+    const providerRequestsBeforeContinue = (await fetch(`${mockUrl}/stats`).then((response) => response.json())).requests?.length || 0;
+    await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
+    await waitForText(browserClient, "继续改写", 12_000);
+    await clickSelector(browserClient, '#run-model-profile');
+    await clickByText(browserClient, "本地连接二 · example-chat", 12_000, true);
+    await clickSelector(browserClient, '#run-prompt-plan');
+    await clickByText(browserClient, "表达优化方案", 12_000, true);
+    await selectTabByText(browserClient, "处理");
+    await clickSelector(browserClient, '[data-testid="rewrite-chunk-long"]');
+    await clickSelector(browserClient, '[data-testid="rewrite-repeat-3"]');
+    await clickSelector(browserClient, '[data-testid="rewrite-concurrency-4"]');
+    await setControlValue(browserClient, "#protected-terms", "关键术语");
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "export notification to clear before next-pass capture",
+      12_000,
+    );
+    await captureScreenshot(browserClient, CONTINUE_SETTINGS_SCREENSHOT_PATH);
+    await clickByText(browserClient, "继续改写", 12_000, true);
+    await waitForExpression(
+      browserClient,
+      `(async () => {
+        const recent = await fetch('/api/recent-documents').then((response) => response.json());
+        const latestRunId = recent.items?.[0]?.latestRunId;
+        if (!latestRunId || latestRunId === ${JSON.stringify(previousRunId)}) return false;
+        const latest = await fetch('/api/runs/' + encodeURIComponent(latestRunId)).then((response) => response.json());
+        return latest.snapshot?.iteration === 2
+          && latest.snapshot?.modelProfile?.name === '本地连接二'
+          && latest.snapshot?.promptPlan?.name === '表达优化方案'
+          && latest.snapshot?.chunking?.preset === 'long'
+          && latest.snapshot?.repeatCount === 3
+          && latest.snapshot?.concurrency === 4
+          && latest.snapshot?.protectedTerms?.includes('关键术语');
+      })()`,
+      "continued rewrite task to use a new persisted run",
+      20_000,
+    );
+    await waitForExpression(
+      browserClient,
+      `Boolean(document.querySelector('[data-review-detail]') && document.querySelector('[data-testid="rewrite-open-task-actions"]'))`,
+      "continued rewrite task to complete",
+      35_000,
+    );
+    const continuedRecent = await fetch(`${backendUrl}/api/recent-documents`).then((response) => response.json());
+    const continuedRunId = continuedRecent.items?.[0]?.latestRunId;
+    const continuedRun = await fetch(`${backendUrl}/api/runs/${encodeURIComponent(continuedRunId)}`).then((response) => response.json());
+    const continuedProviderRequests = (await fetch(`${mockUrl}/stats`).then((response) => response.json())).requests?.slice(providerRequestsBeforeContinue) || [];
+    if (
+      continuedRun.snapshot?.iteration !== 2
+      || continuedRun.snapshot?.parentRunId !== previousRunId
+      || continuedRun.snapshot?.modelProfile?.name !== "本地连接二"
+      || continuedRun.snapshot?.promptPlan?.name !== "表达优化方案"
+      || continuedRun.snapshot?.chunking?.preset !== "long"
+      || continuedRun.snapshot?.repeatCount !== 3
+      || continuedRun.snapshot?.concurrency !== 4
+      || !continuedRun.snapshot?.protectedTerms?.includes("关键术语")
+      || !continuedRun.chunks?.some((chunk) => String(chunk.originalText || '').includes('手动审阅后的正文'))
+    ) {
+      throw new Error(`Continue rewrite did not use the reviewed output: ${JSON.stringify(continuedRun.snapshot)}`);
+    }
+    if (
+      !continuedProviderRequests.length
+      || continuedProviderRequests.some((item) => item.credential !== "secondary")
+      || continuedProviderRequests.some((item) => item.model !== "example-chat")
+      || !continuedProviderRequests.some((item) => item.prompt.includes("请保持事实并改写以下内容"))
+      || !continuedProviderRequests.some((item) => item.prompt.includes("手动审阅后的正文"))
+    ) {
+      throw new Error(`Continue rewrite did not send the selected model, prompt, or reviewed text upstream: ${JSON.stringify(continuedProviderRequests.map((item) => ({
+        credential: item.credential,
+        model: item.model,
+        hasSelectedPrompt: item.prompt.includes("请保持事实并改写以下内容"),
+        hasReviewedText: item.prompt.includes("手动审阅后的正文"),
+      })))}`);
+    }
+    checks.push("completed results can start a fully reconfigured next pass whose selected model, prompt, processing settings, and reviewed input all reach the backend and provider");
 
     await clickByText(browserClient, "最近文档");
     await waitForText(browserClient, "示例文档.docx", 12_000);
@@ -1575,14 +1802,14 @@ async function runSmoke() {
     await waitForText(browserClient, "示例文档.docx", 20_000);
     await waitForExpression(
       browserClient,
-      `Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '导出' && !item.disabled)`,
+      `Boolean(document.querySelector('[data-testid="rewrite-open-task-actions"]:not(:disabled)'))`,
       "restored export action",
       20_000,
     );
     checks.push("page refresh restores the active document and its persisted review task");
 
-    await clickByText(browserClient, "导出", 12_000);
-    await waitForText(browserClient, "改写完成", 12_000);
+    await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
+    await waitForText(browserClient, "继续改写", 12_000);
     await clickByText(browserClient, "新建改写任务", 12_000);
     await browserClient.send("Page.reload", { ignoreCache: true });
     await waitForText(browserClient, "示例文档.docx", 20_000);
@@ -1598,11 +1825,11 @@ async function runSmoke() {
     await waitForExpression(
       browserClient,
       `Boolean(document.querySelector('[data-review-detail]'))
-        && Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '导出')`,
+        && Boolean(document.querySelector('[data-testid="rewrite-open-task-actions"]'))`,
       "completed TXT review workspace",
       25_000,
     );
-    await clickByText(browserClient, "导出", 12_000);
+    await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
     await clickByText(browserClient, "TXT", 12_000);
     await waitForText(browserClient, "导出前确认", 12_000);
     await clickByText(browserClient, "继续导出 TXT", 12_000, true);
@@ -1614,6 +1841,12 @@ async function runSmoke() {
 
     await clickByText(browserClient, "最近文档");
     await waitForText(browserClient, "示例文档.txt", 12_000);
+    await waitForExpression(
+      browserClient,
+      "!document.querySelector('[data-sonner-toast]')",
+      "recent document notification to clear before documentation capture",
+      12_000,
+    );
     await captureScreenshot(browserClient, RECENT_SCREENSHOT_PATH);
     await clickByText(browserClient, "打开", 12_000);
     await waitForText(browserClient, "示例文档.txt", 12_000);
@@ -1626,7 +1859,7 @@ async function runSmoke() {
         const workspace = document.querySelector('[data-testid="rewrite-workspace-grid"]');
         const main = document.querySelector('[data-testid="rewrite-main-panel"]');
         const actionButton = Array.from(workspace?.querySelectorAll('button') || []).find((button) =>
-          ['改写设置', '继续', '导出'].includes((button.innerText || '').trim())
+          ['改写设置', '继续', '继续 / 导出'].includes((button.innerText || '').trim())
         );
         if (!workspace || !main) return { found: false };
         return {
@@ -1642,7 +1875,7 @@ async function runSmoke() {
     if (!tabletLayout.found || !tabletLayout.mainVisible || !tabletLayout.taskAbsent || !tabletLayout.actionButtonVisible || tabletLayout.pageOverflow) {
       throw new Error(`Medium-width workspace is cramped or overflowing: ${JSON.stringify(tabletLayout)}`);
     }
-    await clickByText(browserClient, "导出", 12_000);
+    await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
     await waitForExpression(browserClient, "Boolean(document.querySelector('[data-testid=\\\"rewrite-task-sheet\\\"]'))", "tablet task sheet", 12_000);
     await wait(500);
     const tabletTaskVisible = await evaluate(
@@ -1686,7 +1919,7 @@ async function runSmoke() {
 
     await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await wait(500);
-    await clickByText(browserClient, "导出", 12_000);
+    await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
     await waitForExpression(browserClient, "Boolean(document.querySelector('[data-testid=\\\"rewrite-task-sheet\\\"]'))", "mobile task sheet", 12_000);
     await wait(500);
     const hasHorizontalOverflow = await evaluate(browserClient, "document.documentElement.scrollWidth > window.innerWidth + 1", 3000);
@@ -1696,9 +1929,25 @@ async function runSmoke() {
     await browserClient.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
     await browserClient.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
     await waitForExpression(browserClient, "!document.querySelector('[data-testid=\\\"rewrite-task-sheet\\\"]')", "mobile task sheet to close", 12_000);
+    const mobileReviewLabels = await evaluate(
+      browserClient,
+      `(() => {
+        const pane = document.querySelector('[data-diff-layout="tabs"] [data-state="active"] [data-diff-pane]');
+        if (!pane) return { found: false, labels: [] };
+        const labels = Array.from(pane.querySelectorAll('[data-slot="item-title"]'))
+          .filter((item) => item.getBoundingClientRect().width > 0)
+          .map((item) => (item.textContent || '').trim())
+          .filter(Boolean);
+        return { found: true, labels };
+      })()`,
+      3000,
+    );
+    if (!mobileReviewLabels.found || mobileReviewLabels.labels.length) {
+      throw new Error(`Mobile diff repeats the active tab as an extra pane heading: ${JSON.stringify(mobileReviewLabels)}`);
+    }
     await captureScreenshot(browserClient, MOBILE_SCREENSHOT_PATH);
     checks.push("four primary pages and accessible editors remain responsive");
-    checks.push("mobile workbench stays within the viewport");
+    checks.push("mobile workbench stays within the viewport without repeated diff labels");
 
     await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await browserClient.send("Page.reload", { ignoreCache: true });
@@ -1731,8 +1980,16 @@ async function runSmoke() {
         modelOfficial: MODEL_OFFICIAL_SCREENSHOT_PATH,
         modelMobile: MODEL_MOBILE_SCREENSHOT_PATH,
         prompt: PROMPT_SCREENSHOT_PATH,
+        promptPlan: PROMPT_PLAN_SCREENSHOT_PATH,
+        scope: SCOPE_SCREENSHOT_PATH,
         protection: PROTECTION_SCREENSHOT_PATH,
+        settings: SETTINGS_SCREENSHOT_PATH,
         recent: RECENT_SCREENSHOT_PATH,
+        manualReview: MANUAL_REVIEW_SCREENSHOT_PATH,
+        diff: DIFF_SCREENSHOT_PATH,
+        completedActions: COMPLETED_ACTIONS_SCREENSHOT_PATH,
+        continueSettings: CONTINUE_SETTINGS_SCREENSHOT_PATH,
+        exportWarning: EXPORT_WARNING_SCREENSHOT_PATH,
         tablet: TABLET_SCREENSHOT_PATH,
         mobile: MOBILE_SCREENSHOT_PATH,
       },

@@ -5,6 +5,7 @@ import codecs
 import ipaddress
 import inspect
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable
 from urllib.parse import urlparse
@@ -136,14 +137,21 @@ def build_payload(profile: dict[str, Any], prompt: str) -> dict[str, Any]:
     protocol = normalize_protocol(profile.get("protocol"))
     provider = str(profile.get("provider") or "custom").strip().lower()
     reasoning_effort = normalize_reasoning_effort(profile.get("reasoningEffort"))
+    instructions = str(profile.get("_requestInstructions") or "").strip()
     if protocol == "responses":
         payload: dict[str, Any] = {"model": profile.get("model", ""), "input": prompt, "stream": True}
+        if instructions:
+            payload["instructions"] = instructions
         if reasoning_effort != "auto":
             payload["reasoning"] = {"effort": reasoning_effort}
     else:
+        messages = []
+        if instructions:
+            messages.append({"role": "system", "content": instructions})
+        messages.append({"role": "user", "content": prompt})
         payload = {
             "model": profile.get("model", ""),
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "stream": True,
         }
         if provider == "deepseek":
@@ -362,8 +370,40 @@ class StreamingLLMClient:
     ) -> None:
         self._client_factory = client_factory or httpx.AsyncClient
         self._proxy_resolver = proxy_resolver or resolve_system_proxy
+        self._proxy_cache: dict[str, str | None] = {}
+        self._proxy_cache_lock = threading.Lock()
+        self._proxy_resolve_locks: dict[str, threading.Lock] = {}
 
-    def _make_client(self, endpoint: str, profile: dict[str, Any]) -> httpx.AsyncClient:
+    @staticmethod
+    def _proxy_cache_key(endpoint: str) -> str:
+        parsed = urlparse(endpoint)
+        host = (parsed.hostname or "").casefold()
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return f"{parsed.scheme.casefold()}://{host}{port}"
+
+    def _resolve_proxy_once(self, endpoint: str) -> str | None:
+        key = self._proxy_cache_key(endpoint)
+        with self._proxy_cache_lock:
+            if key in self._proxy_cache:
+                return self._proxy_cache[key]
+            resolve_lock = self._proxy_resolve_locks.setdefault(key, threading.Lock())
+
+        with resolve_lock:
+            with self._proxy_cache_lock:
+                if key in self._proxy_cache:
+                    return self._proxy_cache[key]
+            proxy = self._proxy_resolver(endpoint)
+            with self._proxy_cache_lock:
+                self._proxy_cache[key] = proxy
+                self._proxy_resolve_locks.pop(key, None)
+            return proxy
+
+    async def _resolve_proxy(self, endpoint: str) -> str | None:
+        if _is_local_url(endpoint):
+            return None
+        return await asyncio.to_thread(self._resolve_proxy_once, endpoint)
+
+    async def _make_client(self, endpoint: str, profile: dict[str, Any]) -> httpx.AsyncClient:
         timeout = httpx.Timeout(
             connect=float(profile.get("connectTimeoutSeconds", 15)),
             read=None,
@@ -372,7 +412,7 @@ class StreamingLLMClient:
         )
         if _is_local_url(endpoint):
             return self._client_factory(timeout=timeout, trust_env=False, follow_redirects=True)
-        proxy = self._proxy_resolver(endpoint)
+        proxy = await self._resolve_proxy(endpoint)
         if proxy:
             return self._client_factory(timeout=timeout, proxy=proxy, trust_env=False, follow_redirects=True)
         return self._client_factory(timeout=timeout, trust_env=True, follow_redirects=True)
@@ -412,7 +452,7 @@ class StreamingLLMClient:
         received_text = False
         pieces: list[str] = []
         try:
-            async with self._make_client(endpoint, profile) as client:
+            async with await self._make_client(endpoint, profile) as client:
                 async with client.stream(
                     "POST", endpoint, headers=_headers(profile), json=build_payload(profile, prompt)
                 ) as response:
@@ -532,7 +572,7 @@ class StreamingLLMClient:
 
     async def list_models(self, profile: dict[str, Any]) -> list[str]:
         endpoint = build_models_endpoint(str(profile.get("baseUrl") or ""))
-        async with self._make_client(endpoint, profile) as client:
+        async with await self._make_client(endpoint, profile) as client:
             try:
                 response = await client.get(endpoint, headers=_headers(profile))
             except (httpx.TimeoutException, httpx.TransportError) as exc:

@@ -51,7 +51,7 @@ export function AppSidebar({ activePage, onPageChange, runtimeStatus, progressPe
               <img src="/brand-logo-96.webp" alt="" className="size-9 rounded-md object-contain" />
               <span className="grid min-w-0 flex-1 text-left leading-tight">
                 <span className="truncate font-semibold">FYADR</span>
-                <span className="truncate text-xs">文档改写工作台</span>
+                <span className="truncate text-xs">文档改写平台</span>
               </span>
             </SidebarMenuButton>
           </SidebarMenuItem>

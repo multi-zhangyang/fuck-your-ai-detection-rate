@@ -26,10 +26,6 @@ import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empt
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
-  InputGroup,
-  InputGroupTextarea,
-} from "@/components/ui/input-group";
-import {
   Item,
   ItemActions,
   ItemContent,
@@ -49,6 +45,7 @@ import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { coreService } from "@/lib/coreService";
 import type { CoreSettings, PromptPlan, PromptTemplate } from "@/types/core";
@@ -319,9 +316,9 @@ export function PromptPlansPage({ settings, onRefresh }: Props) {
         )}
       </div>
       <Separator />
-      <ScrollArea className="min-h-0 flex-1">
+      <div className="min-h-0 flex-1">
         {creatingTemplate || templateDraft.id || templateDraft.name || templateDraft.content ? (
-          <FieldGroup className="mx-auto w-full max-w-5xl p-4 md:p-6">
+          <FieldGroup className="mx-auto h-full min-h-0 w-full max-w-5xl p-4 md:p-6">
             {!templateDraft.readOnly ? (
               <FieldGroup className="grid gap-4 md:grid-cols-2">
                 <Field>
@@ -342,18 +339,16 @@ export function PromptPlansPage({ settings, onRefresh }: Props) {
                 </Field>
               </FieldGroup>
             ) : null}
-            <Field>
+            <Field className="min-h-0 flex-1">
               <FieldLabel htmlFor="template-content">提示词内容</FieldLabel>
-              <InputGroup>
-                <InputGroupTextarea
-                  id="template-content"
-                  readOnly={Boolean(templateDraft.readOnly)}
-                  className="min-h-[24rem] font-mono"
-                  value={templateDraft.content || ""}
-                  onChange={(event) => setTemplateDraft({ ...templateDraft, content: event.target.value })}
-                  placeholder={"请改写以下内容……\n\n{{text}}"}
-                />
-              </InputGroup>
+              <Textarea
+                id="template-content"
+                readOnly={Boolean(templateDraft.readOnly)}
+                className="min-h-[20rem] flex-1 resize-none font-mono"
+                value={templateDraft.content || ""}
+                onChange={(event) => setTemplateDraft({ ...templateDraft, content: event.target.value })}
+                placeholder={"请改写以下内容……\n\n{{text}}"}
+              />
             </Field>
           </FieldGroup>
         ) : (
@@ -364,7 +359,7 @@ export function PromptPlansPage({ settings, onRefresh }: Props) {
             </EmptyHeader>
           </Empty>
         )}
-      </ScrollArea>
+      </div>
     </Card>
   );
 
@@ -454,7 +449,9 @@ export function PromptPlansPage({ settings, onRefresh }: Props) {
                       </>
                     ) : (
                       <Select value={templateId} onValueChange={(value) => setPlanStep(index, value)}>
-                        <SelectTrigger><SelectValue placeholder="选择提示词" /></SelectTrigger>
+                        <SelectTrigger data-testid={`prompt-plan-step-${index + 1}`}>
+                          <SelectValue placeholder="选择提示词" />
+                        </SelectTrigger>
                         <SelectContent>
                           <SelectGroup>
                             {settings.promptTemplates.map((template) => (
