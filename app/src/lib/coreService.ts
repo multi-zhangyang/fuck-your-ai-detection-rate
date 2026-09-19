@@ -4,7 +4,6 @@ import type {
   CoreSettings,
   ChunkPreset,
   ModelProfile,
-  PromptPlan,
   PromptTemplate,
   RecentDocument,
   ReviewChoice,
@@ -78,7 +77,7 @@ export const coreService = {
     rewriteConcurrency: number;
     protectedTerms: string[];
     chunkPreset?: ChunkPreset;
-    singleTemplateRounds?: number;
+    roundTemplateIds?: string[];
   }) =>
     requestJson<CoreSettings["preferences"]>("/api/settings/preferences", json("PUT", value)),
 
@@ -109,18 +108,6 @@ export const coreService = {
   deleteTemplate: (id: string) =>
     requestJson<{ ok: boolean }>(`/api/prompt-templates/${encodeURIComponent(id)}`, json("DELETE")),
 
-  createPlan: (value: Partial<PromptPlan> & { makeDefault?: boolean }) =>
-    requestJson<PromptPlan>("/api/prompt-plans", json("POST", value)),
-
-  updatePlan: (id: string, value: Partial<PromptPlan> & { makeDefault?: boolean }) =>
-    requestJson<PromptPlan>(`/api/prompt-plans/${encodeURIComponent(id)}`, json("PUT", value)),
-
-  copyPlan: (id: string) =>
-    requestJson<PromptPlan>(`/api/prompt-plans/${encodeURIComponent(id)}/copy`, json("POST")),
-
-  deletePlan: (id: string) =>
-    requestJson<{ ok: boolean }>(`/api/prompt-plans/${encodeURIComponent(id)}`, json("DELETE")),
-
   uploadDocument: async (file: File): Promise<CoreDocument> => {
     const body = new FormData();
     body.append("file", file);
@@ -144,8 +131,8 @@ export const coreService = {
 
   cancelRun: (id: string) => requestJson<CoreRun>(`/api/runs/${encodeURIComponent(id)}/cancel`, json("POST")),
 
-  resumeRun: (id: string, concurrency: number) =>
-    requestJson<CoreRun>(`/api/runs/${encodeURIComponent(id)}/resume`, json("POST", { concurrency })),
+  resumeRun: (id: string) =>
+    requestJson<CoreRun>(`/api/runs/${encodeURIComponent(id)}/resume`, json("POST")),
 
   continueRun: (id: string, value: RunConfigurationInput) =>
     requestJson<CoreRun>(`/api/runs/${encodeURIComponent(id)}/continue`, json("POST", value)),

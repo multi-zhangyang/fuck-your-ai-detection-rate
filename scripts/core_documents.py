@@ -33,7 +33,7 @@ W_P = f"{{{W_NS}}}p"
 W_BODY = f"{{{W_NS}}}body"
 XML_SPACE = f"{{{XML_NS}}}space"
 MAX_RECENT_DOCUMENTS = 20
-SCOPE_CLASSIFIER_VERSION = 12
+SCOPE_CLASSIFIER_VERSION = 13
 DEFAULT_CHUNK_PRESET = "standard"
 CHUNK_PRESETS: dict[str, dict[str, tuple[int, int, int, int]]] = {
     "fine": {
@@ -695,11 +695,10 @@ def _suggested_body_start(
 ) -> tuple[int | None, str, str]:
     # Abstract prose belongs to the rewriteable manuscript range.  It may sit
     # either before or after a generated TOC, and some templates place the
-    # heading and prose in one paragraph.  Prefer the first real abstract before
-    # the first chapter/reference boundary, while ignoring TOC result rows.
+    # heading and prose in one paragraph.  A cover title may itself use a Word
+    # outline style, so an explicit abstract marker must not be rejected merely
+    # because such a heading appears earlier in the package.
     abstract_candidates: list[int] = []
-    first_main_heading: int | None = None
-    first_references_heading: int | None = None
     for body_child_index, child in enumerate(body_children):
         if child.tag != W_P:
             continue
@@ -709,9 +708,6 @@ def _suggested_body_start(
         style_id = _style_id(child)
         style = styles.get(style_id, {})
         style_names = [str(item) for item in style.get("names", [])]
-        outline_level = _outline_level(child)
-        if outline_level is None:
-            outline_level = style.get("outlineLevel")
         abstract_marker, _abstract_has_prose = _abstract_marker(text)
         if (
             abstract_marker
@@ -719,39 +715,8 @@ def _suggested_body_start(
             and not _looks_like_toc(text, style_id, style_names)
         ):
             abstract_candidates.append(body_child_index)
-        toc_entry = _looks_like_toc(text, style_id, style_names)
-        if first_references_heading is None and not toc_entry and _looks_like_references_heading(text):
-            first_references_heading = body_child_index
-        if first_main_heading is not None or abstract_marker:
-            continue
-        normalized = _normalize_marker_text(text)
-        chapter_like_text = (
-            normalized in {"绪论", "引言", "前言"}
-            or bool(re.match(r"^第[一二三四五六七八九十百0-9]+章", normalized))
-            or bool(re.match(r"^[1-9]\d*(?:\.\d+){0,3}(?:[.\uff0e、]|\s+)[^\d]", text.strip()))
-        )
-        if (
-            (outline_level is not None or chapter_like_text)
-            and not toc_entry
-            and not _looks_like_references_heading(text)
-            and not _looks_like_non_rewrite_section_heading(text)
-        ):
-            first_main_heading = body_child_index
 
-    abstract_limit_candidates = [
-        index
-        for index in (first_main_heading, first_references_heading)
-        if index is not None
-    ]
-    abstract_limit = min(abstract_limit_candidates) if abstract_limit_candidates else None
-    abstract_start = next(
-        (
-            index
-            for index in abstract_candidates
-            if abstract_limit is None or index < abstract_limit
-        ),
-        None,
-    )
+    abstract_start = abstract_candidates[0] if abstract_candidates else None
     if abstract_start is not None:
         return (
             abstract_start,

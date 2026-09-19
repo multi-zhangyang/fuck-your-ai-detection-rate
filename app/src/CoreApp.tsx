@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppNotifications } from "@/components/AppNotifications";
 import { AppSidebar, WORKBENCH_NAV_ITEMS, type WorkbenchPage } from "@/components/AppSidebar";
 import { ModelProfilesPage } from "@/components/core/ModelProfilesPage";
-import { PromptPlansPage } from "@/components/core/PromptPlansPage";
+import { PromptTemplatesPage } from "@/components/core/PromptTemplatesPage";
 import { ProtectionMapPage } from "@/components/core/ProtectionMapPage";
 import { RecentDocumentsPage } from "@/components/core/RecentDocumentsPage";
 import { RewritePage } from "@/components/core/RewritePage";
@@ -25,9 +25,10 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { coreService } from "@/lib/coreService";
-import type { CoreDocument, CoreRun, CoreSettings } from "@/types/core";
+import type { CoreDocument, CoreRun, CoreSettings, RunEvent } from "@/types/core";
 
 const WORKSPACE_STORAGE_KEY = "fyadr.workspace.v2";
+const ACTIVE_RUN_STATUSES = new Set<CoreRun["status"]>(["queued", "running", "cancelling"]);
 
 interface WorkspacePointer {
   documentId: string;
@@ -63,6 +64,17 @@ function statusLabel(run: CoreRun | null): string {
     cancelled: "已停止",
     completed: "改写完成",
   }[run.status];
+}
+
+function mergeRunSnapshot(current: CoreRun, refreshed: CoreRun): CoreRun {
+  const visibleChunks = new Map(current.chunks.map((chunk) => [chunk.id, chunk]));
+  return {
+    ...refreshed,
+    chunks: refreshed.chunks.map((chunk) => {
+      const visible = visibleChunks.get(chunk.id);
+      return visible && visible.revision > chunk.revision ? visible : chunk;
+    }),
+  };
 }
 
 function ResponsiveSidebarController() {
@@ -103,7 +115,6 @@ export function CoreApp() {
   const [bootstrapping, setBootstrapping] = useState(true);
   const [error, setError] = useState("");
   const [scopeRequest, setScopeRequest] = useState(0);
-  const [rewriteSetup, setRewriteSetup] = useState({ modelProfileId: "", promptPlanId: "" });
 
   const loadSettings = useCallback(async () => {
     try {
@@ -177,6 +188,74 @@ export function CoreApp() {
     writeWorkspacePointer(document ? { documentId: document.id, runId: run?.id || "" } : null);
   }, [bootstrapping, document?.id, run?.id]);
 
+  useEffect(() => {
+    if (!run || !ACTIVE_RUN_STATUSES.has(run.status)) return;
+    const runId = run.id;
+    let disposed = false;
+    let refreshing = false;
+    let refreshAgain = false;
+
+    const refreshRun = async () => {
+      if (disposed) return;
+      if (refreshing) {
+        refreshAgain = true;
+        return;
+      }
+      refreshing = true;
+      try {
+        const refreshed = await coreService.getRun(runId);
+        if (disposed) return;
+        setRun((current) => (
+          current?.id === runId ? mergeRunSnapshot(current, refreshed) : current
+        ));
+      } catch {
+        // EventSource reconnects automatically; polling remains a quiet fallback.
+      } finally {
+        refreshing = false;
+        if (refreshAgain && !disposed) {
+          refreshAgain = false;
+          void refreshRun();
+        }
+      }
+    };
+
+    const handleEvent = (event: RunEvent) => {
+      if (disposed) return;
+      if (event.type === "chunk-stream" && event.chunkId && typeof event.text === "string") {
+        setRun((current) => {
+          if (!current || current.id !== runId) return current;
+          const nextRevision = event.revision ?? 0;
+          let changed = false;
+          const chunks = current.chunks.map((chunk) => {
+            if (chunk.id !== event.chunkId || nextRevision < chunk.revision) return chunk;
+            if (chunk.revision === nextRevision && chunk.streamText === event.text) return chunk;
+            changed = true;
+            return { ...chunk, revision: nextRevision, streamText: event.text || "" };
+          });
+          return changed ? { ...current, chunks } : current;
+        });
+        return;
+      }
+      if (["run-status", "chunk-status", "chunk-complete", "chunk-paused", "paragraph-warnings"].includes(event.type)) {
+        void refreshRun();
+      }
+    };
+
+    const closeStream = coreService.streamRun(runId, handleEvent, { onOpen: () => void refreshRun() });
+    const polling = window.setInterval(() => void refreshRun(), 4000);
+    const handleVisibility = () => {
+      if (globalThis.document.visibilityState === "visible") void refreshRun();
+    };
+    globalThis.document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      disposed = true;
+      closeStream();
+      window.clearInterval(polling);
+      globalThis.document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [run?.id, run?.status]);
+
   const openRecent = (nextDocument: CoreDocument, nextRun: CoreRun | null) => {
     setDocument(nextDocument);
     setRun(nextRun);
@@ -193,6 +272,7 @@ export function CoreApp() {
         onPageChange={setPage}
         runtimeStatus={statusLabel(run)}
         progressPercent={run?.progress.percent ?? 0}
+        activityRevision={run?.chunks.reduce((total, chunk) => total + chunk.revision, 0) ?? 0}
       />
 
       <SidebarInset className="h-svh min-h-0 overflow-hidden">
@@ -240,12 +320,11 @@ export function CoreApp() {
                   onRunChange={setRun}
                   onSettingsRefresh={loadSettings}
                   onNavigate={setPage}
-                  onSetupChange={setRewriteSetup}
                   scopeRequest={scopeRequest}
                 />
               ) : null}
               {page === "models" ? <ModelProfilesPage settings={settings} onRefresh={loadSettings} /> : null}
-              {page === "prompts" ? <PromptPlansPage settings={settings} onRefresh={loadSettings} /> : null}
+              {page === "prompts" ? <PromptTemplatesPage settings={settings} onRefresh={loadSettings} /> : null}
               {page === "protection" ? (
                 <ProtectionMapPage
                   document={document}
@@ -256,6 +335,8 @@ export function CoreApp() {
               ) : null}
               {page === "recent" ? (
                 <RecentDocumentsPage
+                  activeDocument={document}
+                  activeRun={run}
                   onOpen={openRecent}
                   onDeleted={(documentId) => {
                     if (document?.id === documentId) {

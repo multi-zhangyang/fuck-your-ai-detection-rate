@@ -16,7 +16,6 @@ const MODEL_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser
 const MODEL_OFFICIAL_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_model_deepseek.png");
 const MODEL_MOBILE_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_model_mobile.png");
 const PROMPT_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_prompt.png");
-const PROMPT_PLAN_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_prompt_plan.png");
 const SCOPE_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_scope.png");
 const PROTECTION_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_protection.png");
 const SETTINGS_SCREENSHOT_PATH = resolve(ROOT_DIR, "finish", "regression", "browser_e2e_settings.png");
@@ -955,10 +954,10 @@ async function runSmoke() {
     await wait(300);
     checks.push("model settings stack into readable list and editor regions at tablet and mobile widths without horizontal overflow");
 
-    await clickByText(browserClient, "提示词方案");
+    await clickByText(browserClient, "提示词");
     await waitForText(browserClient, "提示词", 12_000);
     await waitForExpression(browserClient, "Boolean(document.querySelector('textarea'))", "prompt editor textarea", 12_000);
-    await clickByText(browserClient, "新建", 12_000);
+    await clickSelector(browserClient, 'button[aria-label="新建提示词"]');
     await waitForExpression(
       browserClient,
       "Boolean(document.querySelector('#template-name') && !document.querySelector('#template-name').disabled)",
@@ -966,7 +965,7 @@ async function runSmoke() {
       12_000,
     );
     await setControlValue(browserClient, "#template-name", "学术表达优化");
-    await setControlValue(browserClient, "#template-content", "请保持事实并改写以下内容。\n\n待改写内容：\n{{text}}");
+    await setControlValue(browserClient, "#template-content", "请保持事实并改写以下内容。");
     await clickByText(browserClient, "保存", 12_000);
     await waitForText(browserClient, "提示词已保存", 12_000);
     checks.push("a new prompt template opens an editable form and can be saved");
@@ -1027,23 +1026,15 @@ async function runSmoke() {
     await browserClient.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await wait(300);
     checks.push("prompt library stacks into a scrollable editor instead of clipping at medium widths");
-    await selectTabByText(browserClient, "方案");
-    await waitForText(browserClient, "执行步骤", 12_000);
-    await clickByText(browserClient, "新建", 12_000);
-    await setControlValue(browserClient, "#plan-name", "表达优化方案");
-    await clickByText(browserClient, "添加步骤", 12_000);
-    await clickSelector(browserClient, '[data-testid="prompt-plan-step-1"]');
-    await clickByText(browserClient, "学术表达优化", 12_000, true);
-    await clickByText(browserClient, "保存", 12_000);
-    await waitForText(browserClient, "方案已保存", 12_000);
-    checks.push("a custom prompt plan can be created from the UI with an ordered first step");
-    await waitForExpression(
+    const promptWorkspaceText = await evaluate(
       browserClient,
-      "!document.querySelector('[data-sonner-toast]')",
-      "prompt plan notification to clear before documentation capture",
-      12_000,
+      "document.querySelector('[data-testid=\"prompt-workspace\"]')?.innerText || ''",
+      3000,
     );
-    await captureScreenshot(browserClient, PROMPT_PLAN_SCREENSHOT_PATH);
+    if (promptWorkspaceText.includes("方案") || promptWorkspaceText.includes("执行步骤")) {
+      throw new Error("Prompt library still exposes the removed plan/step abstraction.");
+    }
+    checks.push("the prompt page manages individual prompts without a second plan abstraction");
     await clickByText(browserClient, "最近文档");
     await waitForText(browserClient, "还没有文档", 12_000);
     await captureScreenshot(browserClient, RECENT_SCREENSHOT_PATH);
@@ -1125,7 +1116,7 @@ async function runSmoke() {
           taskWidth: Math.round(taskRect.width),
           manuscriptUsesWorkspace: Math.abs(mainRect.width - workspaceRect.width) <= 2,
           taskFitsViewport: taskRect.left >= -1 && taskRect.right <= window.innerWidth + 1,
-          taskContainsPlan: task.innerText.includes('模型连接') && task.innerText.includes('提示词方案'),
+          taskContainsRewriteSettings: task.innerText.includes('模型连接') && task.innerText.includes('第 1 轮提示词'),
           permanentTaskPanelAbsent: !document.querySelector('[data-testid="rewrite-task-panel"]'),
           pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
         };
@@ -1136,7 +1127,7 @@ async function runSmoke() {
       !uploadedDesktopLayout.found
       || !uploadedDesktopLayout.manuscriptUsesWorkspace
       || !uploadedDesktopLayout.taskFitsViewport
-      || !uploadedDesktopLayout.taskContainsPlan
+      || !uploadedDesktopLayout.taskContainsRewriteSettings
       || !uploadedDesktopLayout.permanentTaskPanelAbsent
       || uploadedDesktopLayout.pageOverflow
     ) {
@@ -1316,7 +1307,8 @@ async function runSmoke() {
           found: true,
           visibleComboboxes: visibleComboboxes.length,
           hasModel: text.includes('模型连接'),
-          hasPrompt: text.includes('提示词方案'),
+          hasPrompt: text.includes('第 1 轮提示词') && text.includes('第 2 轮提示词'),
+          hasRounds: text.includes('改写轮数'),
         };
       })()`,
       3000,
@@ -1332,7 +1324,6 @@ async function runSmoke() {
         return {
           found: Boolean(task),
           hasChunking: text.includes('段内分块'),
-          hasRounds: text.includes('轮数'),
           hasConcurrency: text.includes('同时改写块数'),
           concurrencyOptions,
         };
@@ -1344,9 +1335,9 @@ async function runSmoke() {
       || taskPlanControls.visibleComboboxes < 2
       || !taskPlanControls.hasModel
       || !taskPlanControls.hasPrompt
+      || !taskPlanControls.hasRounds
       || !taskProcessingControls.found
       || !taskProcessingControls.hasChunking
-      || !taskProcessingControls.hasRounds
       || !taskProcessingControls.hasConcurrency
       || !taskProcessingControls.concurrencyOptions.includes("1 块")
       || !taskProcessingControls.concurrencyOptions.includes("8 块")
@@ -1415,6 +1406,30 @@ async function runSmoke() {
     );
     await captureScreenshot(browserClient, RUNNING_SCREENSHOT_PATH);
     checks.push("running tasks show only overall paragraph progress while chunk streaming and concurrency stay internal");
+    const revisionBeforePageSwitch = (runningSnapshot?.chunks || [])
+      .reduce((total, chunk) => total + Number(chunk.revision || 0), 0);
+    const runningDocumentId = String(runningSnapshot?.documentId || "");
+    await clickByText(browserClient, "最近文档", 12_000);
+    await waitForExpression(
+      browserClient,
+      `(() => {
+        const row = document.querySelector('[data-recent-document="${runningDocumentId}"]');
+        const sidebar = document.querySelector('[data-testid="active-run-sidebar"]');
+        const revision = Number(sidebar?.getAttribute('data-run-revision') || 0);
+        return row?.getAttribute('data-recent-status') === 'running'
+          && revision > ${revisionBeforePageSwitch};
+      })()`,
+      "active run progress to keep updating outside the rewrite page",
+      8_000,
+    );
+    checks.push("active task status and recent-document progress keep updating after navigating away from the rewrite page");
+    await clickByText(browserClient, "开始改写", 12_000);
+    await waitForExpression(
+      browserClient,
+      "Boolean(document.querySelector('[data-testid=\"rewrite-run-progress\"]'))",
+      "running rewrite workspace to reopen",
+      12_000,
+    );
     await clickByText(browserClient, "停止", 12_000);
     await waitForText(browserClient, "继续", 15_000);
     await waitForExpression(browserClient, "Boolean(document.querySelector('[data-review-detail]'))", "review after stopping", 12_000);
@@ -1475,7 +1490,7 @@ async function runSmoke() {
       `(() => {
         const task = document.querySelector('[data-testid="rewrite-task-sheet"]');
         const exportButton = Array.from(document.querySelectorAll('button')).find((item) =>
-          task?.contains(item) && (item.innerText || '').trim() === 'Word'
+          task?.contains(item) && (item.innerText || '').trim() === '下载 Word'
         );
         return Boolean(task && exportButton && !exportButton.disabled);
       })()`,
@@ -1555,7 +1570,8 @@ async function runSmoke() {
           visibleComboboxes: visibleComboboxes.length,
           title: task.querySelector('h2')?.textContent?.trim() || '',
           hasModel: text.includes('模型连接') && text.includes('本地连接一'),
-          hasPlan: text.includes('提示词方案') && text.includes('经典改写'),
+           hasRounds: text.includes('改写轮数'),
+           hasRoundPrompts: text.includes('第 1 轮提示词') && text.includes('第 2 轮提示词'),
           pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
         };
       })()`,
@@ -1566,7 +1582,8 @@ async function runSmoke() {
       || configurableContinuePlan.title !== "继续改写"
       || configurableContinuePlan.visibleComboboxes < 2
       || !configurableContinuePlan.hasModel
-      || !configurableContinuePlan.hasPlan
+      || !configurableContinuePlan.hasRounds
+      || !configurableContinuePlan.hasRoundPrompts
       || configurableContinuePlan.pageOverflow
     ) {
       throw new Error(`Completed task sheet cannot configure the next pass: ${JSON.stringify(configurableContinuePlan)}`);
@@ -1580,7 +1597,6 @@ async function runSmoke() {
         return {
           found: Boolean(task),
           hasChunking: text.includes('段内分块'),
-          hasRounds: text.includes('改写轮数'),
           hasConcurrency: text.includes('同时改写块数'),
           hasProtectedTerms: text.includes('保护词'),
         };
@@ -1590,13 +1606,12 @@ async function runSmoke() {
     if (
       !configurableContinueProcessing.found
       || !configurableContinueProcessing.hasChunking
-      || !configurableContinueProcessing.hasRounds
       || !configurableContinueProcessing.hasConcurrency
       || !configurableContinueProcessing.hasProtectedTerms
     ) {
       throw new Error(`Completed task sheet is missing next-pass processing settings: ${JSON.stringify(configurableContinueProcessing)}`);
     }
-    await selectTabByText(browserClient, "方案");
+    await selectTabByText(browserClient, "改写");
     await wait(600);
     await captureScreenshot(browserClient, COMPLETED_ACTIONS_SCREENSHOT_PATH);
     await pressKey(browserClient, "Escape");
@@ -1667,7 +1682,7 @@ async function runSmoke() {
 
     await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
     await waitForExpression(browserClient, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "export sheet", 12_000);
-    await clickByText(browserClient, "Word", 12_000);
+    await clickByText(browserClient, "下载 Word", 12_000);
     await waitForText(browserClient, "导出前确认", 12_000);
     const warningLocations = await evaluate(
       browserClient,
@@ -1686,6 +1701,53 @@ async function runSmoke() {
       throw new Error(`Export warning does not identify its paragraph and changed value: ${JSON.stringify(warningLocations)}`);
     }
     await captureScreenshot(browserClient, EXPORT_WARNING_SCREENSHOT_PATH);
+    await clickByText(browserClient, "返回审阅", 12_000, true);
+    await waitForExpression(
+      browserClient,
+      `(() => {
+        const warningFilter = document.querySelector('[data-testid="review-filter-warnings"]');
+        const review = document.querySelector('[data-review-detail]');
+        const warning = review?.querySelector('button[aria-label$="项提醒"], button[aria-label="请核对"]');
+        return warningFilter?.getAttribute('data-state') === 'on'
+          && Boolean(review)
+          && Boolean(warning)
+          && !document.querySelector('[data-testid="rewrite-task-sheet"]')
+          && !Array.from(document.querySelectorAll('[role="dialog"]')).some((item) => (item.innerText || '').includes('导出前确认'));
+      })()`,
+      "export confirmation to return directly to the filtered warning paragraph",
+      12_000,
+    );
+    const warningPagination = await evaluate(
+      browserClient,
+      `(() => {
+        const status = document.querySelector('[data-testid="review-pagination-status"]');
+        const warningCount = Number((document.querySelector('[data-testid="review-filter-warnings"]')?.textContent || '').match(/\\d+/)?.[0] || 0);
+        const text = (status?.textContent || '').replace(/\\s+/g, ' ').trim();
+        return { text, warningCount };
+      })()`,
+      3000,
+    );
+    if (warningPagination.warningCount < 1 || warningPagination.text !== `1 / ${warningPagination.warningCount}`) {
+      throw new Error(`Warning filter pagination did not use the filtered set: ${JSON.stringify(warningPagination)}`);
+    }
+    if (warningPagination.warningCount > 1) {
+      await clickSelector(browserClient, 'a[aria-label="下一段"]');
+      await waitForExpression(
+        browserClient,
+        `(() => {
+          const status = (document.querySelector('[data-testid="review-pagination-status"]')?.textContent || '').replace(/\\s+/g, ' ').trim();
+          const warning = document.querySelector('[data-review-detail] button[aria-label$="项提醒"], [data-review-detail] button[aria-label="请核对"]');
+          return status === '2 / ${warningPagination.warningCount}' && Boolean(warning);
+        })()`,
+        "next navigation to stay inside warning results",
+        12_000,
+      );
+    }
+    checks.push("returning from export confirmation filters the review workspace to paragraphs with warnings");
+    await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
+    await waitForExpression(browserClient, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "export sheet to reopen", 12_000);
+    await clickByText(browserClient, "下载 Word", 12_000);
+    await waitForText(browserClient, "导出前确认", 12_000);
     await clickByText(browserClient, "继续导出 Word", 12_000, true);
     await waitForText(browserClient, "文件已导出", 20_000);
     await waitForTextGone(browserClient, "导出前确认", 12_000);
@@ -1714,11 +1776,11 @@ async function runSmoke() {
     await waitForText(browserClient, "继续改写", 12_000);
     await clickSelector(browserClient, '#run-model-profile');
     await clickByText(browserClient, "本地连接二 · example-chat", 12_000, true);
-    await clickSelector(browserClient, '#run-prompt-plan');
-    await clickByText(browserClient, "表达优化方案", 12_000, true);
+    await clickSelector(browserClient, '[data-testid="rewrite-round-3"]');
+    await clickSelector(browserClient, '[data-testid="rewrite-round-template-2"]');
+    await clickByText(browserClient, "学术表达优化", 12_000, true);
     await selectTabByText(browserClient, "处理");
     await clickSelector(browserClient, '[data-testid="rewrite-chunk-long"]');
-    await clickSelector(browserClient, '[data-testid="rewrite-repeat-3"]');
     await clickSelector(browserClient, '[data-testid="rewrite-concurrency-4"]');
     await setControlValue(browserClient, "#protected-terms", "关键术语");
     await waitForExpression(
@@ -1738,9 +1800,9 @@ async function runSmoke() {
         const latest = await fetch('/api/runs/' + encodeURIComponent(latestRunId)).then((response) => response.json());
         return latest.snapshot?.iteration === 2
           && latest.snapshot?.modelProfile?.name === '本地连接二'
-          && latest.snapshot?.promptPlan?.name === '表达优化方案'
+          && latest.snapshot?.rounds?.length === 3
+          && latest.snapshot?.rounds?.[1]?.name === '学术表达优化'
           && latest.snapshot?.chunking?.preset === 'long'
-          && latest.snapshot?.repeatCount === 3
           && latest.snapshot?.concurrency === 4
           && latest.snapshot?.protectedTerms?.includes('关键术语');
       })()`,
@@ -1761,12 +1823,13 @@ async function runSmoke() {
       continuedRun.snapshot?.iteration !== 2
       || continuedRun.snapshot?.parentRunId !== previousRunId
       || continuedRun.snapshot?.modelProfile?.name !== "本地连接二"
-      || continuedRun.snapshot?.promptPlan?.name !== "表达优化方案"
+      || continuedRun.snapshot?.rounds?.length !== 3
+      || continuedRun.snapshot?.rounds?.[1]?.name !== "学术表达优化"
       || continuedRun.snapshot?.chunking?.preset !== "long"
-      || continuedRun.snapshot?.repeatCount !== 3
       || continuedRun.snapshot?.concurrency !== 4
       || !continuedRun.snapshot?.protectedTerms?.includes("关键术语")
       || !continuedRun.chunks?.some((chunk) => String(chunk.originalText || '').includes('手动审阅后的正文'))
+      || continuedRun.execution?.requestsStarted !== continuedRun.chunks?.length * 3
     ) {
       throw new Error(`Continue rewrite did not use the reviewed output: ${JSON.stringify(continuedRun.snapshot)}`);
     }
@@ -1774,13 +1837,17 @@ async function runSmoke() {
       !continuedProviderRequests.length
       || continuedProviderRequests.some((item) => item.credential !== "secondary")
       || continuedProviderRequests.some((item) => item.model !== "example-chat")
-      || !continuedProviderRequests.some((item) => item.prompt.includes("请保持事实并改写以下内容"))
+      || continuedProviderRequests.some((item) => item.systemPrompt)
+      || !continuedProviderRequests.some((item) => item.prompt.includes("请保持事实并改写以下内容。"))
+      || !continuedProviderRequests.some((item) => item.prompt.includes("The source text below is in English."))
       || !continuedProviderRequests.some((item) => item.prompt.includes("手动审阅后的正文"))
     ) {
       throw new Error(`Continue rewrite did not send the selected model, prompt, or reviewed text upstream: ${JSON.stringify(continuedProviderRequests.map((item) => ({
         credential: item.credential,
         model: item.model,
-        hasSelectedPrompt: item.prompt.includes("请保持事实并改写以下内容"),
+        hasSystemPrompt: Boolean(item.systemPrompt),
+        hasSelectedPrompt: item.prompt.includes("请保持事实并改写以下内容。"),
+        hasEnglishReminder: item.prompt.includes("The source text below is in English."),
         hasReviewedText: item.prompt.includes("手动审阅后的正文"),
       })))}`);
     }
@@ -1830,7 +1897,7 @@ async function runSmoke() {
       25_000,
     );
     await clickSelector(browserClient, '[data-testid="rewrite-open-task-actions"]');
-    await clickByText(browserClient, "TXT", 12_000);
+    await clickByText(browserClient, "下载 TXT", 12_000);
     await waitForText(browserClient, "导出前确认", 12_000);
     await clickByText(browserClient, "继续导出 TXT", 12_000, true);
     await waitForText(browserClient, "文件已导出", 20_000);
@@ -1980,7 +2047,6 @@ async function runSmoke() {
         modelOfficial: MODEL_OFFICIAL_SCREENSHOT_PATH,
         modelMobile: MODEL_MOBILE_SCREENSHOT_PATH,
         prompt: PROMPT_SCREENSHOT_PATH,
-        promptPlan: PROMPT_PLAN_SCREENSHOT_PATH,
         scope: SCOPE_SCREENSHOT_PATH,
         protection: PROTECTION_SCREENSHOT_PATH,
         settings: SETTINGS_SCREENSHOT_PATH,

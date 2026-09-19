@@ -16,9 +16,11 @@ from urllib.parse import urlparse
 ROOT_DIR = Path(__file__).resolve().parents[1]
 APP_DIR_NAME = "FYADR"
 CONFIG_FILE_NAME = "config.json"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 SECRET_PLACEHOLDER = "__FYADR_SAVED_SECRET__"
 _LOCK = threading.RLock()
+
+PROGRAM_APPENDED_TEMPLATE_SUFFIX = "\n\n待改写内容：\n{{text}}"
 
 DEEPSEEK_PROFILE_ID = "builtin-deepseek-official"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
@@ -54,7 +56,6 @@ def _id(prefix: str) -> str:
 
 
 BUILTIN_TEMPLATE_ID = "builtin-classical-rewrite"
-BUILTIN_PLAN_ID = "builtin-classical-plan"
 BUILTIN_CREATED_AT = "2026-01-01T00:00:00+00:00"
 DEPRECATED_BUILTIN_TEMPLATE_IDS = {
     "builtin-natural-rewrite",
@@ -62,7 +63,9 @@ DEPRECATED_BUILTIN_TEMPLATE_IDS = {
     "builtin-rewrite-pass-1",
     "builtin-rewrite-pass-2",
 }
-DEPRECATED_BUILTIN_PLAN_IDS = {
+LEGACY_BUILTIN_PLAN_ID = "builtin-classical-plan"
+LEGACY_BUILTIN_PLAN_IDS = {
+    LEGACY_BUILTIN_PLAN_ID,
     "builtin-default-plan",
     "builtin-two-pass-plan",
     "builtin-three-pass-plan",
@@ -85,7 +88,7 @@ LEGACY_PROMPT_FALLBACKS = {
         "description": "从旧版本配置迁移的保守润色步骤。",
         "content": (
             "请在不改变事实、术语、数字、引用和结论的前提下，对以下正文进行保守润色。"
-            "保持原有段落作用，只输出润色后的正文，不要附加说明。\n\n{{text}}"
+            "保持原有段落作用，只输出润色后的正文，不要附加说明。"
         ),
     },
     "round1": {
@@ -93,7 +96,7 @@ LEGACY_PROMPT_FALLBACKS = {
         "description": "从旧版本配置迁移的第一步改写。",
         "content": (
             "请保持原意、技术信息、数字和引用不变，重新组织以下正文的表达，使其自然、清楚。"
-            "不要新增观点，不要输出解释或前后缀。\n\n{{text}}"
+            "不要新增观点，不要输出解释或前后缀。"
         ),
     },
     "round2": {
@@ -101,7 +104,7 @@ LEGACY_PROMPT_FALLBACKS = {
         "description": "从旧版本配置迁移的第二步改写。",
         "content": (
             "请在完整保留事实、术语、数字、引用和论证关系的前提下，继续自然化改写以下正文。"
-            "只输出最终正文，不要评价或说明。\n\n{{text}}"
+            "只输出最终正文，不要评价或说明。"
         ),
     },
 }
@@ -113,9 +116,15 @@ def _builtin_prompt_content(filename: str, fallback: str) -> str:
         content = path.read_text(encoding="utf-8").strip()
     except OSError:
         content = fallback.strip()
-    if "{{text}}" not in content:
-        content = f"{content}\n\n待改写内容：\n{{{{text}}}}"
     return content
+
+
+def remove_program_appended_template_suffix(content: Any) -> str:
+    value = str(content or "")
+    normalized = value.replace("\r\n", "\n")
+    if normalized.endswith(PROGRAM_APPENDED_TEMPLATE_SUFFIX):
+        return normalized[: -len(PROGRAM_APPENDED_TEMPLATE_SUFFIX)].rstrip()
+    return value
 
 
 BUILTIN_TEMPLATE = {
@@ -132,19 +141,6 @@ BUILTIN_TEMPLATE = {
     "updatedAt": BUILTIN_CREATED_AT,
 }
 BUILTIN_TEMPLATES = [BUILTIN_TEMPLATE]
-BUILTIN_PLAN = {
-    "id": BUILTIN_PLAN_ID,
-    "name": "经典改写",
-    "description": "使用经典改写提示词完成一次改写。",
-    "templateIds": [BUILTIN_TEMPLATE_ID],
-    "builtIn": True,
-    "readOnly": True,
-    "createdAt": BUILTIN_CREATED_AT,
-    "updatedAt": BUILTIN_CREATED_AT,
-}
-BUILTIN_PLANS = [BUILTIN_PLAN]
-
-
 def builtin_deepseek_profile() -> dict[str, Any]:
     return {
         "id": DEEPSEEK_PROFILE_ID,
@@ -171,15 +167,13 @@ def default_config() -> dict[str, Any]:
     return {
         "schemaVersion": SCHEMA_VERSION,
         "defaultModelProfileId": "",
-        "defaultPromptPlanId": BUILTIN_PLAN_ID,
         "modelProfiles": [builtin_deepseek_profile()],
         "promptTemplates": deepcopy(BUILTIN_TEMPLATES),
-        "promptPlans": deepcopy(BUILTIN_PLANS),
         "preferences": {
             "rewriteConcurrency": 1,
             "protectedTerms": [],
             "chunkPreset": "standard",
-            "singleTemplateRounds": 2,
+            "roundTemplateIds": [BUILTIN_TEMPLATE_ID, BUILTIN_TEMPLATE_ID],
         },
         "migration": {"completedAt": "", "sourceSchema": None},
     }
@@ -237,13 +231,23 @@ def _normalize_preferences(raw: Any) -> dict[str, Any]:
         terms = [part.strip() for part in terms.replace("，", ",").split(",")]
     if not isinstance(terms, list):
         terms = []
+    round_template_ids = value.get("roundTemplateIds")
+    if isinstance(round_template_ids, list):
+        normalized_round_template_ids = [
+            str(item).strip() for item in round_template_ids if str(item).strip()
+        ][:3]
+    else:
+        legacy_round_count = _int(value.get("singleTemplateRounds"), 2, 1, 3)
+        normalized_round_template_ids = [BUILTIN_TEMPLATE_ID] * legacy_round_count
+    if not normalized_round_template_ids:
+        normalized_round_template_ids = [BUILTIN_TEMPLATE_ID, BUILTIN_TEMPLATE_ID]
     return {
         "rewriteConcurrency": _int(value.get("rewriteConcurrency"), 1, 1, 16),
         "protectedTerms": list(
             dict.fromkeys(str(item).strip() for item in terms if str(item).strip())
         )[:200],
         "chunkPreset": normalize_chunk_preset(value.get("chunkPreset")),
-        "singleTemplateRounds": _int(value.get("singleTemplateRounds"), 2, 1, 3),
+        "roundTemplateIds": normalized_round_template_ids,
     }
 
 
@@ -355,10 +359,8 @@ def _migrate_prompt_sequence(config: dict[str, Any], raw: dict[str, Any]) -> Non
             if not content:
                 content = (
                     "请在保持原意、事实、术语、数字和引用不变的前提下改写以下正文。"
-                    "只输出改写后的正文。\n\n{{text}}"
+                    "只输出改写后的正文。"
                 )
-            if "{{text}}" not in content:
-                content = f"{content}\n\n{{{{text}}}}"
             migrated = {
                 "id": migrated_id,
                 "name": str((existing or {}).get("name") or (fallback or {}).get("name") or f"原有步骤 {source_id}")[:80],
@@ -377,28 +379,40 @@ def _migrate_prompt_sequence(config: dict[str, Any], raw: dict[str, Any]) -> Non
             template_by_id[migrated_id] = migrated
         template_ids.append(migrated_id)
 
-    plan_id = _stable_migration_id("plan", "\0".join(sequence))
-    plans = [
-        deepcopy(item)
-        for item in config.get("promptPlans", [])
-        if isinstance(item, dict)
-    ]
-    if not any(item.get("id") == plan_id for item in plans):
-        plans.append(
-            {
-                "id": plan_id,
-                "name": "原有改写方案",
-                "description": "由旧版本中的提示词顺序迁移，按当前顺序逐步执行。",
-                "templateIds": template_ids,
-                "builtIn": False,
-                "readOnly": False,
-                "createdAt": created_at,
-                "updatedAt": created_at,
-            }
-        )
     config["promptTemplates"] = templates
-    config["promptPlans"] = plans
-    config["defaultPromptPlanId"] = plan_id
+    config.setdefault("preferences", {})["roundTemplateIds"] = template_ids
+
+
+def _legacy_round_template_ids(raw: dict[str, Any]) -> list[str]:
+    raw_preferences = raw.get("preferences") if isinstance(raw.get("preferences"), dict) else {}
+    explicit = raw_preferences.get("roundTemplateIds", raw.get("roundTemplateIds"))
+    if isinstance(explicit, list):
+        values = [str(item).strip() for item in explicit if str(item).strip()][:3]
+        if values:
+            return values
+
+    plans = [item for item in raw.get("promptPlans", []) if isinstance(item, dict)]
+    default_plan_id = str(raw.get("defaultPromptPlanId") or "")
+    plan = next((item for item in plans if str(item.get("id") or "") == default_plan_id), None)
+    if plan is None and plans:
+        plan = next(
+            (item for item in plans if str(item.get("id") or "") == LEGACY_BUILTIN_PLAN_ID),
+            plans[0],
+        )
+    template_ids = [
+        BUILTIN_TEMPLATE_ID if str(item) in DEPRECATED_BUILTIN_TEMPLATE_IDS else str(item)
+        for item in (plan or {}).get("templateIds", [])
+        if str(item)
+    ][:3]
+    if len(template_ids) == 1:
+        repeat_count = _int(
+            raw_preferences.get("singleTemplateRounds", raw.get("singleTemplateRounds")),
+            2,
+            1,
+            3,
+        )
+        template_ids *= repeat_count
+    return template_ids or [BUILTIN_TEMPLATE_ID, BUILTIN_TEMPLATE_ID]
 
 
 def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
@@ -447,6 +461,7 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
             "protectedTerms": raw.get("protectedTerms", []),
             "chunkPreset": raw.get("chunkPreset"),
             "singleTemplateRounds": raw.get("singleTemplateRounds"),
+            "roundTemplateIds": _legacy_round_template_ids(raw),
         }
     )
     _migrate_prompt_sequence(config, raw)
@@ -465,10 +480,11 @@ def migrate_v2_config(raw: dict[str, Any]) -> dict[str, Any]:
     raw_templates = raw.get("promptTemplates")
     if isinstance(raw_templates, list):
         config["promptTemplates"] = [deepcopy(item) for item in raw_templates if isinstance(item, dict)]
-    raw_plans = raw.get("promptPlans")
-    if isinstance(raw_plans, list):
-        config["promptPlans"] = [deepcopy(item) for item in raw_plans if isinstance(item, dict)]
-    config["defaultPromptPlanId"] = str(raw.get("defaultPromptPlanId") or BUILTIN_PLAN_ID)
+        for template in config["promptTemplates"]:
+            if template.get("builtIn") is not True:
+                template["content"] = remove_program_appended_template_suffix(
+                    template.get("content")
+                )
     raw_preferences = raw.get("preferences") if isinstance(raw.get("preferences"), dict) else {}
     config["preferences"] = _normalize_preferences(
         {
@@ -479,6 +495,7 @@ def migrate_v2_config(raw: dict[str, Any]) -> dict[str, Any]:
             "singleTemplateRounds": raw_preferences.get(
                 "singleTemplateRounds", raw.get("singleTemplateRounds")
             ),
+            "roundTemplateIds": _legacy_round_template_ids(raw),
         }
     )
     _migrate_prompt_sequence(config, raw)
@@ -550,11 +567,6 @@ def _ensure_builtins(config: dict[str, Any]) -> dict[str, Any]:
         for item in config.get("promptTemplates", [])
         if isinstance(item, dict)
     ]
-    raw_plans = [
-        deepcopy(item)
-        for item in config.get("promptPlans", [])
-        if isinstance(item, dict)
-    ]
     template_replacements = {
         template_id: BUILTIN_TEMPLATE_ID for template_id in DEPRECATED_BUILTIN_TEMPLATE_IDS
     }
@@ -576,39 +588,21 @@ def _ensure_builtins(config: dict[str, Any]) -> dict[str, Any]:
             continue
         seen_template_ids.add(template_id)
         templates.append(item)
-
-    plan_replacements = {plan_id: BUILTIN_PLAN_ID for plan_id in DEPRECATED_BUILTIN_PLAN_IDS}
-    plans: list[dict[str, Any]] = []
-    seen_plan_ids: set[str] = set()
-    for item in raw_plans:
-        plan_id = str(item.get("id") or "")
-        if plan_id == BUILTIN_PLAN_ID:
-            continue
-        if plan_id in DEPRECATED_BUILTIN_PLAN_IDS:
-            is_user_owned = item.get("builtIn") is False and item.get("readOnly") is not True
-            if not is_user_owned:
-                continue
-            migrated_id = _stable_migration_id("plan", plan_id)
-            plan_replacements[plan_id] = migrated_id
-            item.update({"id": migrated_id, "builtIn": False, "readOnly": False})
-            plan_id = migrated_id
-        if not plan_id or plan_id in seen_plan_ids:
-            continue
-        seen_plan_ids.add(plan_id)
-        item["templateIds"] = [
-            template_replacements.get(str(template_id), str(template_id))
-            for template_id in item.get("templateIds", [])
-            if str(template_id)
-        ][:3]
-        plans.append(item)
-
     config["promptTemplates"] = [*deepcopy(BUILTIN_TEMPLATES), *templates]
-    config["promptPlans"] = [*deepcopy(BUILTIN_PLANS), *plans]
-    default_plan_id = str(config.get("defaultPromptPlanId") or "")
-    config["defaultPromptPlanId"] = plan_replacements.get(default_plan_id, default_plan_id)
-    available_plan_ids = {item.get("id") for item in config["promptPlans"]}
-    if config.get("defaultPromptPlanId") not in available_plan_ids:
-        config["defaultPromptPlanId"] = BUILTIN_PLAN_ID
+    preferences = _normalize_preferences(config.get("preferences", {}))
+    available_template_ids = {str(item.get("id") or "") for item in config["promptTemplates"]}
+    round_template_ids = [
+        template_replacements.get(str(template_id), str(template_id))
+        for template_id in preferences.get("roundTemplateIds", [])
+        if str(template_id)
+    ][:3]
+    preferences["roundTemplateIds"] = [
+        template_id if template_id in available_template_ids else BUILTIN_TEMPLATE_ID
+        for template_id in round_template_ids
+    ] or [BUILTIN_TEMPLATE_ID, BUILTIN_TEMPLATE_ID]
+    config["preferences"] = preferences
+    config.pop("promptPlans", None)
+    config.pop("defaultPromptPlanId", None)
     return config
 
 
@@ -625,7 +619,7 @@ def load_config() -> dict[str, Any]:
             source_schema = raw.get("schemaVersion")
             config = (
                 migrate_v2_config(raw)
-                if source_schema in {2, 3, 4, 5}
+            if source_schema in {2, 3, 4, 5, 6, 7}
                 else migrate_legacy_config(raw)
             )
             config = _ensure_builtins(config)
@@ -712,11 +706,10 @@ def delete_profile(profile_id: str) -> None:
 
 def _normalize_template(raw: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
     existing = existing or {}
-    content = str(raw.get("content") or "").strip()
-    if not content:
+    incoming_content = raw.get("content") if "content" in raw else existing.get("content")
+    content = "" if incoming_content is None else str(incoming_content)
+    if not content.strip():
         raise ValueError("提示词正文不能为空。")
-    if "{{text}}" not in content:
-        content = f"{content}\n\n待改写内容：\n{{{{text}}}}"
     return {
         "id": str(raw.get("id") or existing.get("id") or _id("template")),
         "name": str(raw.get("name") or existing.get("name") or "未命名提示词").strip()[:80],
@@ -752,55 +745,11 @@ def delete_template(template_id: str) -> None:
             return
         if target.get("readOnly"):
             raise ValueError("内置提示词不能删除。")
-        if any(template_id in plan.get("templateIds", []) for plan in config["promptPlans"]):
-            raise ValueError("该提示词仍被方案使用，请先调整方案。")
         config["promptTemplates"] = [x for x in config["promptTemplates"] if x.get("id") != template_id]
-        save_config(config)
-
-
-def upsert_plan(raw: dict[str, Any], plan_id: str | None = None) -> dict[str, Any]:
-    with _LOCK:
-        config = load_config()
-        existing = next((x for x in config["promptPlans"] if x.get("id") == plan_id), None)
-        if existing and existing.get("readOnly"):
-            raise ValueError("内置方案不能直接修改，请先复制。")
-        template_ids = [str(x) for x in raw.get("templateIds", []) if str(x)]
-        if not 1 <= len(template_ids) <= 3:
-            raise ValueError("一个提示词方案必须包含 1–3 个步骤。")
-        available = {x.get("id") for x in config["promptTemplates"]}
-        if any(item not in available for item in template_ids):
-            raise ValueError("方案中包含不存在的提示词。")
-        value = {
-            "id": str(plan_id or raw.get("id") or _id("plan")),
-            "name": str(raw.get("name") or "未命名方案").strip()[:80],
-            "description": str(raw.get("description") or "").strip()[:300],
-            "templateIds": template_ids,
-            "builtIn": False,
-            "readOnly": False,
-            "createdAt": str((existing or {}).get("createdAt") or utc_now()),
-            "updatedAt": utc_now(),
-        }
-        if existing:
-            config["promptPlans"] = [value if x.get("id") == plan_id else x for x in config["promptPlans"]]
-        else:
-            config["promptPlans"].append(value)
-        if raw.get("makeDefault"):
-            config["defaultPromptPlanId"] = value["id"]
-        save_config(config)
-        return value
-
-
-def delete_plan(plan_id: str) -> None:
-    with _LOCK:
-        config = load_config()
-        target = next((x for x in config["promptPlans"] if x.get("id") == plan_id), None)
-        if not target:
-            return
-        if target.get("readOnly"):
-            raise ValueError("内置方案不能删除。")
-        config["promptPlans"] = [x for x in config["promptPlans"] if x.get("id") != plan_id]
-        if config.get("defaultPromptPlanId") == plan_id:
-            config["defaultPromptPlanId"] = BUILTIN_PLAN_ID
+        config.setdefault("preferences", {})["roundTemplateIds"] = [
+            BUILTIN_TEMPLATE_ID if item == template_id else item
+            for item in config.get("preferences", {}).get("roundTemplateIds", [])
+        ]
         save_config(config)
 
 

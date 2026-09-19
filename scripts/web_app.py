@@ -13,7 +13,6 @@ from werkzeug.exceptions import HTTPException
 from core_config import (
     SCHEMA_VERSION,
     SECRET_PLACEHOLDER,
-    delete_plan,
     delete_profile,
     delete_template,
     find_profile,
@@ -21,7 +20,6 @@ from core_config import (
     normalize_profile,
     public_config,
     set_preferences,
-    upsert_plan,
     upsert_profile,
     upsert_template,
 )
@@ -191,43 +189,6 @@ def copy_prompt_template(template_id: str) -> tuple[Response, int]:
     return jsonify(value), 201
 
 
-@app.get("/api/prompt-plans")
-def get_prompt_plans() -> Response:
-    config = load_config()
-    return jsonify({"items": config.get("promptPlans", []), "defaultPromptPlanId": config.get("defaultPromptPlanId", "")})
-
-
-@app.post("/api/prompt-plans")
-def create_prompt_plan() -> tuple[Response, int]:
-    return jsonify(upsert_plan(request.get_json(silent=True) or {})), 201
-
-
-@app.put("/api/prompt-plans/<plan_id>")
-def update_prompt_plan(plan_id: str) -> Response:
-    return jsonify(upsert_plan(request.get_json(silent=True) or {}, plan_id))
-
-
-@app.delete("/api/prompt-plans/<plan_id>")
-def remove_prompt_plan(plan_id: str) -> Response:
-    delete_plan(plan_id)
-    return jsonify({"ok": True})
-
-
-@app.post("/api/prompt-plans/<plan_id>/copy")
-def copy_prompt_plan(plan_id: str) -> tuple[Response, int]:
-    plan = next((item for item in load_config().get("promptPlans", []) if item.get("id") == plan_id), None)
-    if not plan:
-        return error("提示词方案不存在。", 404)
-    value = upsert_plan(
-        {
-            "name": f"{plan['name']} · 副本",
-            "description": plan.get("description", ""),
-            "templateIds": plan["templateIds"],
-        }
-    )
-    return jsonify(value), 201
-
-
 @app.post("/api/documents")
 def upload_document() -> tuple[Response, int]:
     upload = request.files.get("file")
@@ -302,11 +263,12 @@ def create_run() -> tuple[Response, int]:
     value = RUN_MANAGER.create_run(
         str(payload.get("documentId") or ""),
         str(payload.get("modelProfileId") or ""),
-        str(payload.get("promptPlanId") or ""),
+        [str(item) for item in payload.get("roundTemplateIds", []) if str(item)]
+        if isinstance(payload.get("roundTemplateIds"), list)
+        else None,
         concurrency=int(payload.get("concurrency", 1)),
         protected_terms=payload.get("protectedTerms") if isinstance(payload.get("protectedTerms"), list) else None,
         chunk_preset=str(payload.get("chunkPreset") or "") or None,
-        repeat_count=payload.get("repeatCount"),
     )
     return jsonify(value), 201
 
@@ -348,14 +310,7 @@ def cancel_run(run_id: str) -> Response:
 
 @app.post("/api/runs/<run_id>/resume")
 def resume_run(run_id: str) -> Response:
-    payload = request.get_json(silent=True) or {}
-    concurrency = payload.get("concurrency")
-    return jsonify(
-        RUN_MANAGER.resume(
-            run_id,
-            concurrency=int(concurrency) if concurrency is not None else None,
-        )
-    )
+    return jsonify(RUN_MANAGER.resume(run_id))
 
 
 @app.post("/api/runs/<run_id>/continue")
@@ -363,15 +318,19 @@ def continue_run(run_id: str) -> Response:
     payload = request.get_json(silent=True) or {}
     concurrency = payload.get("concurrency")
     protected_terms = payload.get("protectedTerms")
+    round_template_ids = payload.get("roundTemplateIds")
     return jsonify(
         RUN_MANAGER.continue_run(
             run_id,
             model_profile_id=str(payload.get("modelProfileId") or "") or None,
-            prompt_plan_id=str(payload.get("promptPlanId") or "") or None,
+            round_template_ids=(
+                [str(item) for item in round_template_ids if str(item)]
+                if isinstance(round_template_ids, list)
+                else None
+            ),
             concurrency=int(concurrency) if concurrency is not None else None,
             protected_terms=protected_terms if isinstance(protected_terms, list) else None,
             chunk_preset=str(payload.get("chunkPreset") or "") or None,
-            repeat_count=payload.get("repeatCount"),
         )
     )
 
@@ -440,7 +399,7 @@ def frontend(path: str = "") -> Response | tuple[Response, int]:
 
 
 if __name__ == "__main__":
-    load_config()  # performs the one-time v1 -> v2 migration before serving requests
+    load_config()
     app.run(
         host="127.0.0.1",
         port=int(os.getenv("FYADR_PORT", "8765")),

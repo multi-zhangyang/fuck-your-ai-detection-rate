@@ -37,29 +37,16 @@ export interface PromptTemplate {
   updatedAt?: string;
 }
 
-export interface PromptPlan {
-  id: string;
-  name: string;
-  description: string;
-  templateIds: string[];
-  builtIn: boolean;
-  readOnly: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
 export interface CoreSettings {
   schemaVersion: number;
   defaultModelProfileId: string;
-  defaultPromptPlanId: string;
   modelProfiles: ModelProfile[];
   promptTemplates: PromptTemplate[];
-  promptPlans: PromptPlan[];
   preferences: {
     rewriteConcurrency: number;
     protectedTerms: string[];
     chunkPreset: ChunkPreset;
-    singleTemplateRounds: number;
+    roundTemplateIds: string[];
   };
 }
 
@@ -178,10 +165,9 @@ export type ReviewChoice = "rewrite" | "original" | "manual";
 
 export interface RunConfigurationInput {
   modelProfileId: string;
-  promptPlanId: string;
+  roundTemplateIds: string[];
   concurrency: number;
   chunkPreset: ChunkPreset;
-  repeatCount: number;
   protectedTerms: string[];
 }
 
@@ -222,22 +208,15 @@ export interface CoreRun {
     document: { id: string; name: string; kind: "docx" | "txt"; selectedParagraphIds: string[] };
     modelProfile: ModelProfile;
     credentialProfileId: string;
-    promptPlan: {
-      id: string;
+    rounds: Array<{
+      roundNumber: number;
+      templateId: string;
       name: string;
-      steps: Array<{
-        templateId: string;
-        name: string;
-        executionId?: string;
-        roundIndex?: number;
-        roundNumber?: number;
-      }>;
-    };
+    }>;
     chunking: {
       preset: ChunkPreset;
       limits: Record<string, { keep: number; target: number; hard: number; minTail: number }>;
     };
-    repeatCount: number;
     concurrency: number;
     protectedTerms: string[];
     iteration?: number;

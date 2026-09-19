@@ -137,21 +137,18 @@ def build_payload(profile: dict[str, Any], prompt: str) -> dict[str, Any]:
     protocol = normalize_protocol(profile.get("protocol"))
     provider = str(profile.get("provider") or "custom").strip().lower()
     reasoning_effort = normalize_reasoning_effort(profile.get("reasoningEffort"))
-    instructions = str(profile.get("_requestInstructions") or "").strip()
     if protocol == "responses":
-        payload: dict[str, Any] = {"model": profile.get("model", ""), "input": prompt, "stream": True}
-        if instructions:
-            payload["instructions"] = instructions
+        payload: dict[str, Any] = {
+            "model": profile.get("model", ""),
+            "input": prompt,
+            "stream": True,
+        }
         if reasoning_effort != "auto":
             payload["reasoning"] = {"effort": reasoning_effort}
     else:
-        messages = []
-        if instructions:
-            messages.append({"role": "system", "content": instructions})
-        messages.append({"role": "user", "content": prompt})
         payload = {
             "model": profile.get("model", ""),
-            "messages": messages,
+            "messages": [{"role": "user", "content": prompt}],
             "stream": True,
         }
         if provider == "deepseek":
@@ -454,7 +451,10 @@ class StreamingLLMClient:
         try:
             async with await self._make_client(endpoint, profile) as client:
                 async with client.stream(
-                    "POST", endpoint, headers=_headers(profile), json=build_payload(profile, prompt)
+                    "POST",
+                    endpoint,
+                    headers=_headers(profile),
+                    json=build_payload(profile, prompt),
                 ) as response:
                     if response.status_code >= 400:
                         detail = (await response.aread()).decode("utf-8", errors="replace")[:500]

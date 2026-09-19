@@ -7,22 +7,37 @@ import unittest
 from pathlib import Path
 
 from core_config import (
-    BUILTIN_PLAN_ID,
-    BUILTIN_PLANS,
     BUILTIN_TEMPLATE_ID,
     BUILTIN_TEMPLATES,
     DEEPSEEK_BASE_URL,
     DEEPSEEK_PROFILE_ID,
+    PROGRAM_APPENDED_TEMPLATE_SUFFIX,
     SCHEMA_VERSION,
     SECRET_PLACEHOLDER,
     delete_profile,
+    delete_template,
     get_config_path,
     load_config,
     public_config,
+    remove_program_appended_template_suffix,
     save_config,
     set_preferences,
     upsert_profile,
+    upsert_template,
 )
+
+
+LEGACY_BUILTIN_PLAN_ID = "builtin-classical-plan"
+LEGACY_BUILTIN_PLANS = [
+    {
+        "id": LEGACY_BUILTIN_PLAN_ID,
+        "name": "经典改写",
+        "description": "旧版内置方案",
+        "templateIds": [BUILTIN_TEMPLATE_ID],
+        "builtIn": True,
+        "readOnly": True,
+    }
+]
 
 
 class CoreConfigRegression(unittest.TestCase):
@@ -74,17 +89,15 @@ class CoreConfigRegression(unittest.TestCase):
             [item["name"] for item in migrated["promptTemplates"] if item["builtIn"]],
             ["经典改写"],
         )
-        migrated_plan = next(
-            item for item in migrated["promptPlans"] if item["id"] == migrated["defaultPromptPlanId"]
-        )
-        self.assertFalse(migrated_plan["builtIn"])
         self.assertEqual(
             [
                 next(template["name"] for template in migrated["promptTemplates"] if template["id"] == template_id)
-                for template_id in migrated_plan["templateIds"]
+                for template_id in migrated["preferences"]["roundTemplateIds"]
             ],
             ["原有润色步骤", "原有改写步骤一", "原有改写步骤二"],
         )
+        self.assertNotIn("promptPlans", migrated)
+        self.assertNotIn("defaultPromptPlanId", migrated)
         backup = path.with_name(f"config.before-v{SCHEMA_VERSION}.json")
         self.assertTrue(backup.exists())
         self.assertEqual(json.loads(backup.read_text(encoding="utf-8"))["apiKey"], "top-secret")
@@ -96,7 +109,7 @@ class CoreConfigRegression(unittest.TestCase):
         )
         self.assertNotIn("top-secret", json.dumps(public, ensure_ascii=False))
         self.assertEqual(migrated["preferences"]["chunkPreset"], "standard")
-        self.assertEqual(migrated["preferences"]["singleTemplateRounds"], 2)
+        self.assertEqual(len(migrated["preferences"]["roundTemplateIds"]), 3)
 
         backup_before = backup.read_bytes()
         load_config()
@@ -112,16 +125,8 @@ class CoreConfigRegression(unittest.TestCase):
             "builtIn": False,
             "readOnly": False,
         }
-        custom_plan = {
-            "id": "plan-user-kept",
-            "name": "我的方案",
-            "description": "用户方案",
-            "templateIds": [custom_template["id"]],
-            "builtIn": False,
-            "readOnly": False,
-        }
         config["promptTemplates"].append(custom_template)
-        config["promptPlans"].append(custom_plan)
+        config["preferences"]["roundTemplateIds"] = [custom_template["id"], BUILTIN_TEMPLATE_ID]
         save_config(config)
 
         first = load_config()
@@ -134,22 +139,82 @@ class CoreConfigRegression(unittest.TestCase):
             {item["id"] for item in first["promptTemplates"] if item["builtIn"]},
             {item["id"] for item in BUILTIN_TEMPLATES},
         )
-        self.assertEqual(
-            {item["id"] for item in first["promptPlans"] if item["builtIn"]},
-            {item["id"] for item in BUILTIN_PLANS},
-        )
         self.assertEqual(len(BUILTIN_TEMPLATES), 1)
-        self.assertEqual(len(BUILTIN_PLANS), 1)
         self.assertEqual(BUILTIN_TEMPLATES[0]["id"], BUILTIN_TEMPLATE_ID)
         self.assertEqual(BUILTIN_TEMPLATES[0]["name"], "经典改写")
         self.assertEqual(
             next(item for item in first["promptTemplates"] if item["id"] == custom_template["id"])["content"],
             custom_template["content"],
         )
-        self.assertEqual(
-            next(item for item in first["promptPlans"] if item["id"] == custom_plan["id"])["templateIds"],
-            custom_plan["templateIds"],
+        self.assertEqual(first["preferences"]["roundTemplateIds"], [custom_template["id"], BUILTIN_TEMPLATE_ID])
+
+    def test_prompt_without_placeholder_is_saved_exactly_as_entered(self) -> None:
+        content = "  只执行用户写下的提示词。\n保留这里的换行。  "
+        saved = upsert_template({"name": "原样保存", "content": content})
+        self.assertEqual(saved["content"], content)
+        stored = next(
+            item for item in load_config()["promptTemplates"] if item["id"] == saved["id"]
         )
+        self.assertEqual(stored["content"], content)
+        self.assertNotIn("待改写内容", stored["content"])
+        self.assertNotIn("{{text}}", stored["content"])
+
+    def test_only_exact_historical_suffix_is_removed(self) -> None:
+        self.assertEqual(
+            remove_program_appended_template_suffix(
+                f"用户提示词{PROGRAM_APPENDED_TEMPLATE_SUFFIX}"
+            ),
+            "用户提示词",
+        )
+        intentional = "用户提示词\n\n待改写内容：\n{{text}}\n继续处理"
+        self.assertEqual(remove_program_appended_template_suffix(intentional), intentional)
+
+    def test_v7_upgrade_removes_only_the_program_appended_prompt_suffix(self) -> None:
+        path = get_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        auto_template = {
+            "id": "template-auto-suffix",
+            "name": "旧提示词",
+            "description": "",
+            "content": f"用户原始提示词{PROGRAM_APPENDED_TEMPLATE_SUFFIX}",
+            "builtIn": False,
+            "readOnly": False,
+        }
+        explicit_template = {
+            "id": "template-explicit-placeholder",
+            "name": "显式占位符",
+            "description": "",
+            "content": "前缀\n{{text}}\n后缀",
+            "builtIn": False,
+            "readOnly": False,
+        }
+        path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 7,
+                    "defaultModelProfileId": "",
+                    "modelProfiles": [],
+                    "promptTemplates": [auto_template, explicit_template],
+                    "preferences": {
+                        "rewriteConcurrency": 1,
+                        "protectedTerms": [],
+                        "chunkPreset": "standard",
+                        "roundTemplateIds": [auto_template["id"], explicit_template["id"]],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        migrated = load_config()
+        templates = {item["id"]: item for item in migrated["promptTemplates"]}
+        self.assertEqual(templates[auto_template["id"]]["content"], "用户原始提示词")
+        self.assertEqual(
+            templates[explicit_template["id"]]["content"],
+            explicit_template["content"],
+        )
+        self.assertTrue(path.with_name("config.before-v8.json").exists())
 
     def test_multiple_openai_compatible_profiles_can_be_created(self) -> None:
         saved = upsert_profile(
@@ -228,7 +293,7 @@ class CoreConfigRegression(unittest.TestCase):
                 {
                     "schemaVersion": 2,
                     "defaultModelProfileId": "legacy-deepseek",
-                    "defaultPromptPlanId": BUILTIN_PLAN_ID,
+                    "defaultPromptPlanId": LEGACY_BUILTIN_PLAN_ID,
                     "modelProfiles": [
                         {
                             "id": "legacy-deepseek",
@@ -253,7 +318,7 @@ class CoreConfigRegression(unittest.TestCase):
                         },
                     ],
                     "promptTemplates": BUILTIN_TEMPLATES,
-                    "promptPlans": BUILTIN_PLANS,
+                    "promptPlans": LEGACY_BUILTIN_PLANS,
                     "preferences": {"rewriteConcurrency": 1, "protectedTerms": []},
                 },
                 ensure_ascii=False,
@@ -279,7 +344,7 @@ class CoreConfigRegression(unittest.TestCase):
         config = {
             "schemaVersion": 4,
             "defaultModelProfileId": "custom-kept",
-            "defaultPromptPlanId": BUILTIN_PLAN_ID,
+            "defaultPromptPlanId": LEGACY_BUILTIN_PLAN_ID,
             "modelProfiles": [
                 {
                     "id": DEEPSEEK_PROFILE_ID,
@@ -303,7 +368,7 @@ class CoreConfigRegression(unittest.TestCase):
                 },
             ],
             "promptTemplates": BUILTIN_TEMPLATES,
-            "promptPlans": BUILTIN_PLANS,
+            "promptPlans": LEGACY_BUILTIN_PLANS,
             "preferences": {"rewriteConcurrency": 1, "protectedTerms": []},
         }
         path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
@@ -345,7 +410,7 @@ class CoreConfigRegression(unittest.TestCase):
                     "defaultPromptPlanId": custom_plan["id"],
                     "modelProfiles": [],
                     "promptTemplates": [*BUILTIN_TEMPLATES, custom_template],
-                    "promptPlans": [*BUILTIN_PLANS, custom_plan],
+                    "promptPlans": [*LEGACY_BUILTIN_PLANS, custom_plan],
                     "preferences": {"rewriteConcurrency": 3, "protectedTerms": ["Transformer"]},
                     "roundModels": {"round1": {"model": "retired"}},
                     "rateLimitMaxRequests": 10,
@@ -360,32 +425,109 @@ class CoreConfigRegression(unittest.TestCase):
         self.assertNotIn("roundModels", migrated)
         self.assertNotIn("rateLimitMaxRequests", migrated)
         self.assertNotIn("providerRoutes", migrated)
-        self.assertEqual(migrated["defaultPromptPlanId"], custom_plan["id"])
+        self.assertNotIn("defaultPromptPlanId", migrated)
+        self.assertNotIn("promptPlans", migrated)
         self.assertEqual(
             next(item for item in migrated["promptTemplates"] if item["id"] == custom_template["id"])["content"],
             custom_template["content"],
         )
         self.assertEqual(
-            next(item for item in migrated["promptPlans"] if item["id"] == custom_plan["id"])["templateIds"],
-            custom_plan["templateIds"],
+            migrated["preferences"]["roundTemplateIds"],
+            [custom_template["id"], custom_template["id"]],
         )
         self.assertEqual(migrated["preferences"]["rewriteConcurrency"], 3)
         self.assertEqual(migrated["preferences"]["protectedTerms"], ["Transformer"])
 
+    def test_v6_multistep_plan_becomes_one_prompt_per_round_without_multiplication(self) -> None:
+        path = get_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        templates = [
+            {
+                "id": f"template-round-{index}",
+                "name": f"第 {index} 轮提示词",
+                "description": "用户内容",
+                "content": f"ROUND-{index}\n\n{{{{text}}}}",
+                "builtIn": False,
+                "readOnly": False,
+            }
+            for index in (1, 2, 3)
+        ]
+        path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 6,
+                    "defaultModelProfileId": "",
+                    "defaultPromptPlanId": "plan-three-steps",
+                    "modelProfiles": [],
+                    "promptTemplates": [*BUILTIN_TEMPLATES, *templates],
+                    "promptPlans": [
+                        {
+                            "id": "plan-three-steps",
+                            "name": "旧三步方案",
+                            "templateIds": [item["id"] for item in templates],
+                            "builtIn": False,
+                            "readOnly": False,
+                        }
+                    ],
+                    "preferences": {
+                        "rewriteConcurrency": 8,
+                        "protectedTerms": [],
+                        "chunkPreset": "standard",
+                        "singleTemplateRounds": 2,
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        migrated = load_config()
+        self.assertEqual(
+            migrated["preferences"]["roundTemplateIds"],
+            [item["id"] for item in templates],
+        )
+        self.assertEqual(len(migrated["preferences"]["roundTemplateIds"]), 3)
+        self.assertNotIn("promptPlans", migrated)
+        self.assertNotIn("defaultPromptPlanId", migrated)
+        self.assertTrue(path.with_name(f"config.before-v{SCHEMA_VERSION}.json").exists())
+
+    def test_deleting_selected_custom_template_falls_back_without_blocking(self) -> None:
+        custom = upsert_template(
+            {
+                "name": "临时提示词",
+                "description": "删除回归",
+                "content": "请改写。\n\n{{text}}",
+            }
+        )
+        set_preferences(
+            {
+                "roundTemplateIds": [custom["id"], custom["id"], BUILTIN_TEMPLATE_ID],
+            }
+        )
+
+        delete_template(custom["id"])
+
+        config = load_config()
+        self.assertNotIn(custom["id"], {item["id"] for item in config["promptTemplates"]})
+        self.assertEqual(
+            config["preferences"]["roundTemplateIds"],
+            [BUILTIN_TEMPLATE_ID, BUILTIN_TEMPLATE_ID, BUILTIN_TEMPLATE_ID],
+        )
+
     def test_preferences_default_to_standard_two_rounds_and_are_clamped(self) -> None:
         preferences = load_config()["preferences"]
         self.assertEqual(preferences["chunkPreset"], "standard")
-        self.assertEqual(preferences["singleTemplateRounds"], 2)
+        self.assertEqual(preferences["roundTemplateIds"], [BUILTIN_TEMPLATE_ID, BUILTIN_TEMPLATE_ID])
         saved = set_preferences(
             {
                 "chunkPreset": "fine",
-                "singleTemplateRounds": 99,
+                "roundTemplateIds": [BUILTIN_TEMPLATE_ID] * 8,
                 "rewriteConcurrency": 16,
                 "protectedTerms": ["Transformer"],
             }
         )
         self.assertEqual(saved["chunkPreset"], "fine")
-        self.assertEqual(saved["singleTemplateRounds"], 3)
+        self.assertEqual(saved["roundTemplateIds"], [BUILTIN_TEMPLATE_ID] * 3)
         self.assertEqual(saved["rewriteConcurrency"], 16)
 
 if __name__ == "__main__":

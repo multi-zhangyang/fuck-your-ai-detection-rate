@@ -20,23 +20,17 @@ const MODEL = process.env.FYADR_REAL_MODEL || "";
 const ALLOW_CONFIG_MUTATION = process.env.FYADR_REAL_ALLOW_CONFIG_MUTATION === "1";
 const SOURCE_DOCX = process.env.FYADR_REAL_SOURCE_DOCX || "";
 const SOURCE_TXT = process.env.FYADR_REAL_SOURCE_TXT || "";
-const SELECT_COUNT = Math.max(1, Number(process.env.FYADR_REAL_SELECT_COUNT || 8));
-const MIN_SUGGESTED_ORDER = Math.max(0, Number(process.env.FYADR_REAL_MIN_SUGGESTED_ORDER || 0));
-const CONCURRENCY = Math.min(16, Math.max(1, Number(process.env.FYADR_REAL_CONCURRENCY || 2)));
-const REQUIRE_NUMERIC_SELECTION = process.env.FYADR_REAL_REQUIRE_NUMERIC_SELECTION === "1";
+const requestedConcurrency = Number(process.env.FYADR_REAL_CONCURRENCY || 2);
+const CONCURRENCY = [1, 2, 4, 8, 16].includes(requestedConcurrency) ? requestedConcurrency : 2;
 const PROTECTED_TERMS = process.env.FYADR_REAL_PROTECTED_TERMS || "MMC-MTDC，PSCAD";
 const REAL_TEMPLATE_NAME = process.env.FYADR_REAL_TEMPLATE_NAME || "真实验收二次润色";
-const REAL_PLAN_NAME = process.env.FYADR_REAL_PLAN_NAME || "真实两步改写验收";
 const STOP_AND_RESUME = process.env.FYADR_REAL_STOP_AND_RESUME === "1";
-const MANUAL_NUMBER_EDIT = process.env.FYADR_REAL_MANUAL_NUMBER_EDIT === "1";
 const CURRENT_DOCUMENT_ID = process.env.FYADR_REAL_DOCUMENT_ID || "";
 const CURRENT_RUN_ID = process.env.FYADR_REAL_RUN_ID || "";
 const KEEP_ORIGINAL_PARAGRAPH_ID = process.env.FYADR_REAL_KEEP_ORIGINAL_PARAGRAPH_ID || "";
 const SECOND_PROMPT_CONTENT = [
   "请在不改变事实、数字、引用、URL、专有名词和技术含义的前提下，对下列文字做第二次自然化润色。",
   "保留原有信息，不添加解释、标题或评价，只输出完整的润色结果。",
-  "",
-  "{{text}}",
 ].join("\n");
 const VALIDATION_DIR = resolve(
   process.env.FYADR_REAL_OUTPUT_DIR
@@ -211,33 +205,6 @@ async function setControlValue(client, selector, value) {
   await wait(120);
 }
 
-async function setSliderValue(client, selector, value) {
-  const limits = await evaluate(client, `(() => {
-    const slider = document.querySelector(${JSON.stringify(selector)});
-    if (!slider || slider.getAttribute('role') !== 'slider') return null;
-    slider.focus();
-    return {
-      min: Number(slider.getAttribute('aria-valuemin')),
-      max: Number(slider.getAttribute('aria-valuemax')),
-    };
-  })()`);
-  if (!limits || value < limits.min || value > limits.max) {
-    throw new Error(`并发滑块无法设置为 ${value}：${JSON.stringify(limits)}`);
-  }
-  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Home", code: "Home", windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36 });
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Home", code: "Home", windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36 });
-  for (let current = limits.min; current < value; current += 1) {
-    await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 });
-    await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 });
-  }
-  await waitForExpression(
-    client,
-    `document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-valuenow') === ${JSON.stringify(String(value))}`,
-    `并发滑块变为 ${value}`,
-    5_000,
-  );
-}
-
 async function clickSelector(client, selector) {
   const expression = `(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
@@ -259,48 +226,22 @@ async function setCheckbox(client, selector, checked) {
   if (state !== checked) await clickSelector(client, selector);
 }
 
-async function chooseVisibleComboboxOption(client, index, optionText) {
-  const expression = `(() => {
-    const visible = (element) => {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-    };
-    const controls = Array.from(document.querySelectorAll('button[role="combobox"]')).filter(visible);
-    const element = controls[${Number(index)}];
-    if (!element || element.disabled) return false;
-    element.scrollIntoView({ block: 'center', inline: 'center' });
-    const rect = element.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-  })()`;
-  await clickTarget(client, expression, `第 ${index + 1} 个提示词选择框`);
-  await clickByText(client, optionText, { preferLast: true });
-}
-
-async function removeAllPlanSteps(client) {
-  while (await evaluate(client, `(() => {
-    const visible = (element) => {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-    };
-    return Array.from(document.querySelectorAll('button[aria-label="移除步骤"]')).filter(visible).length;
-  })()`)) {
-    const expression = `(() => {
-      const visible = (element) => {
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-      };
-      const buttons = Array.from(document.querySelectorAll('button[aria-label="移除步骤"]')).filter(visible);
-      const element = buttons[buttons.length - 1];
-      if (!element || element.disabled) return false;
-      element.scrollIntoView({ block: 'center', inline: 'center' });
-      const rect = element.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    })()`;
-    await clickTarget(client, expression, "移除已有提示词步骤");
+async function selectRoundPrompts(client, templateNames) {
+  if (!Array.isArray(templateNames) || templateNames.length < 1 || templateNames.length > 3) {
+    throw new Error("真实验收仅支持选择 1–3 轮提示词。");
   }
+  await clickSelector(client, `[data-testid="rewrite-round-${templateNames.length}"]`);
+  for (const [index, templateName] of templateNames.entries()) {
+    await clickSelector(client, `#run-round-template-${index + 1}`);
+    await clickByText(client, templateName, { preferLast: true });
+  }
+  const labels = await evaluate(client, `Array.from({ length: ${templateNames.length} }, (_, index) => (
+    document.querySelector('#run-round-template-' + (index + 1))?.innerText?.replace(/\\s+/g, ' ').trim() || ''
+  ))`);
+  if (labels.some((label, index) => !label.startsWith(templateNames[index]))) {
+    throw new Error(`每轮提示词没有正确选中：${JSON.stringify(labels)}`);
+  }
+  return labels;
 }
 
 async function uploadFile(client, filePath) {
@@ -500,93 +441,58 @@ async function configureModel(client) {
   };
 }
 
-async function configurePromptPlan(client) {
+async function configurePromptTemplates(client) {
   await setViewport(client, 1440, 1000, false);
   await client.send("Page.navigate", { url: `${FRONTEND_URL}/` });
-  await waitForText(client, "任务控制台", 30_000);
-  await clickByText(client, "提示词方案");
+  await waitForText(client, "开始改写", 30_000);
+  await clickByText(client, "提示词");
   await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"prompt-workspace\"]'))", "提示词配置页");
 
-  await clickByText(client, "提示词");
   const templateList = await evaluate(client, `(() => {
     const workspace = document.querySelector('[data-testid="prompt-workspace"]');
-    const buttons = Array.from(workspace?.querySelectorAll('button') || []);
-    return buttons.map((button) => (button.innerText || '').split(/\\r?\\n/).map((item) => item.trim()).filter(Boolean))
-      .filter((lines) => lines.includes('内置') || lines.includes('自定义'));
+    return Array.from(workspace?.querySelectorAll('button') || [])
+      .map((button) => (button.innerText || '').split(/\\r?\\n/).map((item) => item.trim()).filter(Boolean))
+      .filter((lines) => lines.includes('内置') || lines.some((line) => line.includes('自定义提示词')));
   })()`);
   const builtInTemplateName = templateList.find((lines) => lines.includes("内置"))?.[0] || "";
   if (!builtInTemplateName) throw new Error(`页面中没有可用的内置提示词：${JSON.stringify(templateList)}`);
 
   const existingTemplate = templateList.some((lines) => lines[0] === REAL_TEMPLATE_NAME);
   if (existingTemplate) await clickByText(client, REAL_TEMPLATE_NAME);
-  else await clickByText(client, "新建");
+  else await clickSelector(client, 'button[aria-label="新建提示词"]');
   await waitForExpression(client, "Boolean(document.querySelector('#template-name'))", "提示词编辑表单");
-  const templateReadOnly = await evaluate(client, "Boolean(document.querySelector('#template-name')?.disabled)");
-  if (templateReadOnly) throw new Error("真实验收提示词意外变成只读，无法通过界面更新。 ");
   await setControlValue(client, "#template-name", REAL_TEMPLATE_NAME);
-  await setControlValue(client, "#template-description", "真实文档两步流式验收使用");
+  await setControlValue(client, "#template-description", "真实文档两轮流式验收使用");
   await setControlValue(client, "#template-content", SECOND_PROMPT_CONTENT);
   await clickByText(client, "保存", { preferLast: true });
   await waitForText(client, "提示词已保存", 30_000);
 
-  await clickByText(client, "改写方案");
-  await waitForExpression(client, "Boolean(document.querySelector('#plan-name'))", "改写方案编辑表单");
-  const planList = await evaluate(client, `(() => {
-    const workspace = document.querySelector('[data-testid="prompt-workspace"]');
-    return Array.from(workspace?.querySelectorAll('button') || [])
-      .map((button) => (button.innerText || '').split(/\\r?\\n/).map((item) => item.trim()).filter(Boolean))
-      .filter((lines) => lines.some((line) => line.includes('步')));
-  })()`);
-  const existingPlan = planList.some((lines) => lines[0] === REAL_PLAN_NAME);
-  if (existingPlan) await clickByText(client, REAL_PLAN_NAME);
-  else await clickByText(client, "新建");
-  await waitForExpression(client, "Boolean(document.querySelector('#plan-name'))", "方案名称输入框");
-  const planReadOnly = await evaluate(client, "Boolean(document.querySelector('#plan-name')?.disabled)");
-  if (planReadOnly) throw new Error("真实验收方案意外变成只读，无法通过界面更新。 ");
-  await setControlValue(client, "#plan-name", REAL_PLAN_NAME);
-  await setControlValue(client, "#plan-description", "内置改写后再做一次自然化润色");
-  await removeAllPlanSteps(client);
-  await clickByText(client, "添加第一个步骤");
-  await chooseVisibleComboboxOption(client, 0, builtInTemplateName);
-  await clickByText(client, "增加步骤");
-  await chooseVisibleComboboxOption(client, 1, REAL_TEMPLATE_NAME);
-  await setCheckbox(client, "#default-plan", true);
-  await clickByText(client, "保存", { preferLast: true });
-  await waitForText(client, "提示词方案已保存", 30_000);
-
   const saved = await evaluate(client, `(() => {
     const workspace = document.querySelector('[data-testid="prompt-workspace"]');
     const selected = Array.from(workspace?.querySelectorAll('button') || [])
-      .find((button) => (button.innerText || '').includes(${JSON.stringify(REAL_PLAN_NAME)}));
-    const selects = Array.from(document.querySelectorAll('button[role="combobox"]'))
-      .filter((element) => {
-        const rect = element.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      });
+      .find((button) => (button.innerText || '').includes(${JSON.stringify(REAL_TEMPLATE_NAME)}));
     return {
-      selectedPlanText: (selected?.innerText || '').replace(/\\s+/g, ' ').trim(),
-      stepLabels: selects.map((item) => (item.innerText || '').replace(/\\s+/g, ' ').trim()),
-      isDefault: document.querySelector('#default-plan')?.getAttribute('data-state') === 'checked',
+      selectedTemplateText: (selected?.innerText || '').replace(/\\s+/g, ' ').trim(),
+      planControls: Boolean(document.querySelector('#plan-name, [data-testid^="prompt-plan-step-"]')),
     };
   })()`);
-  if (saved.stepLabels.length !== 2 || saved.stepLabels[0] !== builtInTemplateName || saved.stepLabels[1] !== REAL_TEMPLATE_NAME || !saved.isDefault) {
-    throw new Error(`两步方案没有按界面设置成功：${JSON.stringify(saved)}`);
+  if (!saved.selectedTemplateText.includes(REAL_TEMPLATE_NAME) || saved.planControls) {
+    throw new Error(`提示词库没有按界面设置成功：${JSON.stringify(saved)}`);
   }
 
-  const desktopScreenshot = await screenshot(client, "prompt-plan-desktop");
-  const desktopAudit = await auditUi(client, "prompt-plan-desktop");
+  const desktopScreenshot = await screenshot(client, "prompt-template-desktop");
+  const desktopAudit = await auditUi(client, "prompt-template-desktop");
   await setViewport(client, 1024, 768, false);
-  const tabletAudit = await auditUi(client, "prompt-plan-tablet");
-  const tabletScreenshot = await screenshot(client, "prompt-plan-tablet");
+  const tabletAudit = await auditUi(client, "prompt-template-tablet");
+  const tabletScreenshot = await screenshot(client, "prompt-template-tablet");
   await setViewport(client, 390, 844, true);
-  const mobileAudit = await auditUi(client, "prompt-plan-mobile");
-  const mobileScreenshot = await screenshot(client, "prompt-plan-mobile");
+  const mobileAudit = await auditUi(client, "prompt-template-mobile");
+  const mobileScreenshot = await screenshot(client, "prompt-template-mobile");
   await setViewport(client, 1440, 1000, false);
 
   return {
     phase: "configure_prompts",
     templateName: REAL_TEMPLATE_NAME,
-    planName: REAL_PLAN_NAME,
     builtInTemplateName,
     saved,
     screenshots: [desktopScreenshot, tabletScreenshot, mobileScreenshot],
@@ -607,144 +513,68 @@ async function clickScopeTab(client, prefix) {
   await clickTarget(client, expression, `范围分组“${prefix}”`);
 }
 
-async function chooseScopeParagraphs(client, count) {
-  await clickByText(client, "清空");
-  await clickScopeTab(client, "建议");
-  await wait(250);
-  const candidates = await evaluate(client, `(() => {
-    const dialog = document.querySelector('[role="dialog"]');
-    if (!dialog) return { error: 'scope dialog missing' };
-    const panel = dialog.querySelector('[role="tabpanel"]');
-    const checkboxes = Array.from(panel?.querySelectorAll('[role="checkbox"]') || [])
-      .filter((item) => !item.disabled && item.getAttribute('aria-disabled') !== 'true');
-    const allChoices = checkboxes.map((checkbox) => {
-      const container = checkbox.closest('[data-slot="field"]');
-      const body = container?.querySelector('[data-slot="field-description"]')?.innerText || '';
-      return {
-        id: checkbox.id,
-        text: (container?.innerText || '').replace(/\\s+/g, ' ').trim(),
-        hasNumber: /\\d/.test(body),
-      };
-    }).filter((item) => item.id && item.text.length >= 55);
-    let choices = allChoices.slice(0, ${Number(count)});
-    if (${JSON.stringify(REQUIRE_NUMERIC_SELECTION)}) {
-      const numeric = allChoices.find((item) => item.hasNumber);
-      if (numeric) choices = [numeric, ...allChoices.filter((item) => item.id !== numeric.id)].slice(0, ${Number(count)});
-    }
-    return {
-      available: checkboxes.length,
-      candidateCount: allChoices.length,
-      choices,
-    };
-  })()`);
-  if (candidates.error || candidates.choices?.length !== count) {
-    throw new Error(`正文范围选择失败：${JSON.stringify(candidates)}`);
-  }
-  if (REQUIRE_NUMERIC_SELECTION && !candidates.choices.some((item) => item.hasNumber)) {
-    throw new Error(`建议正文中没有选到含数字段落：${JSON.stringify(candidates)}`);
-  }
-  for (const choice of candidates.choices) {
-    await clickSelector(client, `#${choice.id}`);
-  }
-  await wait(350);
-  return {
-    available: candidates.available,
-    candidateCount: candidates.candidateCount,
-    chosen: candidates.choices.length,
-    paragraphIds: candidates.choices.map((item) => item.id.replace(/^paragraph-/, "")),
-    numericParagraphId: candidates.choices.find((item) => item.hasNumber)?.id.replace(/^paragraph-/, "") || "",
-    previews: candidates.choices.map((item) => item.text.slice(0, 90)),
-  };
-}
 
 async function observeRunUntilComplete(client, runStarted, timeoutMs = 1_800_000) {
   const started = Date.now();
   const latestRevision = new Map();
-  const stepSequences = new Map();
+  const roundSequences = new Map();
   const timeline = [];
-  let firstVisibleDeltaMs = null;
-  let firstStreamScreenshot = "";
-  let secondStepScreenshot = "";
-  let maxVisibleGenerating = 0;
-  let maxReportedConcurrentParagraphs = 0;
+  let firstUpstreamDeltaMs = null;
+  let firstDeltaScreenshot = "";
+  let nextRoundScreenshot = "";
+  let maxActiveRequests = 0;
 
   while (Date.now() - started < timeoutMs) {
-    const snapshot = await evaluate(client, `(() => {
-      const panel = document.querySelector('[data-testid="rewrite-task-panel"]');
-      const review = document.querySelector('[aria-labelledby="rewrite-review-title"]');
-      const cards = Array.from(document.querySelectorAll('[data-live-part]')).map((card) => {
-        const status = card.querySelector('[data-live-status]')?.innerText || '';
-        const text = card.querySelector('[data-live-text]')?.innerText || '';
-        return {
-          id: card.getAttribute('data-live-part') || '',
-          revision: Number(card.getAttribute('data-live-revision') || 0),
-          stepIndex: Number(card.getAttribute('data-live-step') || 0),
-          stepLabel: card.querySelector('[data-live-step-label]')?.innerText || '',
-          status,
-          text,
-        };
-      });
-      const activity = document.querySelector('[data-run-activity]')?.innerText || '';
-      const concurrentMatch = activity.match(/正在处理\\s*(\\d+)\\s*段正文/);
-      const resumable = Array.from(document.querySelectorAll('button')).some((item) =>
-        !item.disabled && (item.innerText || '').replace(/\\s+/g, ' ').trim() === '继续未完成内容'
-      );
-      return {
-        completed: (panel?.innerText || '').includes('改写完成'),
-        resumable,
-        reviewText: (review?.innerText || '').slice(0, 500),
-        concurrentParagraphs: concurrentMatch ? Number(concurrentMatch[1]) : 0,
-        cards,
-      };
-    })()`);
-    maxReportedConcurrentParagraphs = Math.max(maxReportedConcurrentParagraphs, snapshot.concurrentParagraphs || 0);
-    maxVisibleGenerating = Math.max(
-      maxVisibleGenerating,
-      snapshot.cards.filter((item) => item.status.includes("生成中")).length,
-    );
+    const telemetry = await currentRunTelemetry(client);
+    if (!telemetry || telemetry.error) {
+      await wait(250);
+      continue;
+    }
+    maxActiveRequests = Math.max(maxActiveRequests, telemetry.execution?.activeRequests || 0);
     let traceChanged = false;
-    for (const card of snapshot.cards) {
-      if (!card.text.trim() || card.revision <= 0) continue;
-      if (firstVisibleDeltaMs === null) {
-        firstVisibleDeltaMs = Date.now() - runStarted;
-        firstStreamScreenshot = await screenshot(client, "first-stream");
+    for (const chunk of telemetry.chunkItems || []) {
+      if (chunk.revision <= 0 && chunk.completedRounds <= 0) continue;
+      if (firstUpstreamDeltaMs === null && chunk.revision > 0) {
+        firstUpstreamDeltaMs = Date.now() - runStarted;
+        firstDeltaScreenshot = await screenshot(client, "first-upstream-delta");
       }
-      if (card.stepIndex === 1 && !secondStepScreenshot) {
-        secondStepScreenshot = await screenshot(client, "second-step-stream");
+      if (chunk.completedRounds >= 1 && !nextRoundScreenshot) {
+        nextRoundScreenshot = await screenshot(client, "next-round");
       }
-      const sequence = stepSequences.get(card.id) || [];
-      if (!sequence.includes(card.stepIndex)) sequence.push(card.stepIndex);
-      stepSequences.set(card.id, sequence);
-      if ((latestRevision.get(card.id) || -1) < card.revision) {
-        latestRevision.set(card.id, card.revision);
+      const sequence = roundSequences.get(chunk.id) || [];
+      if (!sequence.includes(chunk.completedRounds)) sequence.push(chunk.completedRounds);
+      roundSequences.set(chunk.id, sequence);
+      if ((latestRevision.get(chunk.id) || -1) < chunk.revision) {
+        latestRevision.set(chunk.id, chunk.revision);
         traceChanged = true;
         timeline.push({
           elapsedMs: Date.now() - runStarted,
-          chunkId: card.id,
-          revision: card.revision,
-          stepIndex: card.stepIndex,
-          stepLabel: card.stepLabel,
-          textLength: card.text.length,
-          textPreview: card.text.slice(0, 100),
+          chunkId: chunk.id,
+          revision: chunk.revision,
+          completedRounds: chunk.completedRounds,
+          status: chunk.status,
+          streamLength: chunk.streamLength,
         });
       }
     }
     const result = {
-        firstVisibleDeltaMs,
-        firstStreamScreenshot,
-        secondStepScreenshot,
-        maxVisibleGenerating,
-        maxReportedConcurrentParagraphs,
-        chunkIds: [...stepSequences.keys()],
-        stepSequences: Object.fromEntries(stepSequences),
-        timeline,
-        settledStatus: snapshot.completed ? "completed" : snapshot.resumable ? "paused" : "running",
-      };
-    if (traceChanged || snapshot.completed || snapshot.resumable) {
+      firstUpstreamDeltaMs,
+      firstDeltaScreenshot,
+      nextRoundScreenshot,
+      maxActiveRequests,
+      chunkIds: [...roundSequences.keys()],
+      roundSequences: Object.fromEntries(roundSequences),
+      timeline,
+      settledStatus: telemetry.status,
+      completedTelemetry: telemetry.status === "completed" ? telemetry : null,
+    };
+    if (traceChanged || ["completed", "paused", "cancelled"].includes(telemetry.status)) {
       writeFileSync(STREAM_TRACE_PATH, JSON.stringify(result, null, 2), "utf-8");
     }
-    if (snapshot.completed || snapshot.resumable) {
-      if (snapshot.completed && firstVisibleDeltaMs === null) throw new Error("任务完成了，但页面从未显示真实流式正文。 ");
+    if (["completed", "paused", "cancelled"].includes(telemetry.status)) {
+      if (telemetry.status === "completed" && firstUpstreamDeltaMs === null) {
+        throw new Error("任务已经完成，但没有记录到任何上游正文增量。");
+      }
       return result;
     }
     await wait(100);
@@ -753,23 +583,23 @@ async function observeRunUntilComplete(client, runStarted, timeoutMs = 1_800_000
 }
 
 function mergeStreamEvidence(parts) {
-  const stepSequences = new Map();
+  const roundSequences = new Map();
   const timeline = parts.flatMap((item) => item.timeline || []).sort((left, right) => left.elapsedMs - right.elapsedMs);
   for (const event of timeline) {
-    const sequence = stepSequences.get(event.chunkId) || [];
-    if (!sequence.includes(event.stepIndex)) sequence.push(event.stepIndex);
-    stepSequences.set(event.chunkId, sequence);
+    const sequence = roundSequences.get(event.chunkId) || [];
+    if (!sequence.includes(event.completedRounds)) sequence.push(event.completedRounds);
+    roundSequences.set(event.chunkId, sequence);
   }
   return {
-    firstVisibleDeltaMs: parts.map((item) => item.firstVisibleDeltaMs).filter((value) => value !== null).sort((a, b) => a - b)[0] ?? null,
-    firstStreamScreenshot: parts.find((item) => item.firstStreamScreenshot)?.firstStreamScreenshot || "",
-    secondStepScreenshot: parts.find((item) => item.secondStepScreenshot)?.secondStepScreenshot || "",
-    maxVisibleGenerating: Math.max(0, ...parts.map((item) => item.maxVisibleGenerating || 0)),
-    maxReportedConcurrentParagraphs: Math.max(0, ...parts.map((item) => item.maxReportedConcurrentParagraphs || 0)),
-    chunkIds: [...stepSequences.keys()],
-    stepSequences: Object.fromEntries(stepSequences),
+    firstUpstreamDeltaMs: parts.map((item) => item.firstUpstreamDeltaMs).filter((value) => value !== null).sort((a, b) => a - b)[0] ?? null,
+    firstDeltaScreenshot: parts.find((item) => item.firstDeltaScreenshot)?.firstDeltaScreenshot || "",
+    nextRoundScreenshot: parts.find((item) => item.nextRoundScreenshot)?.nextRoundScreenshot || "",
+    maxActiveRequests: Math.max(0, ...parts.map((item) => item.maxActiveRequests || 0)),
+    chunkIds: [...roundSequences.keys()],
+    roundSequences: Object.fromEntries(roundSequences),
     timeline,
     settledStatus: parts.at(-1)?.settledStatus || "",
+    completedTelemetry: parts.at(-1)?.completedTelemetry || null,
     resumeCount: Math.max(0, parts.length - 1),
   };
 }
@@ -786,7 +616,9 @@ async function observeAndResumeUntilComplete(client, runStarted, maxResumes = 3)
       throw new Error(`任务未能完成：${JSON.stringify({ settledStatus: part.settledStatus, resumeCount: attempt })}`);
     }
     await screenshot(client, `paused-before-resume-${attempt + 1}`);
-    await clickByText(client, "继续未完成内容");
+    await clickByText(client, "继续");
+    await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "继续操作", 30_000);
+    await clickByText(client, "继续未完成内容", { preferLast: true });
     await waitForText(client, "正在改写", 30_000);
   }
   throw new Error("任务多次继续后仍未完成。 ");
@@ -976,7 +808,7 @@ async function recentDocumentsFlow(client) {
   await clickRecentAction(client, completed.id, "打开");
   await waitForText(client, "改写完成", 30_000);
   const opened = await evaluate(client, `(() => {
-    const word = Array.from(document.querySelectorAll('button')).find((item) => (item.innerText || '').trim() === '导出 Word');
+    const word = Array.from(document.querySelectorAll('button')).find((item) => (item.innerText || '').trim() === '下载 Word');
     const resume = Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '继续未完成内容');
     return { title: document.body?.innerText?.includes(${JSON.stringify(completed.name)}) || false, wordEnabled: Boolean(word && !word.disabled), resume };
   })()`);
@@ -986,7 +818,7 @@ async function recentDocumentsFlow(client) {
   await waitForText(client, "任务控制台", 30_000);
   await waitForText(client, "改写完成", 30_000);
   const restored = await evaluate(client, `(() => {
-    const word = Array.from(document.querySelectorAll('button')).find((item) => (item.innerText || '').trim() === '导出 Word');
+    const word = Array.from(document.querySelectorAll('button')).find((item) => (item.innerText || '').trim() === '下载 Word');
     return {
       hasDocument: document.body?.innerText?.includes(${JSON.stringify(completed.name)}) || false,
       wordEnabled: Boolean(word && !word.disabled),
@@ -1092,45 +924,43 @@ async function txtFlow(client) {
   await clickByText(client, "确认正文范围", { preferLast: true });
   await waitForText(client, "范围已确认", 30_000);
 
-  const selectedPlanLabel = await evaluate(client, "document.querySelector('#run-prompt-plan')?.innerText?.replace(/\\s+/g, ' ').trim() || ''");
-  if (!selectedPlanLabel.startsWith(REAL_PLAN_NAME)) {
-    await clickSelector(client, "#run-prompt-plan");
-    await clickByText(client, REAL_PLAN_NAME, { preferLast: true });
-  }
-  const confirmedPlanLabel = await evaluate(client, "document.querySelector('#run-prompt-plan')?.innerText?.replace(/\\s+/g, ' ').trim() || ''");
-  if (!confirmedPlanLabel.startsWith(REAL_PLAN_NAME)) throw new Error(`TXT 流程没有选中两步方案：${confirmedPlanLabel}`);
+  const roundPromptLabels = await selectRoundPrompts(client, ["经典改写", REAL_TEMPLATE_NAME]);
 
   const runStarted = Date.now();
   await clickByText(client, "开始改写", { preferLast: true });
   await waitForText(client, "正在改写", 30_000);
   const streamEvidence = await observeAndResumeUntilComplete(client, runStarted);
   await waitForExpression(client, "Boolean(document.querySelector('[data-text-diff]'))", "TXT Diff 审阅结果", 60_000);
-  const transitionedChunkIds = Object.entries(streamEvidence.stepSequences)
-    .filter(([, steps]) => steps.includes(0) && steps.includes(1))
+  const transitionedChunkIds = Object.entries(streamEvidence.roundSequences)
+    .filter(([, rounds]) => rounds.includes(0) && rounds.some((round) => round >= 1))
     .map(([chunkId]) => chunkId);
-  if (!transitionedChunkIds.length) throw new Error(`TXT 流程没有观察到两步流式切换：${JSON.stringify(streamEvidence.stepSequences)}`);
+  if (!transitionedChunkIds.length && streamEvidence.completedTelemetry?.chunks.minCompletedRounds !== 2) {
+    throw new Error(`TXT 流程没有完成两轮改写：${JSON.stringify(streamEvidence)}`);
+  }
 
+  await clickByText(client, "继续 / 导出");
+  await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "TXT 导出操作", 30_000);
   const exportState = await evaluate(client, `(() => {
-    const buttons = Array.from(document.querySelectorAll('button'));
-    const word = buttons.find((item) => (item.innerText || '').trim() === '导出 Word');
-    const txt = buttons.find((item) => (item.innerText || '').trim() === '导出 TXT');
+    const sheet = document.querySelector('[data-testid="rewrite-task-sheet"]');
+    const buttons = Array.from(sheet?.querySelectorAll('button') || []);
+    const word = buttons.find((item) => (item.innerText || '').trim() === '下载 Word');
+    const txt = buttons.find((item) => (item.innerText || '').trim() === '下载 TXT');
     return {
-      textMode: document.body?.innerText?.includes('文本模式') || false,
-      wordDisabled: Boolean(word?.disabled),
+      wordAvailable: Boolean(word),
       txtEnabled: Boolean(txt && !txt.disabled),
       reviewCards: document.querySelectorAll('[data-review-paragraph]').length,
     };
   })()`);
-  if (!exportState.textMode || !exportState.wordDisabled || !exportState.txtEnabled || exportState.reviewCards < 1) {
+  if (exportState.wordAvailable || !exportState.txtEnabled || exportState.reviewCards < 1) {
     throw new Error(`TXT 完成后的导出状态错误：${JSON.stringify(exportState)}`);
   }
 
   const previousDownloads = downloadSnapshot();
-  await clickByText(client, "导出 TXT");
-  const exportOutcome = await waitForAnyText(client, ["导出前确认变化提醒", "文件已导出"], 120_000);
+  await clickByText(client, "下载 TXT", { preferLast: true });
+  const exportOutcome = await waitForAnyText(client, ["导出前确认", "文件已导出"], 120_000);
   let warningConfirmationCount = 0;
-  if (exportOutcome.text === "导出前确认变化提醒") {
-    await clickByText(client, "确认并导出", { preferLast: true });
+  if (exportOutcome.text === "导出前确认") {
+    await clickByText(client, "继续导出 TXT", { preferLast: true });
     warningConfirmationCount = 1;
     await waitForText(client, "文件已导出", 120_000);
   }
@@ -1154,13 +984,13 @@ async function txtFlow(client) {
     phase: "txt_flow",
     source: resolve(SOURCE_TXT),
     scope,
-    selectedPlan: confirmedPlanLabel,
+    roundPromptLabels,
     streamEvidence,
     transitionedChunkIds,
     exportState,
     warningConfirmationCount,
     download: { ...download, sha256: createHash("sha256").update(downloadedText, "utf-8").digest("hex") },
-    screenshots: [scopeScreenshot, streamEvidence.firstStreamScreenshot, streamEvidence.secondStepScreenshot, completedScreenshot, tabletScreenshot, mobileScreenshot].filter(Boolean),
+    screenshots: [scopeScreenshot, streamEvidence.firstDeltaScreenshot, streamEvidence.nextRoundScreenshot, completedScreenshot, tabletScreenshot, mobileScreenshot].filter(Boolean),
     uiAudits: [desktopAudit, tabletAudit, mobileAudit],
   };
 }
@@ -1315,210 +1145,6 @@ async function scopeAuditFlow(client) {
   };
 }
 
-async function runDocumentFlow(client) {
-  if (!SOURCE_DOCX) throw new Error("run 阶段缺少 FYADR_REAL_SOURCE_DOCX。 ");
-  await setViewport(client, 1440, 1000, false);
-  await client.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: DOWNLOAD_DIR });
-  await client.send("Page.setInterceptFileChooserDialog", { enabled: true });
-  await client.send("Page.navigate", { url: `${FRONTEND_URL}/` });
-  await waitForText(client, "任务控制台", 30_000);
-  await clickByText(client, "开始改写");
-  const hasDocument = await evaluate(client, `Array.from(document.querySelectorAll('button')).some((item) => (item.innerText || '').trim() === '更换文档')`);
-  await clickByText(client, hasDocument ? "更换文档" : "上传 DOCX 或 TXT");
-
-  const uploadStarted = Date.now();
-  await uploadFile(client, SOURCE_DOCX);
-  await waitForText(client, "文档已读取", 120_000);
-  await waitForExpression(
-    client,
-    `Boolean(document.querySelector('[role="dialog"]')?.innerText?.includes('确认正文范围'))`,
-    "正文范围弹窗",
-    30_000,
-  );
-  const uploadElapsedMs = Date.now() - uploadStarted;
-  const scopeScreenshot = await screenshot(client, "scope-default");
-  const scopeDefaults = await evaluate(client, `(() => {
-    const dialog = document.querySelector('[role="dialog"]');
-    const panel = dialog?.querySelector('[role="tabpanel"]');
-    const boxes = Array.from(panel?.querySelectorAll('[role="checkbox"]') || []);
-    const first = boxes.find((item) => !item.disabled && item.getAttribute('aria-disabled') !== 'true');
-    const firstField = first?.closest('[data-slot="field"]');
-    const firstLabel = first?.id ? dialog?.querySelector('label[for="' + CSS.escape(first.id) + '"]') : null;
-    const orderMatch = (firstLabel?.innerText || '').match(/第\\s*(\\d+)\\s*段/);
-    return {
-      total: boxes.length,
-      checked: boxes.filter((item) => item.getAttribute('data-state') === 'checked').length,
-      disabled: boxes.filter((item) => item.disabled || item.getAttribute('aria-disabled') === 'true').length,
-      activeTab: dialog?.querySelector('[role="tab"][aria-selected="true"]')?.innerText?.replace(/\\s+/g, ' ').trim() || '',
-      firstOrder: orderMatch ? Number(orderMatch[1]) : null,
-      firstPreview: (firstField?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120),
-    };
-  })()`);
-  if (!scopeDefaults.activeTab.startsWith("建议")) {
-    throw new Error(`范围弹窗没有默认打开建议正文：${JSON.stringify(scopeDefaults)}`);
-  }
-  if (!scopeDefaults.firstOrder || scopeDefaults.firstOrder < MIN_SUGGESTED_ORDER) {
-    throw new Error(`建议正文仍从前置内容开始：${JSON.stringify(scopeDefaults)}`);
-  }
-
-  const scopeDesktopAudit = await auditScopeDialog(client, "scope-desktop");
-  await setViewport(client, 1024, 768, false);
-  const scopeTabletAudit = await auditScopeDialog(client, "scope-tablet");
-  const scopeTabletScreenshot = await screenshot(client, "scope-tablet");
-  await setViewport(client, 390, 844, true);
-  const scopeMobileAudit = await auditScopeDialog(client, "scope-mobile");
-  const scopeMobileScreenshot = await screenshot(client, "scope-mobile");
-  await setViewport(client, 1440, 1000, false);
-  const scopeChoice = await chooseScopeParagraphs(client, SELECT_COUNT);
-  await clickByText(client, "确认正文范围", { preferLast: true });
-  await waitForText(client, "范围已确认", 30_000);
-
-  const selectedPlanLabel = await evaluate(client, "document.querySelector('#run-prompt-plan')?.innerText?.replace(/\\s+/g, ' ').trim() || ''");
-  if (!selectedPlanLabel.startsWith(REAL_PLAN_NAME)) {
-    await clickSelector(client, "#run-prompt-plan");
-    await clickByText(client, REAL_PLAN_NAME, { preferLast: true });
-  }
-  const confirmedPlanLabel = await evaluate(client, "document.querySelector('#run-prompt-plan')?.innerText?.replace(/\\s+/g, ' ').trim() || ''");
-  if (!confirmedPlanLabel.startsWith(REAL_PLAN_NAME)) throw new Error(`首页没有选中真实两步方案：${confirmedPlanLabel}`);
-
-  await clickByText(client, "高级设置");
-  const concurrencyExpression = `(() => {
-    const labels = Array.from(document.querySelectorAll('label')).filter((item) => (item.innerText || '').includes('同时处理'));
-    const region = labels[0]?.closest('[data-slot="field"]') || labels[0]?.parentElement?.parentElement;
-    const button = Array.from(region?.querySelectorAll('button') || []).find((item) => (item.innerText || '').trim() === ${JSON.stringify(String(CONCURRENCY))});
-    if (!button || button.disabled) return false;
-    button.scrollIntoView({ block: 'center', inline: 'center' });
-    const rect = button.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-  })()`;
-  await clickTarget(client, concurrencyExpression, `${CONCURRENCY} 路并行选项`);
-  const concurrencySelected = true;
-  await setControlValue(client, "#protected-terms", PROTECTED_TERMS);
-
-  const runStarted = Date.now();
-  await clickByText(client, "开始改写", { preferLast: true });
-  await waitForText(client, "正在改写", 30_000);
-  let firstVisibleDeltaMs = null;
-  let streamScreenshot = "";
-  let streamEvidence = null;
-  let stoppedProgress = null;
-
-  if (STOP_AND_RESUME) {
-    firstVisibleDeltaMs = await waitForExpression(
-      client,
-      `Array.from(document.querySelectorAll('[data-live-part]')).some((card) => Number(card.getAttribute('data-live-revision') || 0) > 0 && Boolean(card.querySelector('[data-live-text]')?.innerText?.trim()))`,
-      "页面出现首个实时正文",
-      360_000,
-    );
-    streamScreenshot = await screenshot(client, "first-stream");
-    await wait(900);
-    await clickByText(client, "停止并保存进度");
-    await waitForText(client, "继续未完成内容", 60_000);
-    stoppedProgress = await evaluate(client, `(() => {
-      const panel = document.querySelector('[data-testid="rewrite-task-panel"]');
-      return (panel?.innerText || '').replace(/\\s+/g, ' ').trim();
-    })()`);
-    await screenshot(client, "stopped");
-    await clickByText(client, "继续未完成内容");
-    await waitForExpression(
-      client,
-      `(() => {
-        const panel = document.querySelector('[data-testid="rewrite-task-panel"]');
-        return (panel?.innerText || '').includes('改写完成');
-      })()`,
-      "全部所选正文改写完成",
-      1_800_000,
-    );
-  } else {
-    streamEvidence = await observeAndResumeUntilComplete(client, runStarted);
-    firstVisibleDeltaMs = streamEvidence.firstVisibleDeltaMs;
-    streamScreenshot = streamEvidence.firstStreamScreenshot;
-    const transitionedChunkIds = Object.entries(streamEvidence.stepSequences)
-      .filter(([, steps]) => steps.includes(0) && steps.includes(1))
-      .map(([chunkId]) => chunkId);
-    if (!transitionedChunkIds.length) {
-      throw new Error(`页面没有观察到同一分块从提示词步骤 1/2 切换到 2/2：${JSON.stringify(streamEvidence.stepSequences)}`);
-    }
-    const expectedConcurrent = Math.min(CONCURRENCY, SELECT_COUNT);
-    if (streamEvidence.maxReportedConcurrentParagraphs < expectedConcurrent) {
-      throw new Error(`页面最多只显示 ${streamEvidence.maxReportedConcurrentParagraphs} 段并行，未达到设置的 ${expectedConcurrent}。`);
-    }
-  }
-  const completedElapsedMs = Date.now() - runStarted;
-  await waitForExpression(client, "Boolean(document.querySelector('[data-text-diff]'))", "Diff 审阅结果", 60_000);
-  const resultScreenshot = await screenshot(client, "completed-diff");
-  const review = await evaluate(client, `(() => {
-    const cards = Array.from(document.querySelectorAll('[data-review-paragraph]'));
-    return {
-      cards: cards.length,
-      warnings: cards.filter((item) => (item.innerText || '').includes('请人工核对')).length,
-      diffAdded: document.querySelectorAll('[data-diff-added]').length,
-      diffRemoved: document.querySelectorAll('[data-diff-removed]').length,
-      incomplete: cards.filter((item) => (item.innerText || '').includes('未完成')).length,
-    };
-  })()`);
-  const manualEdit = MANUAL_NUMBER_EDIT ? await manuallyChangeNumber(client, scopeChoice.numericParagraphId) : null;
-  const manualScreenshot = manualEdit ? await screenshot(client, "manual-number-warning") : "";
-  const reviewAfterManual = manualEdit ? await evaluate(client, `(() => {
-    const cards = Array.from(document.querySelectorAll('[data-review-paragraph]'));
-    return {
-      cards: cards.length,
-      warnings: cards.filter((item) => (item.innerText || '').includes('请人工核对')).length,
-      taskCompleted: (document.querySelector('[data-testid="rewrite-task-panel"]')?.innerText || '').includes('改写完成'),
-      liveCards: document.querySelectorAll('[data-live-part]').length,
-    };
-  })()`) : null;
-
-  const previousDownloads = downloadSnapshot();
-  await clickByText(client, "导出 Word");
-  const exportOutcome = await waitForAnyText(client, ["导出前确认变化提醒", "文件已导出", "为保护原文格式，已停止 Word 导出"], 120_000);
-  let warningConfirmationCount = 0;
-  if (exportOutcome.text === "导出前确认变化提醒") {
-    const visibleWarningDialogs = await evaluate(client, `Array.from(document.querySelectorAll('[role="dialog"]')).filter((item) => (item.innerText || '').includes('导出前确认变化提醒')).length`);
-    if (visibleWarningDialogs !== 1) throw new Error(`导出警告确认弹窗数量异常：${visibleWarningDialogs}`);
-    await clickByText(client, "确认并导出", { preferLast: true });
-    warningConfirmationCount += 1;
-    await waitForText(client, "文件已导出", 120_000);
-  } else if (exportOutcome.text !== "文件已导出") {
-    throw new Error(`Word 导出失败。当前页面：\n${await bodyText(client)}`);
-  }
-  if (MANUAL_NUMBER_EDIT && warningConfirmationCount !== 1) {
-    throw new Error(`手动改变数字后没有只进行一次警告确认：${warningConfirmationCount}`);
-  }
-  const download = await waitForDownload(previousDownloads);
-  const exportScreenshot = await screenshot(client, "exported");
-
-  const desktopAudit = await auditUi(client, "rewrite-desktop");
-  await setViewport(client, 1024, 768, false);
-  const tabletAudit = await auditUi(client, "rewrite-tablet");
-  const tabletScreenshot = await screenshot(client, "rewrite-tablet");
-  await setViewport(client, 390, 844, true);
-  const mobileAudit = await auditUi(client, "rewrite-mobile");
-  const mobileScreenshot = await screenshot(client, "rewrite-mobile");
-  await setViewport(client, 1440, 1000, false);
-
-  return {
-    phase: "run",
-    source: resolve(SOURCE_DOCX),
-    uploadElapsedMs,
-    scopeDefaults,
-    scopeChoice,
-    concurrency: CONCURRENCY,
-    selectedPlan: confirmedPlanLabel,
-    stopAndResume: STOP_AND_RESUME,
-    stoppedProgress,
-    firstVisibleDeltaMs,
-    streamEvidence,
-    completedElapsedMs,
-    review,
-    manualEdit,
-    reviewAfterManual,
-    warningConfirmationCount,
-    download,
-    screenshots: [scopeScreenshot, scopeTabletScreenshot, scopeMobileScreenshot, streamScreenshot, resultScreenshot, manualScreenshot, exportScreenshot, tabletScreenshot, mobileScreenshot].filter(Boolean),
-    uiAudits: [scopeDesktopAudit, scopeTabletAudit, scopeMobileAudit, desktopAudit, tabletAudit, mobileAudit],
-  };
-}
 
 async function runDocumentFlowCurrent(client) {
   if (!SOURCE_DOCX) throw new Error("run 阶段缺少 FYADR_REAL_SOURCE_DOCX。 ");
@@ -1585,20 +1211,18 @@ async function runDocumentFlowCurrent(client) {
     await clickByText(client, "Cardinalize", { preferLast: true });
     modelLabel = await evaluate(client, "document.querySelector('#run-model-profile')?.innerText?.replace(/\\s+/g, ' ').trim() || ''");
   }
-  const promptPlanLabel = await evaluate(client, "document.querySelector('#run-prompt-plan')?.innerText?.replace(/\\s+/g, ' ').trim() || ''");
+  const roundPromptLabels = await selectRoundPrompts(client, ["经典改写", REAL_TEMPLATE_NAME]);
   await clickByText(client, "处理");
-  await setSliderValue(client, '[data-testid="rewrite-concurrency"] [role="slider"]', CONCURRENCY);
+  await clickSelector(client, `[data-testid="rewrite-concurrency-${CONCURRENCY}"]`);
   await setControlValue(client, "#protected-terms", PROTECTED_TERMS);
   const processingSettings = await evaluate(client, `(() => {
     const sheet = document.querySelector('[data-testid="rewrite-task-sheet"]');
-    const active = (text) => Array.from(sheet?.querySelectorAll('button') || []).find((item) => (item.innerText || '').trim() === text)?.getAttribute('data-state') === 'on';
     return {
-      standardChunking: active('标准'),
-      twoRounds: active('2'),
-      concurrency: Number(sheet?.querySelector('[data-testid="rewrite-concurrency"] [role="slider"]')?.getAttribute('aria-valuenow') || 0),
+      standardChunking: sheet?.querySelector('[data-testid="rewrite-chunk-standard"]')?.getAttribute('data-state') === 'on',
+      concurrency: Number(sheet?.querySelector('[data-testid^="rewrite-concurrency-"][data-state="on"]')?.innerText?.match(/\\d+/)?.[0] || 0),
     };
   })()`);
-  if (!processingSettings.standardChunking || !processingSettings.twoRounds || processingSettings.concurrency !== CONCURRENCY) {
+  if (roundPromptLabels.length !== 2 || !processingSettings.standardChunking || processingSettings.concurrency !== CONCURRENCY) {
     throw new Error(`改写设置没有按产品默认值生效：${JSON.stringify(processingSettings)}`);
   }
 
@@ -1682,7 +1306,7 @@ async function runDocumentFlowCurrent(client) {
   if (completedTelemetry.chunks.completed !== completedTelemetry.chunks.total || completedTelemetry.paragraphs.incomplete) {
     throw new Error(`任务显示完成但仍有未完成内容：${JSON.stringify(completedTelemetry)}`);
   }
-  if (completedTelemetry.snapshot.executionStepCount !== 2 || completedTelemetry.chunks.minCompletedSteps !== 2) {
+  if (completedTelemetry.snapshot.roundCount !== 2 || completedTelemetry.chunks.minCompletedRounds !== 2) {
     throw new Error(`两轮改写没有完整执行：${JSON.stringify(completedTelemetry)}`);
   }
 
@@ -1699,7 +1323,7 @@ async function runDocumentFlowCurrent(client) {
   const previousDownloads = downloadSnapshot();
   await clickByText(client, "导出");
   await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "导出操作", 30_000);
-  await clickByText(client, "Word");
+  await clickByText(client, "下载 Word");
   const exportOutcome = await waitForAnyText(client, ["导出前确认", "文件已导出", "文件无法生成", "导出失败"], 120_000);
   let warningConfirmationCount = 0;
   if (exportOutcome.text === "导出前确认") {
@@ -1737,7 +1361,7 @@ async function runDocumentFlowCurrent(client) {
     uploadElapsedMs,
     scope: scopeDefaults,
     modelLabel,
-    promptPlanLabel,
+    roundPromptLabels,
     processingSettings,
     stopAndResume: STOP_AND_RESUME,
     stopped: stopped ? { status: stopped.status, progress: stopped.progress, chunks: stopped.chunks } : null,
@@ -1769,7 +1393,7 @@ async function currentRunTelemetry(client) {
     const run = await response.json();
     const chunks = Array.isArray(run.chunks) ? run.chunks : [];
     const paragraphs = Array.isArray(run.paragraphs) ? run.paragraphs : [];
-    const completedStepCounts = chunks.map((item) => Number(item.stepIndex || 0));
+    const completedRoundCounts = chunks.map((item) => Number(item.stepIndex || 0));
     const chunkStatuses = Object.fromEntries(['pending', 'running', 'paused', 'cancelled', 'completed'].map((status) => [
       status,
       chunks.filter((item) => item.status === status).length,
@@ -1782,21 +1406,37 @@ async function currentRunTelemetry(client) {
         modelName: run.snapshot?.modelProfile?.name || '',
         model: run.snapshot?.modelProfile?.model || '',
         protocol: run.snapshot?.modelProfile?.protocol || '',
-        promptPlan: run.snapshot?.promptPlan?.name || '',
+        rounds: Array.isArray(run.snapshot?.rounds) ? run.snapshot.rounds.map((item) => ({
+          roundNumber: Number(item.roundNumber || 0),
+          templateId: item.templateId || '',
+          name: item.name || '',
+        })) : [],
         concurrency: run.snapshot?.concurrency || 0,
-        repeatCount: run.snapshot?.repeatCount || 0,
         chunking: run.snapshot?.chunking || null,
-        executionStepCount: run.snapshot?.promptPlan?.steps?.length || 0,
+        roundCount: Array.isArray(run.snapshot?.rounds) ? run.snapshot.rounds.length : 0,
         selectedParagraphCount: run.snapshot?.document?.selectedParagraphIds?.length || 0,
       },
+      execution: {
+        configuredConcurrency: Number(run.execution?.configuredConcurrency || 0),
+        activeRequests: Number(run.execution?.activeRequests || 0),
+        peakActiveRequests: Number(run.execution?.peakActiveRequests || 0),
+        requestsStarted: Number(run.execution?.requestsStarted || 0),
+      },
+      chunkItems: chunks.map((item) => ({
+        id: item.id || '',
+        status: item.status || '',
+        completedRounds: Number(item.stepIndex || 0),
+        revision: Number(item.revision || 0),
+        streamLength: String(item.streamText || '').length,
+      })),
       chunks: {
         total: chunks.length,
         ...chunkStatuses,
         revisionSum: chunks.reduce((sum, item) => sum + Number(item.revision || 0), 0),
         streaming: chunks.filter((item) => String(item.streamText || '').length > 0).length,
         changed: chunks.filter((item) => item.status === 'completed' && String(item.finalText || '') !== String(item.originalText || '')).length,
-        minCompletedSteps: completedStepCounts.length ? Math.min(...completedStepCounts) : 0,
-        maxCompletedSteps: completedStepCounts.length ? Math.max(...completedStepCounts) : 0,
+        minCompletedRounds: completedRoundCounts.length ? Math.min(...completedRoundCounts) : 0,
+        maxCompletedRounds: completedRoundCounts.length ? Math.max(...completedRoundCounts) : 0,
       },
       paragraphs: {
         total: paragraphs.length,
@@ -1848,7 +1488,7 @@ async function exportCurrentRun(client) {
   if (!telemetry || telemetry.status !== "completed") {
     throw new Error(`当前任务尚未完成：${JSON.stringify(telemetry)}`);
   }
-  if (telemetry.snapshot.executionStepCount !== 2 || telemetry.chunks.minCompletedSteps !== 2) {
+  if (telemetry.snapshot.roundCount !== 2 || telemetry.chunks.minCompletedRounds !== 2) {
     throw new Error(`当前任务没有完成两轮：${JSON.stringify(telemetry)}`);
   }
   const review = await evaluate(client, `(() => ({
@@ -1864,7 +1504,7 @@ async function exportCurrentRun(client) {
   const started = Date.now();
   await clickByText(client, "导出");
   await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "导出操作", 30_000);
-  await clickByText(client, "Word");
+  await clickByText(client, "下载 Word");
   const outcome = await waitForAnyText(client, ["导出前确认", "文件已导出", "文件无法生成", "导出失败"], 120_000);
   let warningConfirmationCount = 0;
   if (outcome.text === "导出前确认") {
@@ -1906,30 +1546,26 @@ async function resumeCurrentRunFlow(client) {
   await client.send("Page.navigate", { url: `${FRONTEND_URL}/` });
   await waitForText(client, "任务控制台", 30_000);
   await clickByText(client, "开始改写");
-  const initial = await waitForAnyText(client, ["继续未完成内容", "改写完成"], 30_000);
-  if (initial.text !== "继续未完成内容") throw new Error("当前任务已经完成，无法验证暂停后的真实继续流程。 ");
-  const beforeResume = await evaluate(client, `(() => {
-    const cards = Array.from(document.querySelectorAll('[data-review-paragraph]'));
-    return {
-      taskText: (document.querySelector('[data-testid="rewrite-task-panel"]')?.innerText || '').replace(/\\s+/g, ' ').trim(),
-      paragraphs: cards.length,
-      completed: cards.filter((item) => !(item.innerText || '').includes('未完成')).length,
-      incomplete: cards.filter((item) => (item.innerText || '').includes('未完成')).length,
-    };
-  })()`);
+  const beforeResume = await currentRunTelemetry(client);
+  if (!beforeResume || !["paused", "cancelled"].includes(beforeResume.status)) {
+    throw new Error(`当前任务不在可继续状态：${JSON.stringify(beforeResume)}`);
+  }
+  const unfinishedChunks = beforeResume.chunks.total - beforeResume.chunks.completed;
   const pausedScreenshot = await screenshot(client, "current-paused");
   const runStarted = Date.now();
-  await clickByText(client, "继续未完成内容");
+  await clickByText(client, "继续");
+  await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "继续操作", 30_000);
+  await clickByText(client, "继续未完成内容", { preferLast: true });
   await waitForText(client, "正在改写", 30_000);
   const streamEvidence = await observeAndResumeUntilComplete(client, runStarted);
-  if (streamEvidence.maxReportedConcurrentParagraphs > beforeResume.incomplete) {
-    throw new Error(`继续任务重跑了超过未完成段落数量的内容：${JSON.stringify({ beforeResume, streamEvidence })}`);
+  if (streamEvidence.maxActiveRequests > unfinishedChunks) {
+    throw new Error(`继续任务启动了超过未完成分块数量的请求：${JSON.stringify({ unfinishedChunks, streamEvidence })}`);
   }
-  const transitionedChunkIds = Object.entries(streamEvidence.stepSequences)
-    .filter(([, steps]) => steps.includes(0) && steps.includes(1))
+  const transitionedChunkIds = Object.entries(streamEvidence.roundSequences)
+    .filter(([, rounds]) => rounds.includes(0) && rounds.some((round) => round >= 1))
     .map(([chunkId]) => chunkId);
-  if (!transitionedChunkIds.length) {
-    throw new Error(`继续任务没有观察到同一分块的两步流式切换：${JSON.stringify(streamEvidence.stepSequences)}`);
+  if (!transitionedChunkIds.length && streamEvidence.completedTelemetry?.chunks.minCompletedRounds !== 2) {
+    throw new Error(`继续任务没有完成两轮改写：${JSON.stringify(streamEvidence)}`);
   }
 
   await waitForExpression(client, "Boolean(document.querySelector('[data-text-diff]'))", "继续后的 Diff 审阅结果", 60_000);
@@ -1948,13 +1584,15 @@ async function resumeCurrentRunFlow(client) {
   const manualScreenshot = await screenshot(client, "resumed-manual-number-warning");
 
   const previousDownloads = downloadSnapshot();
-  await clickByText(client, "导出 Word");
-  const exportOutcome = await waitForAnyText(client, ["导出前确认变化提醒", "文件已导出", "为保护原文格式，已停止 Word 导出"], 120_000);
+  await clickByText(client, "继续 / 导出");
+  await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"rewrite-task-sheet\"]'))", "导出操作", 30_000);
+  await clickByText(client, "下载 Word");
+  const exportOutcome = await waitForAnyText(client, ["导出前确认", "文件已导出", "文件无法生成", "导出失败"], 120_000);
   let warningConfirmationCount = 0;
-  if (exportOutcome.text === "导出前确认变化提醒") {
-    const visibleWarningDialogs = await evaluate(client, `Array.from(document.querySelectorAll('[role="dialog"]')).filter((item) => (item.innerText || '').includes('导出前确认变化提醒')).length`);
+  if (exportOutcome.text === "导出前确认") {
+    const visibleWarningDialogs = await evaluate(client, `Array.from(document.querySelectorAll('[role="dialog"]')).filter((item) => (item.innerText || '').includes('导出前确认')).length`);
     if (visibleWarningDialogs !== 1) throw new Error(`导出警告确认弹窗数量异常：${visibleWarningDialogs}`);
-    await clickByText(client, "确认并导出", { preferLast: true });
+    await clickByText(client, "继续导出 Word", { preferLast: true });
     warningConfirmationCount += 1;
     await waitForText(client, "文件已导出", 120_000);
   } else if (exportOutcome.text !== "文件已导出") {
@@ -1982,7 +1620,7 @@ async function resumeCurrentRunFlow(client) {
     manualEdit,
     warningConfirmationCount,
     download,
-    screenshots: [pausedScreenshot, streamEvidence.firstStreamScreenshot, streamEvidence.secondStepScreenshot, completedScreenshot, manualScreenshot, exportedScreenshot, tabletScreenshot, mobileScreenshot].filter(Boolean),
+    screenshots: [pausedScreenshot, streamEvidence.firstDeltaScreenshot, streamEvidence.nextRoundScreenshot, completedScreenshot, manualScreenshot, exportedScreenshot, tabletScreenshot, mobileScreenshot].filter(Boolean),
     uiAudits: [desktopAudit, tabletAudit, mobileAudit],
   };
 }
@@ -2015,7 +1653,7 @@ async function redoManualNumberFlow(client) {
   }
 
   const previousDownloads = downloadSnapshot();
-  await clickByText(client, "导出 Word");
+  await clickByText(client, "下载 Word");
   const exportOutcome = await waitForAnyText(client, ["导出前确认变化提醒", "文件已导出", "为保护原文格式，已停止 Word 导出"], 120_000);
   let warningConfirmationCount = 0;
   if (exportOutcome.text === "导出前确认变化提醒") {
@@ -2058,7 +1696,7 @@ async function run() {
   await client.send("DOM.enable");
   try {
     if (PHASE === "configure") return await configureModel(client);
-    if (PHASE === "configure_prompts") return await configurePromptPlan(client);
+    if (PHASE === "configure_prompts") return await configurePromptTemplates(client);
     if (PHASE === "scope_audit") return await scopeAuditFlow(client);
     if (PHASE === "run") return await runDocumentFlowCurrent(client);
     if (PHASE === "export_current") return await exportCurrentRun(client);
