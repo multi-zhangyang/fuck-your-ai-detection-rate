@@ -348,7 +348,32 @@ def cancel_run(run_id: str) -> Response:
 
 @app.post("/api/runs/<run_id>/resume")
 def resume_run(run_id: str) -> Response:
-    return jsonify(RUN_MANAGER.resume(run_id))
+    payload = request.get_json(silent=True) or {}
+    concurrency = payload.get("concurrency")
+    return jsonify(
+        RUN_MANAGER.resume(
+            run_id,
+            concurrency=int(concurrency) if concurrency is not None else None,
+        )
+    )
+
+
+@app.post("/api/runs/<run_id>/continue")
+def continue_run(run_id: str) -> Response:
+    payload = request.get_json(silent=True) or {}
+    concurrency = payload.get("concurrency")
+    protected_terms = payload.get("protectedTerms")
+    return jsonify(
+        RUN_MANAGER.continue_run(
+            run_id,
+            model_profile_id=str(payload.get("modelProfileId") or "") or None,
+            prompt_plan_id=str(payload.get("promptPlanId") or "") or None,
+            concurrency=int(concurrency) if concurrency is not None else None,
+            protected_terms=protected_terms if isinstance(protected_terms, list) else None,
+            chunk_preset=str(payload.get("chunkPreset") or "") or None,
+            repeat_count=payload.get("repeatCount"),
+        )
+    )
 
 
 @app.post("/api/runs/<run_id>/paragraphs/<paragraph_id>/retry")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 import unittest
 from typing import AsyncIterator
 from unittest.mock import patch
@@ -318,6 +320,43 @@ class CoreLLMRegression(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_slow_proxy_resolution_is_cached_without_serializing_concurrent_requests(self) -> None:
+        resolver_calls = 0
+        resolver_lock = threading.Lock()
+        request_started: list[float] = []
+
+        def resolver(_url: str) -> None:
+            nonlocal resolver_calls
+            with resolver_lock:
+                resolver_calls += 1
+            time.sleep(0.12)
+            return None
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            request_started.append(time.monotonic())
+            if request.url.path.endswith("/models"):
+                return httpx.Response(200, json={"data": [{"id": "test-model"}]})
+            data = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=ChunkStream([data]))
+
+        transport = httpx.MockTransport(handler)
+        client = StreamingLLMClient(
+            lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs),
+            proxy_resolver=resolver,
+        )
+        results = await asyncio.gather(*[
+            client.stream_completion(profile(baseUrl="https://same.example.test/v1"), "test", lambda _delta: None)
+            for _index in range(8)
+        ])
+
+        self.assertEqual(results, ["ok"] * 8)
+        self.assertEqual(resolver_calls, 1)
+        self.assertEqual(len(request_started), 8)
+        self.assertLess(max(request_started) - min(request_started), 0.08)
+
+        await client.list_models(profile(baseUrl="https://same.example.test/v1"))
+        self.assertEqual(resolver_calls, 1, "the model-list endpoint should reuse the same origin proxy result")
+
     async def test_responses_incomplete_is_never_accepted(self) -> None:
         calls = 0
 
@@ -386,6 +425,21 @@ class CoreLLMRegression(unittest.IsolatedAsyncioTestCase):
             payload = build_payload(profile(protocol=protocol), "hello")
             self.assertNotIn("max_tokens", payload)
             self.assertNotIn("max_output_tokens", payload)
+
+    def test_request_instructions_use_each_protocols_native_field(self) -> None:
+        chat = build_payload(profile(_requestInstructions="English only."), "rewrite")
+        self.assertEqual(
+            chat["messages"],
+            [
+                {"role": "system", "content": "English only."},
+                {"role": "user", "content": "rewrite"},
+            ],
+        )
+        responses = build_payload(
+            profile(protocol="responses", _requestInstructions="English only."), "rewrite"
+        )
+        self.assertEqual(responses["instructions"], "English only.")
+        self.assertEqual(responses["input"], "rewrite")
 
     def test_openai_compatible_reasoning_uses_each_protocol_shape(self) -> None:
         chat = build_payload(profile(reasoningEffort="medium", temperature=0.8), "hello")

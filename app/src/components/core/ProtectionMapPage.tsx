@@ -53,10 +53,10 @@ export function ProtectionMapPage({ document, run, onOpenDocument, onDocumentCha
         <EmptyHeader>
           <EmptyMedia variant="icon"><FileText /></EmptyMedia>
           <EmptyTitle>TXT 没有 Word 结构</EmptyTitle>
-          <EmptyDescription>可在改写工作台继续处理。</EmptyDescription>
+          <EmptyDescription>可在开始改写中继续处理。</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <Button variant="outline" onClick={onOpenDocument}>返回改写工作台</Button>
+          <Button variant="outline" onClick={onOpenDocument}>返回开始改写</Button>
         </EmptyContent>
       </Empty>
     );
@@ -117,7 +117,7 @@ export function ProtectionMapPage({ document, run, onOpenDocument, onDocumentCha
 
       <Separator />
       <div className="flex shrink-0 items-center justify-between gap-3">
-        <Button variant="outline" onClick={onOpenDocument}>返回改写工作台</Button>
+        <Button variant="outline" onClick={onOpenDocument}>返回开始改写</Button>
         <Button disabled={locked || saving || !changed || !selectedIds.size} onClick={() => void save()}>
           {saving ? <Spinner data-icon="inline-start" /> : <Save data-icon="inline-start" />}
           保存正文范围

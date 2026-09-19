@@ -477,6 +477,49 @@ class CoreDocxRegression(unittest.TestCase):
             {body["id"], caption["id"], reference_one["id"], appendix_body["id"]},
         )
 
+    def test_standalone_equation_numbers_are_not_suggested_as_body(self) -> None:
+        equation_document = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="{W_NS}"><w:body>
+  <w:p><w:r><w:t>模型输入为多变量时间序列，计算结果如下。</w:t></w:r></w:p>
+  <w:p><w:r><w:t>（3-1）</w:t></w:r></w:p>
+  <w:p><w:r><w:t>式（4.2）</w:t></w:r></w:p>
+  <w:p><w:r><w:t>（a）</w:t></w:r></w:p>
+  <w:sectPr/>
+</w:body></w:document>'''.encode()
+        public = import_document(io.BytesIO(fixture_docx(equation_document)), "公式编号.docx")
+        prose, numbered, prefixed, lettered = public["paragraphs"]
+
+        self.assertTrue(prose["selected"])
+        for paragraph in (numbered, prefixed, lettered):
+            self.assertTrue(paragraph["safe"])
+            self.assertFalse(paragraph["selected"])
+            self.assertEqual(paragraph["suggestionReason"], "structural_label")
+
+    def test_upgrade_removes_old_automatic_equation_selection_but_keeps_manual_includes(self) -> None:
+        equation_document = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="{W_NS}"><w:body>
+  <w:p><w:r><w:t>正文段落需要继续改写。</w:t></w:r></w:p>
+  <w:p><w:r><w:t>（3-1）</w:t></w:r></w:p>
+  <w:p><w:r><w:t>表3-1 试验结果</w:t></w:r></w:p>
+  <w:sectPr/>
+</w:body></w:document>'''.encode()
+        public = import_document(io.BytesIO(fixture_docx(equation_document)), "旧公式范围.docx")
+        stored = load_document(public["id"])
+        body, equation_number, caption = stored["paragraphs"]
+        equation_number["selected"] = True
+        equation_number["suggestedSelected"] = True
+        caption["selected"] = True
+        self.assertFalse(caption["suggestedSelected"])
+        stored["scopeConfirmed"] = True
+        stored["scopeClassifierVersion"] = 10
+        save_document(stored)
+
+        upgraded = load_document(public["id"])
+        upgraded_body, upgraded_equation, upgraded_caption = upgraded["paragraphs"]
+        self.assertTrue(upgraded_body["selected"])
+        self.assertFalse(upgraded_equation["selected"])
+        self.assertTrue(upgraded_caption["selected"])
+
     def test_front_declaration_does_not_lock_the_following_body(self) -> None:
         declaration_document = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="{W_NS}"><w:body>

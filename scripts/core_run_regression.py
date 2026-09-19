@@ -11,7 +11,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core_config import BUILTIN_PLAN_ID, upsert_plan, upsert_profile, upsert_template
-from core_documents import CHUNK_PRESETS, build_chunk_manifest, import_document, split_text, update_scope
+from core_documents import (
+    CHUNK_PRESETS,
+    SCOPE_CLASSIFIER_VERSION,
+    build_chunk_manifest,
+    import_document,
+    load_document,
+    save_document,
+    split_text,
+    update_scope,
+)
 from core_llm import StreamRequestError
 from core_docx_regression import fixture_docx, fixture_with_digital_signature
 from core_runs import RunError, RunManager, WarningAcknowledgementRequired, run_path
@@ -63,6 +72,17 @@ class WorkerProbeClient:
             self.active -= 1
 
 
+class ProfileProbeClient:
+    def __init__(self) -> None:
+        self.profiles: list[dict] = []
+
+    async def stream_completion(self, profile, prompt, on_delta, _on_attempt=None):
+        self.profiles.append(dict(profile))
+        source = prompt.rsplit("待改写内容：\n", 1)[-1]
+        await on_delta(source)
+        return source
+
+
 class QueueCancelClient:
     def __init__(self) -> None:
         self.started = 0
@@ -101,6 +121,22 @@ class PromptSequenceClient:
         self.prompts.append(prompt)
         marker, source = prompt.split("\n", 1)
         result = f"{source}-{'一' if marker == 'STEP1' else '二'}"
+        await on_delta(result)
+        return result
+
+
+class ContinueConfigurationClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def stream_completion(self, profile, prompt, on_delta, _on_attempt=None):
+        self.calls.append({"profile": dict(profile), "prompt": prompt})
+        if prompt.startswith("NEXT-B\n"):
+            source = prompt.split("\n", 1)[1]
+            result = f"{source}-B"
+        else:
+            source = prompt.rsplit("待改写内容：\n", 1)[-1]
+            result = f"{source}-A"
         await on_delta(result)
         return result
 
@@ -359,6 +395,8 @@ class CoreRunRegression(unittest.TestCase):
         result = self.wait(manager, created["id"])
         self.assertEqual(result["status"], "completed")
         self.assertEqual(client.max_active, 16)
+        self.assertEqual(result["execution"]["configuredConcurrency"], 16)
+        self.assertEqual(result["execution"]["peakActiveRequests"], 16)
         self.assertEqual(result["progress"]["completed"], 20)
         self.assertEqual(result["progress"]["total"], 20)
 
@@ -444,7 +482,9 @@ class CoreRunRegression(unittest.TestCase):
         self.assertFalse(paused["paragraphs"][1]["complete"])
         self.assertEqual(paused["paragraphs"][1]["rewrittenText"], "")
 
-        resumed = manager.resume(created["id"])
+        resumed = manager.resume(created["id"], concurrency=8)
+        self.assertEqual(resumed["snapshot"]["concurrency"], 8)
+        self.assertEqual(resumed["execution"]["configuredConcurrency"], 8)
         completed = self.wait(manager, resumed["id"])
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(client.calls, {"第一段": 1, "第二段": 2})
@@ -452,6 +492,33 @@ class CoreRunRegression(unittest.TestCase):
             [item["rewrittenText"] for item in completed["paragraphs"]],
             ["第一段-完成", "第二段-完成"],
         )
+
+    def test_english_source_uses_protocol_level_english_rewrite_instruction(self) -> None:
+        english = (
+            "Facility agriculture supports stable vegetable production, while intelligent control "
+            "improves water use efficiency and reduces repetitive manual work in greenhouses."
+        )
+        chinese = "设施农业能够保障蔬菜稳定生产，并提高温室水分利用效率。"
+        client = ProfileProbeClient()
+        manager = RunManager(client)
+        english_run = manager.create_run(
+            self.document(english)["id"],
+            self.profile["id"],
+            BUILTIN_PLAN_ID,
+            repeat_count=1,
+        )
+        self.assertEqual(self.wait(manager, english_run["id"])["status"], "completed")
+        self.assertIn("_requestInstructions", client.profiles[-1])
+        self.assertIn("entire response in fluent academic English", client.profiles[-1]["_requestInstructions"])
+
+        chinese_run = manager.create_run(
+            self.document(chinese)["id"],
+            self.profile["id"],
+            BUILTIN_PLAN_ID,
+            repeat_count=1,
+        )
+        self.assertEqual(self.wait(manager, chinese_run["id"])["status"], "completed")
+        self.assertNotIn("_requestInstructions", client.profiles[-1])
 
     def test_application_restart_recovers_active_run_as_paused_without_filling_original(self) -> None:
         document = self.document("重启时不能拿原文冒充结果。")
@@ -486,8 +553,16 @@ class CoreRunRegression(unittest.TestCase):
         completed = self.wait(manager, created["id"])
         paragraph_id = completed["paragraphs"][0]["paragraphId"]
 
-        with self.assertRaises(WarningAcknowledgementRequired):
+        with self.assertRaises(WarningAcknowledgementRequired) as confirmation:
             manager.export(created["id"], output_format="txt")
+        self.assertTrue(confirmation.exception.summary["warnings"])
+        self.assertEqual(
+            {item["paragraphNumber"] for item in confirmation.exception.summary["warnings"]},
+            {1},
+        )
+        self.assertTrue(
+            all(item["paragraphPreview"] for item in confirmation.exception.summary["warnings"])
+        )
         output, _audit = manager.export(
             created["id"], output_format="txt", acknowledge_warnings=True
         )
@@ -509,6 +584,123 @@ class CoreRunRegression(unittest.TestCase):
             {item["category"] for item in changed_manual["paragraphs"][0]["warnings"]},
             {"number", "citation"},
         )
+
+    def test_completed_run_can_continue_from_current_review_choices(self) -> None:
+        document = self.document("第一段\n\n第二段")
+        manager = RunManager(DelayedClient())
+        created = manager.create_run(
+            document["id"], self.profile["id"], BUILTIN_PLAN_ID, concurrency=2, repeat_count=1
+        )
+        completed = self.wait(manager, created["id"])
+        self.assertEqual(completed["status"], "completed")
+        first, second = completed["paragraphs"]
+        manager.save_review(created["id"], first["paragraphId"], "manual", "第一段手动稿")
+        manager.save_review(created["id"], second["paragraphId"], "original")
+
+        continued = manager.continue_run(created["id"], concurrency=8)
+        self.assertNotEqual(continued["id"], created["id"])
+        self.assertEqual(continued["snapshot"]["iteration"], 2)
+        self.assertEqual(continued["snapshot"]["parentRunId"], created["id"])
+        self.assertEqual(continued["snapshot"]["rootRunId"], created["id"])
+        self.assertEqual(continued["snapshot"]["concurrency"], 8)
+        next_completed = self.wait(manager, continued["id"])
+        self.assertEqual(next_completed["status"], "completed")
+        self.assertEqual(
+            [item["rewrittenText"] for item in next_completed["paragraphs"]],
+            ["第一段手动稿-完成", "第二段-完成"],
+        )
+        preserved = manager.public_run(created["id"])
+        self.assertEqual(preserved["paragraphs"][0]["decision"]["decision"], "manual")
+        self.assertEqual(preserved["paragraphs"][1]["decision"]["decision"], "original")
+        self.assertEqual(load_document(document["id"])["latestRunId"], continued["id"])
+
+    def test_completed_run_applies_new_model_plan_chunking_rounds_and_terms(self) -> None:
+        second_profile = upsert_profile(
+            {
+                "name": "第二连接",
+                "baseUrl": "http://127.0.0.1:9998/v1",
+                "apiKey": "second-key",
+                "model": "second-model",
+                "protocol": "chat_completions",
+            }
+        )
+        next_template = upsert_template(
+            {"name": "下一轮提示词", "content": "NEXT-B\n{{text}}"}
+        )
+        next_plan = upsert_plan(
+            {"name": "下一轮方案", "templateIds": [next_template["id"]]}
+        )
+        document = self.document("第一段\n\n第二段")
+        client = ContinueConfigurationClient()
+        manager = RunManager(client)
+        created = manager.create_run(
+            document["id"], self.profile["id"], BUILTIN_PLAN_ID, repeat_count=1
+        )
+        completed = self.wait(manager, created["id"])
+        first, second = completed["paragraphs"]
+        manager.save_review(created["id"], first["paragraphId"], "manual", "第一段手动稿")
+        manager.save_review(created["id"], second["paragraphId"], "original")
+        client.calls.clear()
+
+        continued = manager.continue_run(
+            created["id"],
+            model_profile_id=second_profile["id"],
+            prompt_plan_id=next_plan["id"],
+            concurrency=4,
+            protected_terms=["保护词B"],
+            chunk_preset="long",
+            repeat_count=2,
+        )
+        snapshot = continued["snapshot"]
+        self.assertEqual(snapshot["credentialProfileId"], second_profile["id"])
+        self.assertEqual(snapshot["modelProfile"]["model"], "second-model")
+        self.assertEqual(snapshot["promptPlan"]["id"], next_plan["id"])
+        self.assertEqual(snapshot["chunking"]["preset"], "long")
+        self.assertEqual(snapshot["repeatCount"], 2)
+        self.assertEqual(snapshot["concurrency"], 4)
+        self.assertEqual(snapshot["protectedTerms"], ["保护词B"])
+
+        next_completed = self.wait(manager, continued["id"])
+        self.assertEqual(next_completed["status"], "completed")
+        self.assertTrue(client.calls)
+        self.assertTrue(
+            all(call["profile"]["model"] == "second-model" for call in client.calls)
+        )
+        self.assertTrue(
+            all(call["profile"]["apiKey"] == "second-key" for call in client.calls)
+        )
+        self.assertTrue(all(call["prompt"].startswith("NEXT-B\n") for call in client.calls))
+        self.assertIn("NEXT-B\n第一段手动稿", [call["prompt"] for call in client.calls])
+        self.assertIn("NEXT-B\n第二段", [call["prompt"] for call in client.calls])
+        self.assertEqual(
+            [item["rewrittenText"] for item in next_completed["paragraphs"]],
+            ["第一段手动稿-B-B", "第二段-B-B"],
+        )
+
+    def test_classifier_upgrade_does_not_mutate_an_existing_runs_snapshot(self) -> None:
+        document = self.document("第一段\n\n第二段")
+        manager = RunManager(DelayedClient())
+        created = manager.create_run(
+            document["id"], self.profile["id"], BUILTIN_PLAN_ID, concurrency=2, repeat_count=1
+        )
+        completed = self.wait(manager, created["id"])
+        self.assertEqual(completed["status"], "completed")
+
+        stored = load_document(document["id"])
+        stored["scopeConfirmed"] = True
+        stored["scopeClassifierVersion"] = SCOPE_CLASSIFIER_VERSION - 1
+        stored["paragraphs"][1]["selected"] = False
+        stored["paragraphs"][1]["suggestedSelected"] = False
+        save_document(stored)
+
+        reopened = manager.public_run(created["id"])
+        self.assertEqual(len(reopened["paragraphs"]), 2)
+        self.assertEqual(
+            {item["paragraphId"] for item in reopened["paragraphs"]},
+            set(created["snapshot"]["document"]["selectedParagraphIds"]),
+        )
+        output, _audit = manager.export(created["id"], output_format="txt")
+        self.assertEqual(output.read_text(encoding="utf-8"), "第一段-完成\n\n第二段-完成")
 
     def test_incomplete_docx_can_export_after_user_keeps_failed_paragraph_original(self) -> None:
         document = import_document(io.BytesIO(fixture_docx()), "保留失败段.docx")

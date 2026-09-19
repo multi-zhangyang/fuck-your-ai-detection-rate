@@ -176,6 +176,15 @@ export interface RunChunk {
 
 export type ReviewChoice = "rewrite" | "original" | "manual";
 
+export interface RunConfigurationInput {
+  modelProfileId: string;
+  promptPlanId: string;
+  concurrency: number;
+  chunkPreset: ChunkPreset;
+  repeatCount: number;
+  protectedTerms: string[];
+}
+
 export interface RunParagraph {
   paragraphId: string;
   order: number;
@@ -203,10 +212,27 @@ export interface CoreRun {
     completedChunks: number;
     totalChunks: number;
   };
+  execution: {
+    configuredConcurrency: number;
+    activeRequests: number;
+    peakActiveRequests: number;
+    requestsStarted: number;
+  };
   snapshot: {
     document: { id: string; name: string; kind: "docx" | "txt"; selectedParagraphIds: string[] };
     modelProfile: ModelProfile;
-    promptPlan: { id: string; name: string; steps: Array<{ templateId: string; name: string }> };
+    credentialProfileId: string;
+    promptPlan: {
+      id: string;
+      name: string;
+      steps: Array<{
+        templateId: string;
+        name: string;
+        executionId?: string;
+        roundIndex?: number;
+        roundNumber?: number;
+      }>;
+    };
     chunking: {
       preset: ChunkPreset;
       limits: Record<string, { keep: number; target: number; hard: number; minTail: number }>;
@@ -214,6 +240,9 @@ export interface CoreRun {
     repeatCount: number;
     concurrency: number;
     protectedTerms: string[];
+    iteration?: number;
+    parentRunId?: string;
+    rootRunId?: string;
   };
   chunks: RunChunk[];
   paragraphs: RunParagraph[];
@@ -263,7 +292,11 @@ export interface RecentDocument {
 export interface WarningSummary {
   count: number;
   categories: Record<string, number>;
-  warnings: Array<RewriteWarning & { paragraphId: string }>;
+  warnings: Array<RewriteWarning & {
+    paragraphId: string;
+    paragraphNumber: number;
+    paragraphPreview?: string;
+  }>;
   message: string;
   formatAudit?: FormatAudit;
   incompleteParagraphIds?: string[];

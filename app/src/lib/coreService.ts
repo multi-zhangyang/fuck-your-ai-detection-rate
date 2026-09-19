@@ -8,6 +8,7 @@ import type {
   PromptTemplate,
   RecentDocument,
   ReviewChoice,
+  RunConfigurationInput,
   RunEvent,
   WarningSummary,
 } from "@/types/core";
@@ -136,21 +137,18 @@ export const coreService = {
 
   getRecentDocuments: () => requestJson<{ items: RecentDocument[] }>("/api/recent-documents"),
 
-  createRun: (value: {
-    documentId: string;
-    modelProfileId: string;
-    promptPlanId: string;
-    concurrency: number;
-    chunkPreset: ChunkPreset;
-    repeatCount: number;
-    protectedTerms: string[];
-  }) => requestJson<CoreRun>("/api/runs", json("POST", value)),
+  createRun: (value: RunConfigurationInput & { documentId: string }) =>
+    requestJson<CoreRun>("/api/runs", json("POST", value)),
 
   getRun: (id: string) => requestJson<CoreRun>(`/api/runs/${encodeURIComponent(id)}`),
 
   cancelRun: (id: string) => requestJson<CoreRun>(`/api/runs/${encodeURIComponent(id)}/cancel`, json("POST")),
 
-  resumeRun: (id: string) => requestJson<CoreRun>(`/api/runs/${encodeURIComponent(id)}/resume`, json("POST")),
+  resumeRun: (id: string, concurrency: number) =>
+    requestJson<CoreRun>(`/api/runs/${encodeURIComponent(id)}/resume`, json("POST", { concurrency })),
+
+  continueRun: (id: string, value: RunConfigurationInput) =>
+    requestJson<CoreRun>(`/api/runs/${encodeURIComponent(id)}/continue`, json("POST", value)),
 
   retryParagraph: (runId: string, paragraphId: string) =>
     requestJson<CoreRun>(

@@ -42,16 +42,13 @@ class CoreWarningsRegression(unittest.TestCase):
         text = "本文使用BERT模型，结果为1,024，引用见［1］。"
         self.assertEqual(generate_rewrite_warnings(text, text, ["BERT"]), [])
 
-    def test_dominant_language_change_is_only_reported_as_a_warning(self) -> None:
+    def test_language_change_does_not_add_a_mechanical_warning(self) -> None:
         original = " ".join(["This paragraph explains the access control system and its implementation details."] * 8)
         rewritten = "。".join(["本段介绍门禁系统及其实现细节"] * 12)
 
         warnings = generate_rewrite_warnings(original, rewritten)
 
-        language = next(item for item in warnings if item["category"] == "language")
-        self.assertEqual(language["removed"], [])
-        self.assertEqual(language["added"], [])
-        self.assertIn("英文 → 中文", language["message"])
+        self.assertNotIn("language", {item["category"] for item in warnings})
 
     def test_mixed_technical_chinese_does_not_create_language_noise(self) -> None:
         original = ("本文使用 Java Web、Spring MVC 和 MySQL 完成二维码门禁系统开发。" * 10)

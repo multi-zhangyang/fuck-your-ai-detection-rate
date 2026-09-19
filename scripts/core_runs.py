@@ -25,11 +25,25 @@ from core_documents import (
     set_latest_run,
 )
 from core_llm import StreamRequestError, StreamingLLMClient
-from core_warnings import generate_rewrite_warnings
+from core_warnings import dominant_language, generate_rewrite_warnings
 
 
 class RunError(RuntimeError):
     pass
+
+
+ENGLISH_REWRITE_INSTRUCTION = """The source passage is English. Apply these requirements before all language-specific examples in the selected template:
+- Write the entire response in fluent academic English. Do not translate prose into Chinese or mix Chinese into the response.
+- Paraphrase the wording and sentence structure substantially instead of copying long clauses unchanged.
+- Preserve the original meaning, technical terms, abbreviations, numbers, citations, and logical relationships.
+- Keep Chinese characters only when they already occur in the source and are required as a proper name or quoted identifier.
+- Output only the rewritten English passage, without a heading, note, or explanation."""
+
+
+def _request_profile(profile: dict[str, Any], original: str) -> dict[str, Any]:
+    if dominant_language(original, minimum_letters=24) == "英文":
+        return {**profile, "_requestInstructions": ENGLISH_REWRITE_INSTRUCTION}
+    return profile
 
 
 class ExportConfirmationRequired(RunError):
@@ -99,6 +113,7 @@ class RunManager:
             if value.get("status") in {"running", "queued", "cancelling"}:
                 value["status"] = "paused"
                 value["message"] = "应用上次退出时任务尚未完成，可以继续改写。"
+                value.setdefault("execution", {})["activeRequests"] = 0
                 for chunk in value.get("chunks", []):
                     if chunk.get("status") == "running":
                         chunk["status"] = "paused"
@@ -124,20 +139,75 @@ class RunManager:
                 self._save(run)
             self._condition(str(run["id"])).notify_all()
 
-    def create_run(
+    def _register_run(
         self,
         document_id: str,
+        snapshot: dict[str, Any],
+        chunk_manifest: list[dict[str, Any]],
+        *,
+        message: str,
+    ) -> dict[str, Any]:
+        run_id = f"run-{uuid.uuid4().hex}"
+        snapshot_value = deepcopy(snapshot)
+        snapshot_value["chunkManifest"] = deepcopy(chunk_manifest)
+        concurrency = max(1, min(16, int(snapshot_value.get("concurrency", 1))))
+        snapshot_value["concurrency"] = concurrency
+        created_at = _now()
+        run = {
+            "id": run_id,
+            "documentId": document_id,
+            "status": "queued",
+            "message": message,
+            "cancelRequested": False,
+            "snapshot": snapshot_value,
+            "chunks": [
+                {
+                    **item,
+                    "status": "pending",
+                    "stepIndex": 0,
+                    "stepOutputs": [],
+                    "streamText": "",
+                    "revision": 0,
+                    "finalText": "",
+                    "warnings": [],
+                    "error": "",
+                }
+                for item in chunk_manifest
+            ],
+            "reviewDecisions": {},
+            "paragraphWarnings": {},
+            "warningCheckErrors": {},
+            "execution": {
+                "configuredConcurrency": concurrency,
+                "activeRequests": 0,
+                "peakActiveRequests": 0,
+                "requestsStarted": 0,
+            },
+            "eventSequence": 0,
+            "events": [],
+            "formatAudit": None,
+            "createdAt": created_at,
+            "updatedAt": created_at,
+            "completedAt": "",
+        }
+        with self._lock:
+            self._runs[run_id] = run
+            self._save(run)
+        set_latest_run(document_id, run_id)
+        self._start_worker(run_id)
+        return self.public_run(run_id)
+
+    def _build_run_snapshot(
+        self,
+        document: dict[str, Any],
         model_profile_id: str,
         prompt_plan_id: str,
         *,
-        concurrency: int = 1,
-        protected_terms: list[str] | None = None,
-        chunk_preset: str | None = None,
-        repeat_count: int | None = None,
-    ) -> dict[str, Any]:
-        document = load_document(document_id)
-        if not document.get("scopeConfirmed"):
-            raise RunError("请先确认需要改写的正文范围。")
+        concurrency: int | None,
+        protected_terms: list[str] | None,
+        chunk_preset: str | None,
+        repeat_count: int | None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         config = load_config()
         profile = find_profile(model_profile_id, config)
         if not profile:
@@ -194,78 +264,74 @@ class RunManager:
         if not chunk_manifest:
             raise RunError("当前范围内没有可改写的正文。")
         profile_snapshot = {key: value for key, value in profile.items() if key not in {"apiKey", "knownModels"}}
-        run_id = f"run-{uuid.uuid4().hex}"
         terms = protected_terms if protected_terms is not None else config.get("preferences", {}).get("protectedTerms", [])
-        run = {
-            "id": run_id,
-            "documentId": document_id,
-            "status": "queued",
-            "message": "任务已创建。",
-            "cancelRequested": False,
-            "snapshot": {
-                "document": {
-                    "id": document["id"],
-                    "name": document["name"],
-                    "kind": document["kind"],
-                    "sourceHash": document["sourceHash"],
-                    "selectedParagraphIds": [
-                        item["id"] for item in document["paragraphs"] if item.get("selected")
-                    ],
-                },
-                "modelProfile": profile_snapshot,
-                "credentialProfileId": profile["id"],
-                "promptPlan": {
-                    "id": plan["id"],
-                    "name": plan["name"],
-                    "steps": steps,
-                },
-                "chunking": {
-                    "preset": normalized_preset,
-                    "limits": {
-                        language: {
-                            "keep": values[0],
-                            "target": values[1],
-                            "hard": values[2],
-                            "minTail": values[3],
-                        }
-                        for language, values in CHUNK_PRESETS[normalized_preset].items()
-                    },
-                },
-                "repeatCount": effective_repeat,
-                "concurrency": max(1, min(16, int(concurrency))),
-                "protectedTerms": list(dict.fromkeys(str(item).strip() for item in terms if str(item).strip()))[:200],
-                "chunkManifest": deepcopy(chunk_manifest),
+        requested_concurrency = concurrency if concurrency is not None else preferences.get("rewriteConcurrency", 1)
+        try:
+            normalized_concurrency = max(1, min(16, int(requested_concurrency)))
+        except (TypeError, ValueError):
+            normalized_concurrency = 1
+        snapshot = {
+            "document": {
+                "id": document["id"],
+                "name": document["name"],
+                "kind": document["kind"],
+                "sourceHash": document["sourceHash"],
+                "selectedParagraphIds": [
+                    item["id"] for item in document["paragraphs"] if item.get("selected")
+                ],
             },
-            "chunks": [
-                {
-                    **item,
-                    "status": "pending",
-                    "stepIndex": 0,
-                    "stepOutputs": [],
-                    "streamText": "",
-                    "revision": 0,
-                    "finalText": "",
-                    "warnings": [],
-                    "error": "",
-                }
-                for item in chunk_manifest
-            ],
-            "reviewDecisions": {},
-            "paragraphWarnings": {},
-            "warningCheckErrors": {},
-            "eventSequence": 0,
-            "events": [],
-            "formatAudit": None,
-            "createdAt": _now(),
-            "updatedAt": _now(),
-            "completedAt": "",
+            "modelProfile": profile_snapshot,
+            "credentialProfileId": profile["id"],
+            "promptPlan": {
+                "id": plan["id"],
+                "name": plan["name"],
+                "steps": steps,
+            },
+            "chunking": {
+                "preset": normalized_preset,
+                "limits": {
+                    language: {
+                        "keep": values[0],
+                        "target": values[1],
+                        "hard": values[2],
+                        "minTail": values[3],
+                    }
+                    for language, values in CHUNK_PRESETS[normalized_preset].items()
+                },
+            },
+            "repeatCount": effective_repeat,
+            "concurrency": normalized_concurrency,
+            "protectedTerms": list(dict.fromkeys(str(item).strip() for item in terms if str(item).strip()))[:200],
+            "iteration": 1,
+            "parentRunId": "",
+            "rootRunId": "",
         }
-        with self._lock:
-            self._runs[run_id] = run
-            self._save(run)
-        set_latest_run(document_id, run_id)
-        self._start_worker(run_id)
-        return self.public_run(run_id)
+        return snapshot, chunk_manifest
+
+    def create_run(
+        self,
+        document_id: str,
+        model_profile_id: str,
+        prompt_plan_id: str,
+        *,
+        concurrency: int = 1,
+        protected_terms: list[str] | None = None,
+        chunk_preset: str | None = None,
+        repeat_count: int | None = None,
+    ) -> dict[str, Any]:
+        document = load_document(document_id)
+        if not document.get("scopeConfirmed"):
+            raise RunError("请先确认需要改写的正文范围。")
+        snapshot, chunk_manifest = self._build_run_snapshot(
+            document,
+            model_profile_id,
+            prompt_plan_id,
+            concurrency=concurrency,
+            protected_terms=protected_terms,
+            chunk_preset=chunk_preset,
+            repeat_count=repeat_count,
+        )
+        return self._register_run(document_id, snapshot, chunk_manifest, message="任务已创建。")
 
     def _start_worker(self, run_id: str) -> None:
         thread = threading.Thread(target=self._worker_entry, args=(run_id,), name=f"fyadr-{run_id[-8:]}", daemon=True)
@@ -309,6 +375,15 @@ class RunManager:
         concurrency = int(run["snapshot"].get("concurrency", 1))
         pending_chunks = [chunk for chunk in run.get("chunks", []) if chunk.get("status") == "pending"]
         worker_count = min(max(1, min(16, concurrency)), len(pending_chunks)) if pending_chunks else 0
+        with self._lock:
+            execution = run.setdefault("execution", {})
+            execution.update(
+                {
+                    "configuredConcurrency": concurrency,
+                    "activeRequests": 0,
+                    "peakActiveRequests": 0,
+                }
+            )
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         for chunk in pending_chunks:
             queue.put_nowait(chunk)
@@ -386,9 +461,19 @@ class RunManager:
             ]
             if not chunks or any(item.get("status") != "completed" for item in chunks):
                 return
-            original = self._joined_chunk_value(chunks, "originalText", require_complete=False)
             rewritten = self._joined_chunk_value(chunks, "finalText", require_complete=True)
             protected_terms = list(run.get("snapshot", {}).get("protectedTerms", []))
+            document_id = str(run.get("documentId") or "")
+        document = load_document(document_id)
+        paragraph = next(
+            (item for item in document.get("paragraphs", []) if item.get("id") == paragraph_id),
+            None,
+        )
+        original = (
+            str(paragraph.get("text") or "")
+            if paragraph
+            else self._joined_chunk_value(chunks, "originalText", require_complete=False)
+        )
         warnings, warning_error = self._safe_warnings(original, rewritten, protected_terms)
         with self._lock:
             run.setdefault("paragraphWarnings", {})[paragraph_id] = warnings
@@ -431,6 +516,7 @@ class RunManager:
                     raise asyncio.CancelledError
                 step = steps[step_index]
                 prompt = str(step["content"]).replace("{{text}}", current_input)
+                request_profile = _request_profile(profile, str(chunk["originalText"]))
                 streamed: list[str] = []
                 last_emit = 0.0
 
@@ -454,7 +540,22 @@ class RunManager:
                             )
                         last_emit = now
 
-                result = await self.llm.stream_completion(profile, prompt, on_delta)
+                with self._lock:
+                    execution = run.setdefault("execution", {})
+                    execution["activeRequests"] = int(execution.get("activeRequests", 0)) + 1
+                    execution["peakActiveRequests"] = max(
+                        int(execution.get("peakActiveRequests", 0)),
+                        int(execution["activeRequests"]),
+                    )
+                    execution["requestsStarted"] = int(execution.get("requestsStarted", 0)) + 1
+                try:
+                    result = await self.llm.stream_completion(request_profile, prompt, on_delta)
+                finally:
+                    with self._lock:
+                        execution = run.setdefault("execution", {})
+                        execution["activeRequests"] = max(
+                            0, int(execution.get("activeRequests", 0)) - 1
+                        )
                 if not result.strip():
                     raise StreamRequestError("模型返回了空内容。", category="empty")
                 with self._lock:
@@ -572,7 +673,7 @@ class RunManager:
                 loop.call_soon_threadsafe(task.cancel)
         return self.public_run(run_id)
 
-    def resume(self, run_id: str) -> dict[str, Any]:
+    def resume(self, run_id: str, *, concurrency: int | None = None) -> dict[str, Any]:
         run = self._load(run_id)
         with self._lock:
             if run.get("status") in {"running", "queued", "cancelling"}:
@@ -586,12 +687,105 @@ class RunManager:
                     unfinished = True
             if not unfinished:
                 raise RunError("任务已经完成，无需继续。")
+            if concurrency is not None:
+                normalized_concurrency = max(1, min(16, int(concurrency)))
+                run["snapshot"]["concurrency"] = normalized_concurrency
+                run.setdefault("execution", {})["configuredConcurrency"] = normalized_concurrency
             run["status"] = "queued"
             run["cancelRequested"] = False
             run["message"] = "准备继续未完成的内容。"
             self._save(run)
         self._start_worker(run_id)
         return self.public_run(run_id)
+
+    def continue_run(
+        self,
+        run_id: str,
+        *,
+        model_profile_id: str | None = None,
+        prompt_plan_id: str | None = None,
+        concurrency: int | None = None,
+        protected_terms: list[str] | None = None,
+        chunk_preset: str | None = None,
+        repeat_count: int | None = None,
+    ) -> dict[str, Any]:
+        previous = self._load(run_id)
+        if previous.get("status") != "completed":
+            raise RunError("当前任务完成后才能继续改写。")
+        document = load_document(str(previous.get("documentId") or ""))
+        previous_snapshot = deepcopy(previous.get("snapshot", {}))
+        if document.get("sourceHash") != previous_snapshot.get("document", {}).get("sourceHash"):
+            raise RunError("源文件已在任务创建后变化，无法继续改写。")
+        selected_ids = [
+            str(item)
+            for item in previous_snapshot.get("document", {}).get("selectedParagraphIds", [])
+        ]
+        selected_set = set(selected_ids)
+        document_ids = {str(item.get("id") or "") for item in document.get("paragraphs", [])}
+        if any(paragraph_id not in document_ids for paragraph_id in selected_ids):
+            raise RunError("任务中的正文位置已无法定位，请重新创建改写任务。")
+
+        current_texts: dict[str, str] = {}
+        for result in self._paragraph_results(previous, document):
+            decision = str(result.get("decision", {}).get("decision") or "rewrite")
+            if decision == "original":
+                value = str(result.get("originalText") or "")
+            elif decision == "manual":
+                value = str(result.get("decision", {}).get("text") or "")
+            elif result.get("complete"):
+                value = str(result.get("rewrittenText") or "")
+            else:
+                raise RunError("仍有段落未完成，请先继续处理或保留原文。")
+            if not value.strip():
+                raise RunError("存在空白段落，无法继续改写。")
+            current_texts[str(result["paragraphId"])] = value
+        if set(current_texts) != selected_set:
+            raise RunError("本轮结果与正文范围不一致，无法继续改写。")
+
+        next_document = deepcopy(document)
+        for paragraph in next_document.get("paragraphs", []):
+            paragraph_id = str(paragraph.get("id") or "")
+            paragraph["selected"] = paragraph_id in selected_set
+            if paragraph_id in current_texts:
+                paragraph["text"] = current_texts[paragraph_id]
+        inherited_profile_id = str(
+            previous_snapshot.get("credentialProfileId")
+            or previous_snapshot.get("modelProfile", {}).get("id")
+            or ""
+        )
+        inherited_plan_id = str(previous_snapshot.get("promptPlan", {}).get("id") or "")
+        snapshot, chunk_manifest = self._build_run_snapshot(
+            next_document,
+            model_profile_id or inherited_profile_id,
+            prompt_plan_id or inherited_plan_id,
+            concurrency=previous_snapshot.get("concurrency", 1) if concurrency is None else concurrency,
+            protected_terms=(
+                list(previous_snapshot.get("protectedTerms", []))
+                if protected_terms is None
+                else protected_terms
+            ),
+            chunk_preset=(
+                str(previous_snapshot.get("chunking", {}).get("preset") or DEFAULT_CHUNK_PRESET)
+                if chunk_preset is None
+                else chunk_preset
+            ),
+            repeat_count=(
+                previous_snapshot.get("repeatCount", 1)
+                if repeat_count is None
+                else repeat_count
+            ),
+        )
+        snapshot["iteration"] = max(1, int(previous_snapshot.get("iteration") or 1)) + 1
+        snapshot["parentRunId"] = str(previous.get("id") or "")
+        snapshot["rootRunId"] = str(
+            previous_snapshot.get("rootRunId") or previous.get("id") or ""
+        )
+        return self._register_run(
+            str(document["id"]),
+            snapshot,
+            chunk_manifest,
+            message="继续改写已创建。",
+        )
 
     def retry_paragraph(self, run_id: str, paragraph_id: str) -> dict[str, Any]:
         run = self._load(run_id)
@@ -629,7 +823,8 @@ class RunManager:
             raise RunError("审阅决定无效。")
         document = load_document(str(run["documentId"]))
         paragraph = next((item for item in document["paragraphs"] if item["id"] == paragraph_id), None)
-        if not paragraph or not paragraph.get("selected"):
+        selected_ids = set(run.get("snapshot", {}).get("document", {}).get("selectedParagraphIds", []))
+        if not paragraph or paragraph_id not in selected_ids:
             raise RunError("未找到对应正文段落。")
         if decision == "manual" and not text.strip():
             raise RunError("手动编辑内容不能为空。")
@@ -648,8 +843,9 @@ class RunManager:
             by_paragraph.setdefault(str(chunk["paragraphId"]), []).append(chunk)
         results: list[dict[str, Any]] = []
         decisions = run.get("reviewDecisions", {})
+        selected_ids = set(run.get("snapshot", {}).get("document", {}).get("selectedParagraphIds", []))
         for paragraph in document.get("paragraphs", []):
-            if not paragraph.get("selected"):
+            if paragraph.get("id") not in selected_ids:
                 continue
             chunks = sorted(by_paragraph.get(paragraph["id"], []), key=lambda item: int(item["partIndex"]))
             complete = bool(chunks) and all(item.get("status") == "completed" for item in chunks)
@@ -744,6 +940,16 @@ class RunManager:
                 "status": run["status"],
                 "message": run.get("message", ""),
                 "progress": self._progress(run),
+                "execution": {
+                    "configuredConcurrency": int(
+                        run.get("execution", {}).get(
+                            "configuredConcurrency", run["snapshot"].get("concurrency", 1)
+                        )
+                    ),
+                    "activeRequests": int(run.get("execution", {}).get("activeRequests", 0)),
+                    "peakActiveRequests": int(run.get("execution", {}).get("peakActiveRequests", 0)),
+                    "requestsStarted": int(run.get("execution", {}).get("requestsStarted", 0)),
+                },
                 "snapshot": snapshot,
                 "chunks": chunks,
                 "paragraphs": paragraphs,
@@ -782,7 +988,7 @@ class RunManager:
         replacements: dict[str, str] = {}
         warnings: list[dict[str, Any]] = []
         incomplete: list[str] = []
-        for result in results:
+        for paragraph_number, result in enumerate(results, start=1):
             decision = result["decision"].get("decision", "rewrite")
             if decision == "original":
                 final = result["originalText"]
@@ -801,7 +1007,14 @@ class RunManager:
                     result["originalText"], final, run["snapshot"].get("protectedTerms", [])
                 )
                 for warning in warning_items:
-                    warnings.append({"paragraphId": result["paragraphId"], **warning})
+                    warnings.append(
+                        {
+                            "paragraphId": result["paragraphId"],
+                            "paragraphNumber": paragraph_number,
+                            "paragraphPreview": str(result["originalText"]).replace("\n", " ")[:120],
+                            **warning,
+                        }
+                    )
         if incomplete and not use_original_for_incomplete:
             # The caller still receives one unified confirmation response. Original
             # text is only used in the generated file after explicit confirmation.
@@ -820,11 +1033,12 @@ class RunManager:
         run = self._load(run_id)
         document = load_document(str(run["documentId"]))
         snapshot_document = run.get("snapshot", {}).get("document", {})
-        current_selected = [item["id"] for item in document.get("paragraphs", []) if item.get("selected")]
-        if document.get("sourceHash") != snapshot_document.get("sourceHash") or current_selected != snapshot_document.get(
-            "selectedParagraphIds", []
-        ):
-            raise RunError("文档或正文范围已在任务创建后变化，请重新创建改写任务。")
+        if document.get("sourceHash") != snapshot_document.get("sourceHash"):
+            raise RunError("源文件已在任务创建后变化，请重新创建改写任务。")
+        snapshot_paragraph_ids = [str(item) for item in snapshot_document.get("selectedParagraphIds", [])]
+        current_ids = {str(item.get("id") or "") for item in document.get("paragraphs", [])}
+        if any(paragraph_id not in current_ids for paragraph_id in snapshot_paragraph_ids):
+            raise RunError("任务中的正文位置已无法定位，请重新创建改写任务。")
         normalized_format = output_format.lower()
         if normalized_format not in {"docx", "txt"}:
             raise RunError("导出格式无效。")
@@ -836,9 +1050,9 @@ class RunManager:
             use_original_for_incomplete=use_original_for_incomplete,
         )
         if normalized_format == "docx":
-            output, audit = export_docx(document, replacements, run_id)
+            output, audit = export_docx(document, replacements, run_id, set(snapshot_paragraph_ids))
         else:
-            output, audit = export_txt(document, replacements, run_id)
+            output, audit = export_txt(document, replacements, run_id, set(snapshot_paragraph_ids))
         audit["forceExported"] = bool(audit.get("status") == "warning" and force_format_risk)
         with self._lock:
             run["formatAudit"] = audit

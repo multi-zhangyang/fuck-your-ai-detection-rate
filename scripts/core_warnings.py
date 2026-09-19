@@ -49,11 +49,11 @@ def _warning(category: str, label: str, before: Counter[str], after: Counter[str
     }
 
 
-def _dominant_language(text: str) -> str | None:
+def dominant_language(text: str, *, minimum_letters: int = 80) -> str | None:
     cjk_count = len(CJK_RE.findall(text or ""))
     latin_count = len(LATIN_RE.findall(text or ""))
     total = cjk_count + latin_count
-    if total < 80:
+    if total < minimum_letters:
         return None
     if cjk_count / total >= 0.65:
         return "中文"
@@ -80,16 +80,4 @@ def generate_rewrite_warnings(original: str, rewritten: str, protected_terms: It
         value = _warning("protected_term", "保护词", before, after)
         if value:
             warnings.append(value)
-    original_language = _dominant_language(original)
-    rewritten_language = _dominant_language(rewritten)
-    if original_language and rewritten_language and original_language != rewritten_language:
-        warnings.append(
-            {
-                "category": "language",
-                "label": "主要语言",
-                "removed": [],
-                "added": [],
-                "message": f"主要语言可能发生变化（{original_language} → {rewritten_language}）",
-            }
-        )
     return warnings
